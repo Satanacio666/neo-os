@@ -118,7 +118,7 @@ uefi/%.o: uefi/%.c
 %.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $(addprefix $(OUTDIR),$@)
 
-buildlib:
+buildlib: crt_$(ARCH).o libuefi.a
 	@mkdir ../build ../build/uefi 2>/dev/null || true
 	@cp crt_$(ARCH).o ../build/uefi/crt0.o
 	@cp elf_$(ARCH)_efi.lds ../build/uefi/link.ld

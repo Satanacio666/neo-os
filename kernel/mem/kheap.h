@@ -29,5 +29,8 @@ void* kcalloc(size_t num, size_t size);
 void* krealloc(void *ptr, size_t new_size);
 void  kheap_get_stats(heap_stats_t *stats);
 void  kheap_dump(void);
+int   kheap_is_valid_ptr(void *ptr);
+uintptr_t kheap_get_start(void);
+uintptr_t kheap_get_end(void);
 
 #endif // NEO_KHEAP_H

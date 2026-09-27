@@ -10,6 +10,13 @@ typedef enum {
     TASK_DEAD
 } task_state_t;
 
+typedef enum {
+    PRIO_REALTIME    = 10, // Rendering pipeline & compositor (immune to mid-frame quantum preemption)
+    PRIO_INTERACTIVE = 5,  // Shell, keyboard, mouse
+    PRIO_BACKGROUND  = 1,  // Disk flushes, GC, loggers
+    PRIO_IDLE        = 0   // Low-power idle
+} task_priority_t;
+
 typedef struct {
     uint64_t x19;
     uint64_t x20;
@@ -46,6 +53,9 @@ typedef struct task {
     void          *arg;
     uint8_t       *stack_base;
     uint64_t      stack_size;
+    uint32_t      quantum_ticks;
+    uint32_t      quantum_remaining;
+    uint32_t      affinity_mask;   // Bitmask of allowed CPU cores (bit 0=C0, bit 1=C1, ...)
     cpu_context_t context;
     struct task   *next;
     struct task   *prev;

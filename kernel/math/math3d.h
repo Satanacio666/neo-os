@@ -30,6 +30,10 @@ vec3_t vec3_scale(vec3_t v, float s);
 float  vec3_dot(vec3_t a, vec3_t b);
 vec3_t vec3_cross(vec3_t a, vec3_t b);
 vec3_t vec3_normalize(vec3_t v);
+float  fast_rsqrt_neon(float x);
+float  fast_sqrt_neon(float x);
+double math3d_sin_d(double deg);
+double fast_sqrt_d(double x);
 
 // Matrix Operations (Model-View-Projection pipeline)
 void mat4_identity(mat4_t *out);
@@ -41,6 +45,7 @@ void mat4_rotate_z(mat4_t *out, float deg);
 void mat4_mul(mat4_t *out, const mat4_t *a, const mat4_t *b);
 void mat4_mul_vec4(vec4_t *out, const mat4_t *m, const vec4_t *v);
 void mat4_perspective(mat4_t *out, float fov_deg, float aspect, float near_z, float far_z);
+void math3d_transform_vertices_parallel(const vec3_t *in, vec4_t *out, int count, const mat4_t *mvp);
 
 // Vector 2D (UV texture coordinates)
 typedef struct {
@@ -76,6 +81,7 @@ typedef struct {
 } zbuffer_t;
 
 int  zbuffer_init(zbuffer_t *zb, int w, int h);
+int  zbuffer_resize(zbuffer_t *zb, int new_w, int new_h);
 void zbuffer_clear(zbuffer_t *zb);
 void zbuffer_free(zbuffer_t *zb);
 

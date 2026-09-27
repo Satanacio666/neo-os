@@ -11,11 +11,12 @@ typedef struct {
 
 typedef void (*smp_task_fn)(void *arg);
 
-typedef struct {
+typedef struct __attribute__((aligned(64))) {
     smp_task_fn  fn;
     void        *arg;
     volatile int pending;
     volatile int completed;
+    uint8_t      pad[40]; // Pad to exactly 64 bytes (ARMv8 cacheline boundary)
 } smp_core_job_t;
 
 typedef struct {
@@ -45,6 +46,7 @@ int  smp_dispatch(uint32_t core_id, smp_task_fn fn, void *arg);
 int  smp_is_job_done(uint32_t core_id);
 void smp_spin_lock(spinlock_t *l);
 void smp_spin_unlock(spinlock_t *l);
+uint32_t smp_get_core_load_pct(uint32_t core_id);
 void smp_print_doldoc(void);
 
 #endif // NEO_SMP_H

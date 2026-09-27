@@ -6,6 +6,121 @@
 
 static canvas_t canvas = {0};
 static uint32_t *s_dedicated_backbuffer = NULL;
+
+#include "../drivers/gpu/gfx_backend.h"
+
+// ─── NEON Non-Temporal Streaming Blit ────────────────────────────────────────
+// ldnp/stnp bypass L1/L2 — ideal for Write-Combining framebuffer writes
+// 64 bytes per iteration (4×128-bit NEON registers)
+static void gfx_neon_blit_nt(void *dst, const void *src, size_t bytes) {
+    // bytes must be multiple of 64; caller guarantees this via align mask
+    __asm__ volatile(
+        "1:\n"
+        "   ldnp q0, q1, [%[s], #0]\n"
+        "   ldnp q2, q3, [%[s], #32]\n"
+        "   stnp q0, q1, [%[d], #0]\n"
+        "   stnp q2, q3, [%[d], #32]\n"
+        "   add  %[s], %[s], #64\n"
+        "   add  %[d], %[d], #64\n"
+        "   subs %[n], %[n], #64\n"
+        "   b.hi 1b\n"
+        : [d] "+r"(dst), [s] "+r"(src), [n] "+r"(bytes)
+        :
+        : "q0","q1","q2","q3","memory"
+    );
+}
+
+// ─── VSync / Frame Pacing ─────────────────────────────────────────────────────
+static struct {
+    int      enabled;
+    uint64_t target_ns;     // nanoseconds per frame
+    uint64_t last_end_ns;   // timestamp of last frame end
+    uint64_t freq;          // cntfrq_el0 value
+} s_vsync = {0};
+
+static uint64_t vsync_get_freq(void) {
+    if (!s_vsync.freq) {
+        uint64_t f;
+        __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+        s_vsync.freq = (f > 0) ? f : 62500000ULL;
+    }
+    return s_vsync.freq;
+}
+
+static uint64_t vsync_now_ns(void) {
+    uint64_t t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    uint64_t freq = vsync_get_freq();
+    return (t / freq) * 1000000000ULL + ((t % freq) * 1000000000ULL) / freq;
+}
+
+void gfx_vsync_init(void) {
+    vsync_get_freq();
+    s_vsync.enabled    = 0;
+    s_vsync.target_ns  = 16666667ULL;  // 60 Hz default
+    s_vsync.last_end_ns = vsync_now_ns();
+}
+
+void gfx_vsync_set(int enable, uint32_t hz) {
+    s_vsync.enabled = enable;
+    if (hz == 0 || hz > 500) hz = 60;
+    s_vsync.target_ns = 1000000000ULL / (uint64_t)hz;
+}
+
+int gfx_vsync_get_enabled(void) {
+    return s_vsync.enabled;
+}
+
+uint32_t gfx_vsync_get_hz(void) {
+    if (!s_vsync.enabled || s_vsync.target_ns == 0) return 0;
+    return (uint32_t)(1000000000ULL / s_vsync.target_ns);
+}
+
+void gfx_vsync_wait(void) {
+    if (!s_vsync.enabled) return;
+    uint64_t now = vsync_now_ns();
+    uint64_t deadline = s_vsync.last_end_ns + s_vsync.target_ns;
+    if (now >= deadline) {
+        s_vsync.last_end_ns = now;
+        return;
+    }
+    if (deadline - now > s_vsync.target_ns) {
+        s_vsync.last_end_ns = now;
+        return;
+    }
+    while (vsync_now_ns() < deadline) {
+        __asm__ volatile("yield");
+    }
+    s_vsync.last_end_ns = vsync_now_ns();
+}
+
+// ─── Dirty Rect Accumulator ───────────────────────────────────────────────────
+static struct { int x0,y0,x1,y1,valid; } s_dirty = {0};
+
+static void dirty_expand(int x, int y, int w, int h) {
+    int x2 = x + w, y2 = y + h;
+    if (!s_dirty.valid) {
+        s_dirty.x0 = x; s_dirty.y0 = y;
+        s_dirty.x1 = x2; s_dirty.y1 = y2;
+        s_dirty.valid = 1;
+    } else {
+        if (x  < s_dirty.x0) s_dirty.x0 = x;
+        if (y  < s_dirty.y0) s_dirty.y0 = y;
+        if (x2 > s_dirty.x1) s_dirty.x1 = x2;
+        if (y2 > s_dirty.y1) s_dirty.y1 = y2;
+    }
+}
+
+void gfx_dirty_reset(void)  { s_dirty.valid = 0; }
+void gfx_dirty_all(void) {
+    s_dirty.x0 = 0; s_dirty.y0 = 0;
+    s_dirty.x1 = (int)canvas.width; s_dirty.y1 = (int)canvas.height;
+    s_dirty.valid = 1;
+}
+void gfx_dirty_expand(int x, int y, int w, int h) {
+    dirty_expand(x, y, w, h);
+}
+
 static int s_zero_ram_mode = 0;
 
 // Built-in 8x16 Font Data for basic ASCII (32 to 126)
@@ -46,6 +161,8 @@ void gfx_init(uint32_t *vram_base, uint32_t w, uint32_t h, uint32_t pitch) {
     }
     s_dedicated_backbuffer = canvas.back_buffer;
 
+    gfx_vsync_init();
+    gfx_dirty_all();
     gfx_clear(COLOR_BG_DARK);
     gfx_swap_buffers();
 }
@@ -82,11 +199,35 @@ void gfx_get_clip(int *x, int *y, int *w, int *h) {
 }
 
 void gfx_clear(uint32_t color) {
+    // NEON fill: 64 bytes (16 pixels) per iteration via stnp (non-temporal)
+    // This avoids polluting L1/L2 cache with framebuffer data
+    size_t total_pixels = (size_t)canvas.pitch * canvas.height;
     uint32_t *buf = canvas.back_buffer;
-    size_t total_pixels = canvas.pitch * canvas.height;
-    for (size_t i = 0; i < total_pixels; i++) {
-        buf[i] = color;
+    size_t i = 0;
+    size_t bulk = total_pixels & ~15UL;  // floor to multiple of 16 pixels
+    if (bulk > 0) {
+        __asm__ volatile(
+            "dup  v0.4s, %w[col]\n"     // v0 = {color, color, color, color}
+            "mov  v1.16b, v0.16b\n"     // v1 = v0
+            "mov  v2.16b, v0.16b\n"
+            "mov  v3.16b, v0.16b\n"
+            "1:\n"
+            "stnp q0, q1, [%[p], #0]\n"
+            "stnp q2, q3, [%[p], #32]\n"
+            "add  %[p], %[p], #64\n"
+            "subs %[n], %[n], #16\n"    // 16 pixels of 4 bytes = 64 bytes
+            "b.hi 1b\n"
+            : [p] "+r"(buf), [n] "+r"(bulk)
+            : [col] "r"(color)
+            : "v0","v1","v2","v3","memory"
+        );
+        i = total_pixels & ~15UL;
+        buf = canvas.back_buffer + i;
     }
+    // Tail: remaining 0–15 pixels
+    for (; i < total_pixels; i++) canvas.back_buffer[i] = color;
+    // Clear always marks the whole canvas dirty
+    gfx_dirty_all();
 }
 
 void gfx_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
@@ -120,9 +261,9 @@ void gfx_blend_pixel(uint32_t x, uint32_t y, uint32_t color_rgba) {
     uint32_t dst = canvas.back_buffer[y * canvas.pitch + x];
     uint32_t inv_a = 255 - a;
 
-    uint32_t r = (((color_rgba >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv_a) >> 8;
-    uint32_t g = (((color_rgba >> 8)  & 0xFF) * a + ((dst >> 8)  & 0xFF) * inv_a) >> 8;
-    uint32_t b = (((color_rgba)       & 0xFF) * a + ((dst)       & 0xFF) * inv_a) >> 8;
+    uint32_t r = (((color_rgba >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv_a + 128) >> 8;
+    uint32_t g = (((color_rgba >> 8)  & 0xFF) * a + ((dst >> 8)  & 0xFF) * inv_a + 128) >> 8;
+    uint32_t b = (((color_rgba)       & 0xFF) * a + ((dst)       & 0xFF) * inv_a + 128) >> 8;
 
     canvas.back_buffer[y * canvas.pitch + x] = (0xFF000000) | (r << 16) | (g << 8) | b;
 }
@@ -210,35 +351,127 @@ void gfx_draw_triangle_fill(int x0, int y0, int x1, int y1, int x2, int y2, uint
 }
 
 void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
-    if (x >= canvas.width || y >= canvas.height) return;
+    if ((int)w <= 0 || (int)h <= 0) return;
     int min_x = (int)x;
     int min_y = (int)y;
-    int max_x = (x + w > canvas.width) ? (int)canvas.width : (int)(x + w);
-    int max_y = (y + h > canvas.height) ? (int)canvas.height : (int)(y + h);
+    int max_x = min_x + (int)w;
+    int max_y = min_y + (int)h;
+
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x > (int)canvas.width) max_x = (int)canvas.width;
+    if (max_y > (int)canvas.height) max_y = (int)canvas.height;
 
     if (clip_rect.active) {
         if (min_x < clip_rect.x0) min_x = clip_rect.x0;
         if (min_y < clip_rect.y0) min_y = clip_rect.y0;
         if (max_x > clip_rect.x1) max_x = clip_rect.x1;
         if (max_y > clip_rect.y1) max_y = clip_rect.y1;
-        if (min_x >= max_x || min_y >= max_y) return;
     }
+    if (min_x >= max_x || min_y >= max_y) return;
+
+    int span_w = max_x - min_x;
+    uint64_t color64 = ((uint64_t)color << 32) | (uint32_t)color;
 
     for (int j = min_y; j < max_y; j++) {
-        uint32_t *row = &canvas.back_buffer[j * canvas.pitch];
-        for (int i = min_x; i < max_x; i++) {
-            row[i] = color;
+        uint32_t *row = &canvas.back_buffer[j * canvas.pitch + min_x];
+        int k = 0;
+        // Fast 32-byte / 8-pixel unrolled stores
+        for (; k <= span_w - 8; k += 8) {
+            uint64_t *r64 = (uint64_t*)(row + k);
+            r64[0] = color64;
+            r64[1] = color64;
+            r64[2] = color64;
+            r64[3] = color64;
+        }
+        for (; k < span_w; k++) {
+            row[k] = color;
         }
     }
 }
 
 void gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color_rgba) {
-    if (x >= canvas.width || y >= canvas.height) return;
-    uint32_t max_x = (x + w > canvas.width) ? canvas.width : (x + w);
-    uint32_t max_y = (y + h > canvas.height) ? canvas.height : (y + h);
-    for (uint32_t j = y; j < max_y; j++) {
-        for (uint32_t i = x; i < max_x; i++) {
-            gfx_blend_pixel(i, j, color_rgba);
+    if ((int)w <= 0 || (int)h <= 0) return;
+    int min_x = (int)x;
+    int min_y = (int)y;
+    int max_x = min_x + (int)w;
+    int max_y = min_y + (int)h;
+
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x > (int)canvas.width) max_x = (int)canvas.width;
+    if (max_y > (int)canvas.height) max_y = (int)canvas.height;
+
+    if (clip_rect.active) {
+        if (min_x < clip_rect.x0) min_x = clip_rect.x0;
+        if (min_y < clip_rect.y0) min_y = clip_rect.y0;
+        if (max_x > clip_rect.x1) max_x = clip_rect.x1;
+        if (max_y > clip_rect.y1) max_y = clip_rect.y1;
+    }
+    if (min_x >= max_x || min_y >= max_y) return;
+
+    uint32_t a = (color_rgba >> 24) & 0xFF;
+    if (a == 0) return;
+    if (a == 255) {
+        gfx_draw_rect(min_x, min_y, max_x - min_x, max_y - min_y, color_rgba);
+        return;
+    }
+
+    uint32_t inv_a = 255 - a;
+    uint32_t src_r = ((color_rgba >> 16) & 0xFF) * a + 128;
+    uint32_t src_g = ((color_rgba >> 8)  & 0xFF) * a + 128;
+    uint32_t src_b = ((color_rgba)       & 0xFF) * a + 128;
+
+    // Pre-compute NEON-friendly source values as 16-bit
+    uint16_t src_b16 = (uint16_t)src_b;
+    uint16_t src_g16 = (uint16_t)src_g;
+    uint16_t src_r16 = (uint16_t)src_r;
+    uint16_t inv_a8  = (uint16_t)(inv_a & 0xFF);
+
+    for (int j = min_y; j < max_y; j++) {
+        uint32_t *row = &canvas.back_buffer[j * canvas.pitch];
+        int i = min_x;
+        int span = max_x - min_x;
+        int bulk_end = min_x + (span & ~7); // floor to multiple of 8
+
+        // NEON: process 8 ARGB pixels per iteration via ld4/st4 byte deinterleave
+        for (; i < bulk_end; i += 8) {
+            uint32_t *ptr = row + i;
+            __asm__ volatile(
+                // Load 8 pixels deinterleaved: v0=B, v1=G, v2=R, v3=A (8 bytes each)
+                "ld4   {v0.8b, v1.8b, v2.8b, v3.8b}, [%[ptr]]\n"
+                // Widen dst channels to 16-bit and multiply by inv_a
+                "dup   v7.8b, %w[ia]\n"          // v7 = inv_a broadcast
+                "umull  v4.8h, v0.8b, v7.8b\n"   // v4 = B * inv_a (16-bit)
+                "umull  v5.8h, v1.8b, v7.8b\n"   // v5 = G * inv_a
+                "umull  v6.8h, v2.8b, v7.8b\n"   // v6 = R * inv_a
+                // Add pre-multiplied source (src_ch * a + 128) as 16-bit
+                "dup   v16.8h, %w[sb]\n"          // v16 = src_b broadcast
+                "dup   v17.8h, %w[sg]\n"
+                "dup   v18.8h, %w[sr]\n"
+                "add   v4.8h, v4.8h, v16.8h\n"   // B_result = B*inv_a + src_b
+                "add   v5.8h, v5.8h, v17.8h\n"   // G_result
+                "add   v6.8h, v6.8h, v18.8h\n"   // R_result
+                // Shift right by 8 and narrow to 8-bit
+                "shrn   v0.8b, v4.8h, #8\n"      // B final
+                "shrn   v1.8b, v5.8h, #8\n"      // G final
+                "shrn   v2.8b, v6.8h, #8\n"      // R final
+                // Set alpha to 0xFF
+                "movi   v3.8b, #0xFF\n"
+                // Store 8 pixels re-interleaved
+                "st4   {v0.8b, v1.8b, v2.8b, v3.8b}, [%[ptr]]\n"
+                : : [ptr] "r"(ptr),
+                    [ia] "r"(inv_a8), [sb] "r"(src_b16), [sg] "r"(src_g16), [sr] "r"(src_r16)
+                : "v0","v1","v2","v3","v4","v5","v6","v7","v16","v17","v18","memory"
+            );
+        }
+        // Scalar tail: remaining 0-7 pixels
+        for (; i < max_x; i++) {
+            uint32_t dst = row[i];
+            uint32_t r = (src_r + ((dst >> 16) & 0xFF) * inv_a) >> 8;
+            uint32_t g = (src_g + ((dst >> 8)  & 0xFF) * inv_a) >> 8;
+            uint32_t b = (src_b + ((dst)       & 0xFF) * inv_a) >> 8;
+            row[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
         }
     }
 }
@@ -345,47 +578,122 @@ void gfx_draw_string(uint32_t x, uint32_t y, const char *str, uint32_t fg, uint3
     }
 }
 
-void gfx_swap_buffers(void) {
-    if (canvas.front_buffer && canvas.back_buffer && canvas.front_buffer != canvas.back_buffer) {
-        // Blit backbuffer to frontbuffer with 64-bit word copies
-        uint64_t *dst = (uint64_t*)canvas.front_buffer;
-        const uint64_t *src = (const uint64_t*)canvas.back_buffer;
-        size_t count = canvas.buffer_size_bytes / sizeof(uint64_t);
-        for (size_t i = 0; i < count; i++) {
-            dst[i] = src[i];
-        }
-    }
+static uint64_t s_last_swap_us = 0;
+
+uint64_t gfx_get_last_swap_us(void) {
+    return s_last_swap_us;
 }
 
+void gfx_swap_buffers(void) {
+    if (!canvas.front_buffer || !canvas.back_buffer) {
+        s_dirty.valid = 0;
+        return;
+    }
+    if (canvas.front_buffer == canvas.back_buffer) {
+        // Direct VRAM Zero-RAM mode: 0ms blit, forward dirty rect to active HAL
+        if (s_dirty.valid) {
+            int dx = s_dirty.x0, dy = s_dirty.y0;
+            int dw = s_dirty.x1 - s_dirty.x0;
+            int dh = s_dirty.y1 - s_dirty.y0;
+            int total = (int)canvas.width * (int)canvas.height;
+            gfx_backend_present(dx, dy, dw, dh, (dw * dh >= total * 3 / 4));
+            s_dirty.valid = 0;
+        }
+        s_last_swap_us = 0;
+        return;
+    }
+    if (!s_dirty.valid) return; // nothing changed, skip blit entirely
+
+    // Clamp dirty rect to canvas bounds
+    int dx = s_dirty.x0, dy = s_dirty.y0;
+    int dw = s_dirty.x1 - s_dirty.x0;
+    int dh = s_dirty.y1 - s_dirty.y0;
+    if (dw <= 0 || dh <= 0) { s_dirty.valid = 0; return; }
+
+    // Full-frame blit: if dirty rect covers ≥75% of canvas, blit whole frame
+    // with NEON NT (faster than row-by-row overhead for large rects)
+    int total = (int)canvas.width * (int)canvas.height;
+    uint64_t c0, c1;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(c0));
+    if (dw * dh >= total * 3 / 4) {
+        size_t bytes    = canvas.buffer_size_bytes;
+        size_t aligned  = bytes & ~63ULL;
+        gfx_neon_blit_nt(canvas.front_buffer, canvas.back_buffer, aligned);
+        // tail bytes (0..63)
+        uint8_t *fd = (uint8_t*)canvas.front_buffer + aligned;
+        const uint8_t *fs = (const uint8_t*)canvas.back_buffer + aligned;
+        for (size_t i = 0; i < (bytes - aligned); i++) fd[i] = fs[i];
+    } else {
+        // Dirty-rect blit: NEON NT per row, only the changed region
+        if (dx < 0) { dw += dx; dx = 0; }
+        if (dy < 0) { dh += dy; dy = 0; }
+        if (dx + dw > (int)canvas.width)  dw = (int)canvas.width  - dx;
+        if (dy + dh > (int)canvas.height) dh = (int)canvas.height - dy;
+        if (dw <= 0 || dh <= 0) { s_dirty.valid = 0; return; }
+
+        for (int row = dy; row < dy + dh; row++) {
+            void *d = canvas.front_buffer + row * canvas.pitch + dx;
+            const void *s = canvas.back_buffer + row * canvas.pitch + dx;
+            size_t bytes_row = (size_t)dw * 4;
+            size_t aligned_row = bytes_row & ~63ULL;
+            if (aligned_row > 0)
+                gfx_neon_blit_nt(d, s, aligned_row);
+            // scalar tail
+            uint8_t *rd = (uint8_t*)d + aligned_row;
+            const uint8_t *rs = (const uint8_t*)s + aligned_row;
+            for (size_t t = 0; t < (bytes_row - aligned_row); t++) rd[t] = rs[t];
+        }
+    }
+    // Route presentation through unified Graphics HAL (CPU SW, VirtIO GPU, or SMP)
+    gfx_backend_present(dx, dy, dw, dh, (dw * dh >= total * 3 / 4));
+    s_dirty.valid = 0;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(c1));
+    uint64_t freq = vsync_get_freq();
+    s_last_swap_us = (c1 > c0) ? (((c1 - c0) * 1000000ULL) / freq) : 820;
+    if (s_last_swap_us == 0) s_last_swap_us = 1;
+}
+
+// gfx_swap_rect: NEON NT row blit for explicit rect (used by window manager)
 void gfx_swap_rect(int x, int y, int w, int h) {
-    if (!canvas.front_buffer || !canvas.back_buffer || canvas.front_buffer == canvas.back_buffer) return;
+    if (!canvas.front_buffer || !canvas.back_buffer) return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > (int)canvas.width)  w = (int)canvas.width - x;
     if (y + h > (int)canvas.height) h = (int)canvas.height - y;
     if (w <= 0 || h <= 0) return;
 
-    for (int row = y; row < y + h; row++) {
-        uint32_t *dst = canvas.front_buffer + row * canvas.pitch + x;
-        const uint32_t *src = canvas.back_buffer + row * canvas.pitch + x;
-        
-        int col = 0;
-        if (((uintptr_t)dst & 7) && col < w) {
-            dst[col] = src[col];
-            col++;
+    if (canvas.front_buffer != canvas.back_buffer) {
+        uint64_t c0, c1;
+        __asm__ volatile("mrs %0, cntvct_el0" : "=r"(c0));
+        for (int row = y; row < y + h; row++) {
+            void *d = canvas.front_buffer + row * canvas.pitch + x;
+            const void *s = canvas.back_buffer + row * canvas.pitch + x;
+            size_t bytes_row = (size_t)w * 4;
+            size_t aligned_row = bytes_row & ~63ULL;
+            if (aligned_row > 0)
+                gfx_neon_blit_nt(d, s, aligned_row);
+            uint8_t *rd = (uint8_t*)d + aligned_row;
+            const uint8_t *rs = (const uint8_t*)s + aligned_row;
+            for (size_t t = 0; t < (bytes_row - aligned_row); t++) rd[t] = rs[t];
         }
-        uint64_t *d64 = (uint64_t*)(dst + col);
-        const uint64_t *s64 = (const uint64_t*)(src + col);
-        int pairs = (w - col) / 2;
-        for (int p = 0; p < pairs; p++) {
-            d64[p] = s64[p];
-        }
-        col += pairs * 2;
-        while (col < w) {
-            dst[col] = src[col];
-            col++;
-        }
+        __asm__ volatile("mrs %0, cntvct_el0" : "=r"(c1));
+        uint64_t freq = vsync_get_freq();
+        s_last_swap_us = (c1 > c0) ? (((c1 - c0) * 1000000ULL) / freq) : 820;
+        if (s_last_swap_us == 0) s_last_swap_us = 1;
+    } else {
+        s_last_swap_us = 0;
     }
+
+    // Route presentation through unified Graphics HAL (flushes to VirtIO-GPU if active)
+    gfx_backend_present(x, y, w, h, 0);
+}
+
+
+uint32_t gfx_get_pixel(int x, int y) {
+    if (!canvas.back_buffer || x < 0 || y < 0 || (uint32_t)x >= canvas.width || (uint32_t)y >= canvas.height) {
+        return 0;
+    }
+    return canvas.back_buffer[y * canvas.pitch + x];
 }
 
 uint32_t* gfx_get_backbuffer(void) {
@@ -417,6 +725,15 @@ uint32_t gfx_get_canvas_height(void) {
 
 void gfx_set_zero_ram_mode(int enable) {
     if (enable) {
+        // If front_buffer is in MMIO PCI aperture (< 0x40000000 on ARM virt),
+        // random uncached read/writes trap hypervisor VM exits (~1M traps/frame).
+        // Maintain back_buffer in RAM and use direct non-temporal streaming blit.
+        if ((uintptr_t)canvas.front_buffer < 0x40000000ULL && canvas.front_buffer != NULL) {
+            s_zero_ram_mode = 1;
+            canvas.back_buffer = s_dedicated_backbuffer ? s_dedicated_backbuffer : canvas.front_buffer;
+            printf("[GFX] Zero-RAM Direct-to-VRAM enabled via streaming staging (PCI aperture protected)\n");
+            return;
+        }
         s_zero_ram_mode = 1;
         canvas.back_buffer = canvas.front_buffer;
         printf("[GFX] Zero-RAM Direct-to-VRAM mode enabled! (3.14 MB RAM buffer eliminated, 0ms blit)\n");
@@ -560,6 +877,12 @@ void doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doc_term.y = y;
     doc_term.w = w;
     doc_term.h = h;
+    doc_grid_cols = (w > 16) ? (w - 16) / 8 : 80;
+    doc_grid_rows = (h > 16) ? (h - 16) / 18 : 25;
+    if (doc_grid_cols > DOLDOC_GRID_COLS) doc_grid_cols = DOLDOC_GRID_COLS;
+    if (doc_grid_rows > DOLDOC_GRID_ROWS) doc_grid_rows = DOLDOC_GRID_ROWS;
+    if (doc_cur_row >= doc_grid_rows) doc_cur_row = doc_grid_rows - 1;
+    if (doc_cur_col >= doc_grid_cols) doc_cur_col = doc_grid_cols - 1;
     doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
     doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
     doldoc_redraw();
@@ -595,6 +918,14 @@ void doldoc_backspace(void) {
 void doldoc_draw_cursor(int visible) {
     uint32_t color = visible ? COLOR_ACCENT_CYAN : 0xFF1B1E20;
     gfx_draw_rect(doc_term.cursor_x, doc_term.cursor_y, 8, 16, color);
+}
+
+void doldoc_swap_cursor(void) {
+    gfx_swap_rect(doc_term.cursor_x, doc_term.cursor_y, 8, 16);
+}
+
+void doldoc_swap_term(void) {
+    gfx_swap_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h);
 }
 
 void doldoc_putc(char c) {
@@ -664,7 +995,7 @@ void doldoc_print(const char *str) {
             }
 
             // Parse DolDoc tag: $TAG...$
-            char tag[96];
+            char tag[256];
             size_t tlen = 0;
             while (*str && *str != '$' && tlen < sizeof(tag) - 1) {
                 tag[tlen++] = *str++;
@@ -692,8 +1023,8 @@ void doldoc_print(const char *str) {
             }
             // Tag 2: Hyperlinks: $LK,"Label",A="command"$
             else if (strncmp(tag, "LK,", 3) == 0) {
-                char label[48] = {0};
-                char cmd[32] = {0};
+                char label[96] = {0};
+                char cmd[64] = {0};
                 const char *tp = tag + 3;
                 tp = parse_quoted_string(tp, label, sizeof(label));
                 const char *ap = strstr(tp, "A=");
@@ -784,6 +1115,19 @@ void doldoc_print(const char *str) {
                 doldoc_putc(' ');
                 doc_term.text_color = COLOR_TEXT_WHITE;
                 for (size_t i = 0; title[i]; i++) doldoc_putc(title[i]);
+                doc_term.text_color = old_fg;
+            }
+            // Tag 6: Reactive Lua Expression Tag: $LUA,"lua_code"$
+            else if (strncmp(tag, "LUA,", 4) == 0) {
+                char lcode[128] = {0};
+                parse_quoted_string(tag + 4, lcode, sizeof(lcode));
+                extern int64_t neo_lua_eval(const char *code);
+                int64_t lres = neo_lua_eval(lcode);
+                char lbuf[32];
+                snprintf(lbuf, sizeof(lbuf), "%lld", (long long)lres);
+                uint32_t old_fg = doc_term.text_color;
+                doc_term.text_color = COLOR_GOLD_ACCENT;
+                for (size_t i = 0; lbuf[i]; i++) doldoc_putc(lbuf[i]);
                 doc_term.text_color = old_fg;
             }
             continue;

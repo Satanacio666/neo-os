@@ -8,6 +8,7 @@
 static task_t *current_task = NULL;
 static task_t *task_head = NULL;
 static uint64_t next_task_id = 1;
+static task_t *s_zombie_task = NULL;
 
 static void task_entry_wrapper(void) {
     if (current_task && current_task->entry) {
@@ -28,9 +29,12 @@ void sched_init(void) {
     main_task->id = next_task_id++;
     strncpy(main_task->name, "KernelMain", sizeof(main_task->name) - 1);
     main_task->state = TASK_RUNNING;
-    main_task->priority = 10;
+    main_task->priority = PRIO_REALTIME;
     main_task->stack_base = NULL; // Uses UEFI/current stack
     main_task->stack_size = 0;
+    main_task->quantum_ticks = 5;
+    main_task->quantum_remaining = 5;
+    main_task->affinity_mask = 0x0F;
     main_task->next = main_task;
     main_task->prev = main_task;
 
@@ -57,11 +61,14 @@ task_t* task_create(const char *name, task_entry_t entry, void *arg, size_t stac
     task->id = next_task_id++;
     strncpy(task->name, name ? name : "task", sizeof(task->name) - 1);
     task->state = TASK_READY;
-    task->priority = 5;
+    task->priority = PRIO_INTERACTIVE;
     task->entry = entry;
     task->arg = arg;
     task->stack_base = stack;
     task->stack_size = stack_size;
+    task->quantum_ticks = 5;
+    task->quantum_remaining = 5;
+    task->affinity_mask = 0x0F;
 
     // Align stack pointer to 16 bytes at the top of stack (stacks grow downwards in AArch64)
     uintptr_t sp_top = ((uintptr_t)stack + stack_size - 16) & ~15;
@@ -84,26 +91,45 @@ task_t* task_create(const char *name, task_entry_t entry, void *arg, size_t stac
 void task_yield(void) {
     if (!current_task || !current_task->next) return;
 
-    task_t *prev = current_task;
-    task_t *next = current_task->next;
-
-    // Find next ready task in circular queue
-    while (next != prev) {
-        if (next->state == TASK_READY) {
-            break;
+    // Clean up any previously exited zombie task now that execution is on a valid stack
+    if (s_zombie_task) {
+        if (s_zombie_task->stack_base) {
+            kfree(s_zombie_task->stack_base);
+            s_zombie_task->stack_base = NULL;
         }
-        next = next->next;
+        kfree(s_zombie_task);
+        s_zombie_task = NULL;
     }
 
-    if (next == prev || next->state != TASK_READY) {
+    task_t *prev = current_task;
+    task_t *best = NULL;
+    uint32_t best_prio = 0;
+
+    // Priority-aware task selection: pick highest-priority TASK_READY task
+    task_t *curr = current_task->next;
+    while (curr != current_task) {
+        if (curr->state == TASK_READY) {
+            if (!best || curr->priority > best_prio) {
+                best = curr;
+                best_prio = curr->priority;
+            }
+        }
+        curr = curr->next;
+    }
+
+    if (!best || best->state != TASK_READY) {
         return; // No other ready task to switch to
     }
 
+    task_t *next = best;
     if (prev->state == TASK_RUNNING) {
         prev->state = TASK_READY;
     }
     next->state = TASK_RUNNING;
     current_task = next;
+
+    // Reset quantum for freshly scheduled task
+    current_task->quantum_remaining = current_task->quantum_ticks ? current_task->quantum_ticks : 5;
 
     // Fast assembly context switch (20 nanoseconds!)
     cpu_switch_context(&prev->context, &next->context);
@@ -115,18 +141,21 @@ void task_exit(void) {
     printf("[SCHED] Task ID #%llu '%s' finished.\n",
            (unsigned long long)current_task->id, current_task->name);
 
-    current_task->state = TASK_DEAD;
+    task_t *dying_task = current_task;
+    dying_task->state = TASK_DEAD;
 
     // Remove from linked list if not only task
-    if (current_task->next != current_task) {
-        current_task->prev->next = current_task->next;
-        current_task->next->prev = current_task->prev;
-        if (task_head == current_task) {
-            task_head = current_task->next;
+    if (dying_task->next != dying_task) {
+        dying_task->prev->next = dying_task->next;
+        dying_task->next->prev = dying_task->prev;
+        if (task_head == dying_task) {
+            task_head = dying_task->next;
         }
     }
 
-    // Yield to next task
+    s_zombie_task = dying_task;
+
+    // Yield to next ready task
     task_yield();
 
     // If we reach here, no other tasks exist
@@ -141,8 +170,32 @@ task_t* sched_get_current(void) {
 
 void sched_tick(uint64_t ticks) {
     (void)ticks;
-    // Periodic hardware timer tick: keeps monotonically advancing system time.
-    // Tasks switch cooperatively via task_yield() in main loop and background tasks.
+    if (!current_task) return;
+
+    // Real-Time tasks (Render loop, compositor, physics) have preemption immunity mid-frame!
+    // They yield cooperatively via task_yield() at frame/vsync boundaries.
+    if (current_task->priority >= PRIO_REALTIME) {
+        return;
+    }
+
+    if (current_task->quantum_remaining > 0) {
+        current_task->quantum_remaining--;
+    }
+
+    if (current_task->quantum_remaining == 0) {
+        current_task->quantum_remaining = current_task->quantum_ticks ? current_task->quantum_ticks : 5;
+        // Check if another task is ready to run
+        if (current_task->next && current_task->next != current_task) {
+            task_t *t = current_task->next;
+            while (t != current_task) {
+                if (t->state == TASK_READY) {
+                    task_yield();
+                    break;
+                }
+                t = t->next;
+            }
+        }
+    }
 }
 
 void sched_dump(void) {
@@ -210,19 +263,36 @@ void top_print_doldoc(void) {
                       i, role, state, (unsigned long long)hb);
     }
 
-    doldoc_print("\n $FG,YELLOW$Active Ring 0 Scheduler Tasks:$FG$\n");
+    doldoc_print("\n $FG,YELLOW$Active Ring 0 Scheduler Tasks & Core Affinity:$FG$\n");
     if (task_head) {
         task_t *curr = task_head;
         do {
             const char *st = (curr->state == TASK_RUNNING) ? "RUNNING" :
                              (curr->state == TASK_READY)   ? "READY" :
                              (curr->state == TASK_SLEEPING)? "SLEEP" : "DEAD";
-            doldoc_printf("  [PID %llu] %s | %s | SP: 0x%016llX\n",
-                          (unsigned long long)curr->id, curr->name, st, (unsigned long long)curr->context.sp);
+            doldoc_printf("  [PID %llu] %-14s | %-7s | Aff: 0x%02X | $BT,\"C0\",LM=\"affinity %llu 0\"$ $BT,\"C1\",LM=\"affinity %llu 1\"$ $BT,\"SMP\",LM=\"affinity %llu -1\"$\n",
+                          (unsigned long long)curr->id, curr->name, st, curr->affinity_mask,
+                          (unsigned long long)curr->id, (unsigned long long)curr->id, (unsigned long long)curr->id);
             curr = curr->next;
         } while (curr != task_head);
     }
     doldoc_print("\n Actions: $BT,\"Refresh\",LM=\"top\"$ $BT,\"Tasks\",LM=\"tasks\"$ $BT,\"Mem\",LM=\"mem\"$ $BT,\"SMP\",LM=\"smp\"$\n");
     doldoc_print("$FG,CYAN$==============================================================$FG$\n");
 }
+
+int task_set_affinity(uint64_t task_id, uint32_t mask) {
+    if (!task_head) return -1;
+    task_t *curr = task_head;
+    do {
+        if (curr->id == task_id) {
+            curr->affinity_mask = mask;
+            printf("[SCHED] Task PID %llu '%s' affinity mask updated to 0x%02X\n",
+                   (unsigned long long)task_id, curr->name, mask);
+            return 0;
+        }
+        curr = curr->next;
+    } while (curr != task_head);
+    return -1;
+}
+
 

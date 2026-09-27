@@ -30,24 +30,38 @@ typedef struct {
 
 static ramdisk_fs_t g_ramdisk = {0};
 
-static void update_alloc_watermark(void) {
-    g_redsea.next_alloc_lba = g_redsea.root_lba + g_redsea.root_sectors;
+static void scan_directory_watermark(uint64_t dir_lba, uint32_t dir_sectors, int depth) {
+    if (depth > 16) return;
+    if (dir_lba + dir_sectors > g_redsea.next_alloc_lba) {
+        g_redsea.next_alloc_lba = dir_lba + dir_sectors;
+    }
 
     uint8_t sector_buf[512];
-    for (uint32_t s = 0; s < g_redsea.root_sectors; s++) {
-        if (virtio_blk_read_sectors(g_redsea.root_lba + s, 1, sector_buf) != 0) break;
+    for (uint32_t s = 0; s < dir_sectors; s++) {
+        if (virtio_blk_read_sectors(dir_lba + s, 1, sector_buf) != 0) break;
         redsea_entry_t *entries = (redsea_entry_t*)sector_buf;
         int max_e = 512 / sizeof(redsea_entry_t);
 
         for (int i = 0; i < max_e; i++) {
             if (entries[i].attr != 0 && entries[i].name[0] != '\0') {
+                if (strcmp(entries[i].name, ".") == 0 || strcmp(entries[i].name, "..") == 0) {
+                    continue;
+                }
                 uint32_t e_sectors = (entries[i].size + 511) / 512;
                 if (entries[i].cluster + e_sectors > g_redsea.next_alloc_lba) {
                     g_redsea.next_alloc_lba = entries[i].cluster + e_sectors;
                 }
+                if (entries[i].attr & RS_ATTR_DIR) {
+                    scan_directory_watermark(entries[i].cluster, e_sectors > 0 ? e_sectors : 2, depth + 1);
+                }
             }
         }
     }
+}
+
+static void update_alloc_watermark(void) {
+    g_redsea.next_alloc_lba = g_redsea.root_lba + g_redsea.root_sectors;
+    scan_directory_watermark(g_redsea.root_lba, g_redsea.root_sectors, 0);
 }
 
 int redsea_init(uint64_t partition_lba) {
@@ -86,11 +100,14 @@ int redsea_init(uint64_t partition_lba) {
     symbols_register("redsea_rm", (void*)redsea_delete_file, SYM_FUNC);
     symbols_register("redsea_pwd", (void*)redsea_get_pwd, SYM_FUNC);
     symbols_register("ramdisk_list", (void*)ramdisk_list_dir, SYM_FUNC);
+    symbols_register("ramdisk_rm", (void*)ramdisk_delete_file, SYM_FUNC);
     return 0;
 }
 
 int redsea_format(uint64_t partition_lba, uint64_t sector_count) {
-    (void)sector_count;
+    if (sector_count > 0) {
+        g_redsea.total_sectors = sector_count;
+    }
     uint8_t zero_buf[512];
     memset(zero_buf, 0, sizeof(zero_buf));
 
@@ -107,119 +124,17 @@ int redsea_format(uint64_t partition_lba, uint64_t sector_count) {
     g_redsea.next_alloc_lba = partition_lba + REDSEA_ROOT_SECTORS;
     g_redsea.initialized = 1;
 
-    // Create default sample files and directories
+    // Create clean base README.TXT
     const char *readme_txt =
         "Welcome to NeoOS 2.0!\n"
         "AArch64 Ring 0 / EL1 Single Address Space Operating System.\n"
-        "TempleOS inspired: DolDoc 2.0, HolyC JIT, RedSea Contiguous Storage.\n";
+        "DolDoc 2.0, NeoC JIT Engine, RedSea Contiguous Storage.\n";
     redsea_write_file("README.TXT", readme_txt, strlen(readme_txt));
 
-    const char *fact_hc =
-        "// NeoOS Sample HolyC Script: Factorial\n"
-        "I64 factorial(I64 n) {\n"
-        "    if (n <= 1) return 1;\n"
-        "    return n * factorial(n - 1);\n"
-        "}\n"
-        "factorial(6);\n";
-    redsea_write_file("fact.HC", fact_hc, strlen(fact_hc));
-
-    const char *calc_hc =
-        "// NeoOS Arithmetic Calculator\n"
-        "I64 a = 100;\n"
-        "I64 b = 250;\n"
-        "a + b * 2;\n";
-    redsea_write_file("calc.HC", calc_hc, strlen(calc_hc));
-
-    const char *editor_hc =
-        "// NeoOS HolyC Code Editor (Editor.HC)\n"
-        "class EditorState { I64 lines; I64 cur; };\n"
-        "I64 EditorMain() {\n"
-        "    EditorState ed;\n"
-        "    ed.lines = 6; ed.cur = 1;\n"
-        "    auto conf = { tab = 4 };\n"
-        "    doldoc_print(\"$FG,CYAN$=== NeoOS HolyC DolDoc Editor 2.0 ===$FG$\\n\");\n"
-        "    doldoc_print(\" Actions: $BT,\\\"Save\\\",LM=\\\"save\\\"$ $BT,\\\"Run F5\\\",LM=\\\"run fact.HC\\\"$\\n\\n\");\n"
-        "    \" Buffer: fact.HC | Lines: %d | TabSize: %d\\n\", ed.lines, conf.tab;\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$001: $FG,CYAN$// Factorial in HolyC$FG$\\n\");\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$002: $FG,YELLOW$I64$FG$ fact($FG,YELLOW$I64$FG$ n) {\\n\");\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$003:     $FG,GREEN$if$FG$ (n <= 1) return 1;\\n\");\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$004:     return n * fact(n - 1);\\n\");\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$005: }\\n\");\n"
-        "    doldoc_print(\"$FG,LIGHT_GREY$006: fact(6);\\n\");\n"
-        "    return ed.lines;\n"
-        "}\n"
-        "EditorMain();\n";
-    redsea_write_file("Editor.HC", editor_hc, strlen(editor_hc));
-
-    const char *filer_hc =
-        "// NeoOS HolyC File Manager (Filer.HC)\n"
-        "I64 FilerMain() {\n"
-        "    redsea_list_dir();\n"
-        "    return 0;\n"
-        "}\n"
-        "FilerMain();\n";
-    redsea_write_file("Filer.HC", filer_hc, strlen(filer_hc));
-
-    const char *top_hc =
-        "// NeoOS Task Manager & SMP Monitor (Top.HC)\n"
-        "I64 TopMain() {\n"
-        "    top_print_doldoc();\n"
-        "    return 0;\n"
-        "}\n"
-        "TopMain();\n";
-    redsea_write_file("Top.HC", top_hc, strlen(top_hc));
-
-    const char *gears_hc =
-        "// NeoOS Authentic 3D GLXGears Launcher (Gears.HC)\n"
-        "U0 Main() {\n"
-        "    doldoc_print(\"$FG,GREEN$[GLXGEARS]$FG$ Starting Authentic 3D GLXGears (Z-Buffer Lit)...\\n\");\n"
-        "    glxgears_start(0, 0, 0);\n"
-        "}\n"
-        "Main();\n";
-    redsea_write_file("Gears.HC", gears_hc, strlen(gears_hc));
-
-    const char *bench3d_hc =
-        "// NeoOS 3D Benchmark Launcher (Bench3D.HC)\n"
-        "class BenchConfig { I64 c1; I64 c2; };\n"
-        "I64 BenchMain() {\n"
-        "    BenchConfig cfg;\n"
-        "    cfg.c1 = 1; cfg.c2 = 2;\n"
-        "    auto theme = { viewports = 2 };\n"
-        "    doldoc_print(\"$FG,CYAN$=== NeoOS 3D Multi-Window Benchmark Launcher ===$FG$\\n\");\n"
-        "    \" 3D Engine: MiniGL/SASOS Pipeline | Cores: %d, %d | Viewports: %d\\n\\n\", cfg.c1, cfg.c2, theme.viewports;\n"
-        "    doldoc_print(\"  Window 1: Neon Cyan Wireframe Cube (Core 1 - Math Stress)\\n\");\n"
-        "    doldoc_print(\"  Window 2: Gold/Magenta Solid Cube (Core 2 - Fill Rate)\\n\\n\");\n"
-        "    bench3d_start();\n"
-        "    return 2;\n"
-        "}\n"
-        "BenchMain();\n";
-    redsea_write_file("Bench3D.HC", bench3d_hc, strlen(bench3d_hc));
-
-    const char *benchsuite_hc =
-        "// NeoOS NeoBench Extreme Launcher (BenchSuite.HC)\n"
-        "U0 SuiteMain() {\n"
-        "    doldoc_print(\"$FG,CYAN$=== NeoBench Extreme Automated Suite ===$FG$\\n\");\n"
-        "    doldoc_print(\" 6 Test Cycles: Wireframe, Polygons, UV Texture, Phong, Clip, Physics\\n\");\n"
-        "    doldoc_print(\" Phases: Single 1T -> 3T SMP -> Dual Window -> HW Accel\\n\\n\");\n"
-        "    bench_suite_start();\n"
-        "}\n"
-        "SuiteMain();\n";
-    redsea_write_file("BenchSuite.HC", benchsuite_hc, strlen(benchsuite_hc));
-
-    // Create subdirectories
+    // Create system directories
     redsea_mkdir("System");
     redsea_mkdir("Apps");
     redsea_mkdir("Docs");
-
-    // Put a file inside /Docs
-    redsea_change_dir("Docs");
-    const char *doc_txt =
-        "NeoOS System Architecture Guide:\n"
-        "- All code runs in EL1 / Ring 0 identity mapped space.\n"
-        "- DolDoc supports tags: $BT$, $LK$, $PB$, $TR$.\n"
-        "- HolyC 2.0 includes classes, dynamic tables, unary ops.\n";
-    redsea_write_file("GUIDE.TXT", doc_txt, strlen(doc_txt));
-    redsea_change_dir("/");
 
     printf("[REDSEA] Filesystem formatted successfully with system directory structure.\n");
     return 0;
@@ -326,8 +241,13 @@ int redsea_mkdir(const char *dirname) {
     }
 
     // Allocate 2 sectors (1024 bytes = 16 entries) for new directory
-    uint64_t new_dir_lba = g_redsea.next_alloc_lba;
     uint32_t new_dir_sectors = 2;
+    if (g_redsea.total_sectors > 0 &&
+        (g_redsea.next_alloc_lba + new_dir_sectors > g_redsea.root_lba + g_redsea.total_sectors)) {
+        printf("[REDSEA] Error: Disk full! Cannot allocate directory '%s'\n", dirname);
+        return -1;
+    }
+    uint64_t new_dir_lba = g_redsea.next_alloc_lba;
     g_redsea.next_alloc_lba += new_dir_sectors;
 
     // Initialize new directory sectors with '.' and '..'
@@ -444,6 +364,10 @@ int redsea_change_dir(const char *dirname) {
 
 int redsea_delete_file(const char *filename) {
     if (!g_redsea.initialized || !filename || !*filename) return -1;
+    if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0) {
+        printf("[REDSEA] Error: Cannot delete '.' or '..'\n");
+        return -1;
+    }
 
     uint8_t sector_buf[512];
     for (uint32_t s = 0; s < g_redsea.current_dir_sectors; s++) {
@@ -453,6 +377,40 @@ int redsea_delete_file(const char *filename) {
 
         for (int i = 0; i < max_e; i++) {
             if (entries[i].attr != 0 && strcmp(entries[i].name, filename) == 0) {
+                // If directory, ensure it is empty
+                if (entries[i].attr & RS_ATTR_DIR) {
+                    uint32_t dir_sec = (entries[i].size + 511) / 512;
+                    if (dir_sec == 0) dir_sec = 2;
+                    uint8_t chk_buf[512];
+                    int has_children = 0;
+                    for (uint32_t ds = 0; ds < dir_sec; ds++) {
+                        if (virtio_blk_read_sectors(entries[i].cluster + ds, 1, chk_buf) == 0) {
+                            redsea_entry_t *sub = (redsea_entry_t*)chk_buf;
+                            int sub_max = 512 / sizeof(redsea_entry_t);
+                            for (int si = 0; si < sub_max; si++) {
+                                if (sub[si].attr != 0 && sub[si].name[0] != '\0') {
+                                    if (strcmp(sub[si].name, ".") != 0 && strcmp(sub[si].name, "..") != 0) {
+                                        has_children = 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (has_children) break;
+                    }
+                    if (has_children) {
+                        printf("[REDSEA] Error: Directory '%s' is not empty\n", filename);
+                        return -1;
+                    }
+                }
+
+                uint32_t file_sec = (entries[i].size + 511) / 512;
+                if (file_sec == 0) file_sec = 1;
+                // Reclaim contiguous sectors if this was the last allocation
+                if (entries[i].cluster + file_sec == g_redsea.next_alloc_lba) {
+                    g_redsea.next_alloc_lba = entries[i].cluster;
+                }
+
                 memset(&entries[i], 0, sizeof(redsea_entry_t));
                 virtio_blk_write_sectors(g_redsea.current_dir_lba + s, 1, sector_buf);
                 return 0;
@@ -552,6 +510,11 @@ int redsea_write_file(const char *filename, const void *data, size_t size) {
 
                 uint64_t target_cluster = entries[i].cluster;
                 if (needed_sectors > existing_sectors) {
+                    if (g_redsea.total_sectors > 0 &&
+                        (g_redsea.next_alloc_lba + needed_sectors > g_redsea.root_lba + g_redsea.total_sectors)) {
+                        printf("[REDSEA] Error: Disk full! Cannot allocate %u sectors\n", needed_sectors);
+                        return -1;
+                    }
                     target_cluster = g_redsea.next_alloc_lba;
                     g_redsea.next_alloc_lba += needed_sectors;
                 }
@@ -589,6 +552,11 @@ int redsea_write_file(const char *filename, const void *data, size_t size) {
     // Allocate contiguous sectors at next_alloc_lba
     uint32_t payload_sectors = (size + 511) / 512;
     if (payload_sectors == 0) payload_sectors = 1;
+    if (g_redsea.total_sectors > 0 &&
+        (g_redsea.next_alloc_lba + payload_sectors > g_redsea.root_lba + g_redsea.total_sectors)) {
+        printf("[REDSEA] Error: Disk full! Cannot allocate %u sectors\n", payload_sectors);
+        return -1;
+    }
     uint64_t target_cluster = g_redsea.next_alloc_lba;
     g_redsea.next_alloc_lba += payload_sectors;
 
@@ -653,6 +621,12 @@ int ramdisk_write_file(const char *filename, const void *data, size_t size) {
     // Check if exists
     for (int i = 0; i < RAMDISK_MAX_FILES; i++) {
         if (g_ramdisk.entries[i].used && strcmp(g_ramdisk.entries[i].name, filename) == 0) {
+            if (size <= g_ramdisk.entries[i].size) {
+                // In-place overwrite without leaking memory
+                memcpy(g_ramdisk.storage + g_ramdisk.entries[i].offset, data, size);
+                g_ramdisk.entries[i].size = size;
+                return 0;
+            }
             size_t off = g_ramdisk.used_bytes;
             memcpy(g_ramdisk.storage + off, data, size);
             g_ramdisk.entries[i].offset = off;
@@ -688,6 +662,26 @@ int ramdisk_read_file(const char *filename, void *buffer, size_t max_bytes, size
             if (to_copy > max_bytes) to_copy = max_bytes;
             memcpy(buffer, g_ramdisk.storage + g_ramdisk.entries[i].offset, to_copy);
             if (out_size) *out_size = to_copy;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int ramdisk_delete_file(const char *filename) {
+    if (!g_ramdisk.initialized || !filename || !*filename) return -1;
+
+    for (int i = 0; i < RAMDISK_MAX_FILES; i++) {
+        if (g_ramdisk.entries[i].used && strcmp(g_ramdisk.entries[i].name, filename) == 0) {
+            size_t end_off = (g_ramdisk.entries[i].offset + g_ramdisk.entries[i].size + 15) & ~15ULL;
+            if (end_off == g_ramdisk.used_bytes) {
+                // Reclaim storage if this was the last file
+                g_ramdisk.used_bytes = g_ramdisk.entries[i].offset;
+            }
+            g_ramdisk.entries[i].used = 0;
+            g_ramdisk.entries[i].name[0] = '\0';
+            g_ramdisk.entries[i].size = 0;
+            g_ramdisk.entries[i].offset = 0;
             return 0;
         }
     }

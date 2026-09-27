@@ -3,13 +3,11 @@
 #include "wm.h"
 #include "../fs/redsea.h"
 #include "../gui/shell.h"
-#include "../kernel/bench/glxgears.h"
-#include "../kernel/bench/bench3d.h"
-#include "../kernel/bench/bench_suite.h"
+#include "../kernel/bench/bench_unified.h"
 #include "../kernel/sched/sched.h"
 #include <uefi.h>
 
-#define MAX_MENU_APPS 16
+#define MAX_MENU_APPS 24
 
 typedef struct {
     char name[32];
@@ -27,28 +25,60 @@ static void scan_apps(void) {
     menu_item_count = 0;
 
     // Fixed / Primary System & Benchmark Apps
-    // 1. GLXGears 3D
-    strncpy(menu_items[menu_item_count].name, "Gears.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "Mesa GLXGears 3D", 47);
-    strncpy(menu_items[menu_item_count].command, "run Gears.HC", 47);
+    // 1. NeoBench Extreme Master Benchmark
+    strncpy(menu_items[menu_item_count].name, "Bench.HC", 31);
+    strncpy(menu_items[menu_item_count].desc, "NeoBench Extreme 3D", 47);
+    strncpy(menu_items[menu_item_count].command, "run Bench.HC", 47);
+    menu_items[menu_item_count].tag_color = COLOR_GOLD_ACCENT;
+    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    menu_item_count++;
+
+    // 2. Dynamics 3D Physics Simulation
+    strncpy(menu_items[menu_item_count].name, "Dynamics.HC", 31);
+    strncpy(menu_items[menu_item_count].desc, "64-Bit Multi-Body Physics", 47);
+    strncpy(menu_items[menu_item_count].command, "dynamics", 47);
     menu_items[menu_item_count].tag_color = 0xFFE74C3C;
     strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
     menu_item_count++;
 
-    // 2. Bench3D Multi-Cube
-    strncpy(menu_items[menu_item_count].name, "Bench3D.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "SMP Dual Core 3D", 47);
-    strncpy(menu_items[menu_item_count].command, "run Bench3D.HC", 47);
+    // 3. GPU Hardware & Buffering Configuration Hub
+    strncpy(menu_items[menu_item_count].name, "GpuConfig.HC", 31);
+    strncpy(menu_items[menu_item_count].desc, "GPU & Render Mode Hub", 47);
+    strncpy(menu_items[menu_item_count].command, "gpuconfig", 47);
     menu_items[menu_item_count].tag_color = COLOR_ACCENT_CYAN;
     strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
     menu_item_count++;
 
-    // 3. NeoBench Extreme Suite
-    strncpy(menu_items[menu_item_count].name, "BenchSuite.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "6-Cycle Multi-Core", 47);
-    strncpy(menu_items[menu_item_count].command, "run BenchSuite.HC", 47);
-    menu_items[menu_item_count].tag_color = COLOR_GOLD_ACCENT;
+    // 4. Pure CPU Software Graphics Quick-Switch
+    strncpy(menu_items[menu_item_count].name, "CPU Render", 31);
+    strncpy(menu_items[menu_item_count].desc, "Original UEFI SW Graphics", 47);
+    strncpy(menu_items[menu_item_count].command, "render cpu", 47);
+    menu_items[menu_item_count].tag_color = 0xFF27AE60;
     strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    menu_item_count++;
+
+    // 5. VirtIO-GPU Hardware Mode Quick-Switch
+    strncpy(menu_items[menu_item_count].name, "GPU Render", 31);
+    strncpy(menu_items[menu_item_count].desc, "VirtIO-GPU Hardware DMA", 47);
+    strncpy(menu_items[menu_item_count].command, "render gpu", 47);
+    menu_items[menu_item_count].tag_color = 0xFF8E44AD;
+    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    menu_item_count++;
+
+    // 6. SMP Multi-Core Parallel Graphics Quick-Switch
+    strncpy(menu_items[menu_item_count].name, "SMP Render", 31);
+    strncpy(menu_items[menu_item_count].desc, "SMP 4-Core Parallel Mode", 47);
+    strncpy(menu_items[menu_item_count].command, "render smp", 47);
+    menu_items[menu_item_count].tag_color = 0xFF16A085;
+    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    menu_item_count++;
+
+    // 3. Lua 3D Benchmark Script
+    strncpy(menu_items[menu_item_count].name, "bench.lua", 31);
+    strncpy(menu_items[menu_item_count].desc, "Lua 5.4.7 3D Controller", 47);
+    strncpy(menu_items[menu_item_count].command, "run bench.lua", 47);
+    menu_items[menu_item_count].tag_color = COLOR_ACCENT_CYAN;
+    strncpy(menu_items[menu_item_count].category, "Scripting", 19);
     menu_item_count++;
 
     // 4. Top Monitor
@@ -276,12 +306,10 @@ int menu_handle_click(window_t *win, int mouse_x, int mouse_y) {
             doldoc_printf("\n$FG,YELLOW$[NEOMENU]$FG$ Launching $FG,CYAN$%s$FG$ (%s)...\n",
                           menu_items[i].name, cmd_copy);
             menu_close();
-            if (strcmp(menu_items[i].name, "Gears.HC") == 0) {
-                glxgears_start(0, 0, 0);
-            } else if (strcmp(menu_items[i].name, "Bench3D.HC") == 0) {
-                bench3d_start();
-            } else if (strcmp(menu_items[i].name, "BenchSuite.HC") == 0) {
-                bench_suite_start();
+            if (strcmp(menu_items[i].name, "Bench.HC") == 0 || strcmp(menu_items[i].name, "Gears.HC") == 0) {
+                bench_unified_start(BENCH_MODE_GEARS);
+            } else if (strcmp(menu_items[i].name, "Dynamics.HC") == 0) {
+                bench_unified_start(BENCH_MODE_DYNAMICS);
             } else if (strcmp(menu_items[i].name, "Top.HC") == 0) {
                 top_print_doldoc();
             } else {

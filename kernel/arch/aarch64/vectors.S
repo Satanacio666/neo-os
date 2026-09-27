@@ -4,8 +4,9 @@
 .extern arm64_sync_exception
 
 // Macro to save complete CPU state (trap frame)
+// Macro to save complete CPU state (trap frame: GPRs + SP + NEON Q0-Q31)
 .macro SAVE_ALL
-    sub sp, sp, #272
+    sub sp, sp, #784
     stp x0,  x1,  [sp, #16 * 0]
     stp x2,  x3,  [sp, #16 * 1]
     stp x4,  x5,  [sp, #16 * 2]
@@ -24,16 +25,54 @@
 
     mrs x21, elr_el1
     mrs x22, spsr_el1
+    mrs x23, sp_el0
     stp x30, x21, [sp, #16 * 15]
-    str x22,      [sp, #16 * 16]
+    stp x22, x23, [sp, #16 * 16]
+
+    // Save NEON / Floating Point registers Q0-Q31
+    stp q0,  q1,  [sp, #272 + 32 * 0]
+    stp q2,  q3,  [sp, #272 + 32 * 1]
+    stp q4,  q5,  [sp, #272 + 32 * 2]
+    stp q6,  q7,  [sp, #272 + 32 * 3]
+    stp q8,  q9,  [sp, #272 + 32 * 4]
+    stp q10, q11, [sp, #272 + 32 * 5]
+    stp q12, q13, [sp, #272 + 32 * 6]
+    stp q14, q15, [sp, #272 + 32 * 7]
+    stp q16, q17, [sp, #272 + 32 * 8]
+    stp q18, q19, [sp, #272 + 32 * 9]
+    stp q20, q21, [sp, #272 + 32 * 10]
+    stp q22, q23, [sp, #272 + 32 * 11]
+    stp q24, q25, [sp, #272 + 32 * 12]
+    stp q26, q27, [sp, #272 + 32 * 13]
+    stp q28, q29, [sp, #272 + 32 * 14]
+    stp q30, q31, [sp, #272 + 32 * 15]
 .endm
 
 // Macro to restore complete CPU state
 .macro RESTORE_ALL
+    // Restore NEON / Floating Point registers Q0-Q31
+    ldp q0,  q1,  [sp, #272 + 32 * 0]
+    ldp q2,  q3,  [sp, #272 + 32 * 1]
+    ldp q4,  q5,  [sp, #272 + 32 * 2]
+    ldp q6,  q7,  [sp, #272 + 32 * 3]
+    ldp q8,  q9,  [sp, #272 + 32 * 4]
+    ldp q10, q11, [sp, #272 + 32 * 5]
+    ldp q12, q13, [sp, #272 + 32 * 6]
+    ldp q14, q15, [sp, #272 + 32 * 7]
+    ldp q16, q17, [sp, #272 + 32 * 8]
+    ldp q18, q19, [sp, #272 + 32 * 9]
+    ldp q20, q21, [sp, #272 + 32 * 10]
+    ldp q22, q23, [sp, #272 + 32 * 11]
+    ldp q24, q25, [sp, #272 + 32 * 12]
+    ldp q26, q27, [sp, #272 + 32 * 13]
+    ldp q28, q29, [sp, #272 + 32 * 14]
+    ldp q30, q31, [sp, #272 + 32 * 15]
+
     ldp x30, x21, [sp, #16 * 15]
-    ldr x22,      [sp, #16 * 16]
+    ldp x22, x23, [sp, #16 * 16]
     msr elr_el1,  x21
     msr spsr_el1, x22
+    msr sp_el0,   x23
 
     ldp x0,  x1,  [sp, #16 * 0]
     ldp x2,  x3,  [sp, #16 * 1]
@@ -50,7 +89,7 @@
     ldp x24, x25, [sp, #16 * 12]
     ldp x26, x27, [sp, #16 * 13]
     ldp x28, x29, [sp, #16 * 14]
-    add sp, sp, #272
+    add sp, sp, #784
 .endm
 
 // Official ARM64 Vector Table: strictly aligned to 2048 bytes

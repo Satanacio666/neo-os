@@ -1,0 +1,5 @@
+NeoOS System Architecture Guide:
+- All code runs in EL1 / Ring 0 identity mapped space.
+- DolDoc supports interactive tags: $BT$, $LK$, $PB$, $LUA$.
+- NeoC JIT Engine supports classes, structs, 64-bit types, format strings.
+- Direct Graphics HAL with NEON streaming blits and HolyGL 3D.

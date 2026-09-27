@@ -57,13 +57,15 @@ smp_spin_lock:
     mov w2, #1
 1:  ldaxr w1, [x0]
     cbnz w1, 2f
-    stxr w1, w2, [x0]
+    stlxr w1, w2, [x0]
     cbnz w1, 1b
+    dmb ish
     ret
 2:  wfe
     b 1b
 
 smp_spin_unlock:
+    dmb ish
     stlr wzr, [x0]
     sev
     ret
@@ -72,15 +74,17 @@ smp_spin_unlock:
 smp_entry:
     // When called from PSCI CPU_ON:
     // X0 contains context_id (core_id)
-    mov x19, x0
+    mov x4, x0
 
-    // Setup per-core stack
+    // Setup per-core stack using temporary registers before setting up x19
     adrp x1, smp_core_stacks
     add x1, x1, :lo12:smp_core_stacks
     mov x2, #16384
-    add x3, x19, #1
+    add x3, x4, #1
     mul x2, x2, x3
     add sp, x1, x2
+
+    mov x19, x4
 
     // Enable FP/SIMD
     mrs x1, cpacr_el1

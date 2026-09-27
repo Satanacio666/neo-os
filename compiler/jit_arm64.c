@@ -10,17 +10,63 @@ typedef struct {
     uint32_t *code;
     size_t   capacity;
     size_t   count;
+    int      has_error;
+    char     error_msg[128];
 } code_buffer_t;
+
+
+static void arm64_flush_cache(void *addr, size_t size) {
+    if (!addr || size == 0) return;
+    uintptr_t start = (uintptr_t)addr;
+    uintptr_t end = start + size;
+    for (uintptr_t p = start & ~63ULL; p < end; p += 64) {
+        asm volatile("dc cvau, %0" :: "r"(p) : "memory");
+    }
+    asm volatile("dsb ish" ::: "memory");
+    for (uintptr_t p = start & ~63ULL; p < end; p += 64) {
+        asm volatile("ic ivau, %0" :: "r"(p) : "memory");
+    }
+    asm volatile("dsb ish; isb" ::: "memory");
+}
+
+static uint8_t *s_jit_pool_start = NULL;
+static size_t   s_jit_pool_offset = 0;
+static size_t   s_jit_pool_size = 0;
+
+void jit_init_code_pool(void *pool_start, size_t pool_size) {
+    s_jit_pool_start = (uint8_t*)pool_start;
+    s_jit_pool_offset = 0;
+    s_jit_pool_size = pool_size;
+    printf("[NEOC JIT] Dedicated Executable Code Pool (EfiLoaderCode) @ 0x%016llX (%llu KB)\n",
+           (unsigned long long)pool_start, (unsigned long long)(pool_size / 1024));
+}
 
 static void cb_init(code_buffer_t *cb, size_t max_instructions) {
     cb->capacity = max_instructions;
     cb->count = 0;
-    cb->code = (uint32_t*)kmalloc(max_instructions * sizeof(uint32_t));
+    cb->has_error = 0;
+    cb->error_msg[0] = '\0';
+    size_t bytes = max_instructions * sizeof(uint32_t);
+    if (s_jit_pool_start && (s_jit_pool_offset + bytes <= s_jit_pool_size)) {
+        cb->code = (uint32_t*)(s_jit_pool_start + s_jit_pool_offset);
+        s_jit_pool_offset = (s_jit_pool_offset + bytes + 63) & ~63ULL;
+    } else {
+        cb->code = (uint32_t*)kmalloc(bytes);
+    }
+    if (!cb->code) {
+        cb->has_error = 1;
+        snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating code buffer");
+    }
 }
 
 static void emit_u32(code_buffer_t *cb, uint32_t instruction) {
+    if (cb->has_error) return;
     if (cb->code && cb->count < cb->capacity) {
         cb->code[cb->count++] = instruction;
+    } else {
+        cb->has_error = 1;
+        snprintf(cb->error_msg, sizeof(cb->error_msg), "Code buffer capacity exceeded (%d instructions)", (int)cb->capacity);
+        printf("[JIT] Error: %s\n", cb->error_msg);
     }
 }
 
@@ -166,35 +212,48 @@ static void emit_mvn(code_buffer_t *cb, uint32_t rd, uint32_t rm) {
 }
 
 // Float NEON / VFP (Double Precision D0-D31)
-static void __attribute__((unused)) emit_fadd(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
+static void emit_fadd(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x1E602800 | (rm << 16) | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fsub(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
+static void emit_fsub(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x1E603800 | (rm << 16) | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fmul(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
+static void emit_fmul(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x1E600800 | (rm << 16) | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fdiv(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
+static void emit_fdiv(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x1E601800 | (rm << 16) | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_scvtf(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+static void emit_fcmp(code_buffer_t *cb, uint32_t rn, uint32_t rm) {
+    emit_u32(cb, 0x1E602000 | (rm << 16) | (rn << 5));
+}
+
+static void emit_fneg(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+    emit_u32(cb, 0x1E614000 | (rn << 5) | rd);
+}
+
+static void emit_scvtf(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
     emit_u32(cb, 0x9E620000 | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fcvtzs(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+static void emit_fcvtzs(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
     emit_u32(cb, 0x9E780000 | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fmov_d_x(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+static void emit_fmov_d_x(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
     emit_u32(cb, 0x9E670000 | (rn << 5) | rd);
 }
 
-static void __attribute__((unused)) emit_fmov_x_d(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+static void emit_fcvt_s_d(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
+    // FCVT Sd, Dn: converts 64-bit double in Dn to 32-bit single-precision float in Sd
+    emit_u32(cb, 0x1E624000 | (rn << 5) | rd);
+}
+
+static void emit_fmov_x_d(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
     emit_u32(cb, 0x9E660000 | (rn << 5) | rd);
 }
 
@@ -254,12 +313,14 @@ static void emit_b_cond(code_buffer_t *cb, uint32_t cond, size_t target_idx) {
     emit_u32(cb, 0x54000000 | ((offset & 0x7FFFF) << 5) | (cond & 0xF));
 }
 
+__attribute__((unused))
 static size_t emit_b_cond_placeholder(code_buffer_t *cb, uint32_t cond) {
     size_t idx = cb->count;
     emit_u32(cb, 0x54000000 | (cond & 0xF));
     return idx;
 }
 
+__attribute__((unused))
 static void patch_b_cond(code_buffer_t *cb, size_t branch_idx, size_t target_idx) {
     int32_t offset = (int32_t)(target_idx - branch_idx);
     cb->code[branch_idx] |= ((offset & 0x7FFFF) << 5);
@@ -272,8 +333,8 @@ static void emit_cbnz(code_buffer_t *cb, uint32_t rt, size_t target_idx) {
 
 // Loop and Switch context stack for break/continue control flow
 #define MAX_LOOP_DEPTH 16
-#define MAX_BREAKS_PER_LOOP 32
-#define MAX_CONTINUES_PER_LOOP 32
+#define MAX_BREAKS_PER_LOOP 64
+#define MAX_CONTINUES_PER_LOOP 64
 
 typedef struct {
     int is_switch; // 1 if switch, 0 if loop (while, for, do)
@@ -311,14 +372,18 @@ typedef struct {
     int size;
 } struct_member_t;
 
+#define MAX_STRUCT_DEFS 64
+#define MAX_STRUCT_MEMBERS 32
+#define MAX_VAR_TYPES 128
+
 typedef struct {
     char name[32];
     int total_size;
     int member_count;
-    struct_member_t members[16];
+    struct_member_t members[MAX_STRUCT_MEMBERS];
 } struct_def_t;
 
-static struct_def_t struct_defs[32];
+static struct_def_t struct_defs[MAX_STRUCT_DEFS];
 static int struct_def_count = 0;
 
 static struct_def_t* find_struct_def(const char *name) {
@@ -333,26 +398,30 @@ typedef struct {
     char name[32];
     int scale;            // 1 (U8), 2 (U16), 4 (U32), 8 (I64 / pointer / default)
     int is_ptr;           // 1 if pointer, 0 if direct struct/value
+    int is_float;         // 1 if floating point (F64, double, float)
     char struct_type[32]; // Bound struct type if applicable
 } var_type_t;
 
-static var_type_t var_types[64];
+static var_type_t var_types[MAX_VAR_TYPES];
 static int var_type_count = 0;
+static int s_expr_is_float = 0;
 
-static void register_var_type(const char *name, int scale, int is_ptr, const char *st_name) {
+static void register_var_type(const char *name, int scale, int is_ptr, int is_float, const char *st_name) {
     for (int i = 0; i < var_type_count; i++) {
         if (strcmp(var_types[i].name, name) == 0) {
             var_types[i].scale = scale;
             var_types[i].is_ptr = is_ptr;
+            var_types[i].is_float = is_float;
             if (st_name) strncpy(var_types[i].struct_type, st_name, 31);
             else var_types[i].struct_type[0] = '\0';
             return;
         }
     }
-    if (var_type_count < 64) {
+    if (var_type_count < MAX_VAR_TYPES) {
         strncpy(var_types[var_type_count].name, name, 31);
         var_types[var_type_count].scale = scale;
         var_types[var_type_count].is_ptr = is_ptr;
+        var_types[var_type_count].is_float = is_float;
         if (st_name) strncpy(var_types[var_type_count].struct_type, st_name, 31);
         else var_types[var_type_count].struct_type[0] = '\0';
         var_type_count++;
@@ -388,6 +457,7 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
         uint64_t raw = 0;
         memcpy(&raw, &tok.float_value, sizeof(double));
         emit_mov_imm64(cb, 0, raw);
+        s_expr_is_float = 1;
         lexer_next(l);
     } else if (tok.type == TOK_STRING) {
         // Allocate persistent copy in kernel heap
@@ -445,9 +515,18 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             lexer_next(l); // eat '('
 
             symbol_t *sym = symbols_lookup_entry(ident_name);
-            if (!sym) {
-                symbols_register(ident_name, NULL, SYM_FUNC);
-                sym = symbols_lookup_entry(ident_name);
+            if (!sym || !sym->address) {
+                printf("[JIT] Error: Undefined symbol '%s'\n", ident_name);
+                cb->has_error = 1;
+                snprintf(cb->error_msg, sizeof(cb->error_msg), "Undefined symbol '%s'", ident_name);
+                // Synchronize past arguments to keep lexer state clean
+                int paren_depth = 1;
+                while (paren_depth > 0 && lexer_peek(l).type != TOK_EOF) {
+                    token_t t = lexer_next(l);
+                    if (t.type == TOK_LPAREN) paren_depth++;
+                    else if (t.type == TOK_RPAREN) paren_depth--;
+                }
+                return;
             }
 
             int arg_count = 0;
@@ -469,23 +548,47 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 lexer_next(l); // eat ')'
             }
 
+            if (arg_count > 8) {
+                printf("[JIT] Error: Function '%s' called with %d arguments (max 8 supported)\n", ident_name, arg_count);
+                cb->has_error = 1;
+                return;
+            }
+
             // Restore arguments into registers X0-X7 in forward order
             for (int i = arg_count - 1; i >= 0; i--) {
-                if (i < 8) {
-                    emit_pop_x(cb, i); // Pop into Xi
-                } else {
-                    emit_pop_x(cb, 7);
+                emit_pop_x(cb, i); // Pop into Xi
+            }
+
+            // AAPCS compliance: Mirror arguments into float registers D0-D7 / S0-S7
+            // HolyGL functions take IEEE-754 32-bit single-precision float parameters in S0-S7,
+            // while math and HolyC functions take 64-bit doubles in D0-D7.
+            int is_holygl_float_func = (
+                strcmp(ident_name, "glVertex3f") == 0 ||
+                strcmp(ident_name, "glVertex2f") == 0 ||
+                strcmp(ident_name, "glColor3f") == 0 ||
+                strcmp(ident_name, "glColor4f") == 0 ||
+                strcmp(ident_name, "glNormal3f") == 0 ||
+                strcmp(ident_name, "glTexCoord2f") == 0 ||
+                strcmp(ident_name, "glTranslatef") == 0 ||
+                strcmp(ident_name, "glRotatef") == 0 ||
+                strcmp(ident_name, "glScalef") == 0 ||
+                strcmp(ident_name, "gluPerspective") == 0 ||
+                strcmp(ident_name, "glClearColor") == 0
+            );
+
+            for (int i = 0; i < arg_count; i++) {
+                emit_fmov_d_x(cb, i, i);
+                if (is_holygl_float_func) {
+                    emit_fcvt_s_d(cb, i, i);
                 }
             }
 
             // Call function via X16
-            if (sym && sym->address) {
+            if (sym->type == SYM_VAR) {
                 emit_mov_imm64(cb, 16, (uint64_t)sym->address);
-            } else if (sym) {
-                emit_mov_imm64(cb, 16, (uint64_t)&sym->address);
                 emit_ldr_ptr(cb, 16, 16); // Dereference *(&sym->address) at runtime
             } else {
-                emit_mov_imm64(cb, 16, 0);
+                emit_mov_imm64(cb, 16, (uint64_t)sym->address);
             }
             emit_blr(cb, 16);
         } else if (lexer_peek(l).type == TOK_LBRACKET) {
@@ -530,6 +633,9 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             // Variable Read: lookup in Global Symbol Table
             symbol_t *sym = symbols_lookup_entry(ident_name);
             var_type_t *vt = lookup_var_type(ident_name);
+            if (vt && vt->is_float && !vt->is_ptr) {
+                s_expr_is_float = 1;
+            }
             if (sym && sym->type == SYM_VAR) {
                 if (vt && vt->struct_type[0] != '\0' && !vt->is_ptr) {
                     emit_mov_imm64(cb, 0, (uint64_t)sym->address);
@@ -607,6 +713,35 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             }
         }
     } else if (tok.type == TOK_LPAREN) {
+        lexer_t l_save = *l;
+        lexer_next(&l_save); // advance past '(' in temporary copy
+        token_t next_tok = lexer_peek(&l_save);
+        if (next_tok.type == TOK_TYPE_F64) {
+            *l = l_save;
+            lexer_next(l); // eat 'F64'
+            if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
+            s_expr_is_float = 0;
+            parse_unary(l, cb);
+            if (!s_expr_is_float) {
+                emit_scvtf(cb, 0, 0); // X0 int -> D0 double
+                emit_fmov_x_d(cb, 0, 0); // D0 -> X0
+            }
+            s_expr_is_float = 1;
+            return;
+        } else if (next_tok.type == TOK_TYPE_I64 || next_tok.type == TOK_TYPE_U32 || next_tok.type == TOK_TYPE_U8) {
+            *l = l_save;
+            lexer_next(l); // eat type
+            if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
+            s_expr_is_float = 0;
+            parse_unary(l, cb);
+            if (s_expr_is_float) {
+                emit_fmov_d_x(cb, 0, 0); // X0 -> D0
+                emit_fcvtzs(cb, 0, 0);  // D0 double -> X0 int
+            }
+            s_expr_is_float = 0;
+            return;
+        }
+
         lexer_next(l); // eat '('
         parse_expr(l, cb);
         if (lexer_peek(l).type == TOK_RPAREN) {
@@ -622,7 +757,11 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
     if (tok.type == TOK_MINUS) {
         lexer_next(l);
         parse_unary(l, cb);
-        emit_neg(cb, 0, 0);
+        if (s_expr_is_float) {
+            emit_fneg(cb, 0, 0);
+        } else {
+            emit_neg(cb, 0, 0);
+        }
     } else if (tok.type == TOK_TILDE) {
         lexer_next(l);
         parse_unary(l, cb);
@@ -634,8 +773,38 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
         emit_cset(cb, 0, 1); // X0 = (X0 == 0)
     } else if (tok.type == TOK_STAR) {
         lexer_next(l); // eat '*'
+        int deref_scale = 8;
+        if (lexer_peek(l).type == TOK_LPAREN) {
+            lexer_t l_chk = *l;
+            lexer_next(&l_chk); // eat '('
+            token_t t_type = lexer_peek(&l_chk);
+            if (t_type.type == TOK_TYPE_U8 || t_type.type == TOK_TYPE_U16 ||
+                t_type.type == TOK_TYPE_U32 || t_type.type == TOK_TYPE_I64 ||
+                t_type.type == TOK_TYPE_F64) {
+                lexer_next(&l_chk); // eat type
+                if (lexer_peek(&l_chk).type == TOK_STAR) {
+                    lexer_next(&l_chk); // eat '*'
+                    if (lexer_peek(&l_chk).type == TOK_RPAREN) {
+                        lexer_next(&l_chk); // eat ')'
+                        *l = l_chk; // commit cast
+                        if (t_type.type == TOK_TYPE_U8) deref_scale = 1;
+                        else if (t_type.type == TOK_TYPE_U16) deref_scale = 2;
+                        else if (t_type.type == TOK_TYPE_U32) deref_scale = 4;
+                        else deref_scale = 8;
+                    }
+                }
+            }
+        }
         parse_unary(l, cb);
-        emit_ldr64(cb, 0, 0);
+        if (deref_scale == 1) {
+            emit_ldrb(cb, 0, 0);
+        } else if (deref_scale == 2) {
+            emit_ldrh(cb, 0, 0);
+        } else if (deref_scale == 4) {
+            emit_ldr32(cb, 0, 0);
+        } else {
+            emit_ldr64(cb, 0, 0);
+        }
     } else if (tok.type == TOK_AMPERSAND) {
         lexer_next(l);
         token_t id = lexer_peek(l);
@@ -676,6 +845,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
 // Multiplicative: *, /, %
 static void parse_term(lexer_t *l, code_buffer_t *cb) {
     parse_unary(l, cb);
+    int lhs_is_float = s_expr_is_float;
 
     while (lexer_peek(l).type == TOK_STAR ||
            lexer_peek(l).type == TOK_SLASH ||
@@ -684,15 +854,44 @@ static void parse_term(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l);
 
         emit_push_x(cb, 0); // Save LHS
+        s_expr_is_float = 0;
         parse_unary(l, cb); // RHS in X0
+        int rhs_is_float = s_expr_is_float;
         emit_pop_x(cb, 1);  // LHS in X1
 
-        if (op == TOK_STAR) {
-            emit_mul(cb, 0, 1, 0); // X0 = X1 * X0
-        } else if (op == TOK_SLASH) {
-            emit_sdiv(cb, 0, 1, 0); // X0 = X1 / X0
-        } else if (op == TOK_PERCENT) {
-            emit_srem(cb, 0, 1, 0); // X0 = X1 % X0
+        if (lhs_is_float || rhs_is_float) {
+            if (!lhs_is_float) {
+                emit_scvtf(cb, 1, 1);
+                emit_fmov_x_d(cb, 1, 1);
+            }
+            if (!rhs_is_float) {
+                emit_scvtf(cb, 0, 0);
+                emit_fmov_x_d(cb, 0, 0);
+            }
+            emit_fmov_d_x(cb, 1, 1); // D1 = X1
+            emit_fmov_d_x(cb, 0, 0); // D0 = X0
+            if (op == TOK_STAR) {
+                emit_fmul(cb, 0, 1, 0); // D0 = D1 * D0
+            } else if (op == TOK_SLASH) {
+                emit_fdiv(cb, 0, 1, 0); // D0 = D1 / D0
+            } else {
+                emit_fdiv(cb, 2, 1, 0);
+                emit_fcvtzs(cb, 2, 2);
+                emit_scvtf(cb, 2, 2);
+                emit_fmul(cb, 2, 2, 0);
+                emit_fsub(cb, 0, 1, 2);
+            }
+            emit_fmov_x_d(cb, 0, 0); // X0 = D0
+            s_expr_is_float = 1;
+            lhs_is_float = 1;
+        } else {
+            if (op == TOK_STAR) {
+                emit_mul(cb, 0, 1, 0); // X0 = X1 * X0
+            } else if (op == TOK_SLASH) {
+                emit_sdiv(cb, 0, 1, 0); // X0 = X1 / X0
+            } else if (op == TOK_PERCENT) {
+                emit_srem(cb, 0, 1, 0); // X0 = X1 % X0
+            }
         }
     }
 }
@@ -700,19 +899,43 @@ static void parse_term(lexer_t *l, code_buffer_t *cb) {
 // Additive: +, -
 static void parse_additive(lexer_t *l, code_buffer_t *cb) {
     parse_term(l, cb);
+    int lhs_is_float = s_expr_is_float;
 
     while (lexer_peek(l).type == TOK_PLUS || lexer_peek(l).type == TOK_MINUS) {
         token_type_t op = lexer_peek(l).type;
         lexer_next(l);
 
         emit_push_x(cb, 0); // Save LHS
+        s_expr_is_float = 0;
         parse_term(l, cb);  // RHS in X0
+        int rhs_is_float = s_expr_is_float;
         emit_pop_x(cb, 1);  // LHS in X1
 
-        if (op == TOK_PLUS) {
-            emit_add(cb, 0, 1, 0); // X0 = X1 + X0
+        if (lhs_is_float || rhs_is_float) {
+            if (!lhs_is_float) {
+                emit_scvtf(cb, 1, 1);
+                emit_fmov_x_d(cb, 1, 1);
+            }
+            if (!rhs_is_float) {
+                emit_scvtf(cb, 0, 0);
+                emit_fmov_x_d(cb, 0, 0);
+            }
+            emit_fmov_d_x(cb, 1, 1);
+            emit_fmov_d_x(cb, 0, 0);
+            if (op == TOK_PLUS) {
+                emit_fadd(cb, 0, 1, 0);
+            } else {
+                emit_fsub(cb, 0, 1, 0);
+            }
+            emit_fmov_x_d(cb, 0, 0);
+            s_expr_is_float = 1;
+            lhs_is_float = 1;
         } else {
-            emit_sub(cb, 0, 1, 0); // X0 = X1 - X0
+            if (op == TOK_PLUS) {
+                emit_add(cb, 0, 1, 0);
+            } else {
+                emit_sub(cb, 0, 1, 0);
+            }
         }
     }
 }
@@ -764,6 +987,7 @@ static void parse_bitwise(lexer_t *l, code_buffer_t *cb) {
 // Relational: <, <=, >, >=
 static void parse_relational(lexer_t *l, code_buffer_t *cb) {
     parse_bitwise(l, cb);
+    int lhs_is_float = s_expr_is_float;
 
     while (lexer_peek(l).type == TOK_LT || lexer_peek(l).type == TOK_LTE ||
            lexer_peek(l).type == TOK_GT || lexer_peek(l).type == TOK_GTE) {
@@ -771,10 +995,26 @@ static void parse_relational(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l);
 
         emit_push_x(cb, 0);
+        s_expr_is_float = 0;
         parse_bitwise(l, cb);
+        int rhs_is_float = s_expr_is_float;
         emit_pop_x(cb, 1);
 
-        emit_cmp(cb, 1, 0); // CMP X1, X0
+        if (lhs_is_float || rhs_is_float) {
+            if (!lhs_is_float) {
+                emit_scvtf(cb, 1, 1);
+                emit_fmov_x_d(cb, 1, 1);
+            }
+            if (!rhs_is_float) {
+                emit_scvtf(cb, 0, 0);
+                emit_fmov_x_d(cb, 0, 0);
+            }
+            emit_fmov_d_x(cb, 1, 1);
+            emit_fmov_d_x(cb, 0, 0);
+            emit_fcmp(cb, 1, 0); // FCMP D1, D0
+        } else {
+            emit_cmp(cb, 1, 0); // CMP X1, X0
+        }
         if (op == TOK_LT) {
             emit_cset(cb, 0, 10); // LT -> inv GE (10)
         } else if (op == TOK_LTE) {
@@ -784,27 +1024,46 @@ static void parse_relational(lexer_t *l, code_buffer_t *cb) {
         } else if (op == TOK_GTE) {
             emit_cset(cb, 0, 11); // GE -> inv LT (11)
         }
+        s_expr_is_float = 0;
     }
 }
 
 // Equality: ==, !=
 static void parse_equality(lexer_t *l, code_buffer_t *cb) {
     parse_relational(l, cb);
+    int lhs_is_float = s_expr_is_float;
 
     while (lexer_peek(l).type == TOK_EQEQ || lexer_peek(l).type == TOK_NEQ) {
         token_type_t op = lexer_peek(l).type;
         lexer_next(l);
 
         emit_push_x(cb, 0);
+        s_expr_is_float = 0;
         parse_relational(l, cb);
+        int rhs_is_float = s_expr_is_float;
         emit_pop_x(cb, 1);
 
-        emit_cmp(cb, 1, 0); // CMP X1, X0
+        if (lhs_is_float || rhs_is_float) {
+            if (!lhs_is_float) {
+                emit_scvtf(cb, 1, 1);
+                emit_fmov_x_d(cb, 1, 1);
+            }
+            if (!rhs_is_float) {
+                emit_scvtf(cb, 0, 0);
+                emit_fmov_x_d(cb, 0, 0);
+            }
+            emit_fmov_d_x(cb, 1, 1);
+            emit_fmov_d_x(cb, 0, 0);
+            emit_fcmp(cb, 1, 0);
+        } else {
+            emit_cmp(cb, 1, 0);
+        }
         if (op == TOK_EQEQ) {
             emit_cset(cb, 0, 1); // EQ -> inv NE (1)
         } else {
             emit_cset(cb, 0, 0); // NE -> inv EQ (0)
         }
+        s_expr_is_float = 0;
     }
 }
 
@@ -891,6 +1150,23 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
         if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
 
+        // Validate % specifiers against argument count
+        int spec_count = 0;
+        for (const char *p = fmt; *p; p++) {
+            if (*p == '%') {
+                if (*(p + 1) == '%') p++; // Skip escaped %%
+                else spec_count++;
+            }
+        }
+        if (arg_count > 7) {
+            printf("[JIT] Error: Print statement with %d arguments exceeds max 7 registers\n", arg_count);
+            cb->has_error = 1;
+            return;
+        }
+        if (spec_count > arg_count) {
+            printf("[JIT] Warning: Format string '%s' expects %d arguments, but got %d\n", fmt, spec_count, arg_count);
+        }
+
         // Pop args into X1..X7 in reverse
         for (int i = arg_count; i >= 1; i--) {
             if (i < 8) emit_pop_x(cb, i);
@@ -916,6 +1192,12 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             st_name[31] = '\0';
             lexer_next(l); // eat ident
 
+            if (struct_def_count >= MAX_STRUCT_DEFS) {
+                printf("[JIT] Error: Maximum struct definitions (%d) exceeded\n", MAX_STRUCT_DEFS);
+                cb->has_error = 1;
+                return;
+            }
+
             struct_def_t *st = &struct_defs[struct_def_count++];
             memset(st, 0, sizeof(struct_def_t));
             strncpy(st->name, st_name, 31);
@@ -939,8 +1221,14 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                     token_t m_id = lexer_peek(l);
                     if (m_id.type == TOK_IDENT) {
+                        if (st->member_count >= MAX_STRUCT_MEMBERS) {
+                            printf("[JIT] Error: Struct '%s' exceeded max members (%d)\n", st_name, MAX_STRUCT_MEMBERS);
+                            cb->has_error = 1;
+                            return;
+                        }
                         struct_member_t *mem = &st->members[st->member_count++];
                         strncpy(mem->name, m_id.str_value, 31);
+                        mem->name[31] = '\0';
                         mem->offset = cur_offset;
                         mem->size = m_size;
                         cur_offset += m_size;
@@ -986,6 +1274,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             loop_ctx_t *lctx = &loop_stack[loop_depth - 1];
             if (lctx->break_count < MAX_BREAKS_PER_LOOP) {
                 lctx->break_patches[lctx->break_count++] = emit_b_placeholder(cb);
+            } else {
+                printf("[JIT] Error: Maximum breaks per loop (%d) exceeded\n", MAX_BREAKS_PER_LOOP);
+                cb->has_error = 1;
             }
         }
         return;
@@ -1000,6 +1291,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             if (!loop_stack[d].is_switch) {
                 if (loop_stack[d].continue_count < MAX_CONTINUES_PER_LOOP) {
                     loop_stack[d].continue_patches[loop_stack[d].continue_count++] = emit_b_placeholder(cb);
+                } else {
+                    printf("[JIT] Error: Maximum continues per loop (%d) exceeded\n", MAX_CONTINUES_PER_LOOP);
+                    cb->has_error = 1;
                 }
                 break;
             }
@@ -1010,7 +1304,11 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
     // While Loop: while (cond) block
     if (tok.type == TOK_WHILE) {
         lexer_next(l); // eat 'while'
-        if (loop_depth >= MAX_LOOP_DEPTH) return;
+        if (loop_depth >= MAX_LOOP_DEPTH) {
+            printf("[JIT] Error: Maximum loop nesting depth (%d) exceeded\n", MAX_LOOP_DEPTH);
+            cb->has_error = 1;
+            return;
+        }
         loop_ctx_t *lctx = &loop_stack[loop_depth++];
         memset(lctx, 0, sizeof(loop_ctx_t));
         lctx->is_switch = 0;
@@ -1043,7 +1341,11 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
     // Do-While Loop: do block while (cond);
     if (tok.type == TOK_DO) {
         lexer_next(l); // eat 'do'
-        if (loop_depth >= MAX_LOOP_DEPTH) return;
+        if (loop_depth >= MAX_LOOP_DEPTH) {
+            printf("[JIT] Error: Maximum loop nesting depth (%d) exceeded\n", MAX_LOOP_DEPTH);
+            cb->has_error = 1;
+            return;
+        }
         loop_ctx_t *lctx = &loop_stack[loop_depth++];
         memset(lctx, 0, sizeof(loop_ctx_t));
         lctx->is_switch = 0;
@@ -1086,7 +1388,11 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             lexer_next(l);
         }
 
-        if (loop_depth >= MAX_LOOP_DEPTH) return;
+        if (loop_depth >= MAX_LOOP_DEPTH) {
+            printf("[JIT] Error: Maximum loop nesting depth (%d) exceeded\n", MAX_LOOP_DEPTH);
+            cb->has_error = 1;
+            return;
+        }
         loop_ctx_t *lctx = &loop_stack[loop_depth++];
         memset(lctx, 0, sizeof(loop_ctx_t));
         lctx->is_switch = 0;
@@ -1161,7 +1467,12 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         emit_mov_imm64(cb, 16, (uint64_t)sw_slot);
         emit_str_ptr(cb, 0, 16); // *sw_slot = switch value
 
-        if (loop_depth >= MAX_LOOP_DEPTH) return;
+        if (loop_depth >= MAX_LOOP_DEPTH) {
+            printf("[JIT] Error: Maximum switch nesting depth (%d) exceeded\n", MAX_LOOP_DEPTH);
+            cb->has_error = 1;
+            kfree(sw_slot);
+            return;
+        }
         loop_ctx_t *lctx = &loop_stack[loop_depth++];
         memset(lctx, 0, sizeof(loop_ctx_t));
         lctx->is_switch = 1;
@@ -1237,6 +1548,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             current_switch_ctx->cases[current_switch_ctx->case_count].value = case_val;
             current_switch_ctx->cases[current_switch_ctx->case_count].code_target = cb->count;
             current_switch_ctx->case_count++;
+        } else if (current_switch_ctx) {
+            printf("[JIT] Error: Maximum switch cases (%d) exceeded\n", MAX_CASES);
+            cb->has_error = 1;
         }
         return;
     }
@@ -1381,7 +1695,16 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     current_fn_param_storages[i] = parent_param_storages[i];
                 }
 
-                asm volatile("isb" ::: "memory");
+                if (fn_cb.has_error) {
+                    symbol_t *s = symbols_lookup_entry(name);
+                    if (s && s->address == fn_cb.code) s->address = NULL;
+                    cb->has_error = 1;
+                    kfree(fn_cb.code);
+                    printf("[JIT] Error: Function '%s' compilation failed\n", name);
+                    return;
+                }
+
+                arm64_flush_cache(fn_cb.code, fn_cb.count * sizeof(uint32_t));
                 printf("[JIT] Compiled function '%s' to RAM at 0x%p (%u instrs)\n",
                        name, fn_cb.code, (unsigned int)fn_cb.count);
                 doldoc_printf("$FG,GREEN$[JIT]$FG$ Function '%s' compiled to RAM (0x%p)\n", name, fn_cb.code);
@@ -1396,7 +1719,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             int64_t *storage = (int64_t*)kmalloc(alloc_sz);
             memset(storage, 0, alloc_sz);
             symbols_register(name, storage, SYM_VAR);
-            register_var_type(name, scale, is_ptr, st_type_name[0] ? st_type_name : NULL);
+            register_var_type(name, scale, is_ptr, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
 
             if (lexer_peek(l).type == TOK_EQUAL) {
                 lexer_next(l); // eat '='
@@ -1410,13 +1733,37 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         }
     }
 
-    // Dereference Assignment: *ptr = expr;
+    // Dereference Assignment: *ptr = expr; or *(U32*)addr = expr;
     if (tok.type == TOK_STAR) {
         lexer_next(l); // eat '*'
+        int store_scale = 8;
+        if (lexer_peek(l).type == TOK_LPAREN) {
+            lexer_t l_chk = *l;
+            lexer_next(&l_chk); // eat '('
+            token_t t_type = lexer_peek(&l_chk);
+            if (t_type.type == TOK_TYPE_U8 || t_type.type == TOK_TYPE_U16 ||
+                t_type.type == TOK_TYPE_U32 || t_type.type == TOK_TYPE_I64 ||
+                t_type.type == TOK_TYPE_F64) {
+                lexer_next(&l_chk); // eat type
+                if (lexer_peek(&l_chk).type == TOK_STAR) {
+                    lexer_next(&l_chk); // eat '*'
+                    if (lexer_peek(&l_chk).type == TOK_RPAREN) {
+                        lexer_next(&l_chk); // eat ')'
+                        *l = l_chk; // commit cast
+                        if (t_type.type == TOK_TYPE_U8) store_scale = 1;
+                        else if (t_type.type == TOK_TYPE_U16) store_scale = 2;
+                        else if (t_type.type == TOK_TYPE_U32) store_scale = 4;
+                        else store_scale = 8;
+                    }
+                }
+            }
+        }
+
         token_t id_tok = lexer_peek(l);
         if (id_tok.type == TOK_IDENT) {
             char ptr_name[64];
             strncpy(ptr_name, id_tok.str_value, 63);
+            ptr_name[63] = '\0';
             lexer_next(l); // eat ident
 
             if (lexer_peek(l).type == TOK_EQUAL) {
@@ -1429,10 +1776,42 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 emit_mov_imm64(cb, 16, (uint64_t)storage);
                 emit_ldr_ptr(cb, 1, 16); // X1 = target address stored in ptr
                 emit_pop_x(cb, 0);       // X0 = RHS value
-                emit_str_ptr(cb, 0, 1);  // *X1 = X0
+                if (store_scale == 1) {
+                    emit_strb(cb, 0, 1);
+                } else if (store_scale == 2) {
+                    emit_strh(cb, 0, 1);
+                } else if (store_scale == 4) {
+                    emit_str32(cb, 0, 1);
+                } else {
+                    emit_str_ptr(cb, 0, 1);  // *X1 = X0
+                }
 
                 if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
                 return;
+            }
+        } else {
+            // General Address Expression (e.g. *(U32*)(0x0A003E70) = val)
+            parse_unary(l, cb); // target address in X0
+            emit_push_x(cb, 0); // Save target address
+
+            if (lexer_peek(l).type == TOK_EQUAL) {
+                lexer_next(l); // eat '='
+                parse_expr(l, cb); // RHS in X0
+                emit_pop_x(cb, 1); // X1 = target address
+                if (store_scale == 1) {
+                    emit_strb(cb, 0, 1);
+                } else if (store_scale == 2) {
+                    emit_strh(cb, 0, 1);
+                } else if (store_scale == 4) {
+                    emit_str32(cb, 0, 1);
+                } else {
+                    emit_str_ptr(cb, 0, 1);
+                }
+
+                if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                return;
+            } else {
+                emit_pop_x(cb, 0);
             }
         }
     }
@@ -1681,7 +2060,13 @@ int64_t jit_eval(const char *expr_source) {
     emit_pop_lr(&cb);
     emit_ret(&cb);
 
-    asm volatile("isb" ::: "memory");
+    if (cb.has_error) {
+        printf("[JIT] Evaluation aborted due to compilation error.\n");
+        kfree(cb.code);
+        return 0;
+    }
+
+    arm64_flush_cache(cb.code, cb.count * sizeof(uint32_t));
 
     jit_func_t fn = (jit_func_t)cb.code;
     int64_t result = fn();
@@ -1706,12 +2091,19 @@ int64_t jit_compile_and_run(const char *source) {
 
     while (lexer_peek(&l).type != TOK_EOF) {
         parse_statement(&l, &cb);
+        if (cb.has_error) break;
     }
 
     emit_pop_lr(&cb);
     emit_ret(&cb);
 
-    asm volatile("isb" ::: "memory");
+    if (cb.has_error) {
+        printf("[JIT] Execution aborted due to compilation error.\n");
+        kfree(cb.code);
+        return -1;
+    }
+
+    arm64_flush_cache(cb.code, cb.count * sizeof(uint32_t));
 
     jit_func_t fn = (jit_func_t)cb.code;
     int64_t result = fn();
@@ -1722,7 +2114,7 @@ int64_t jit_compile_and_run(const char *source) {
 
 int jit_run_self_tests(void) {
     int passed = 0;
-    int total = 7;
+    int total = 10;
 
     doldoc_print("$FG,CYAN$=======================================================$FG$\n");
     doldoc_print("$FG,WHITE$ NeoOS HolyC 2.0 JIT Advanced Feature Self-Tests$FG$\n");
@@ -1845,6 +2237,47 @@ int jit_run_self_tests(void) {
         passed++;
     } else {
         doldoc_printf(" $FG,RED$[FAIL]$FG$ 7. Switch Default: expected 888, got %lld\n", (long long)v_defout);
+    }
+
+    // 8. Class / Struct Declaration & Member Access
+    jit_compile_and_run(
+        "class Vec2D { I64 x; I64 y; };\n"
+        "Vec2D v;\n"
+        "v.x = 25;\n"
+        "v.y = 75;\n"
+        "I64 v_sum = v.x + v.y;\n"
+    );
+    symbol_t *s_vsum = symbols_lookup_entry("v_sum");
+    int64_t v_val = s_vsum ? *(int64_t*)s_vsum->address : 0;
+    if (v_val == 100) {
+        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 8. Class / Struct Member Access: v.x(25) + v.y(75) = %lld\n", (long long)v_val);
+        passed++;
+    } else {
+        doldoc_printf(" $FG,RED$[FAIL]$FG$ 8. Class / Struct: expected 100, got %lld\n", (long long)v_val);
+    }
+
+    // 9. Pointer Dereference & Write
+    jit_compile_and_run(
+        "I64 target_val = 42;\n"
+        "I64 *p_val = &target_val;\n"
+        "*p_val = 999;\n"
+    );
+    symbol_t *s_tval = symbols_lookup_entry("target_val");
+    int64_t v_tval = s_tval ? *(int64_t*)s_tval->address : 0;
+    if (v_tval == 999) {
+        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 9. Pointer Dereference & Indirection: *p_val = %lld\n", (long long)v_tval);
+        passed++;
+    } else {
+        doldoc_printf(" $FG,RED$[FAIL]$FG$ 9. Pointer Dereference: expected 999, got %lld\n", (long long)v_tval);
+    }
+
+    // 10. Floating-Point Expressions & Casts (J10)
+    int64_t fp_res = jit_eval("(I64)(10.5 * 2.0 + 3.0)");
+    if (fp_res == 24) {
+        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 10. Floating-Point Expressions (F64 & Casts): (10.5 * 2.0 + 3.0) = %lld\n", (long long)fp_res);
+        passed++;
+    } else {
+        doldoc_printf(" $FG,RED$[FAIL]$FG$ 10. Floating-Point: expected 24, got %lld\n", (long long)fp_res);
     }
 
     if (passed == total) {

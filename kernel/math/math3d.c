@@ -9,11 +9,34 @@ static float sin_table[360];
 static float cos_table[360];
 static int   math3d_initialized = 0;
 
+// AArch64 hardware fsqrt — exact, ~17 cycles Cortex-A72
 static inline float fast_sqrt(float x) {
     if (x <= 0.0f) return 0.0f;
     float res;
-    asm volatile("fsqrt %s0, %s1" : "=w"(res) : "w"(x));
+    __asm__ volatile("fsqrt %s0, %s1" : "=w"(res) : "w"(x));
     return res;
+}
+
+// NEON rsqrte + 2× Newton-Raphson refinement — ~5 cycles, <0.001% error
+// Use for normalization where exact sqrt is not needed
+float fast_rsqrt_neon(float x) {
+    if (x <= 0.0f) return 0.0f;
+    float e, r;
+    // vrsqrte: reciprocal square root estimate
+    __asm__ volatile("frsqrte %s0, %s1"  : "=w"(e) : "w"(x));
+    // Newton step 1: e = e * (1.5 - 0.5*x*e*e) via frsqrts
+    // frsqrts computes (3 - a*b) / 2
+    float xe = x * e;
+    __asm__ volatile("frsqrts %s0, %s1, %s2" : "=w"(r) : "w"(xe), "w"(e));
+    e = e * r;
+    // Newton step 2 for extra precision
+    xe = x * e;
+    __asm__ volatile("frsqrts %s0, %s1, %s2" : "=w"(r) : "w"(xe), "w"(e));
+    return e * r;
+}
+
+float fast_sqrt_neon(float x) {
+    return (x > 0.0f) ? (x * fast_rsqrt_neon(x)) : 0.0f;
 }
 
 static float calc_taylor_sin(float deg) {
@@ -55,6 +78,17 @@ float math3d_sin(float deg) {
     return sin_table[idx];
 }
 
+double math3d_sin_d(double deg) {
+    return (double)math3d_sin((float)deg);
+}
+
+double fast_sqrt_d(double x) {
+    if (x <= 0.0) return 0.0;
+    double res;
+    asm volatile("fsqrt %d0, %d1" : "=w"(res) : "w"(x));
+    return res;
+}
+
 float math3d_cos(float deg) {
     if (!math3d_initialized) math3d_init();
     int idx = (int)deg % 360;
@@ -87,12 +121,11 @@ vec3_t vec3_cross(vec3_t a, vec3_t b) {
 }
 
 vec3_t vec3_normalize(vec3_t v) {
-    float len = fast_sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-    if (len > 0.00001f) {
-        float inv = 1.0f / len;
-        return (vec3_t){v.x * inv, v.y * inv, v.z * inv};
-    }
-    return (vec3_t){0, 0, 0};
+    // NEON rsqrte+rsqrts: ~5 cycles vs ~17 for fsqrt + fdiv
+    float len_sq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (len_sq < 0.0000001f) return (vec3_t){0, 0, 0};
+    float inv = fast_rsqrt_neon(len_sq);
+    return (vec3_t){v.x * inv, v.y * inv, v.z * inv};
 }
 
 void mat4_identity(mat4_t *out) {
@@ -144,11 +177,15 @@ void mat4_rotate_z(mat4_t *out, float deg) {
 void mat4_mul(mat4_t *out, const mat4_t *a, const mat4_t *b) {
     mat4_t tmp;
     for (int r = 0; r < 4; r++) {
+        float a0 = a->m[r][0];
+        float a1 = a->m[r][1];
+        float a2 = a->m[r][2];
+        float a3 = a->m[r][3];
         for (int c = 0; c < 4; c++) {
-            tmp.m[r][c] = a->m[r][0] * b->m[0][c] +
-                          a->m[r][1] * b->m[1][c] +
-                          a->m[r][2] * b->m[2][c] +
-                          a->m[r][3] * b->m[3][c];
+            tmp.m[r][c] = a0 * b->m[0][c] +
+                          a1 * b->m[1][c] +
+                          a2 * b->m[2][c] +
+                          a3 * b->m[3][c];
         }
     }
     *out = tmp;
@@ -676,9 +713,47 @@ int zbuffer_init(zbuffer_t *zb, int w, int h) {
     return 1;
 }
 
+int zbuffer_resize(zbuffer_t *zb, int new_w, int new_h) {
+    if (!zb || new_w <= 0 || new_h <= 0) return 0;
+    if (zb->width == new_w && zb->height == new_h && zb->buffer) return 1;
+    if (zb->buffer) {
+        kfree(zb->buffer);
+        zb->buffer = NULL;
+    }
+    return zbuffer_init(zb, new_w, new_h);
+}
+
 void zbuffer_clear(zbuffer_t *zb) {
     if (!zb || !zb->buffer) return;
-    memset(zb->buffer, 0xFF, (size_t)zb->width * zb->height * sizeof(uint16_t));
+    size_t total_elements = (size_t)zb->width * (size_t)zb->height;
+    size_t total_bytes = total_elements * sizeof(uint16_t);
+    size_t aligned_bytes = total_bytes & ~63ULL; // Multiple of 64 bytes
+
+    if (aligned_bytes > 0) {
+        uint8_t *ptr = (uint8_t*)zb->buffer;
+        size_t n = aligned_bytes;
+        __asm__ volatile(
+            "   movi v0.16b, #0xff\n"
+            "   movi v1.16b, #0xff\n"
+            "   movi v2.16b, #0xff\n"
+            "   movi v3.16b, #0xff\n"
+            "1:\n"
+            "   stnp q0, q1, [%[p], #0]\n"
+            "   stnp q2, q3, [%[p], #32]\n"
+            "   add  %[p], %[p], #64\n"
+            "   subs %[n], %[n], #64\n"
+            "   b.hi 1b\n"
+            : [p] "+r"(ptr), [n] "+r"(n)
+            :
+            : "v0", "v1", "v2", "v3", "memory"
+        );
+    }
+    // Tail elements (0..31 pixels)
+    uint16_t *tail = (uint16_t*)((uint8_t*)zb->buffer + aligned_bytes);
+    size_t rem = (total_bytes - aligned_bytes) >> 1;
+    for (size_t i = 0; i < rem; i++) {
+        tail[i] = 0xFFFF;
+    }
 }
 
 void zbuffer_free(zbuffer_t *zb) {
@@ -844,9 +919,18 @@ void rasterize_triangle_scanline(
     int v_min_y = viewport_y;
     int v_max_y = viewport_y + viewport_h;
 
+    if (zb && zb->buffer) {
+        if (v_max_x > viewport_x + zb->width) v_max_x = viewport_x + zb->width;
+        if (v_max_y > viewport_y + zb->height) v_max_y = viewport_y + zb->height;
+    }
+
     // Section 1: Scanlines from sy0 to sy1
     for (int y = sy0; y < sy1; y++) {
         if (y >= v_min_y && y < v_max_y) {
+            if (zb && zb->buffer) {
+                int zy = y - viewport_y;
+                if (zy < 0 || zy >= zb->height) continue;
+            }
             int xl = (int)(xA >> 16);
             int xr = (int)(xB >> 16);
             int32_t zl = zA, zr = zB;
@@ -866,16 +950,44 @@ void rasterize_triangle_scanline(
                     int32_t cur_z = zl + (int32_t)((int64_t)dz_dx * (x_start - xl));
                     uint32_t *dst_pixel = target_buffer ? (target_buffer + y * pitch + x_start) : NULL;
                     uint16_t *dst_z = (zb && zb->buffer) ? (zb->buffer + (y - viewport_y) * zb->width + (x_start - viewport_x)) : NULL;
+                    int count = x_end - x_start;
 
-                    for (int px = x_start; px < x_end; px++) {
-                        uint16_t z16 = (uint16_t)(cur_z >> 16);
-                        if (!dst_z || z16 < *dst_z) {
-                            if (dst_z) *dst_z = z16;
-                            if (dst_pixel) *dst_pixel = shaded_color;
+                    if (dst_z && dst_pixel) {
+                        int32_t dz_dx2 = dz_dx << 1;
+                        int32_t dz_dx3 = dz_dx2 + dz_dx;
+                        int32_t dz_dx4 = dz_dx << 2;
+                        int i = 0;
+                        for (; i <= count - 4; i += 4) {
+                            uint16_t z_a = (uint16_t)(cur_z >> 16);
+                            uint16_t z_b = (uint16_t)((cur_z + dz_dx) >> 16);
+                            uint16_t z_c = (uint16_t)((cur_z + dz_dx2) >> 16);
+                            uint16_t z_d = (uint16_t)((cur_z + dz_dx3) >> 16);
+                            cur_z += dz_dx4;
+
+                            if (z_a < dst_z[i + 0]) { dst_z[i + 0] = z_a; dst_pixel[i + 0] = shaded_color; }
+                            if (z_b < dst_z[i + 1]) { dst_z[i + 1] = z_b; dst_pixel[i + 1] = shaded_color; }
+                            if (z_c < dst_z[i + 2]) { dst_z[i + 2] = z_c; dst_pixel[i + 2] = shaded_color; }
+                            if (z_d < dst_z[i + 3]) { dst_z[i + 3] = z_d; dst_pixel[i + 3] = shaded_color; }
                         }
-                        cur_z += dz_dx;
-                        if (dst_pixel) dst_pixel++;
-                        if (dst_z) dst_z++;
+                        for (; i < count; i++) {
+                            uint16_t z_val = (uint16_t)(cur_z >> 16);
+                            cur_z += dz_dx;
+                            if (z_val < dst_z[i]) {
+                                dst_z[i] = z_val;
+                                dst_pixel[i] = shaded_color;
+                            }
+                        }
+                    } else if (dst_pixel) {
+                        int i = 0;
+                        for (; i <= count - 4; i += 4) {
+                            dst_pixel[i + 0] = shaded_color;
+                            dst_pixel[i + 1] = shaded_color;
+                            dst_pixel[i + 2] = shaded_color;
+                            dst_pixel[i + 3] = shaded_color;
+                        }
+                        for (; i < count; i++) {
+                            dst_pixel[i] = shaded_color;
+                        }
                     }
                 }
             }
@@ -892,6 +1004,10 @@ void rasterize_triangle_scanline(
 
     for (int y = sy1; y < sy2; y++) {
         if (y >= v_min_y && y < v_max_y) {
+            if (zb && zb->buffer) {
+                int zy = y - viewport_y;
+                if (zy < 0 || zy >= zb->height) continue;
+            }
             int xl = (int)(xA >> 16);
             int xr = (int)(xB >> 16);
             int32_t zl = zA, zr = zB;
@@ -911,16 +1027,44 @@ void rasterize_triangle_scanline(
                     int32_t cur_z = zl + (int32_t)((int64_t)dz_dx * (x_start - xl));
                     uint32_t *dst_pixel = target_buffer ? (target_buffer + y * pitch + x_start) : NULL;
                     uint16_t *dst_z = (zb && zb->buffer) ? (zb->buffer + (y - viewport_y) * zb->width + (x_start - viewport_x)) : NULL;
+                    int count = x_end - x_start;
 
-                    for (int px = x_start; px < x_end; px++) {
-                        uint16_t z16 = (uint16_t)(cur_z >> 16);
-                        if (!dst_z || z16 < *dst_z) {
-                            if (dst_z) *dst_z = z16;
-                            if (dst_pixel) *dst_pixel = shaded_color;
+                    if (dst_z && dst_pixel) {
+                        int32_t dz_dx2 = dz_dx << 1;
+                        int32_t dz_dx3 = dz_dx2 + dz_dx;
+                        int32_t dz_dx4 = dz_dx << 2;
+                        int i = 0;
+                        for (; i <= count - 4; i += 4) {
+                            uint16_t z_a = (uint16_t)(cur_z >> 16);
+                            uint16_t z_b = (uint16_t)((cur_z + dz_dx) >> 16);
+                            uint16_t z_c = (uint16_t)((cur_z + dz_dx2) >> 16);
+                            uint16_t z_d = (uint16_t)((cur_z + dz_dx3) >> 16);
+                            cur_z += dz_dx4;
+
+                            if (z_a < dst_z[i + 0]) { dst_z[i + 0] = z_a; dst_pixel[i + 0] = shaded_color; }
+                            if (z_b < dst_z[i + 1]) { dst_z[i + 1] = z_b; dst_pixel[i + 1] = shaded_color; }
+                            if (z_c < dst_z[i + 2]) { dst_z[i + 2] = z_c; dst_pixel[i + 2] = shaded_color; }
+                            if (z_d < dst_z[i + 3]) { dst_z[i + 3] = z_d; dst_pixel[i + 3] = shaded_color; }
                         }
-                        cur_z += dz_dx;
-                        if (dst_pixel) dst_pixel++;
-                        if (dst_z) dst_z++;
+                        for (; i < count; i++) {
+                            uint16_t z_val = (uint16_t)(cur_z >> 16);
+                            cur_z += dz_dx;
+                            if (z_val < dst_z[i]) {
+                                dst_z[i] = z_val;
+                                dst_pixel[i] = shaded_color;
+                            }
+                        }
+                    } else if (dst_pixel) {
+                        int i = 0;
+                        for (; i <= count - 4; i += 4) {
+                            dst_pixel[i + 0] = shaded_color;
+                            dst_pixel[i + 1] = shaded_color;
+                            dst_pixel[i + 2] = shaded_color;
+                            dst_pixel[i + 3] = shaded_color;
+                        }
+                        for (; i < count; i++) {
+                            dst_pixel[i] = shaded_color;
+                        }
                     }
                 }
             }
@@ -977,7 +1121,9 @@ void mesh3d_render_solid_zbuffered(const mesh3d_cube_t *cube, const mat4_t *mvp,
             uint16_t depth[3];
 
             for (int k = 0; k < 3; k++) {
-                float inv_w = 1.0f / clipped_tris[t][k].pos.w;
+                float w_val = clipped_tris[t][k].pos.w;
+                if (w_val < 0.0001f && w_val > -0.0001f) w_val = (w_val >= 0.0f) ? 0.0001f : -0.0001f;
+                float inv_w = 1.0f / w_val;
                 float ndc_x = clipped_tris[t][k].pos.x * inv_w;
                 float ndc_y = clipped_tris[t][k].pos.y * inv_w;
                 float ndc_z = clipped_tris[t][k].pos.z * inv_w;
@@ -1022,6 +1168,62 @@ void mesh3d_render_solid_zbuffered(const mesh3d_cube_t *cube, const mat4_t *mvp,
             gfx_draw_triangle_wire(sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], 0xFF14171A);
         }
     }
+}
+
+// ─── SMP Parallel Multi-Core Vertex Transformation ────────────────────────────
+#include "../arch/aarch64/smp.h"
+
+typedef struct {
+    const vec3_t *in;
+    vec4_t *out;
+    int count;
+    const mat4_t *mvp;
+    volatile int done;
+} smp_vertex_job_t;
+
+static void worker_smp_vertex_transform(void *arg) {
+    smp_vertex_job_t *job = (smp_vertex_job_t*)arg;
+    if (!job) return;
+    for (int i = 0; i < job->count; i++) {
+        vec4_t in_v = {job->in[i].x, job->in[i].y, job->in[i].z, 1.0f};
+        mat4_mul_vec4(&job->out[i], job->mvp, &in_v);
+    }
+    asm volatile("dmb ish" ::: "memory");
+    job->done = 1;
+}
+
+void math3d_transform_vertices_parallel(const vec3_t *in, vec4_t *out, int count, const mat4_t *mvp) {
+    if (!in || !out || !mvp || count <= 0) return;
+
+    if (count < 8 || !g_smp.core_online[1]) {
+        for (int i = 0; i < count; i++) {
+            vec4_t in_v = {in[i].x, in[i].y, in[i].z, 1.0f};
+            mat4_mul_vec4(&out[i], mvp, &in_v);
+        }
+        return;
+    }
+
+    int half = count / 2;
+    smp_vertex_job_t job1 = {
+        .in = in + half,
+        .out = out + half,
+        .count = count - half,
+        .mvp = mvp,
+        .done = 0
+    };
+
+    smp_dispatch(1, worker_smp_vertex_transform, &job1);
+
+    for (int i = 0; i < half; i++) {
+        vec4_t in_v = {in[i].x, in[i].y, in[i].z, 1.0f};
+        mat4_mul_vec4(&out[i], mvp, &in_v);
+    }
+
+    uint32_t timeout = 1000000;
+    while (!job1.done && --timeout) {
+        asm volatile("yield");
+    }
+    asm volatile("dmb ish" ::: "memory");
 }
 
 

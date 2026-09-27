@@ -1,5 +1,8 @@
 # Build artifacts
 build/
+*.o
+*.a
+!boot/uefi/crt_aarch64.o
 
 # PPM raw dumps (huge)
 *.ppm

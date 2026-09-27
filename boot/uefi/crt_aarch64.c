@@ -97,7 +97,9 @@ void bootstrap(void)
     __asm__ __volatile__ (
     "	.p2align 3\n"
     "	.globl	setjmp\n"
+    "	.globl	_setjmp\n"
     "setjmp:\n"
+    "_setjmp:\n"
     "	mov	x16, sp\n"
     "	stp	x19, x20, [x0, #0]\n"
     "	stp	x21, x22, [x0, #16]\n"
@@ -115,7 +117,9 @@ void bootstrap(void)
     );
     __asm__ __volatile__ (
     "	.globl	longjmp\n"
+    "	.globl	_longjmp\n"
     "longjmp:\n"
+    "_longjmp:\n"
     "	ldp	x19, x20, [x0, #0]\n"
     "	ldp	x21, x22, [x0, #16]\n"
     "	ldp	x23, x24, [x0, #32]\n"

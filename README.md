@@ -14,8 +14,20 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 - **Single Address Space** — kernel, JIT-compiled HolyC scripts, drivers, and apps share one flat 64-bit virtual address space
 - **Real hardware execution** — every screenshot is a real QEMU framebuffer capture from a Cortex-A72 SMP machine
 - **Zero-RAM rendering** — default boot mode writes pixels directly to VRAM (GOP framebuffer), eliminating the 3.14 MB RAM backbuffer entirely
+- **Sovereign L1 Tile NEON SIMD** — hardware-aligned tile rasterizer with cache-resident depth and color rendering
+
+<p align="center">
+  <img src="docs/images/three_gears_perfect_render.png" alt="NeoOS 3D Gears HolyGL Engine" width="48%">
+  <img src="docs/images/sixteen_phase_scorecard_live.png" alt="NeoOS 16-Phase Empirical Benchmark Scorecard" width="48%">
+</p>
 
 ---
+
+## 📚 Architectural Manifestos & Deep Dives
+
+- [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Complete blueprint covering SoC brings-up (Qualcomm Snapdragon / Poco X3 Pro, Rockchip RK3326), DRM/KMS/KGSL acceleration, bare-metal audio, cellular baseband drivers, HolyGL Quake/Half-Life engine ports, and Ring 0 game compatibility.
+- [**Ring 0 Native Embeddings Engine Manifesto**](docs/ring0_embeddings_engine_manifesto.md): Pure C/NEON deterministic vector engine running inside the kernel without external Python/LLM dependencies. Provides SIMD cosine similarity, HNSW indexing, and zero-hallucination semantic command dispatch directly in Ring 0.
+- [**Walkthrough & Benchmark Report**](docs/walkthrough.md): Technical deep-dive on the HolyC JIT upgrade (AAPCS D0-D7/S0-S7 float mirroring, typed pointers, MMIO), HolyGL pipeline unification, 16-bit depth scaling fix, and the 16-phase empirical comparison matrix.
 
 ## Features
 

@@ -33,6 +33,9 @@ int symbols_register(const char *name, void *address, symbol_type_t type) {
     symbol_t *curr = buckets[bucket];
     while (curr) {
         if (strcmp(curr->name, name) == 0) {
+            if (curr->address && curr->address != address && kheap_is_valid_ptr(curr->address)) {
+                kfree(curr->address);
+            }
             curr->address = address;
             curr->type = type;
             return 1; // Updated

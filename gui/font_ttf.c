@@ -168,6 +168,7 @@ void font_ttf_draw_char(int x, int y, char c, uint32_t color) {
     int y1 = (int)q.y1;
     int bw = x1 - x0;
     int bh = y1 - y0;
+    if (bw <= 0 || bh <= 0 || bw > 64 || bh > 64) return;
 
     int s0 = (int)(q.s0 * FONT_ATLAS_W + 0.5f);
     int t0 = (int)(q.t0 * FONT_ATLAS_H + 0.5f);
@@ -194,44 +195,16 @@ void font_ttf_draw_char(int x, int y, char c, uint32_t color) {
 void font_ttf_draw_string(int x, int y, const char *str, uint32_t color) {
     if (!str || !g_ttf_ready) return;
 
-    float fx = (float)x;
-    float fy = (float)(y + 13); // Align to baseline
+    int cur_x = x;
+    int cur_y = y;
 
     while (*str) {
         if (*str == '\n') {
-            fx = (float)x;
-            fy += (float)g_line_height;
+            cur_x = x;
+            cur_y += g_line_height;
         } else if ((unsigned char)*str >= 32 && (unsigned char)*str < 128) {
-            stbtt_aligned_quad q;
-            stbtt_GetBakedQuad(g_cdata, FONT_ATLAS_W, FONT_ATLAS_H, (unsigned char)*str - 32, &fx, &fy, &q, 1);
-
-            int x0 = (int)q.x0;
-            int y0 = (int)q.y0;
-            int x1 = (int)q.x1;
-            int y1 = (int)q.y1;
-            int bw = x1 - x0;
-            int bh = y1 - y0;
-
-            int s0 = (int)(q.s0 * FONT_ATLAS_W + 0.5f);
-            int t0 = (int)(q.t0 * FONT_ATLAS_H + 0.5f);
-
-            for (int r = 0; r < bh; r++) {
-                int py = y0 + r;
-                int ay = t0 + r;
-                if (ay < 0 || ay >= FONT_ATLAS_H) continue;
-
-                for (int col = 0; col < bw; col++) {
-                    int px = x0 + col;
-                    int ax = s0 + col;
-                    if (ax < 0 || ax >= FONT_ATLAS_W) continue;
-
-                    uint8_t alpha = g_font_atlas[ay * FONT_ATLAS_W + ax];
-                    if (alpha > 0) {
-                        uint32_t alpha_color = ((uint32_t)alpha << 24) | (color & 0x00FFFFFF);
-                        gfx_blend_pixel(px, py, alpha_color);
-                    }
-                }
-            }
+            font_ttf_draw_char(cur_x, cur_y, *str, color);
+            cur_x += g_char_width;
         }
         str++;
     }

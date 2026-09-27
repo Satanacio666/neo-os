@@ -14,5 +14,6 @@ task_t* sched_get_current(void);
 void    sched_dump(void);
 void    sched_print_doldoc(void);
 void    top_print_doldoc(void);
+int     task_set_affinity(uint64_t task_id, uint32_t mask);
 
 #endif // NEO_SCHED_H

@@ -48,6 +48,7 @@ int  redsea_get_entries(redsea_entry_t *entries, int max_entries);
 void ramdisk_init(void);
 int  ramdisk_write_file(const char *filename, const void *data, size_t size);
 int  ramdisk_read_file(const char *filename, void *buffer, size_t max_bytes, size_t *out_size);
+int  ramdisk_delete_file(const char *filename);
 void ramdisk_list_dir(void);
 
 #endif // NEO_REDSEA_H

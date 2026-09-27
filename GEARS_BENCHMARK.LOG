@@ -1,0 +1,102 @@
+          NeoOS EMPIRICAL HARDWARE TELEMETRY & LATENCY AUDIT LOG
+================================================================================
+ Benchmark Suite:     GLXGears 3D Benchmark
+ Target Architecture: ARMv8-A (AArch64) 4x Cortex-A72 @ 1.50 GHz | Ring 0 EL1 SASOS
+ Memory Management:   32 MB Kernel Heap | Identity Paging 1:1 (Direct Physical)
+ Display Scanout:     UEFI GOP 1024x768 @ 32bpp | Dedicated Double-Buffering
+ Storage Subsystems:  VirtIO-BLK MMIO Slot 31 | RedSea 2.0 (32MB) + RAMDisk (16MB)
+ Total Frames Logged: 34 frames
+================================================================================
+
+--- FRAME-BY-FRAME LATENCY & SPIKE BREAKDOWN ---
+Frame# | Total Time | 3D Render | NEON Blit | Instant FPS | Classification & Diagnosis
+-------+------------+-----------+-----------+-------------+------------------------------------
+#0001  |  168.37 ms |  167.51 ms |   53.08 ms |    5 FPS    | [SPIKE: Cold Warmup / TCG Translation / 525KB Z-Buffer Alloc]
+#0002  |  711.39 ms |   69.03 ms |   62.62 ms |    1 FPS    | [SPIKE: Severe Stall / Full Desktop Compositor Redraw]
+#0003  |  175.36 ms |   48.56 ms |   48.22 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0004  |  110.80 ms |   35.65 ms |    8.10 ms |    9 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0005  |  183.84 ms |   93.63 ms |   12.07 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0006  |  152.13 ms |   51.90 ms |   38.36 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0007  |  143.49 ms |   67.51 ms |   14.70 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0008  |  147.79 ms |   46.12 ms |   19.28 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0009  |  307.32 ms |  261.18 ms |   11.06 ms |    3 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0010  |  202.29 ms |  106.14 ms |    2.92 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0011  |  269.36 ms |  111.75 ms |    2.95 ms |    3 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0012  |  353.42 ms |  213.18 ms |   14.23 ms |    2 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0013  |   97.85 ms |   37.48 ms |   11.10 ms |   10 FPS    | [SPIKE: Minor Jitter / Timer Preemption or Cache Miss]
+#0014  |   94.35 ms |   46.05 ms |   11.09 ms |   10 FPS    | [SPIKE: Minor Jitter / Timer Preemption or Cache Miss]
+#0015  |  329.36 ms |  228.91 ms |   31.06 ms |    3 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0016  |  175.41 ms |   71.11 ms |   31.08 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0017  |  628.26 ms |  225.42 ms |   31.07 ms |    1 FPS    | [SPIKE: Severe Stall / Full Desktop Compositor Redraw]
+#0018  |  188.00 ms |   89.03 ms |   15.23 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0019  |  202.86 ms |   85.40 ms |   19.19 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0020  |  174.41 ms |   45.77 ms |   19.11 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0021  |  105.50 ms |   57.23 ms |    2.91 ms |    9 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0022  |   86.48 ms |   37.54 ms |    0.16 ms |   11 FPS    | [SPIKE: Minor Jitter / Timer Preemption or Cache Miss]
+#0023  |  129.18 ms |   42.96 ms |   11.13 ms |    7 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0024  |  102.50 ms |   48.43 ms |   22.89 ms |    9 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0025  |  204.35 ms |  127.95 ms |   21.16 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0026  |  191.55 ms |  109.80 ms |   26.24 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0027  |  170.43 ms |   37.30 ms |   11.26 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0028  |  134.27 ms |   72.92 ms |    2.92 ms |    7 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0029  |  129.41 ms |   62.49 ms |   21.88 ms |    7 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0030  |  211.44 ms |  111.79 ms |   38.59 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0031  |  209.97 ms |   85.60 ms |   24.03 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0032  |  551.77 ms |  289.51 ms |   46.50 ms |    1 FPS    | [SPIKE: Severe Stall / Full Desktop Compositor Redraw]
+#0033  |  221.54 ms |  109.73 ms |   30.23 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0034  |  249.71 ms |   83.26 ms |   24.06 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+
+================================================================================
+                  STATISTICAL TELEMETRY SUMMARY REPORT
+================================================================================
+Framerate Performance:
+  - Instantaneous Peak FPS:       11 FPS (Fastest Frame: 86.48 ms)
+  - Steady-State Average FPS:     4 FPS (Mean Frame Time: 206.14 ms)
+  - Full Average (incl. Warmup):  4 FPS (Mean Frame Time: 221.00 ms)
+  - 1-Percent Low Framerate:      1 FPS (99th percentile slowest frame)
+  - 0.1-Percent Low Framerate:    1 FPS (Severe stutter drop threshold)
+  - Frame Jitter (StdDev):        146.38 ms (Steady-state consistency)
+
+Empirical Latency Budget Breakdown:
+  - 3D Geometry & Rasterization:  99.35 ms average
+  - NEON Streaming VRAM Blit:     21.78 ms average
+
+Spike Event Diagnostics:
+  - Cold Startup Warmup Spike:    711.39 ms (Frame #1 TCG basic-block translation)
+  - Stalls > 50ms (< 20 FPS):     3 events
+  - Stalls > 100ms (< 10 FPS):    28 events
+  - Stalls > 500ms (< 2 FPS):     3 events
+
+Kernel Subsystem Health & Stability:
+  - Memory Leaks:                 0 bytes (Dynamic allocations strictly reclaimed)
+  - Buffer Overflows:             0 detected
+  - Synchronous Aborts (0x0):     0 (100% Stable Ring 0 SASOS Execution)
+================================================================================
+[GLXGEARS] Exported empirical telemetry log to /GEARS_BENCHMARK.LOG & /tmp/gears_empirical.log!
+[GLXGEARS] 9 frames in 1.0 seconds = 8.49 FPS (Real Time)
+cat GEARS_BENCHMARK.LOG
+--- GEARS_BENCHMARK.LOG (4095 bytes) ---
+================================================================================
+          NeoOS EMPIRICAL HARDWARE TELEMETRY & LATENCY AUDIT LOG
+================================================================================
+ Benchmark Suite:     GLXGears 3D Benchmark
+ Target Architecture: ARMv8-A (AArch64) 4x Cortex-A72 @ 1.50 GHz | Ring 0 EL1 SASOS
+ Memory Management:   32 MB Kernel Heap | Identity Paging 1:1 (Direct Physical)
+ Display Scanout:     UEFI GOP 1024x768 @ 32bpp | Dedicated Double-Buffering
+ Storage Subsystems:  VirtIO-BLK MMIO Slot 31 | RedSea 2.0 (32MB) + RAMDisk (16MB)
+ Total Frames Logged: 34 frames
+================================================================================
+
+--- FRAME-BY-FRAME LATENCY & SPIKE BREAKDOWN ---
+Frame# | Total Time | 3D Render | NEON Blit | Instant FPS | Classification & Diagnosis
+-------+------------+-----------+-----------+-------------+------------------------------------
+#0001  |  168.37 ms |  167.51 ms |   53.08 ms |    5 FPS    | [SPIKE: Cold Warmup / TCG Translation / 525KB Z-Buffer Alloc]
+#0002  |  711.39 ms |   69.03 ms |   62.62 ms |    1 FPS    | [SPIKE: Severe Stall / Full Desktop Compositor Redraw]
+#0003  |  175.36 ms |   48.56 ms |   48.22 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0004  |  110.80 ms |   35.65 ms |    8.10 ms |    9 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0005  |  183.84 ms |   93.63 ms |   12.07 ms |    5 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0006  |  152.13 ms |   51.90 ms |   38.36 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0007  |  143.49 ms |   67.51 ms |   14.70 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0008  |  147.79 ms |   46.12 ms |   19.28 ms |    6 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0009  |  307.32 ms |  261.18 ms |   11.06 ms |    3 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]
+#0010  |  202.29 ms |  106.14 ms |    2.92 ms |    4 FPS    | [SPIKE: Frame Drop / Heavy Compositor Redraw (wm_draw_all)]

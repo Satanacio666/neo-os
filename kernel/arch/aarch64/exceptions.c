@@ -5,6 +5,8 @@ typedef struct {
     uint64_t lr;      // x30
     uint64_t elr_el1; // Exception Link Register (PC where exception occurred)
     uint64_t spsr_el1;// Saved Program Status Register
+    uint64_t sp_el0;  // Saved Stack Pointer
+    uint8_t  q[32][16]; // NEON / Floating-Point registers Q0-Q31
 } __attribute__((packed)) trap_frame_t;
 
 void arm64_sync_exception(trap_frame_t *frame) {

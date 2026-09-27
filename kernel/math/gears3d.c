@@ -1,4 +1,7 @@
 #include "gears3d.h"
+#include "holygl.h"
+#include "raster_tile.h"
+#include "../../drivers/gpu/gfx_backend.h"
 #include "../../gui/render.h"
 #include "../mem/kheap.h"
 #include <uefi.h>
@@ -128,101 +131,40 @@ int gear_generate(gear_mesh_t *gear,
 void gear_render(const gear_mesh_t *gear, const mat4_t *view_proj,
                  int viewport_x, int viewport_y, int viewport_w, int viewport_h,
                  zbuffer_t *zb, int wireframe) {
+    (void)zb; (void)wireframe;
     if (!gear || !view_proj || viewport_w <= 0 || viewport_h <= 0) return;
 
-    uint32_t *backbuffer = gfx_get_backbuffer();
-    uint32_t pitch = gfx_get_canvas_pitch();
+    glViewport(viewport_x, viewport_y, viewport_w, viewport_h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    mat4_t *proj_top = &g_holygl.projection_stack[g_holygl.projection_depth];
+    *proj_top = *view_proj;
 
-    // 1. Build Model Matrix for this gear
-    mat4_t rot_z, trans, model, mvp;
-    mat4_rotate_z(&rot_z, gear->angle);
-    mat4_translate(&trans, gear->pos.x, gear->pos.y, gear->pos.z);
-    mat4_mul(&model, &trans, &rot_z);
-    mat4_mul(&mvp, view_proj, &model);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glPushMatrix();
+    glTranslatef(gear->pos.x, gear->pos.y, gear->pos.z);
+    glRotatef(gear->angle, 0.0f, 0.0f, 1.0f);
 
-    // 2. Pre-transform all vertices to homogeneous clip space (SIMD / fast arithmetic)
-    vec4_t clip_v[MAX_GEAR_VERTS];
-    for (int i = 0; i < gear->num_vertices; i++) {
-        vec4_t in_v = {gear->vertices[i].pos.x, gear->vertices[i].pos.y, gear->vertices[i].pos.z, 1.0f};
-        mat4_mul_vec4(&clip_v[i], &mvp, &in_v);
-    }
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_LIGHTING);
 
-    float half_w = (float)viewport_w * 0.5f;
-    float half_h = (float)viewport_h * 0.5f;
-
-    // Directional Light Vector in World Space
-    vec3_t light_dir = vec3_normalize((vec3_t){5.0f, 5.0f, 10.0f});
-
-    // 3. Process and Render Triangles with Analytical Near-Plane Clipping
+    glBegin(GL_TRIANGLES);
     for (int i = 0; i < gear->num_triangles; i++) {
-        int i0 = gear->triangles[i].v[0];
-        int i1 = gear->triangles[i].v[1];
-        int i2 = gear->triangles[i].v[2];
+        const gear_tri_t *tri = &gear->triangles[i];
+        glNormal3f(tri->normal.x, tri->normal.y, tri->normal.z);
+        glColor3ub((tri->color >> 16) & 0xFF, (tri->color >> 8) & 0xFF, tri->color & 0xFF);
 
-        clip_vertex_t in_tri[3];
-        in_tri[0].pos = clip_v[i0];
-        in_tri[1].pos = clip_v[i1];
-        in_tri[2].pos = clip_v[i2];
+        const vec3_t *p0 = &gear->vertices[tri->v[0]].pos;
+        const vec3_t *p1 = &gear->vertices[tri->v[1]].pos;
+        const vec3_t *p2 = &gear->vertices[tri->v[2]].pos;
 
-        // Normal computation in rotated gear coordinate space
-        vec3_t n_local = gear->triangles[i].normal;
-        vec3_t n_rot = {
-            n_local.x * math3d_cos(gear->angle) - n_local.y * math3d_sin(gear->angle),
-            n_local.x * math3d_sin(gear->angle) + n_local.y * math3d_cos(gear->angle),
-            n_local.z
-        };
-        in_tri[0].normal = in_tri[1].normal = in_tri[2].normal = n_rot;
-
-        // Clip triangle against near camera plane (w >= 0.5f)
-        clip_vertex_t clipped_tris[2][3];
-        int num_clipped = clip_triangle_near_plane(in_tri, 0.5f, clipped_tris);
-
-        for (int t = 0; t < num_clipped; t++) {
-            int sx[3], sy[3];
-            uint16_t depth[3];
-
-            for (int k = 0; k < 3; k++) {
-                float inv_w = 1.0f / clipped_tris[t][k].pos.w;
-                float ndc_x = clipped_tris[t][k].pos.x * inv_w;
-                float ndc_y = clipped_tris[t][k].pos.y * inv_w;
-                float ndc_z = clipped_tris[t][k].pos.z * inv_w;
-
-                sx[k] = viewport_x + (int)((ndc_x + 1.0f) * half_w);
-                sy[k] = viewport_y + (int)((1.0f - ndc_y) * half_h);
-
-                float z_clamped = (ndc_z < -1.0f) ? -1.0f : (ndc_z > 1.0f ? 1.0f : ndc_z);
-                depth[k] = (uint16_t)((z_clamped + 1.0f) * 32767.0f);
-            }
-
-            // Screen-space CCW Backface Culling
-            int cross = (sx[1] - sx[0]) * (sy[0] - sy[2]) - (sy[1] - sy[0]) * (sx[0] - sx[2]);
-            if (cross <= 0) continue; // Face is oriented away from camera
-
-            if (wireframe) {
-                gfx_draw_triangle_wire(sx[0], sy[0], sx[1], sy[1], sx[2], sy[2], gear->base_color);
-                continue;
-            }
-
-            // Directional lighting
-            float dot = vec3_dot(n_rot, light_dir);
-            if (dot < 0.0f) dot = 0.0f;
-            float intensity = 0.28f + 0.72f * dot;
-
-            uint32_t r = (uint32_t)(((gear->base_color >> 16) & 0xFF) * intensity);
-            uint32_t g_col = (uint32_t)(((gear->base_color >> 8) & 0xFF) * intensity);
-            uint32_t b = (uint32_t)((gear->base_color & 0xFF) * intensity);
-            if (r > 255) r = 255;
-            if (g_col > 255) g_col = 255;
-            if (b > 255) b = 255;
-            uint32_t shaded_color = 0xFF000000 | (r << 16) | (g_col << 8) | b;
-
-            rasterize_triangle_scanline(sx[0], sy[0], depth[0],
-                                        sx[1], sy[1], depth[1],
-                                        sx[2], sy[2], depth[2],
-                                        shaded_color,
-                                        viewport_x, viewport_y, viewport_w, viewport_h,
-                                        zb, backbuffer, pitch);
-        }
+        glVertex3f(p0->x, p0->y, p0->z);
+        glVertex3f(p1->x, p1->y, p1->z);
+        glVertex3f(p2->x, p2->y, p2->z);
     }
+    glEnd();
+    glPopMatrix();
 }
 

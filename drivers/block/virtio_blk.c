@@ -192,7 +192,8 @@ int virtio_blk_read_sectors(uint64_t lba, uint32_t count, void *buffer) {
     flush_cache_range((uintptr_t)vq_desc, sizeof(vring_desc_t) * 3);
     flush_cache_range((uintptr_t)vq_avail, sizeof(vring_avail_t) + sizeof(uint16_t) * g_queue_num);
 
-    // Notify queue
+    // Notify queue with full system barrier
+    asm volatile("dsb sy" ::: "memory");
     mmio_write32(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
     // Wait for completion (poll used ring and status byte)
@@ -257,7 +258,8 @@ int virtio_blk_write_sectors(uint64_t lba, uint32_t count, const void *buffer) {
     flush_cache_range((uintptr_t)vq_desc, sizeof(vring_desc_t) * 3);
     flush_cache_range((uintptr_t)vq_avail, sizeof(vring_avail_t) + sizeof(uint16_t) * g_queue_num);
 
-    // Notify queue
+    // Notify queue with full system barrier
+    asm volatile("dsb sy" ::: "memory");
     mmio_write32(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
     // Wait for completion (poll used ring and status byte)
