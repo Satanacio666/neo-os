@@ -26,7 +26,7 @@ cmd = [
     "taskset", "-c", "0",
     "qemu-system-aarch64",
     "-M", "virt",
-    "-accel", "tcg,thread=single,tb-size=256",
+    "-accel", "tcg,thread=single,tb-size=512",
     "-cpu", "cortex-a72",
     "-smp", "4",
     "-m", "1024",

@@ -72,7 +72,7 @@ void gfx_backend_set_mode(gfx_backend_mode_t mode) {
 }
 
 void gfx_backend_present(int x, int y, int w, int h, int is_full) {
-    if (g_gfx_backend.mode == GFX_MODE_GPU_HW || g_gfx_backend.mode == GFX_MODE_SMP_TILED) {
+    if (g_gfx_backend.mode == GFX_MODE_GPU_HW) {
         if (virtio_gpu_is_available()) {
             if (is_full) {
                 virtio_gpu_flush_full();
@@ -82,7 +82,7 @@ void gfx_backend_present(int x, int y, int w, int h, int is_full) {
         }
         g_gfx_backend.ops_counter++;
     } else {
-        // GFX_MODE_CPU_SW: Pure CPU Software Graphics (UEFI GOP)
+        // GFX_MODE_CPU_SW & GFX_MODE_SMP_TILED: Pure Software / SMP Memory Graphics (UEFI GOP)
         g_gfx_backend.ops_counter++;
     }
 }

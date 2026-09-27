@@ -185,9 +185,8 @@ void wm_draw_tray_contents(uint32_t tray_x, uint32_t panel_y, uint32_t tray_w) {
     gfx_draw_rounded_rect(tray_x, panel_y + 5, tray_w, 34, 4, COLOR_WINDOW_BODY);
 
     extern smp_state_t g_smp;
-    extern uint64_t timer_get_ticks(void);
-    uint64_t ticks = timer_get_ticks();
-    uint64_t sec = ticks / 100;
+    extern uint64_t timer_get_uptime_sec(void);
+    uint64_t sec = timer_get_uptime_sec();
     uint64_t s = sec % 60;
     uint64_t m = (sec / 60) % 60;
     uint64_t h = (sec / 3600) % 24;
@@ -248,10 +247,9 @@ void wm_draw_tray_only(void) {
 }
 
 void wm_update_tray_clock(void) {
-    extern uint64_t timer_get_ticks(void);
-    uint64_t ticks = timer_get_ticks();
+    extern uint64_t timer_get_uptime_sec(void);
+    uint64_t sec = timer_get_uptime_sec();
     static uint64_t s_last_tray_sec = 0;
-    uint64_t sec = ticks / 100;
     if (sec != s_last_tray_sec) {
         s_last_tray_sec = sec;
         wm_draw_tray_only();
@@ -326,13 +324,15 @@ void wm_draw_desktop(void) {
 void wm_draw_window(window_t *win) {
     if (!win || win->is_minimized || win->marked_for_destruction) return;
 
-    // 1. Drop Shadow (Configurable via Compositor)
-    if (g_compositor_cfg.shadows_enabled) {
+    int animating = wm_has_animating_windows();
+
+    // 1. Drop Shadow (Configurable via Compositor, bypassed during 3D animation)
+    if (g_compositor_cfg.shadows_enabled && !animating) {
         gfx_draw_shadow(win->x, win->y, win->width, win->height, 8);
     }
 
     // 2. Window Body (Rounded, Rect, or Aero Glass Translucent)
-    if (g_compositor_cfg.glass_enabled) {
+    if (g_compositor_cfg.glass_enabled && !animating) {
         // True Windows Aero Glass acrylic tint with 80% opacity
         gfx_blend_rect(win->x, win->y, win->width, win->height, 0xCC181C22);
     } else if (g_compositor_cfg.rounded_corners) {

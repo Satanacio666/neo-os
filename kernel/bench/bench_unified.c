@@ -208,8 +208,8 @@ static void bench_apply_suite_phase(int phase) {
     g_bench.suite_phase_start_ticks = read_cntvct();
     uint64_t freq = read_cntfrq();
     if (freq == 0) freq = 62500000ULL;
-    // Exactly 2.5 seconds per test = 40 seconds total test suite!
-    g_bench.suite_phase_duration_ticks = (freq * 25ULL) / 10ULL;
+    // Exactly 15.0 seconds per test = 240 seconds total test suite!
+    g_bench.suite_phase_duration_ticks = (freq * 15ULL);
     g_bench.suite_phase_elapsed_sec = 0.0f;
     g_bench.suite_ticks = 0;
     perf_overlay_init(&g_bench.perf_stats);
@@ -1094,7 +1094,7 @@ void bench_unified_render(window_t *win, void *user_data) {
             float elapsed_sec = (freq > 0) ? ((float)elapsed_ticks / (float)freq) : ((float)g_bench.suite_ticks / 30.0f);
             g_bench.suite_phase_elapsed_sec = elapsed_sec;
 
-            if (elapsed_ticks >= g_bench.suite_phase_duration_ticks) {
+            if (elapsed_ticks >= g_bench.suite_phase_duration_ticks && g_bench.perf_stats.total_frames >= 60) {
                 // Record completed phase metrics
                 perf_overlay_update_metrics(&g_bench.perf_stats);
                 bench_comparison_record_t *rec = &g_bench.comparison_records[g_bench.suite_cycle];
@@ -1125,17 +1125,18 @@ void bench_unified_render(window_t *win, void *user_data) {
             int cur_c = (g_bench.suite_cycle < BENCH_SUITE_TOTAL_PHASES) ? g_bench.suite_cycle : (BENCH_SUITE_TOTAL_PHASES - 1);
             gfx_draw_string(vp_x + 24, vp_y + 14, phase_names[cur_c], COLOR_TEXT_WHITE, 0);
 
-            char banner_telemetry[96];
+            char banner_telemetry[128];
             uint32_t el_i = (uint32_t)g_bench.suite_phase_elapsed_sec;
             uint32_t el_d = (uint32_t)((g_bench.suite_phase_elapsed_sec - (float)el_i) * 10.0f);
-            if (el_i > 2 || (el_i == 2 && el_d > 5)) { el_i = 2; el_d = 5; }
+            if (el_i > 15) { el_i = 15; el_d = 0; }
             uint32_t f_i = (uint32_t)g_bench.perf_stats.fps_avg;
             uint32_t f_d = (uint32_t)((g_bench.perf_stats.fps_avg - (float)f_i) * 10.0f);
             uint32_t l_i = (uint32_t)g_bench.perf_stats.fps_1pct_low;
             uint32_t l_d = (uint32_t)((g_bench.perf_stats.fps_1pct_low - (float)l_i) * 10.0f);
             snprintf(banner_telemetry, sizeof(banner_telemetry),
-                     "Time: %llu.%llus / 2.5s  |  Live: %llu.%llu FPS  |  1%% Low: %llu.%llu FPS",
-                     (uint64_t)el_i, (uint64_t)el_d, (uint64_t)f_i, (uint64_t)f_d, (uint64_t)l_i, (uint64_t)l_d);
+                     "Time: %llu.%llus / 15.0s (Frames: %u)  |  Live: %llu.%llu FPS  |  1%% Low: %llu.%llu FPS",
+                     (uint64_t)el_i, (uint64_t)el_d, (unsigned int)g_bench.perf_stats.total_frames,
+                     (uint64_t)f_i, (uint64_t)f_d, (uint64_t)l_i, (uint64_t)l_d);
             gfx_draw_string(vp_x + 24, vp_y + 28, banner_telemetry, COLOR_GOLD_ACCENT, 0);
 
             // Progress Bar

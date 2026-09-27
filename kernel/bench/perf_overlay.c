@@ -56,16 +56,16 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     } else if (s->frame_start_cycles > 0 && now_cycles > s->frame_start_cycles) {
         elapsed_cycles = now_cycles - s->frame_start_cycles;
     } else {
-        elapsed_cycles = 1000;
+        elapsed_cycles = (s->last_render_us > 0) ? ((s->last_render_us * freq) / 1000000ULL) : ((freq * 25ULL) / 1000ULL);
     }
     s->last_frame_end_cycles = now_cycles;
 
     uint64_t dt = (elapsed_cycles * 1000000ULL) / freq;
     if (dt == 0) dt = 1;
 
-    // Safety clamp: if anomalous stall > 1 second, fall back to render + blit
-    if (dt > 1000000ULL) {
-        dt = (s->last_render_us > 0) ? (s->last_render_us + (s->last_blit_us > 0 ? s->last_blit_us : 800)) : 16666ULL;
+    // Safety clamp: if anomalous stall > 10 seconds, clamp to 10s
+    if (dt > 10000000ULL) {
+        dt = 10000000ULL;
     }
 
     // Write into ring buffer

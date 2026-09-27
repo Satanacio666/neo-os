@@ -289,9 +289,6 @@ int main(int argc, char **argv)
 
     enable_interrupts();
 
-    // Automatically launch Master Unified Autonomous Benchmark Suite
-    bench_unified_start(BENCH_MODE_SUITE);
-
     // 10. Interactive Main Loop (Polls input, renders UI, handles animation)
     while (1) {
         // Poll keyboard & execute shell commands

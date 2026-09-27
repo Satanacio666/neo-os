@@ -792,6 +792,16 @@ void doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doldoc_clear();
 }
 
+static uint64_t s_doc_dirty_mask = 0xFFFFFFFFFFFFFFFFULL;
+
+void doldoc_mark_all_dirty(void) {
+    s_doc_dirty_mask = 0xFFFFFFFFFFFFFFFFULL;
+}
+
+void doldoc_mark_row_dirty(int r) {
+    if (r >= 0 && r < 64) s_doc_dirty_mask |= (1ULL << r);
+}
+
 void doldoc_clear(void) {
     memset(doc_grid, 0, sizeof(doc_grid));
     doc_cur_col = 0;
@@ -799,16 +809,23 @@ void doldoc_clear(void) {
     doc_scroll_offset = 0;
     doc_term.cursor_x = doc_term.x + 8;
     doc_term.cursor_y = doc_term.y + 8;
+    doldoc_mark_all_dirty();
     gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, 0xFF1B1E20);
     gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
 }
 
 void doldoc_redraw(void) {
-    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, 0xFF1B1E20);
-    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
+    if (s_doc_dirty_mask == 0) return; // 0.0 ms if nothing changed!
+
+    if (s_doc_dirty_mask == 0xFFFFFFFFFFFFFFFFULL) {
+        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, 0xFF1B1E20);
+        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
+    }
 
     if (doc_scroll_offset == 0) {
         for (int r = 0; r < doc_grid_rows; r++) {
+            if (r < 64 && !(s_doc_dirty_mask & (1ULL << r))) continue;
+            gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, 0xFF1B1E20);
             for (int c = 0; c < doc_grid_cols; c++) {
                 doldoc_cell_t *cell = &doc_grid[r][c];
                 if (cell->c >= 32 && cell->c <= 126) {
@@ -828,6 +845,7 @@ void doldoc_redraw(void) {
                 if (grid_r < doc_grid_rows) row_cells = doc_grid[grid_r];
             }
             if (row_cells) {
+                gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, 0xFF1B1E20);
                 for (int c = 0; c < doc_grid_cols; c++) {
                     doldoc_cell_t *cell = &row_cells[c];
                     if (cell->c >= 32 && cell->c <= 126) {
@@ -854,17 +872,20 @@ void doldoc_redraw(void) {
         int thumb_y = bar_y + ((bar_h - thumb_h) * scroll_pos) / doc_history_count;
         gfx_draw_rounded_rect(bar_x - 1, thumb_y, 6, thumb_h, 2, COLOR_ACCENT_CYAN);
     }
+    s_doc_dirty_mask = 0;
 }
 
 void doldoc_scroll_up(int lines) {
     doc_scroll_offset += lines;
     if (doc_scroll_offset > doc_history_count) doc_scroll_offset = doc_history_count;
+    doldoc_mark_all_dirty();
     doldoc_redraw();
 }
 
 void doldoc_scroll_down(int lines) {
     doc_scroll_offset -= lines;
     if (doc_scroll_offset < 0) doc_scroll_offset = 0;
+    doldoc_mark_all_dirty();
     doldoc_redraw();
 }
 
@@ -885,6 +906,7 @@ void doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     if (doc_cur_col >= doc_grid_cols) doc_cur_col = doc_grid_cols - 1;
     doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
     doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
+    doldoc_mark_all_dirty();
     doldoc_redraw();
 }
 
@@ -902,6 +924,7 @@ static void doldoc_scroll(void) {
     doc_cur_row = doc_grid_rows - 1;
     doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
     doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
+    doldoc_mark_all_dirty();
     doldoc_redraw();
 }
 
@@ -911,6 +934,7 @@ void doldoc_backspace(void) {
         doc_grid[doc_cur_row][doc_cur_col].c = ' ';
         doc_grid[doc_cur_row][doc_cur_col].link_cmd[0] = '\0';
         doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
+        doldoc_mark_row_dirty(doc_cur_row);
         gfx_draw_rect(doc_term.cursor_x, doc_term.cursor_y, 8, 16, 0xFF1B1E20);
     }
 }
@@ -937,6 +961,7 @@ void doldoc_putc(char c) {
         } else {
             doc_term.cursor_x = doc_term.x + 8;
             doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
+            doldoc_mark_row_dirty(doc_cur_row);
         }
     } else if (c == '\r') {
         doc_cur_col = 0;
@@ -952,6 +977,7 @@ void doldoc_putc(char c) {
             doc_grid[doc_cur_row][doc_cur_col].bg = doc_term.bg_color;
             strncpy(doc_grid[doc_cur_row][doc_cur_col].link_cmd, doc_active_link, sizeof(doc_grid[0][0].link_cmd) - 1);
 
+            doldoc_mark_row_dirty(doc_cur_row);
             gfx_draw_char(doc_term.x + 8 + doc_cur_col * 8, doc_term.y + 8 + doc_cur_row * 18,
                           c, doc_term.text_color, doc_term.bg_color);
             doc_cur_col++;

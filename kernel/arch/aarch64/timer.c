@@ -53,9 +53,42 @@ uint64_t timer_get_frequency(void) {
     return timer_frequency;
 }
 
+uint64_t timer_get_uptime_us(void) {
+    uint64_t val = 0;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(val));
+    uint64_t freq = timer_frequency;
+    if (freq == 0) {
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+        if (freq == 0) freq = 62500000ULL;
+    }
+    return (val / freq) * 1000000ULL + ((val % freq) * 1000000ULL) / freq;
+}
+
+uint64_t timer_get_uptime_sec(void) {
+    uint64_t val = 0;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(val));
+    uint64_t freq = timer_frequency;
+    if (freq == 0) {
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+        if (freq == 0) freq = 62500000ULL;
+    }
+    return val / freq;
+}
+
 void timer_sleep_ms(uint64_t ms) {
-    uint64_t target = system_ticks + (ms * 100 / 1000);
-    while (system_ticks < target) {
+    uint64_t freq = timer_frequency;
+    if (freq == 0) {
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+        if (freq == 0) freq = 62500000ULL;
+    }
+    uint64_t start = 0;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(start));
+    uint64_t target = start + (ms * freq) / 1000ULL;
+    while (1) {
+        uint64_t cur = 0;
+        asm volatile("mrs %0, cntvct_el0" : "=r"(cur));
+        if (cur >= target) break;
         task_yield();
     }
 }
+

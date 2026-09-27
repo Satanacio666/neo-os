@@ -64,12 +64,12 @@ static int virtio_gpu_send_cmd(void *cmd, uint32_t cmd_size, void *resp, uint32_
     asm volatile("dsb sy" ::: "memory");
     mmio_write32(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-    uint32_t timeout = 10000000;
-    while (vq_used->idx == last_used && --timeout) {
-        flush_cache_range((uintptr_t)vq_used, sizeof(vring_used_t) + sizeof(vring_used_elem_t) * 4);
-        asm volatile("dmb sy\nyield" ::: "memory");
+    uint32_t timeout = 1000000;
+    while (*(volatile uint16_t*)&vq_used->idx == last_used && --timeout) {
+        asm volatile("dmb ld\nyield" ::: "memory");
     }
 
+    flush_cache_range((uintptr_t)vq_used, sizeof(vring_used_t) + sizeof(vring_used_elem_t) * 4);
     flush_cache_range((uintptr_t)resp, resp_size);
 
     if (timeout == 0) {
