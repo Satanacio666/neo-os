@@ -25,9 +25,14 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 
 ## 📚 Architectural Manifestos & Deep Dives
 
+- [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Comprehensive, unvarnished architectural post-mortem covering all bottlenecks, hardware traps, TCG host contention, DolDoc repaint bugs, lighting math caching, and JIT struct reflection fixes.
 - [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Complete blueprint covering SoC brings-up (Qualcomm Snapdragon / Poco X3 Pro, Rockchip RK3326), DRM/KMS/KGSL acceleration, bare-metal audio, cellular baseband drivers, HolyGL Quake/Half-Life engine ports, and Ring 0 game compatibility.
+- [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL 1.3/2.0 state machine, L1 tiled NEON rasterization, matrix stacks, and zero-overhead Ring 0 multi-language bindings.
+- [**Complete Render Stack Master Evaluation**](docs/complete_render_stack_master_evaluation.md): Deep-dive into memory topologies, scanline vs. tiled SIMD rasterization, non-temporal streaming stores, and double-buffering.
+- [**Single-Core Sovereign Master Audit**](docs/single_core_sovereign_master_audit.md): Systematic single-core benchmarking, frame timing rigor, and CPU budget allocation.
+- [**NeoOS Formal Architecture Specification**](docs/neo_os_architecture_specification.md): Technical specification of the Single Address Space OS, memory layouts, scheduler, and compiler reflection.
 - [**Ring 0 Native Embeddings Engine Manifesto**](docs/ring0_embeddings_engine_manifesto.md): Pure C/NEON deterministic vector engine running inside the kernel without external Python/LLM dependencies. Provides SIMD cosine similarity, HNSW indexing, and zero-hallucination semantic command dispatch directly in Ring 0.
-- [**Walkthrough & Benchmark Report**](docs/walkthrough.md): Technical deep-dive on the HolyC JIT upgrade (AAPCS D0-D7/S0-S7 float mirroring, typed pointers, MMIO), HolyGL pipeline unification, 16-bit depth scaling fix, and the 16-phase empirical comparison matrix.
+- [**Walkthrough & Empirical Verification Gallery**](docs/walkthrough.md): The official 16-phase comparison matrix, live host execution proofs, and gallery of all subsystems in action.
 
 ## Features
 
