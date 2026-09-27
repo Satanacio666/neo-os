@@ -23,14 +23,16 @@ if os.path.exists(qmp_sock):
 os.environ["DISPLAY"] = ":0.0"
 
 cmd = [
+    "taskset", "-c", "0",
     "qemu-system-aarch64",
     "-M", "virt",
+    "-accel", "tcg,thread=single,tb-size=256",
     "-cpu", "cortex-a72",
     "-smp", "4",
     "-m", "1024",
     "-bios", qemu_bios,
     "-device", "ramfb",
-    "-device", "virtio-gpu-device,xres=1280,yres=720",
+    "-device", "virtio-gpu-device,xres=1024,yres=768",
     "-device", "usb-ehci",
     "-device", "usb-tablet",
     "-drive", f"file={disk_img},format=raw,id=bootdisk,if=none",
