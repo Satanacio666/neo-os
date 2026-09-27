@@ -299,45 +299,65 @@ void raster_tile_triangle_neon(tile_scratchpad_t *pad,
         int bulk_end = min_px + ((max_px - min_px) & ~3);
 
         // 4-Pixel Vector Processing Loop
-        for (; px < bulk_end; px += 4) {
-            // Evaluate 4 pixels
-            for (int i = 0; i < 4; i++) {
-                float pe0 = e0 + (float)i * A0;
-                float pe1 = e1 + (float)i * A1;
-                float pe2 = e2 + (float)i * A2;
+        if (shade_mode == RASTER_SHADE_FLAT) {
+            for (; px < bulk_end; px += 4) {
+                for (int i = 0; i < 4; i++) {
+                    float pe0 = e0 + (float)i * A0;
+                    float pe1 = e1 + (float)i * A1;
+                    float pe2 = e2 + (float)i * A2;
 
-                if (pe0 >= 0.0f && pe1 >= 0.0f && pe2 >= 0.0f) {
-                    float pz = z_cur + (float)i * dz_dx;
-                    uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
+                    if (pe0 >= 0.0f && pe1 >= 0.0f && pe2 >= 0.0f) {
+                        float pz = z_cur + (float)i * dz_dx;
+                        uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
 
-                    int p_idx = px + i;
-                    if (!depth_test || z_val < zbuf[p_idx]) {
-                        if (depth_test) zbuf[p_idx] = z_val;
-
-                        if (shade_mode == RASTER_SHADE_FLAT) {
+                        int p_idx = px + i;
+                        if (!depth_test || z_val < zbuf[p_idx]) {
+                            if (depth_test) zbuf[p_idx] = z_val;
                             cbuf[p_idx] = flat_c;
-                        } else if (shade_mode == RASTER_SHADE_WIREFRAME) {
-                            if (pe0 < 1.2f || pe1 < 1.2f || pe2 < 1.2f) {
-                                cbuf[p_idx] = 0xFFFFFFFF;
-                            }
-                        } else {
-                            // Gouraud Interpolation
-                            uint32_t pr = (uint32_t)clampi((int)(r_cur + (float)i * dr_dx), 0, 255);
-                            uint32_t pg = (uint32_t)clampi((int)(g_cur + (float)i * dg_dx), 0, 255);
-                            uint32_t pb = (uint32_t)clampi((int)(b_cur + (float)i * db_dx), 0, 255);
-                            cbuf[p_idx] = 0xFF000000 | (pr << 16) | (pg << 8) | pb;
                         }
                     }
                 }
+                e0 += 4.0f * A0;
+                e1 += 4.0f * A1;
+                e2 += 4.0f * A2;
+                z_cur += 4.0f * dz_dx;
             }
+        } else {
+            for (; px < bulk_end; px += 4) {
+                for (int i = 0; i < 4; i++) {
+                    float pe0 = e0 + (float)i * A0;
+                    float pe1 = e1 + (float)i * A1;
+                    float pe2 = e2 + (float)i * A2;
 
-            e0 += 4.0f * A0;
-            e1 += 4.0f * A1;
-            e2 += 4.0f * A2;
-            z_cur += 4.0f * dz_dx;
-            r_cur += 4.0f * dr_dx;
-            g_cur += 4.0f * dg_dx;
-            b_cur += 4.0f * db_dx;
+                    if (pe0 >= 0.0f && pe1 >= 0.0f && pe2 >= 0.0f) {
+                        float pz = z_cur + (float)i * dz_dx;
+                        uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
+
+                        int p_idx = px + i;
+                        if (!depth_test || z_val < zbuf[p_idx]) {
+                            if (depth_test) zbuf[p_idx] = z_val;
+
+                            if (shade_mode == RASTER_SHADE_WIREFRAME) {
+                                if (pe0 < 1.2f || pe1 < 1.2f || pe2 < 1.2f) {
+                                    cbuf[p_idx] = 0xFFFFFFFF;
+                                }
+                            } else {
+                                uint32_t pr = (uint32_t)clampi((int)(r_cur + (float)i * dr_dx), 0, 255);
+                                uint32_t pg = (uint32_t)clampi((int)(g_cur + (float)i * dg_dx), 0, 255);
+                                uint32_t pb = (uint32_t)clampi((int)(b_cur + (float)i * db_dx), 0, 255);
+                                cbuf[p_idx] = 0xFF000000 | (pr << 16) | (pg << 8) | pb;
+                            }
+                        }
+                    }
+                }
+                e0 += 4.0f * A0;
+                e1 += 4.0f * A1;
+                e2 += 4.0f * A2;
+                z_cur += 4.0f * dz_dx;
+                r_cur += 4.0f * dr_dx;
+                g_cur += 4.0f * dg_dx;
+                b_cur += 4.0f * db_dx;
+            }
         }
 
         // Scalar Tail (0-3 remaining pixels)

@@ -217,28 +217,41 @@ void glVertex3f(float x, float y, float z) {
 
     uint32_t col = g_holygl.current_color;
     if (g_holygl.lighting) {
-        // Transform normal by upper 3x3 of active ModelView matrix
-        const mat4_t *mv = &g_holygl.modelview_stack[g_holygl.modelview_depth];
+        static float s_cached_factor = 1.0f;
+        static vec3_t s_last_normal = {-999.0f, -999.0f, -999.0f};
+        static int s_last_mv_depth = -1;
+
         float nx = g_holygl.current_normal.x;
         float ny = g_holygl.current_normal.y;
         float nz = g_holygl.current_normal.z;
-        float rot_nx = mv->m[0][0]*nx + mv->m[0][1]*ny + mv->m[0][2]*nz;
-        float rot_ny = mv->m[1][0]*nx + mv->m[1][1]*ny + mv->m[1][2]*nz;
-        float rot_nz = mv->m[2][0]*nx + mv->m[2][1]*ny + mv->m[2][2]*nz;
-        float len_sq = rot_nx*rot_nx + rot_ny*rot_ny + rot_nz*rot_nz;
-        if (len_sq > 0.00001f) {
-            float inv = fast_rsqrt_neon(len_sq);
-            rot_nx *= inv;
-            rot_ny *= inv;
-            rot_nz *= inv;
-        }
-        // Directional light vector L = (0.577, 0.577, 0.577) normalized (illuminates front surfaces)
-        float lx = 0.57735f, ly = 0.57735f, lz = 0.57735f;
-        float dot = rot_nx * lx + rot_ny * ly + rot_nz * lz;
-        if (dot < 0.0f) dot = 0.0f;
-        float factor = 0.35f + 0.65f * dot; // 0.35 ambient + 0.65 diffuse
-        if (factor > 1.0f) factor = 1.0f;
 
+        if (s_last_mv_depth != g_holygl.modelview_depth ||
+            nx != s_last_normal.x || ny != s_last_normal.y || nz != s_last_normal.z) {
+
+            s_last_mv_depth = g_holygl.modelview_depth;
+            s_last_normal = (vec3_t){nx, ny, nz};
+
+            // Transform normal by upper 3x3 of active ModelView matrix
+            const mat4_t *mv = &g_holygl.modelview_stack[g_holygl.modelview_depth];
+            float rot_nx = mv->m[0][0]*nx + mv->m[0][1]*ny + mv->m[0][2]*nz;
+            float rot_ny = mv->m[1][0]*nx + mv->m[1][1]*ny + mv->m[1][2]*nz;
+            float rot_nz = mv->m[2][0]*nx + mv->m[2][1]*ny + mv->m[2][2]*nz;
+            float len_sq = rot_nx*rot_nx + rot_ny*rot_ny + rot_nz*rot_nz;
+            if (len_sq > 0.00001f) {
+                float inv = fast_rsqrt_neon(len_sq);
+                rot_nx *= inv;
+                rot_ny *= inv;
+                rot_nz *= inv;
+            }
+            // Directional light vector L = (0.577, 0.577, 0.577) normalized (illuminates front surfaces)
+            float lx = 0.57735f, ly = 0.57735f, lz = 0.57735f;
+            float dot = rot_nx * lx + rot_ny * ly + rot_nz * lz;
+            if (dot < 0.0f) dot = 0.0f;
+            s_cached_factor = 0.35f + 0.65f * dot; // 0.35 ambient + 0.65 diffuse
+            if (s_cached_factor > 1.0f) s_cached_factor = 1.0f;
+        }
+
+        float factor = s_cached_factor;
         uint32_t a = (col >> 24) & 0xFF;
         uint32_t r = (uint32_t)(((col >> 16) & 0xFF) * factor);
         uint32_t g = (uint32_t)(((col >> 8) & 0xFF) * factor);
