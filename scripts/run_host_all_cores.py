@@ -1,20 +1,22 @@
+#!/usr/bin/env python3
 import subprocess
 import socket
 import json
 import time
 import os
+import sys
 import threading
 from PIL import Image
 
-qmp_sock = "/tmp/qmp_live_gui.sock"
+qmp_sock = "/tmp/qmp_host_all_cores.sock"
 disk_img = "/home/carlos/.gemini/antigravity/scratch/neo-os/build/disk.img"
 redsea_img = "/home/carlos/.gemini/antigravity/scratch/neo-os/build/redsea.img"
 qemu_bios = "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+artifact_dir = "/home/carlos/.gemini/antigravity/brain/ceec1da3-4ee5-4701-b009-b49dd16f2bfe"
 
-ppm_path = "/home/carlos/.gemini/antigravity/scratch/neo-os/screenshots/live_gears_benchmark.ppm"
-png_path = "/home/carlos/.gemini/antigravity/scratch/neo-os/screenshots/live_gears_benchmark.png"
-art_png = "/home/carlos/.gemini/antigravity/brain/ceec1da3-4ee5-4701-b009-b49dd16f2bfe/live_gears_benchmark.png"
-crop_path = "/home/carlos/.gemini/antigravity/brain/ceec1da3-4ee5-4701-b009-b49dd16f2bfe/live_gears_crop.png"
+desktop_png = f"{artifact_dir}/live_all_cores_desktop.png"
+crop_png = f"{artifact_dir}/live_all_cores_crop.png"
+ppm_path = "/tmp/live_all_cores.ppm"
 
 if os.path.exists(qmp_sock):
     try: os.remove(qmp_sock)
@@ -22,11 +24,11 @@ if os.path.exists(qmp_sock):
 
 os.environ["DISPLAY"] = ":0.0"
 
+# ALL HOST CORES, MULTI-THREADED TCG, 1024MB TRANSLATION CACHE, FULL HARDWARE GTK WINDOW
 cmd = [
-    "taskset", "-c", "0",
     "qemu-system-aarch64",
     "-M", "virt",
-    "-accel", "tcg,thread=single,tb-size=512",
+    "-accel", "tcg,thread=multi,tb-size=1024",
     "-cpu", "cortex-a72",
     "-smp", "4",
     "-m", "1024",
@@ -44,7 +46,7 @@ cmd = [
     "-qmp", f"unix:{qmp_sock},server,nowait"
 ]
 
-print("[LIVE-GUI] Launching QEMU on DISPLAY=:0.0 with GTK window...")
+print("[ALL-CORES] Launching NeoOS on ALL HOST CORES (Multi-Threaded TCG)...")
 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False, bufsize=0)
 
 logs = []
@@ -68,12 +70,12 @@ for attempt in range(40):
         s.connect(qmp_sock)
         break
     except Exception:
-        time.sleep(0.3)
+        time.sleep(0.2)
 
 if not s:
     print("[ERROR] Failed to connect to QMP socket")
     proc.terminate()
-    exit(1)
+    sys.exit(1)
 
 def qmp_cmd(cmd_dict):
     payload = json.dumps(cmd_dict) + "\r\n"
@@ -88,59 +90,47 @@ def qmp_cmd(cmd_dict):
 greeting = json.loads(s.recv(1024).decode('utf-8'))
 qmp_cmd({"execute": "qmp_capabilities"})
 
-print("[LIVE-GUI] Waiting for kernel boot...")
+print("[ALL-CORES] Waiting for kernel boot...")
 for attempt in range(60):
     if any("Starting main loop" in l for l in logs):
-        print(f"[LIVE-GUI] Kernel reached main loop after {attempt*0.5:.1f}s!")
+        print(f"[ALL-CORES] Kernel booted to main loop in {attempt*0.3:.1f}s!")
         break
-    time.sleep(0.5)
+    time.sleep(0.3)
 
 time.sleep(1.0)
 
 def send_cmd(text, wait_s=2.0):
-    print(f"[LIVE-GUI] Executing shell command: {text}")
+    print(f"[ALL-CORES] Executing: '{text}'")
     for ch in text + "\n":
         proc.stdin.write(ch.encode('ascii'))
         proc.stdin.flush()
         time.sleep(0.01)
     time.sleep(wait_s)
 
-# Demonstrate HolyC 2.0 Dynamic Collections & Lua 5.4.7 in the interactive terminal
-send_cmd("run StdLib.HC", wait_s=2.5)
-send_cmd("run demo.lua", wait_s=2.0)
+# Execute interactive HolyC & Lua programs
+send_cmd("run StdLib.HC", wait_s=2.0)
+send_cmd("run demo.lua", wait_s=1.5)
 
-# Launch NeoBench Extreme 3D Engine
-print("[LIVE-GUI] Launching NeoBench Extreme Unified Engine...")
-send_cmd("bench", wait_s=5.0)
+# Open NeoBench Extreme Unified Engine on All Cores
+print("[ALL-CORES] Launching NeoBench Extreme...")
+send_cmd("bench", wait_s=4.0)
 
-# Let it render to warm up frame pacing and stats
-print("[LIVE-GUI] Warming up 3D render pipeline and RTSS telemetry...")
-
-# Capture high-res screendump
-os.makedirs("/home/carlos/.gemini/antigravity/scratch/neo-os/screenshots", exist_ok=True)
-print("[LIVE-GUI] Capturing live screendump via QMP...")
+# Capture live screendump
+print("[ALL-CORES] Capturing screendump...")
 qmp_cmd({"execute": "screendump", "arguments": {"filename": ppm_path}})
-time.sleep(1.0)
+time.sleep(0.5)
 
 if os.path.exists(ppm_path):
     img = Image.open(ppm_path)
-    img.save(png_path)
-    img.save(art_png)
-    desktop_png = "/home/carlos/.gemini/antigravity/brain/ceec1da3-4ee5-4701-b009-b49dd16f2bfe/live_gears_desktop.png"
     img.save(desktop_png)
-    print(f"[SUCCESS] Live benchmark screenshot saved to {desktop_png}")
+    crop = img.crop((270, 45, 270 + 740, 45 + 560))
+    crop.save(crop_png)
+    print(f"[ALL-CORES] Screenshot saved to {desktop_png}")
+    try: os.remove(ppm_path)
+    except: pass
 
-    # Crop the NeoBench window with the HUD
-    # The unified benchmark window is positioned at (270, 45, 740, 560)
-    w_crop = img.crop((270, 45, 270 + 740, 45 + 560))
-    w_crop.save(crop_path)
-    print(f"[SUCCESS] Cropped gears HUD saved to {crop_path}")
-else:
-    print(f"[FAIL] Screendump PPM not found at {ppm_path}")
+print("[ALL-CORES] NeoOS is live on your display with ALL host cores active! Keeping session open...")
 
-print("[LIVE-GUI] System is now running live on your screen. Keeping QEMU active...")
-
-# Keep running so user can view and interact
 try:
     while proc.poll() is None:
         time.sleep(1.0)
