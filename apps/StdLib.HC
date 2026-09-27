@@ -20,14 +20,17 @@ U0 ArrayPush(CArray *arr, I64 val) {
     if (arr->count >= arr->capacity) {
         I64 new_cap = arr->capacity * 2;
         I64 *new_data = kmalloc(new_cap * 8);
+        I64 *old_data = arr->data;
         for (I64 i = 0; i < arr->count; i++) {
-            new_data[i] = arr->data[i];
+            new_data[i] = old_data[i];
         }
-        kfree(arr->data);
+        kfree(old_data);
         arr->data = new_data;
         arr->capacity = new_cap;
     }
-    arr->data[arr->count++] = val;
+    I64 idx = arr->count;
+    arr->data[idx] = val;
+    arr->count = idx + 1;
 }
 
 I64 ArrayGet(CArray *arr, I64 idx) {
@@ -60,8 +63,9 @@ CDict* DictNew(I64 num_buckets) {
     if (num_buckets < 16) num_buckets = 16;
     CDict *d = kmalloc(sizeof(CDict));
     d->buckets = kmalloc(num_buckets * 8);
+    CDictEntry **b = d->buckets;
     for (I64 i = 0; i < num_buckets; i++) {
-        d->buckets[i] = NULL;
+        b[i] = NULL;
     }
     d->num_buckets = num_buckets;
     d->count = 0;
@@ -77,7 +81,8 @@ U0 DictSet(CDict *d, U8 *key, I64 val) {
         p++;
     }
     I64 b = (h & 0x7FFFFFFFFFFFFFFF) % d->num_buckets;
-    CDictEntry *curr = d->buckets[b];
+    CDictEntry **buckets = d->buckets;
+    CDictEntry *curr = buckets[b];
     while (curr) {
         if (strcmp(curr->key, key) == 0) {
             curr->val = val;
@@ -88,9 +93,9 @@ U0 DictSet(CDict *d, U8 *key, I64 val) {
     CDictEntry *ent = kmalloc(sizeof(CDictEntry));
     ent->key = key;
     ent->val = val;
-    ent->next = d->buckets[b];
-    d->buckets[b] = ent;
-    d->count++;
+    ent->next = buckets[b];
+    buckets[b] = ent;
+    d->count = d->count + 1;
 }
 
 I64 DictGet(CDict *d, U8 *key) {
@@ -102,7 +107,8 @@ I64 DictGet(CDict *d, U8 *key) {
         p++;
     }
     I64 b = (h & 0x7FFFFFFFFFFFFFFF) % d->num_buckets;
-    CDictEntry *curr = d->buckets[b];
+    CDictEntry **buckets = d->buckets;
+    CDictEntry *curr = buckets[b];
     while (curr) {
         if (strcmp(curr->key, key) == 0) {
             return curr->val;
@@ -111,3 +117,24 @@ I64 DictGet(CDict *d, U8 *key) {
     }
     return 0;
 }
+
+I64 StdLibTest() {
+    CArray *arr = ArrayNew(8);
+    ArrayPush(arr, 100);
+    ArrayPush(arr, 200);
+    ArrayPush(arr, 300);
+    I64 v1 = ArrayGet(arr, 0);
+    I64 v2 = ArrayGet(arr, 1);
+    I64 v3 = ArrayGet(arr, 2);
+    ArrayFree(arr);
+
+    CDict *dict = DictNew(16);
+    DictSet(dict, "alpha", 42);
+    DictSet(dict, "beta", 84);
+    I64 d1 = DictGet(dict, "alpha");
+    I64 d2 = DictGet(dict, "beta");
+
+    return v1 + v2 + v3 + d1 + d2;
+}
+
+StdLibTest();

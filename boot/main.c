@@ -74,6 +74,14 @@ int main(int argc, char **argv)
     // Register all core kernel and subsystem symbols for live JIT reflection
     symbols_register("kmalloc", (void*)kmalloc, SYM_FUNC);
     symbols_register("kfree", (void*)kfree, SYM_FUNC);
+    symbols_register("strcmp", (void*)strcmp, SYM_FUNC);
+    symbols_register("strncmp", (void*)strncmp, SYM_FUNC);
+    symbols_register("strlen", (void*)strlen, SYM_FUNC);
+    symbols_register("strcpy", (void*)strcpy, SYM_FUNC);
+    symbols_register("strncpy", (void*)strncpy, SYM_FUNC);
+    symbols_register("memset", (void*)memset, SYM_FUNC);
+    symbols_register("memcpy", (void*)memcpy, SYM_FUNC);
+    symbols_register("memcmp", (void*)memcmp, SYM_FUNC);
     symbols_register("task_yield", (void*)task_yield, SYM_FUNC);
     symbols_register("gfx_put_pixel", (void*)gfx_put_pixel, SYM_FUNC);
     symbols_register("doldoc_print", (void*)doldoc_print, SYM_FUNC);

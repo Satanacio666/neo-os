@@ -167,6 +167,10 @@ void gfx_init(uint32_t *vram_base, uint32_t w, uint32_t h, uint32_t pitch) {
     gfx_swap_buffers();
 }
 
+int gfx_is_active(void) {
+    return (canvas.front_buffer != NULL);
+}
+
 static struct {
     int active;
     int x0, y0, x1, y1;

@@ -32,6 +32,7 @@ typedef struct {
 } canvas_t;
 
 void     gfx_init(uint32_t *vram_base, uint32_t w, uint32_t h, uint32_t pitch);
+int      gfx_is_active(void);
 void     gfx_clear(uint32_t color);
 void     gfx_set_clip(int x, int y, int w, int h);
 void     gfx_reset_clip(void);

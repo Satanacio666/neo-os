@@ -689,6 +689,19 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 }
             }
 
+            // Support array indexing after member: ident->field[idx]
+            if (lexer_peek(l).type == TOK_LBRACKET) {
+                lexer_next(l); // eat '['
+                emit_push_x(cb, 0); // push array base
+                parse_expr(l, cb);  // index in X0
+                emit_pop_x(cb, 1);  // base in X1
+                emit_mov_imm64(cb, 2, 8); // 8-byte elements
+                emit_mul(cb, 0, 0, 2);
+                emit_add(cb, 0, 1, 0);
+                emit_ldr64(cb, 0, 0); // X0 = base[index]
+                if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l);
+            }
+
             // Post-increment / Post-decrement: ident++ / ident--
             if (lexer_peek(l).type == TOK_PLUSPLUS) {
                 lexer_next(l);
@@ -1610,7 +1623,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l); // eat type
 
         int is_ptr = 0;
-        if (lexer_peek(l).type == TOK_STAR) {
+        while (lexer_peek(l).type == TOK_STAR) {
             is_ptr = 1;
             scale = 8; // pointers are 64-bit
             lexer_next(l); // eat '*'
@@ -1640,11 +1653,18 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                 current_fn_param_count = 0;
                 while (lexer_peek(l).type != TOK_RPAREN && lexer_peek(l).type != TOK_EOF) {
-                    if ((lexer_peek(l).type >= TOK_TYPE_I64 && lexer_peek(l).type <= TOK_TYPE_U32) ||
-                        lexer_peek(l).type == TOK_AUTO || find_struct_def(lexer_peek(l).str_value)) {
+                    char param_st_name[64] = {0};
+                    int is_param_ptr = 0;
+                    token_t type_tok = lexer_peek(l);
+                    if (find_struct_def(type_tok.str_value)) {
+                        strncpy(param_st_name, type_tok.str_value, sizeof(param_st_name) - 1);
+                        lexer_next(l);
+                    } else if ((type_tok.type >= TOK_TYPE_I64 && type_tok.type <= TOK_TYPE_U32) ||
+                               type_tok.type == TOK_AUTO) {
                         lexer_next(l);
                     }
-                    if (lexer_peek(l).type == TOK_STAR) {
+                    while (lexer_peek(l).type == TOK_STAR) {
+                        is_param_ptr = 1;
                         lexer_next(l);
                     }
                     token_t p_tok = lexer_peek(l);
@@ -1658,6 +1678,8 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                             *storage = 0;
                             symbols_register(p_tok.str_value, storage, SYM_VAR);
                         }
+
+                        register_var_type(p_tok.str_value, 8, is_param_ptr, 0, param_st_name[0] ? param_st_name : NULL);
 
                         if (current_fn_param_count < 8) {
                             current_fn_param_storages[current_fn_param_count++] = storage;
@@ -1875,10 +1897,78 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             lexer_next(&dot_la); // past ident
             lexer_next(&dot_la); // past '.' or '->'
             int is_member_assign = 0;
+            int is_member_arr_assign = 0;
             if (dot_la.current.type == TOK_IDENT) {
                 lexer_next(&dot_la); // past field
                 if (dot_la.current.type == TOK_EQUAL) {
                     is_member_assign = 1;
+                } else if (dot_la.current.type == TOK_LBRACKET) {
+                    is_member_arr_assign = 1;
+                }
+            }
+
+            if (is_member_arr_assign) {
+                // Member Array Assignment: ident->field[index] = expr;
+                char var_name[64];
+                strncpy(var_name, tok.str_value, 63);
+                var_name[63] = '\0';
+                lexer_next(l); // eat ident
+                lexer_next(l); // eat '.' or '->'
+
+                token_t f_tok = lexer_peek(l);
+                char field_name[32] = {0};
+                if (f_tok.type == TOK_IDENT) {
+                    strncpy(field_name, f_tok.str_value, 31);
+                    lexer_next(l);
+                }
+
+                if (lexer_peek(l).type == TOK_LBRACKET) {
+                    lexer_next(l); // eat '['
+                    parse_expr(l, cb); // index in X0
+                    emit_push_x(cb, 0); // save index
+                    if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                }
+
+                if (lexer_peek(l).type == TOK_EQUAL) {
+                    lexer_next(l); // eat '='
+                    parse_expr(l, cb); // RHS in X0
+                    emit_push_x(cb, 0); // save RHS
+
+                    symbol_t *sym = symbols_lookup_entry(var_name);
+                    int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+
+                    var_type_t *vt = lookup_var_type(var_name);
+                    if (vt && vt->struct_type[0] != '\0') {
+                        struct_def_t *st = find_struct_def(vt->struct_type);
+                        if (st) {
+                            int offset = 0;
+                            for (int m = 0; m < st->member_count; m++) {
+                                if (strcmp(st->members[m].name, field_name) == 0) {
+                                    offset = st->members[m].offset;
+                                    break;
+                                }
+                            }
+                            if (vt->is_ptr) {
+                                emit_mov_imm64(cb, 16, (uint64_t)storage);
+                                emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
+                            } else {
+                                emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                            }
+                            emit_mov_imm64(cb, 2, (uint64_t)offset);
+                            emit_add(cb, 1, 1, 2);   // X1 = &arr->field
+                            emit_ldr64(cb, 2, 1);    // X2 = arr->field (base of array)
+
+                            emit_pop_x(cb, 0); // X0 = RHS value
+                            emit_pop_x(cb, 1); // X1 = index
+                            emit_mov_imm64(cb, 3, 8); // 8 bytes per element
+                            emit_mul(cb, 1, 1, 3);
+                            emit_add(cb, 2, 2, 1); // X2 = base + index * 8
+                            emit_str64(cb, 0, 2); // *(base + index * 8) = RHS
+
+                            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                            return;
+                        }
+                    }
                 }
             }
 

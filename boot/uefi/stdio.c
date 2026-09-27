@@ -723,6 +723,8 @@ int snprintf(char_t *dst, size_t maxlen, const char_t* fmt, ...)
     return ret;
 }
 
+extern int gfx_is_active(void) __attribute__((weak));
+
 int vprintf(const char_t* fmt, __builtin_va_list args)
 {
     int ret;
@@ -730,11 +732,26 @@ int vprintf(const char_t* fmt, __builtin_va_list args)
 #ifndef UEFI_NO_UTF8
     char_t tmp[BUFSIZ];
     ret = vsnprintf(tmp, BUFSIZ, fmt, args);
-    mbstowcs(dst, tmp, BUFSIZ - 1);
+
+    // Mirror to PL011 UART so debug logs appear cleanly in serial output
+    volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
+    const char *p = tmp;
+    while (*p) {
+        if (*p == '\n') *uartdr = '\r';
+        *uartdr = (uint32_t)(*p++);
+    }
+
+    // Only draw via UEFI ConOut if GUI framebuffer is not yet active
+    if (!gfx_is_active || !gfx_is_active()) {
+        mbstowcs(dst, tmp, BUFSIZ - 1);
+        ST->ConOut->OutputString(ST->ConOut, (wchar_t *)&dst);
+    }
 #else
     ret = vsnprintf(dst, BUFSIZ, fmt, args);
+    if (!gfx_is_active || !gfx_is_active()) {
+        ST->ConOut->OutputString(ST->ConOut, (wchar_t *)&dst);
+    }
 #endif
-    ST->ConOut->OutputString(ST->ConOut, (wchar_t *)&dst);
     return ret;
 }
 
