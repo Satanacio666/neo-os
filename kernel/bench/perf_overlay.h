@@ -13,7 +13,8 @@ typedef enum {
     SPIKE_CAUSE_SCHED_PREEMPT   = 3, // Scheduler preempted render thread
     SPIKE_CAUSE_VIRTIO_POLL     = 4, // Host GPU hypervisor fence synchronous wait
     SPIKE_CAUSE_TIMER_BURST     = 5, // Interrupt service routine storm
-    SPIKE_CAUSE_VSYNC_OVERSHOOT = 6  // VSync sleep passed deadline
+    SPIKE_CAUSE_VSYNC_OVERSHOOT = 6, // VSync sleep passed deadline
+    SPIKE_CAUSE_GOP_BLIT_MEM    = 7  // Memory bus blit overhead
 } spike_cause_t;
 
 typedef struct {

@@ -1,6 +1,7 @@
 #include "perf_overlay.h"
 #include "../../gui/render.h"
 #include "../../fs/redsea.h"
+#include "../../drivers/gpu/gfx_backend.h"
 #include <uefi.h>
 
 extern void uart_puts(const char *s);
@@ -101,7 +102,12 @@ void perf_overlay_end_frame(perf_stats_t *s) {
         } else if (s->last_smp_wait_us > 15000) {
             cause = SPIKE_CAUSE_SMP_SYNC_WAIT;
         } else if (s->last_blit_us > 25000) {
-            cause = SPIKE_CAUSE_VIRTIO_POLL;
+            extern gfx_backend_state_t g_gfx_backend;
+            if (g_gfx_backend.mode == GFX_MODE_GPU_HW) {
+                cause = SPIKE_CAUSE_VIRTIO_POLL;
+            } else {
+                cause = SPIKE_CAUSE_GOP_BLIT_MEM;
+            }
         } else if (s->last_render_us > 30000) {
             cause = SPIKE_CAUSE_NONE;
         } else {
@@ -127,6 +133,7 @@ void perf_overlay_end_frame(perf_stats_t *s) {
                                 (cause == SPIKE_CAUSE_SMP_SYNC_WAIT)  ? "SMP_SYNC_WAIT" :
                                 (cause == SPIKE_CAUSE_SCHED_PREEMPT)  ? "SCHED_PREEMPT" :
                                 (cause == SPIKE_CAUSE_VIRTIO_POLL)    ? "VIRTIO_POLL" :
+                                (cause == SPIKE_CAUSE_GOP_BLIT_MEM)   ? "GOP_BLIT_MEM" :
                                 (cause == SPIKE_CAUSE_TIMER_BURST)    ? "TIMER_BURST" :
                                 (cause == SPIKE_CAUSE_VSYNC_OVERSHOOT)? "VSYNC_OVERSHOOT" : "HIGH_COMPUTE_LOAD";
 
@@ -140,7 +147,12 @@ void perf_overlay_end_frame(perf_stats_t *s) {
                  (uint64_t)(s->last_wm_overhead_us / 1000), (uint64_t)((s->last_wm_overhead_us % 1000) / 100),
                  (uint64_t)(s->last_smp_wait_us / 1000), (uint64_t)((s->last_smp_wait_us % 1000) / 100),
                  cause_str);
-        uart_puts(spk_msg);
+
+        // Only emit to UART for significant latency stalls (>400ms) or first 3 frames
+        // to avoid self-inducing UART emulation stalls on every frame!
+        if (dt > 400000ULL || s->total_frames <= 3) {
+            uart_puts(spk_msg);
+        }
     }
 
     // Reset per-frame tracking accumulators

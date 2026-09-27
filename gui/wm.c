@@ -371,6 +371,7 @@ void wm_draw_window(window_t *win) {
         if (win->custom_render) {
             win->custom_render(win, win->user_data);
         } else if (win->id == 1) {
+            doldoc_mark_all_dirty();
             doldoc_redraw();
         }
         gfx_reset_clip();

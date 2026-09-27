@@ -80,6 +80,8 @@ void     gfx_draw_cursor_to_front(int x, int y, const uint8_t bitmap[16][16]);
 // DolDoc 2.0 Console Stream & Interactive APIs
 void     doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 void     doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+void     doldoc_mark_all_dirty(void);
+void     doldoc_mark_row_dirty(int r);
 void     doldoc_redraw(void);
 void     doldoc_clear(void);
 void     doldoc_putc(char c);
