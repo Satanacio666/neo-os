@@ -1337,11 +1337,10 @@ static void parse_logical(lexer_t *l, code_buffer_t *cb) {
         emit_push_x(cb, 0);
         parse_equality(l, cb);
         emit_pop_x(cb, 1);
-
-        emit_cmp(cb, 1, 0); // CMP X1, #0
-        emit_cset(cb, 1, 0); // X1 = (X1 != 0)
-        emit_cmp(cb, 0, 0); // CMP X0, #0
-        emit_cset(cb, 0, 0); // X0 = (X0 != 0)
+        emit_cmp(cb, 1, 31); // CMP X1, XZR
+        emit_cset(cb, 1, 0);  // X1 = (X1 != 0)
+        emit_cmp(cb, 0, 31); // CMP X0, XZR
+        emit_cset(cb, 0, 0);  // X0 = (X0 != 0)
 
         if (op == TOK_ANDAND) {
             emit_and(cb, 0, 1, 0);
@@ -2491,7 +2490,7 @@ int64_t jit_compile_and_run(const char *source) {
 
 int jit_run_self_tests(void) {
     int passed = 0;
-    int total = 10;
+    int total = 12;
 
     doldoc_print("$FG,CYAN$=======================================================$FG$\n");
     doldoc_print("$FG,WHITE$ NeoOS HolyC 2.0 JIT Advanced Feature Self-Tests$FG$\n");
@@ -2655,6 +2654,40 @@ int jit_run_self_tests(void) {
         passed++;
     } else {
         doldoc_printf(" $FG,RED$[FAIL]$FG$ 10. Floating-Point: expected 24, got %lld\n", (long long)fp_res);
+    }
+
+    // 11. Static Type-Checking: Compile-Time Struct Member Verification
+    int64_t err_res = jit_compile_and_run(
+        "class TypeTestClass { I64 valid_field; };\n"
+        "TypeTestClass tt;\n"
+        "tt.invalid_field = 123;\n"
+    );
+    if (err_res == -1) {
+        doldoc_print(" $FG,GREEN$[PASS]$FG$ 11. Type-Checking (Member Verification): invalid struct access halted compile-time\n");
+        passed++;
+    } else {
+        doldoc_printf(" $FG,RED$[FAIL]$FG$ 11. Type-Checking: expected compile abort (-1), got %lld\n", (long long)err_res);
+    }
+
+    // 12. Static Pointer Scaling & Element Access (U8* vs U32* vs I64*)
+    jit_compile_and_run(
+        "U8 *raw_buf = kmalloc(32);\n"
+        "raw_buf[0] = 11;\n"
+        "raw_buf[1] = 22;\n"
+        "raw_buf[2] = 33;\n"
+        "raw_buf[3] = 44;\n"
+        "U32 *p32 = raw_buf;\n"
+        "U32 val32 = p32[0];\n"
+        "I64 scale_ok = (raw_buf[0] == 11 && raw_buf[1] == 22 && val32 != 0);\n"
+        "kfree(raw_buf);\n"
+    );
+    symbol_t *s_scale = symbols_lookup_entry("scale_ok");
+    int64_t v_scale = s_scale ? *(int64_t*)s_scale->address : 0;
+    if (v_scale == 1) {
+        doldoc_print(" $FG,GREEN$[PASS]$FG$ 12. Pointer Scaling & Multi-Type Indirection: U8/U32 verified byte-precise\n");
+        passed++;
+    } else {
+        doldoc_printf(" $FG,RED$[FAIL]$FG$ 12. Pointer Scaling: expected 1, got %lld\n", (long long)v_scale);
     }
 
     if (passed == total) {

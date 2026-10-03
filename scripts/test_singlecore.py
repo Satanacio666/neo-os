@@ -24,7 +24,7 @@ try:
 
     print("\n[TEST] Sending 'jittest' command...")
     child.sendline("jittest")
-    child.expect("ALL 10 JIT ADVANCED CONSTRUCTS VERIFIED 100% OPERATIONAL!", timeout=15)
+    child.expect("ALL 12 JIT ADVANCED CONSTRUCTS VERIFIED 100% OPERATIONAL!", timeout=15)
     child.expect("neo:/>", timeout=10)
     print("\n[TEST] jittest completed successfully!")
 

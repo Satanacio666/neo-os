@@ -34,8 +34,8 @@ void shell_init(void) {
     doldoc_print("$FG,WHITE$ NeoOS DolDoc 2.0 / Native HolyC Interactive Shell (Ring 0)$FG$\n");
     doldoc_print("$FG,CYAN$==============================================================$FG$\n");
     doldoc_print(" Architecture: ARMv8-A (AArch64) SASOS | Identity Paging 1:1\n");
-    doldoc_print(" Actions: $BT,\"✦ NeoMenu\",LM=\"menu\"$ $BT,\"NeoBench\",LM=\"bench\"$ $BT,\"GLXGears\",LM=\"gears\"$ $BT,\"Dynamics 3D\",LM=\"dynamics\"$ $BT,\"Top\",LM=\"top\"$ $BT,\"Files\",LM=\"ls\"$ $BT,\"Help\",LM=\"help\"$\n");
-    doldoc_print(" Code: $FG,YELLOW$menu$FG$, $FG,YELLOW$bench$FG$, $FG,YELLOW$gears$FG$, $FG,YELLOW$dynamics$FG$, $FG,YELLOW$benchsuite$FG$, $FG,YELLOW$top$FG$, $FG,YELLOW$run Bench.HC$FG$\n\n");
+    doldoc_print(" Actions: $BT,\"✦ NeoMenu\",LM=\"menu\"$ $BT,\"HolyBench\",LM=\"run HolyBenchmark.HC\"$ $BT,\"Files\",LM=\"filer\"$ $BT,\"Editor\",LM=\"run Editor.HC\"$ $BT,\"Top\",LM=\"top\"$ $BT,\"GPU\",LM=\"run GpuConfig.HC\"$ $BT,\"Help\",LM=\"help\"$\n");
+    doldoc_print(" Apps: $FG,YELLOW$run HolyBenchmark.HC$FG$, $FG,YELLOW$filer$FG$, $FG,YELLOW$run Editor.HC$FG$, $FG,YELLOW$top$FG$, $FG,YELLOW$menu$FG$, $FG,YELLOW$help$FG$\n\n");
 
     print_prompt();
     doldoc_draw_cursor(1);
@@ -61,10 +61,10 @@ void shell_run_command(const char *raw_cmd) {
     if (strcmp(cmd, "help") == 0) {
         doldoc_print("$FG,CYAN$--- NeoOS Interactive Shell Help ---$FG$\n");
         doldoc_print(" $FG,YELLOW$Application Hub:$FG$     menu, [✦ NeoMenu] button\n");
-        doldoc_print(" $FG,YELLOW$NeoBench Extreme:$FG$      bench, gears, dynamics, benchsuite, benchcompare\n");
-        doldoc_print(" $FG,YELLOW$Graphics HAL Pipeline:$FG$ render <cpu|gpu|smp>, raster <tile|scanline>, tilesize <32|64|128>\n");
+        doldoc_print(" $FG,YELLOW$HolyBenchmark Suite:$FG$  run HolyBenchmark.HC (Sieve, Matrix, Pointers)\n");
+        doldoc_print(" $FG,YELLOW$Graphics HAL Pipeline:$FG$ render <cpu|gpu|smp>, raster [tile] (Sovereign L1 NEON), tilesize <32|64|128>\n");
         doldoc_print(" $FG,YELLOW$Pipeline Parameters:$FG$   cores <1|2|4>, shading <gouraud|flat|wire>, cull <0|1>, gpuconfig\n");
-        doldoc_print(" $FG,YELLOW$GUI Applications:$FG$      menu, filer, edit <file>, gpuconfig, compositor\n");
+        doldoc_print(" $FG,YELLOW$HolyC Applications:$FG$   menu, filer, edit <file>, top, compositor, gpuconfig\n");
         doldoc_print(" $FG,YELLOW$RivaTuner RTSS Telemetry:$FG$ perf (FPS, 1% low, 0.1% low, stddev, latency)\n");
         doldoc_print(" $FG,YELLOW$V-Sync Frame Pacing:$FG$  vsync <on | off | 60 | 120 | 144 | 240>\n");
         doldoc_print(" $FG,YELLOW$Zero-RAM Buffer:$FG$      zeroram (on, off, status)\n");
@@ -73,7 +73,7 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print(" $FG,YELLOW$Storage & RedSea:$FG$     ls, cd, mkdir, rm, cat, write, run\n");
         doldoc_print(" $FG,YELLOW$Arithmetic & HolyC:$FG$   10 + 4 * 8;, I64 x = 10; x * 2;\n");
         doldoc_print(" $FG,YELLOW$Control flow:$FG$         for, while, do..while, switch/case, ? :\n");
-        doldoc_print(" $FG,YELLOW$Interactive Tags:$FG$     $BT,\"NeoMenu\",LM=\"menu\"$ $BT,\"Files\",LM=\"filer\"$ $BT,\"GPU\",LM=\"gpuconfig\"$ $BT,\"Comp\",LM=\"compositor\"$\n");
+        doldoc_print(" $FG,YELLOW$Interactive Tags:$FG$     $BT,\"NeoMenu\",LM=\"menu\"$ $BT,\"HolyBench\",LM=\"run HolyBenchmark.HC\"$ $BT,\"Files\",LM=\"filer\"$ $BT,\"Top\",LM=\"top\"$ $BT,\"GPU\",LM=\"run GpuConfig.HC\"$\n");
         doldoc_print("$FG,CYAN$------------------------------------$FG$\n");
     } else if (strcmp(cmd, "menu") == 0) {
         menu_toggle();
