@@ -1682,10 +1682,14 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l); // eat type
 
         int is_ptr = 0;
+        int ptr_depth = 0;
         while (lexer_peek(l).type == TOK_STAR) {
             is_ptr = 1;
-            scale = 8; // pointers are 64-bit
+            ptr_depth++;
             lexer_next(l); // eat '*'
+        }
+        if (ptr_depth > 1) {
+            scale = 8; // pointer to pointer points to 8-byte pointer
         }
 
         token_t id_tok = lexer_peek(l);
@@ -1715,6 +1719,16 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     char param_st_name[64] = {0};
                     int is_param_ptr = 0;
                     token_t type_tok = lexer_peek(l);
+                    int p_scale = 8;
+                    if (type_tok.type == TOK_TYPE_U8) p_scale = 1;
+                    else if (type_tok.type == TOK_TYPE_U16) p_scale = 2;
+                    else if (type_tok.type == TOK_TYPE_U32) p_scale = 4;
+                    else if (find_struct_def(type_tok.str_value)) {
+                        struct_def_t *pst = find_struct_def(type_tok.str_value);
+                        p_scale = pst->total_size > 0 ? pst->total_size : 8;
+                    }
+                    else p_scale = 8;
+
                     if (find_struct_def(type_tok.str_value)) {
                         strncpy(param_st_name, type_tok.str_value, sizeof(param_st_name) - 1);
                         lexer_next(l);
@@ -1722,9 +1736,14 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                                type_tok.type == TOK_AUTO) {
                         lexer_next(l);
                     }
+                    int p_ptr_depth = 0;
                     while (lexer_peek(l).type == TOK_STAR) {
                         is_param_ptr = 1;
+                        p_ptr_depth++;
                         lexer_next(l);
+                    }
+                    if (p_ptr_depth > 1) {
+                        p_scale = 8;
                     }
                     token_t p_tok = lexer_peek(l);
                     if (p_tok.type == TOK_IDENT) {
@@ -1738,7 +1757,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                             symbols_register(p_tok.str_value, storage, SYM_VAR);
                         }
 
-                        register_var_type(p_tok.str_value, 8, is_param_ptr, 0, param_st_name[0] ? param_st_name : NULL);
+                        register_var_type(p_tok.str_value, p_scale, is_param_ptr, 0, param_st_name[0] ? param_st_name : NULL);
 
                         if (current_fn_param_count < 8) {
                             current_fn_param_storages[current_fn_param_count++] = storage;

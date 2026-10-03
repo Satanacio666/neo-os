@@ -135,6 +135,10 @@ run: all
 	@echo "Launching QEMU AArch64..."
 	$(QEMU) $(QEMU_FLAGS)
 
+run-singlecore: all
+	@echo "Launching QEMU AArch64 (Single Core, Host taskset -c 0)..."
+	$(QEMU) $(subst -smp 4,-smp 1,$(QEMU_FLAGS))
+
 run-headless: all
 	@echo "Launching QEMU AArch64 (Headless)..."
 	$(QEMU) $(QEMU_FLAGS) -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait
@@ -142,6 +146,5 @@ run-headless: all
 clean:
 	rm -rf $(BUILD_DIR)
 	$(MAKE) -C $(UEFI_DIR) clean 2>/dev/null || true
-	$(MAKE) -C compiler/lua clean 2>/dev/null || true
 
 -include $(ALL_OBJS:.o=.d)

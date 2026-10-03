@@ -187,22 +187,19 @@ void smp_init(void) {
     } else {
         printf("[SMP] EFI_MP_SERVICES_PROTOCOL not found, using ARM PSCI CPU_ON...\r\n");
 
-        // 2. Direct ARM PSCI 0.2+ CPU_ON
+        // 2. Direct ARM PSCI 0.2+ CPU_ON via HVC
         for (uint32_t i = 1; i < SMP_MAX_CORES; i++) {
             uint64_t target_cpu = (uint64_t)i; // MPIDR affinity 0 = i
             uint64_t entry_addr = (uint64_t)smp_entry;
             uint64_t context_id = (uint64_t)i;
 
             int64_t ret = psci_call_hvc(PSCI_0_2_FN64_CPU_ON, target_cpu, entry_addr, context_id);
-            if (ret != 0) {
-                // Try SMC conduit if HVC returned non-zero
-                ret = psci_call_smc(PSCI_0_2_FN64_CPU_ON, target_cpu, entry_addr, context_id);
-            }
-
             if (ret == 0) {
                 printf("[SMP] PSCI CPU_ON Core %u dispatched (entry: 0x%llX)\r\n", i, (unsigned long long)entry_addr);
             } else {
-                printf("[SMP] PSCI CPU_ON Core %u returned code %lld\r\n", i, (long long)ret);
+                // Non-zero PSCI status indicates core does not exist (e.g. single-core mode) or is disabled
+                // Do NOT call smc #0 as EL1 SMC is undefined under UEFI/KVM/QEMU TCG
+                // printf("[SMP] Core %u offline (PSCI code %lld)\r\n", i, (long long)ret);
             }
         }
     }
@@ -223,7 +220,8 @@ void smp_init(void) {
         if (g_smp.core_online[i]) online_cnt++;
     }
     g_smp.online_cores = online_cnt;
-    printf("[SMP] Multiprocessing initialized: %u of %u cores active.\r\n",
+    g_smp.num_cores = online_cnt;
+    printf("[SMP] Multiprocessing initialized: %u of %u core(s) active.\r\n",
            g_smp.online_cores, g_smp.num_cores);
 
     symbols_register("smp_get_core_count", (void*)smp_get_core_count, SYM_FUNC);

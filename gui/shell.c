@@ -235,6 +235,7 @@ void shell_run_command(const char *raw_cmd) {
         wm_draw_all();
         gfx_swap_buffers();
         mouse_draw_cursor_front();
+        print_prompt();
         return;
     } else if (strcmp(cmd, "gears") == 0 || strcmp(cmd, "glxgears") == 0) {
         bench_unified_start(BENCH_MODE_GEARS);

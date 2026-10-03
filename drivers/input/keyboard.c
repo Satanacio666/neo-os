@@ -12,8 +12,12 @@ static volatile int buf_tail = 0;
 #define PL011_UARTDR    ((volatile uint32_t*)(PL011_UART_BASE + 0x00))
 #define PL011_UARTFR    ((volatile uint32_t*)(PL011_UART_BASE + 0x18))
 #define PL011_FR_RXFE   (1U << 4) // Receive FIFO Empty
+#define PL011_FR_TXFF   (1U << 5) // Transmit FIFO Full
 
 void uart_putc(char c) {
+    while (*PL011_UARTFR & PL011_FR_TXFF) {
+        asm volatile("nop");
+    }
     *PL011_UARTDR = (uint32_t)c;
 }
 

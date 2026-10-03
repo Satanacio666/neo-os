@@ -1026,8 +1026,12 @@ void doldoc_swap_term(void) {
     gfx_swap_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h);
 }
 
+extern void uart_putc(char c);
+
 void doldoc_putc(char c) {
     if (c == '\n') {
+        uart_putc('\r');
+        uart_putc('\n');
         doc_cur_col = 0;
         doc_cur_row++;
         if (doc_cur_row >= doc_grid_rows) {
@@ -1038,13 +1042,18 @@ void doldoc_putc(char c) {
             doldoc_mark_row_dirty(doc_cur_row);
         }
     } else if (c == '\r') {
+        uart_putc('\r');
         doc_cur_col = 0;
         doc_term.cursor_x = doc_term.x + 8;
     } else if (c == '\b') {
+        uart_putc('\b');
+        uart_putc(' ');
+        uart_putc('\b');
         doldoc_backspace();
     } else if (c == '\t') {
         for (int i = 0; i < 4; i++) doldoc_putc(' ');
     } else {
+        uart_putc(c);
         if (doc_cur_row < doc_grid_rows && doc_cur_col < doc_grid_cols) {
             doc_grid[doc_cur_row][doc_cur_col].c = c;
             doc_grid[doc_cur_row][doc_cur_col].fg = doc_term.text_color;
