@@ -45,8 +45,10 @@ void     gfx_draw_triangle_wire(int x0, int y0, int x1, int y1, int x2, int y2, 
 void     gfx_draw_triangle_fill(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t color);
 void     gfx_fill_circle(int cx, int cy, int radius, uint32_t color);
 void     gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+void     gfx_draw_rect_outline(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void     gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color_rgba);
 void     gfx_draw_rounded_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t radius, uint32_t color);
+void     gfx_draw_rounded_rect_outline(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t radius, uint32_t color);
 void     gfx_draw_shadow(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t spread);
 void     gfx_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);
 void     gfx_draw_string(uint32_t x, uint32_t y, const char *str, uint32_t fg, uint32_t bg);

@@ -509,6 +509,65 @@ void gfx_draw_rounded_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint3
     }
 }
 
+void gfx_draw_rect_outline(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    if ((int)w <= 0 || (int)h <= 0) return;
+    gfx_draw_rect(x, y, w, 1, color);                  // Top border
+    if (h > 1) gfx_draw_rect(x, y + h - 1, w, 1, color); // Bottom border
+    if (h > 2) {
+        gfx_draw_rect(x, y + 1, 1, h - 2, color);      // Left border
+        if (w > 1) gfx_draw_rect(x + w - 1, y + 1, 1, h - 2, color); // Right border
+    }
+}
+
+void gfx_draw_rounded_rect_outline(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t radius, uint32_t color) {
+    if (radius > w / 2) radius = w / 2;
+    if (radius > h / 2) radius = h / 2;
+    if (radius == 0) {
+        gfx_draw_rect_outline(x, y, w, h, color);
+        return;
+    }
+
+    // Straight edge borders
+    gfx_draw_rect(x + radius, y, w - 2 * radius, 1, color);                  // Top
+    gfx_draw_rect(x + radius, y + h - 1, w - 2 * radius, 1, color);          // Bottom
+    gfx_draw_rect(x, y + radius, 1, h - 2 * radius, color);                  // Left
+    gfx_draw_rect(x + w - 1, y + radius, 1, h - 2 * radius, color);          // Right
+
+    // 4 Corner arcs using Bresenham midpoint circle outline
+    int r = (int)radius;
+    int cx0 = x + r;
+    int cy0 = y + r;
+    int cx1 = x + w - 1 - r;
+    int cy1 = y + h - 1 - r;
+
+    int dx = 0;
+    int dy = r;
+    int d = 1 - r;
+
+    while (dx <= dy) {
+        // Top-Left (cx0, cy0)
+        gfx_put_pixel(cx0 - dy, cy0 - dx, color);
+        gfx_put_pixel(cx0 - dx, cy0 - dy, color);
+        // Top-Right (cx1, cy0)
+        gfx_put_pixel(cx1 + dx, cy0 - dy, color);
+        gfx_put_pixel(cx1 + dy, cy0 - dx, color);
+        // Bottom-Left (cx0, cy1)
+        gfx_put_pixel(cx0 - dy, cy1 + dx, color);
+        gfx_put_pixel(cx0 - dx, cy1 + dy, color);
+        // Bottom-Right (cx1, cy1)
+        gfx_put_pixel(cx1 + dx, cy1 + dy, color);
+        gfx_put_pixel(cx1 + dy, cy1 + dx, color);
+
+        if (d < 0) {
+            d += 2 * dx + 3;
+        } else {
+            d += 2 * (dx - dy) + 5;
+            dy--;
+        }
+        dx++;
+    }
+}
+
 void gfx_draw_shadow(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t spread) {
     if (spread > 8) spread = 8;
     for (uint32_t s = 1; s <= spread; s++) {

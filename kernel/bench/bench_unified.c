@@ -751,14 +751,14 @@ void bench_unified_render(window_t *win, void *user_data) {
 
         // Core Status Cards
         gfx_blend_rect(vp_x + 10, vp_y + 10, 220, 48, 0xDD181C20);
-        gfx_draw_rect(vp_x + 10, vp_y + 10, 220, 48, COLOR_ACCENT_CYAN);
+        gfx_draw_rect_outline(vp_x + 10, vp_y + 10, 220, 48, COLOR_ACCENT_CYAN);
         gfx_draw_string(vp_x + 18, vp_y + 16, smp_active ? "Core 1: Parallel Wireframe" : "Core 0: Wireframe (Single)", COLOR_ACCENT_CYAN, 0);
         char c1_str[48];
         snprintf(c1_str, sizeof(c1_str), "Edges Rendered: %llu", (unsigned long long)g_bench.core1_ops);
         gfx_draw_string(vp_x + 18, vp_y + 32, c1_str, COLOR_TEXT_WHITE, 0);
 
         gfx_blend_rect(vp_x + half_w + 10, vp_y + 10, 220, 48, 0xDD181C20);
-        gfx_draw_rect(vp_x + half_w + 10, vp_y + 10, 220, 48, 0xFFE67E22);
+        gfx_draw_rect_outline(vp_x + half_w + 10, vp_y + 10, 220, 48, 0xFFE67E22);
         gfx_draw_string(vp_x + half_w + 18, vp_y + 16, "Core 0: Shaded Painter Engine", 0xFFE67E22, 0);
         char c2_str[48];
         snprintf(c2_str, sizeof(c2_str), "Triangles Drawn: %llu", (unsigned long long)g_bench.core2_ops);
@@ -814,7 +814,7 @@ void bench_unified_render(window_t *win, void *user_data) {
 
         // Physics Telemetry Card
         gfx_blend_rect(vp_x + 14, vp_y + 12, 380, 56, 0xDD181C20);
-        gfx_draw_rect(vp_x + 14, vp_y + 12, 380, 56, COLOR_ACCENT_CYAN);
+        gfx_draw_rect_outline(vp_x + 14, vp_y + 12, 380, 56, COLOR_ACCENT_CYAN);
         gfx_draw_string(vp_x + 22, vp_y + 18, "64-bit Rigid Body Dynamics Engine", COLOR_ACCENT_CYAN, 0);
 
         char dyn_str1[64], dyn_str2[64];
@@ -851,7 +851,7 @@ void bench_unified_render(window_t *win, void *user_data) {
         if (g_bench.suite_finished) {
             // ─── Render Final 16-Phase Comparison Scorecard Matrix ───
             gfx_blend_rect(vp_x + 10, vp_y + 10, vp_w - 20, vp_h - 20, 0xF214171A);
-            gfx_draw_rect(vp_x + 10, vp_y + 10, vp_w - 20, vp_h - 20, COLOR_ACCENT_CYAN);
+            gfx_draw_rect_outline(vp_x + 10, vp_y + 10, vp_w - 20, vp_h - 20, COLOR_ACCENT_CYAN);
 
             gfx_draw_string(vp_x + 20, vp_y + 14, "✦ NeoBench Extreme: 16-Phase Multi-Configuration Comparison Matrix ✦", COLOR_GOLD_ACCENT, 0);
             gfx_draw_string(vp_x + 20, vp_y + 28, "Target Architecture: AArch64 Ring 0 SASOS (4x Cortex-A72 @ 1.5 GHz)", COLOR_TEXT_MUTED, 0);
@@ -1120,7 +1120,7 @@ void bench_unified_render(window_t *win, void *user_data) {
 
             // Suite Progress Banner & Scorecard
             gfx_blend_rect(vp_x + 16, vp_y + 10, vp_w - 32, 60, 0xDD181C20);
-            gfx_draw_rect(vp_x + 16, vp_y + 10, vp_w - 32, 60, COLOR_ACCENT_CYAN);
+            gfx_draw_rect_outline(vp_x + 16, vp_y + 10, vp_w - 32, 60, COLOR_ACCENT_CYAN);
 
             int cur_c = (g_bench.suite_cycle < BENCH_SUITE_TOTAL_PHASES) ? g_bench.suite_cycle : (BENCH_SUITE_TOTAL_PHASES - 1);
             gfx_draw_string(vp_x + 24, vp_y + 14, phase_names[cur_c], COLOR_TEXT_WHITE, 0);

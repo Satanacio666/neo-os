@@ -416,7 +416,7 @@ void gpu_config_render(window_t *win, void *user_data) {
         gfx_draw_string(cx + 20, content_y, "[1] Real-Time Sovereign Telemetry & Diagnostics:", COLOR_GOLD_ACCENT, 0);
 
         gfx_blend_rect(cx + 24, content_y + 20, cw - 48, 120, 0xFF191C20);
-        gfx_draw_rect(cx + 24, content_y + 20, cw - 48, 120, COLOR_ACCENT_CYAN);
+        gfx_draw_rect_outline(cx + 24, content_y + 20, cw - 48, 120, COLOR_ACCENT_CYAN);
 
         char l1[128], l2[128], l3[128], l4[128];
         snprintf(l1, sizeof(l1), "Active Architecture:  %s (%s)",
