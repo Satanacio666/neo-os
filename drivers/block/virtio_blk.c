@@ -32,12 +32,15 @@ static inline void flush_cache_range(uintptr_t vaddr, size_t size) {
     asm volatile("dsb sy\nisb" ::: "memory");
 }
 
+#include "../../kernel/arch/aarch64/hal_platform.h"
+
 int virtio_blk_init(void) {
     mmio_base = 0;
 
-    // In ARM QEMU 'virt' board, 32 VirtIO MMIO slots are mapped at 0x0A000000 - 0x0A003E00
-    for (int slot = 0; slot < 32; slot++) {
-        uintptr_t base = 0x0A000000 + slot * 0x200;
+    // Scan VirtIO MMIO slots provided by HAL
+    uint32_t slots = hal_get_virtio_slots();
+    for (uint32_t slot = 0; slot < slots; slot++) {
+        uintptr_t base = hal_get_virtio_base(slot);
         uint32_t magic = *(volatile uint32_t*)(base + VIRTIO_MMIO_MAGIC_VALUE);
         if (magic == VIRTIO_MMIO_MAGIC) {
             uint32_t dev_id = *(volatile uint32_t*)(base + VIRTIO_MMIO_DEVICE_ID);

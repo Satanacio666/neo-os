@@ -101,17 +101,20 @@ static virtio_gpu_ctrl_hdr __attribute__((aligned(16))) resp_transfer;
 static virtio_gpu_resource_flush __attribute__((aligned(16))) cmd_flush;
 static virtio_gpu_ctrl_hdr __attribute__((aligned(16))) resp_flush;
 
+#include "../../kernel/arch/aarch64/hal_platform.h"
+
 int virtio_gpu_init(void) {
     mmio_base = 0;
 
-    for (int slot = 0; slot < 32; slot++) {
-        uintptr_t base = 0x0A000000 + slot * 0x200;
+    uint32_t slots = hal_get_virtio_slots();
+    for (uint32_t slot = 0; slot < slots; slot++) {
+        uintptr_t base = hal_get_virtio_base(slot);
         uint32_t magic = *(volatile uint32_t*)(base + VIRTIO_MMIO_MAGIC_VALUE);
         if (magic == VIRTIO_MMIO_MAGIC) {
             uint32_t dev_id = *(volatile uint32_t*)(base + VIRTIO_MMIO_DEVICE_ID);
             if (dev_id == VIRTIO_DEV_GPU) {
                 mmio_base = base;
-                printf("[VIRTIO-GPU] Found at MMIO Slot #%d (0x%08llX)\n", slot, (unsigned long long)mmio_base);
+                printf("[VIRTIO-GPU] Found at MMIO Slot #%u (0x%08llX)\n", (unsigned int)slot, (unsigned long long)mmio_base);
                 break;
             }
         }

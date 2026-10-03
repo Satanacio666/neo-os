@@ -11,6 +11,8 @@ static uint64_t next_task_id = 1;
 static task_t *s_zombie_task = NULL;
 
 static void task_entry_wrapper(void) {
+    // Unmask IRQs so newly scheduled tasks can receive timer ticks and preemptive slices
+    asm volatile("msr daifclr, #2");
     if (current_task && current_task->entry) {
         current_task->entry(current_task->arg);
     }
@@ -29,7 +31,7 @@ void sched_init(void) {
     main_task->id = next_task_id++;
     strncpy(main_task->name, "KernelMain", sizeof(main_task->name) - 1);
     main_task->state = TASK_RUNNING;
-    main_task->priority = PRIO_REALTIME;
+    main_task->priority = PRIO_INTERACTIVE;
     main_task->stack_base = NULL; // Uses UEFI/current stack
     main_task->stack_size = 0;
     main_task->quantum_ticks = 5;

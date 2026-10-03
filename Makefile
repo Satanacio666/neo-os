@@ -21,6 +21,7 @@ SRCS_C = boot/main.c \
          kernel/mem/kheap.c \
          kernel/symbols/symbols.c \
          kernel/sched/sched.c \
+         kernel/arch/aarch64/hal_platform.c \
          kernel/arch/aarch64/gic.c \
          kernel/arch/aarch64/timer.c \
          kernel/arch/aarch64/exceptions.c \

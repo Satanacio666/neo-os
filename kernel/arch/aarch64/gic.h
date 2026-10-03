@@ -2,10 +2,11 @@
 #define NEO_GIC_H
 
 #include <uefi.h>
+#include "hal_platform.h"
 
-// Base addresses for QEMU 'virt' board (GICv2)
-#define GICD_BASE 0x08000000ULL
-#define GICC_BASE 0x08010000ULL
+// Base addresses dynamically provided by Hardware Abstraction Layer
+#define GICD_BASE (hal_get_gicd_base())
+#define GICC_BASE (hal_get_gicc_base())
 
 // GIC Distributor Register Offsets
 #define GICD_CTLR            (GICD_BASE + 0x0000)

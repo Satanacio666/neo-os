@@ -102,14 +102,14 @@ void gic_dispatch(void) {
     uint32_t irq = iar & 0x3FF; // Bits 0-9 contain the IRQ number
 
     if (irq < 1020) {
-        // Valid hardware interrupt
+        // Signal End of Interrupt to hardware early so nested IRQs and preemptive task switches can proceed
+        mmio_write32(GICC_EOIR, iar);
+
+        // Dispatch registered handler
         if (irq_table[irq].handler) {
             irq_table[irq].handler(irq, irq_table[irq].data);
         } else {
             printf("[GIC] Unhandled IRQ #%u fired!\n", irq);
         }
-
-        // Signal End of Interrupt to hardware
-        mmio_write32(GICC_EOIR, iar);
     }
 }

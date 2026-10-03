@@ -21,6 +21,7 @@
 #include "../gui/wm.h"
 #include "../gui/menu.h"
 #include "../kernel/math/holygl.h"
+#include "../kernel/arch/aarch64/hal_platform.h"
 
 extern void install_vector_table(void);
 extern void enable_interrupts(void);
@@ -48,6 +49,9 @@ int main(int argc, char **argv)
     printf(" NeoOS AArch64 (ARMv8-A Ring 0 / EL1)\n");
     printf(" Interactive DolDoc 2.0 & Native NeoC JIT Engine\n");
     printf("======================================================\n\n");
+
+    // 0. Initialize Hardware Abstraction Layer
+    hal_platform_init();
 
     // 1. Initialize Kernel Heap Allocator (32 MB Pool)
     efi_physical_address_t heap_phys = 0;
@@ -103,6 +107,9 @@ int main(int argc, char **argv)
     symbols_register("redsea_list_dir", (void*)redsea_list_dir, SYM_FUNC);
     symbols_register("gfx_backend_set_mode", (void*)gfx_backend_set_mode, SYM_FUNC);
     symbols_register("gfx_backend_get_mode", (void*)gfx_backend_get_mode, SYM_FUNC);
+    symbols_register("hal_get_uart_base", (void*)hal_get_uart_base, SYM_FUNC);
+    symbols_register("hal_get_gicd_base", (void*)hal_get_gicd_base, SYM_FUNC);
+    symbols_register("hal_get_gicc_base", (void*)hal_get_gicc_base, SYM_FUNC);
     symbols_register("math3d_sin", (void*)math3d_sin, SYM_FUNC);
     symbols_register("math3d_cos", (void*)math3d_cos, SYM_FUNC);
     symbols_register("math3d_sin_d", (void*)math3d_sin_d, SYM_FUNC);
@@ -331,6 +338,12 @@ int main(int argc, char **argv)
 
         // Cooperative yield between active Ring 0 scheduler tasks
         task_yield();
+
+        // CPU Cycle Budgeting: When system is idle (no animation, WM clean, no keystrokes),
+        // wait for interrupt (WFI) to enter low-power standby and preserve CPU cycles
+        if (!bench_unified_is_active() && !wm_is_dirty() && !keyboard_has_char()) {
+            asm volatile("wfi");
+        }
     }
 
     return 0;

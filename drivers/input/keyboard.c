@@ -1,13 +1,14 @@
 #include "keyboard.h"
 #include <uefi.h>
+#include "../../kernel/arch/aarch64/hal_platform.h"
 
 #define KEY_BUF_SIZE 256
 static int key_buf[KEY_BUF_SIZE];
 static volatile int buf_head = 0;
 static volatile int buf_tail = 0;
 
-// QEMU ARM64 PL011 UART0 Base Registers
-#define PL011_UART_BASE 0x09000000ULL
+// Hardware PL011 UART Base Registers from HAL
+#define PL011_UART_BASE (hal_get_uart_base())
 #define PL011_UARTDR    ((volatile uint32_t*)(PL011_UART_BASE + 0x00))
 #define PL011_UARTFR    ((volatile uint32_t*)(PL011_UART_BASE + 0x18))
 #define PL011_FR_RXFE   (1U << 4) // Receive FIFO Empty
