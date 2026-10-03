@@ -520,8 +520,8 @@ int gpu_config_click(window_t *win, int mouse_x, int mouse_y) {
             return 1;
         }
         if (mouse_x >= cx + 340 && mouse_x <= cx + 640 && mouse_y >= content_y + 20 && mouse_y <= content_y + 70) {
-            gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
-            doldoc_print("$FG,CYAN$[GPU-CONFIG]$FG$ Rasterizer switched to Classic Scanline SIMD.\n");
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            doldoc_print("$FG,CYAN$[GPU-CONFIG]$FG$ Rasterizer confirmed Sovereign L1 Tile NEON.\n");
             return 1;
         }
         // Tile Geometry

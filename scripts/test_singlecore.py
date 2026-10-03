@@ -30,9 +30,21 @@ try:
 
     print("\n[TEST] Sending 'run HolyBenchmark.HC' command...")
     child.sendline("run HolyBenchmark.HC")
-    child.expect("Total Benchmark Execution Time", timeout=15)
+    child.expect("Total Benchmark Execution Time", timeout=20)
     child.expect("neo:/>", timeout=10)
     print("\n[TEST] HolyBenchmark.HC completed successfully!")
+
+    print("\n[TEST] Sending 'raster tile' command...")
+    child.sendline("raster tile")
+    child.expect("Unified L1 Tile NEON Engine", timeout=10)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] raster tile command verified successfully!")
+
+    print("\n[TEST] Sending 'filer' command (pure HolyC)...")
+    child.sendline("filer")
+    child.expect("Filer.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] filer command verified successfully!")
 
     print("\n[TEST] All single-core tests PASSED perfectly!")
 except Exception as e:

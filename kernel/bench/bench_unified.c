@@ -62,42 +62,42 @@ static void bench_apply_suite_phase(int phase) {
         // Ph 1: CPU SW Double-Buffer, 1 Core, 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_CPU_SW;
         gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(1);
         gfx_vsync_set(0, 0);
     } else if (phase == 1) {
         // Ph 2: CPU SW Direct VRAM (Zero-RAM), 1 Core, 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_CPU_SW;
         gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(1);
         gfx_vsync_set(0, 0);
     } else if (phase == 2) {
         // Ph 3: VirtIO-GPU Hardware DMA Scanout, 1 Core, 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_GPU_HW;
         gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(1);
         gfx_vsync_set(0, 0);
     } else if (phase == 3) {
         // Ph 4: VirtIO HW + Direct VRAM, 1 Core, 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_GPU_HW;
         gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(1);
         gfx_vsync_set(0, 0);
     } else if (phase == 4) {
         // Ph 5: Dual-Core SMP Parallel Slicing (2 Cores), 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_SMP_TILED;
         gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(2);
         gfx_vsync_set(0, 0);
     } else if (phase == 5) {
         // Ph 6: Quad-Core SMP Parallel Grid (4 Cores), 360p, Uncapped
         g_gfx_backend.mode = GFX_MODE_SMP_TILED;
         gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
         gpu_set_smp_cores(4);
         gfx_vsync_set(0, 0);
     } else if (phase == 6) {

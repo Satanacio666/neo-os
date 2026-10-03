@@ -65,6 +65,10 @@ static inline int is_in_jit_pool(const void *ptr) {
     return 0;
 }
 
+int jit_is_in_code_pool(const void *ptr) {
+    return is_in_jit_pool(ptr);
+}
+
 static void cb_release(code_buffer_t *cb) {
     if (!cb || !cb->code) return;
     if (!is_in_jit_pool(cb->code)) {

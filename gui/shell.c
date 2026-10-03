@@ -305,20 +305,21 @@ void shell_run_command(const char *raw_cmd) {
         wm_draw_all();
         gfx_swap_buffers();
         mouse_draw_cursor_front();
+        print_prompt();
         return;
     } else if (strncmp(cmd, "raster", 6) == 0) {
         const char *arg = skip_leading_ws(cmd + 6);
         if (strcmp(arg, "tile") == 0 || strcmp(arg, "l1") == 0 || strcmp(arg, "1") == 0) {
             gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-            doldoc_print("$FG,GREEN$[GFX-HAL]$FG$ Switched to $FG,CYAN$Unified L1 Tile NEON Engine$FG$ (24 KB Scratchpad, 4-Wide Pineda SIMD).\n");
+            doldoc_print("$FG,GREEN$[GFX-HAL]$FG$ Confirmed $FG,CYAN$Unified L1 Tile NEON Engine$FG$ (24 KB Scratchpad, 4-Wide Pineda SIMD).\n");
         } else if (strcmp(arg, "scanline") == 0 || strcmp(arg, "0") == 0) {
-            gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
-            doldoc_print("$FG,GREEN$[GFX-HAL]$FG$ Switched to $FG,YELLOW$Classic Scanline SIMD$FG$ (16.16 Fixed-Point Slope-Walker).\n");
+            doldoc_print("$FG,RED$[GFX-HAL]$FG$ Scanline fallback has been excised. Only Sovereign L1-Tiled NEON engine is supported.\n");
         } else {
-            doldoc_print("Usage: raster <tile | scanline>\n");
-            doldoc_printf(" Active Engine: %s\n", (gpu_get_raster_engine() == RASTER_ENGINE_TILED_L1) ? "Unified L1 Tile NEON" : "Classic Scanline SIMD");
+            doldoc_print("Usage: raster [tile]\n");
+            doldoc_printf(" Active Engine: %s (Sovereign L1 NEON)\n", (gpu_get_raster_engine() == RASTER_ENGINE_TILED_L1) ? "Unified L1 Tile NEON" : "Unknown");
         }
         wm_set_dirty();
+        print_prompt();
         return;
     } else if (strncmp(cmd, "tilesize", 8) == 0) {
         const char *arg = skip_leading_ws(cmd + 8);
@@ -332,6 +333,7 @@ void shell_run_command(const char *raw_cmd) {
             doldoc_printf(" Current Tile Size: %dx%d\n", gpu_get_tile_size(), gpu_get_tile_size());
         }
         wm_set_dirty();
+        print_prompt();
         return;
     } else if (strncmp(cmd, "cores", 5) == 0) {
         const char *arg = skip_leading_ws(cmd + 5);
@@ -344,6 +346,7 @@ void shell_run_command(const char *raw_cmd) {
             doldoc_printf(" Current Active Cores: %d\n", gpu_get_smp_cores());
         }
         wm_set_dirty();
+        print_prompt();
         return;
     } else if (strncmp(cmd, "shading", 7) == 0) {
         const char *arg = skip_leading_ws(cmd + 7);
@@ -360,6 +363,7 @@ void shell_run_command(const char *raw_cmd) {
             doldoc_print("Usage: shading <gouraud | flat | wire>\n");
         }
         wm_set_dirty();
+        print_prompt();
         return;
     } else if (strncmp(cmd, "cull", 4) == 0) {
         const char *arg = skip_leading_ws(cmd + 4);
@@ -374,6 +378,7 @@ void shell_run_command(const char *raw_cmd) {
             doldoc_printf(" Current Culling: %s\n", gpu_get_culling() ? "ON" : "OFF");
         }
         wm_set_dirty();
+        print_prompt();
         return;
     } else if (strcmp(cmd, "benchcompare") == 0) {
         bench_unified_start(BENCH_MODE_SUITE);
@@ -618,3 +623,17 @@ void shell_poll(void) {
         doldoc_swap_cursor();
     }
 }
+
+void shell_task_recover(void) {
+    cmd_len = 0;
+    cmd_buf[0] = '\0';
+    cursor_visible = 1;
+    doldoc_print("\n$FG,RED$[KERNEL BSOD RECOVERY]$FG$ HolyC Ring 0 execution aborted cleanly.\n");
+    doldoc_print(" Unwound task execution context. System operational.\n");
+    print_prompt();
+    doldoc_draw_cursor(1);
+    wm_draw_all();
+    mouse_draw_cursor();
+    gfx_swap_buffers();
+}
+
