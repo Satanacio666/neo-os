@@ -29,19 +29,71 @@ static void arm64_flush_cache(void *addr, size_t size) {
     asm volatile("dsb ish; isb" ::: "memory");
 }
 
-static uint8_t *s_jit_pool_start = NULL;
-static size_t   s_jit_pool_offset = 0;
-static size_t   s_jit_pool_size = 0;
+static uint8_t  *s_jit_pool_start = NULL;
+static size_t    s_jit_pool_offset = 0;
+static size_t    s_jit_pool_size = 0;
+static uint32_t *s_jit_scratch_code = NULL;
+static const size_t JIT_SCRATCH_BYTES = 64 * 1024;
+static const size_t JIT_SCRATCH_INSTRS = 16384;
 
 void jit_init_code_pool(void *pool_start, size_t pool_size) {
-    s_jit_pool_start = (uint8_t*)pool_start;
+    if (!pool_start || pool_size <= JIT_SCRATCH_BYTES) {
+        s_jit_pool_start = (uint8_t*)pool_start;
+        s_jit_pool_size = pool_size;
+        s_jit_pool_offset = 0;
+        s_jit_scratch_code = NULL;
+        return;
+    }
+    s_jit_scratch_code = (uint32_t*)pool_start;
+    s_jit_pool_start = (uint8_t*)pool_start + JIT_SCRATCH_BYTES;
+    s_jit_pool_size = pool_size - JIT_SCRATCH_BYTES;
     s_jit_pool_offset = 0;
-    s_jit_pool_size = pool_size;
-    printf("[NEOC JIT] Dedicated Executable Code Pool (EfiLoaderCode) @ 0x%016llX (%llu KB)\n",
-           (unsigned long long)pool_start, (unsigned long long)(pool_size / 1024));
+    printf("[NEOC JIT] Dedicated Executable Code Pool: Scratch 64KB @ 0x%016llX | Persistent Pool %llu KB @ 0x%016llX\n",
+           (unsigned long long)s_jit_scratch_code,
+           (unsigned long long)(s_jit_pool_size / 1024),
+           (unsigned long long)s_jit_pool_start);
 }
 
-static void cb_init(code_buffer_t *cb, size_t max_instructions) {
+static inline int is_in_jit_pool(const void *ptr) {
+    if (!ptr) return 0;
+    if (s_jit_scratch_code && (const uint32_t*)ptr == s_jit_scratch_code) return 1;
+    if (s_jit_pool_start && 
+        (const uint8_t*)ptr >= s_jit_pool_start && 
+        (const uint8_t*)ptr < (s_jit_pool_start + s_jit_pool_size)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void cb_release(code_buffer_t *cb) {
+    if (!cb || !cb->code) return;
+    if (!is_in_jit_pool(cb->code)) {
+        kfree(cb->code);
+    }
+    cb->code = NULL;
+    cb->count = 0;
+    cb->capacity = 0;
+}
+
+static void cb_init_scratch(code_buffer_t *cb, size_t max_instructions) {
+    cb->capacity = max_instructions;
+    cb->count = 0;
+    cb->has_error = 0;
+    cb->error_msg[0] = '\0';
+    if (s_jit_scratch_code && max_instructions <= JIT_SCRATCH_INSTRS) {
+        cb->code = s_jit_scratch_code;
+        cb->capacity = JIT_SCRATCH_INSTRS;
+    } else {
+        size_t bytes = max_instructions * sizeof(uint32_t);
+        cb->code = (uint32_t*)kmalloc(bytes);
+        if (!cb->code) {
+            cb->has_error = 1;
+            snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating scratch buffer");
+        }
+    }
+}
+
+static void cb_init_persistent(code_buffer_t *cb, size_t max_instructions) {
     cb->capacity = max_instructions;
     cb->count = 0;
     cb->has_error = 0;
@@ -49,13 +101,20 @@ static void cb_init(code_buffer_t *cb, size_t max_instructions) {
     size_t bytes = max_instructions * sizeof(uint32_t);
     if (s_jit_pool_start && (s_jit_pool_offset + bytes <= s_jit_pool_size)) {
         cb->code = (uint32_t*)(s_jit_pool_start + s_jit_pool_offset);
-        s_jit_pool_offset = (s_jit_pool_offset + bytes + 63) & ~63ULL;
     } else {
         cb->code = (uint32_t*)kmalloc(bytes);
+        if (!cb->code) {
+            cb->has_error = 1;
+            snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating persistent code buffer");
+        }
     }
-    if (!cb->code) {
-        cb->has_error = 1;
-        snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating code buffer");
+}
+
+static void cb_commit_persistent(code_buffer_t *cb) {
+    if (!cb || cb->has_error || !cb->code) return;
+    if (is_in_jit_pool(cb->code) && cb->code != s_jit_scratch_code) {
+        size_t actual_bytes = (cb->count * sizeof(uint32_t) + 63) & ~63ULL;
+        s_jit_pool_offset += actual_bytes;
     }
 }
 
@@ -1641,7 +1700,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 lexer_next(l); // eat '('
 
                 code_buffer_t fn_cb;
-                cb_init(&fn_cb, 4096);
+                cb_init_persistent(&fn_cb, 4096);
 
                 symbols_register(name, (void*)fn_cb.code, SYM_FUNC);
 
@@ -1721,14 +1780,15 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     symbol_t *s = symbols_lookup_entry(name);
                     if (s && s->address == fn_cb.code) s->address = NULL;
                     cb->has_error = 1;
-                    kfree(fn_cb.code);
+                    cb_release(&fn_cb);
                     printf("[JIT] Error: Function '%s' compilation failed\n", name);
                     return;
                 }
 
+                cb_commit_persistent(&fn_cb);
                 arm64_flush_cache(fn_cb.code, fn_cb.count * sizeof(uint32_t));
-                printf("[JIT] Compiled function '%s' to RAM at 0x%p (%u instrs)\n",
-                       name, fn_cb.code, (unsigned int)fn_cb.count);
+                printf("[JIT] Compiled function '%s' to RAM at 0x%p (%u instrs, %zu bytes)\n",
+                       name, fn_cb.code, (unsigned int)fn_cb.count, (size_t)(fn_cb.count * sizeof(uint32_t)));
                 doldoc_printf("$FG,GREEN$[JIT]$FG$ Function '%s' compiled to RAM (0x%p)\n", name, fn_cb.code);
                 return;
             }
@@ -2136,7 +2196,7 @@ int64_t jit_eval(const char *expr_source) {
 
     lexer_t l;
     code_buffer_t cb;
-    cb_init(&cb, 2048);
+    cb_init_scratch(&cb, 2048);
 
     lexer_init(&l, expr_source);
     emit_push_lr(&cb);
@@ -2152,7 +2212,7 @@ int64_t jit_eval(const char *expr_source) {
 
     if (cb.has_error) {
         printf("[JIT] Evaluation aborted due to compilation error.\n");
-        kfree(cb.code);
+        cb_release(&cb);
         return 0;
     }
 
@@ -2161,7 +2221,7 @@ int64_t jit_eval(const char *expr_source) {
     jit_func_t fn = (jit_func_t)cb.code;
     int64_t result = fn();
 
-    kfree(cb.code);
+    cb_release(&cb);
     return result;
 }
 
@@ -2174,7 +2234,7 @@ int64_t jit_compile_and_run(const char *source) {
 
     lexer_t l;
     code_buffer_t cb;
-    cb_init(&cb, 8192);
+    cb_init_scratch(&cb, 8192);
 
     lexer_init(&l, source);
     emit_push_lr(&cb);
@@ -2189,7 +2249,7 @@ int64_t jit_compile_and_run(const char *source) {
 
     if (cb.has_error) {
         printf("[JIT] Execution aborted due to compilation error.\n");
-        kfree(cb.code);
+        cb_release(&cb);
         return -1;
     }
 
@@ -2198,7 +2258,7 @@ int64_t jit_compile_and_run(const char *source) {
     jit_func_t fn = (jit_func_t)cb.code;
     int64_t result = fn();
 
-    kfree(cb.code);
+    cb_release(&cb);
     return result;
 }
 
