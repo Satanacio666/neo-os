@@ -26,6 +26,7 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 ## 📚 Architectural Manifestos & Deep Dives
 
 - [**Grand Architectural Consolidation Encyclopedia**](docs/neo_os_grand_consolidation_encyclopedia.md): The definitive, all-inclusive master synthesis of every subsystem, .c and .hc file, pipeline stage, bootstrap sequence, empirical discovery, and future engineering frontier.
+- [**Consolidated Defect, Design-Change & Fix Record**](docs/neo_os_consolidated_defect_record.md): Single authoritative problem-only register documenting all 18 documentation contradictions, dead code, integration gaps, code defects, JIT compiler limits, video flaws, retracted premises, and their concrete fixes.
 - [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Comprehensive, unvarnished architectural post-mortem covering all bottlenecks, hardware traps, TCG host contention, DolDoc repaint bugs, lighting math caching, and JIT struct reflection fixes.
 - [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Complete blueprint covering SoC brings-up (Qualcomm Snapdragon / Poco X3 Pro, Rockchip RK3326), DRM/KMS/KGSL acceleration, bare-metal audio, cellular baseband drivers, HolyGL Quake/Half-Life engine ports, and Ring 0 game compatibility.
 - [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL 1.3/2.0 state machine, L1 tiled NEON rasterization, matrix stacks, and zero-overhead Ring 0 multi-language bindings.
