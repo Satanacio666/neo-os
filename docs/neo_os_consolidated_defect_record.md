@@ -169,7 +169,122 @@ The following items are deliberately recorded as **open / not fixed**, with the 
 
 ---
 
-## 10. One-Line Summary of Every Applied Fix
+## 10. The C vs. HolyC (.HC) Architectural Division & The Pure Bootstrap Substrate
+
+### 10.1 The Core Mandate
+> **"Only the C bootstrap is allowed to exist as C. No new .c files; everything new must be .hc."**
+
+In accordance with Terry Davis's TempleOS philosophy, a sovereign operating system should not be a C kernel that merely hosts a scripting language; the operating system *is* HolyC. 
+
+During the initial bring-up on AArch64, an architectural anti-pattern emerged: new applications, benchmarks, and tools were repeatedly authored in C (`gui/filer.c`, `gui/editor.c`, `gui/top_app.c`, `kernel/bench/bench3d.c`, `gui/life.c`), while corresponding `.HC` files in `apps/` were left as uncompiled placeholders or duplicate string literals in `fs/redsea.c`. This bloated the C codebase to **46 project C files (78 total including vendored Lua)** and 63 headers, contradicting the core SASOS vision.
+
+The project established a strict, permanent architectural boundary separating what is permitted in C from what must be HolyC:
+
+```
++-----------------------------------------------------------------------------------------+
+|                              THE SOVEREIGN HOLYC DOMAIN (.HC)                           |
+|  - All Userland & Desktop Applications: apps/GpuConfig.HC, apps/HolyGLCube.HC           |
+|  - Cellular Automata & Demos: apps/Life.HC, apps/PRIMES.HC, apps/Bench3D.HC            |
+|  - System Management Tools: apps/Editor.HC, apps/Filer.HC, apps/Top.HC                  |
+|  - Dynamic Data Structures: apps/StdLib.HC (CArray, CDict)                              |
+|  - Interactive Shell Scripts, REPL Commands, Window Event Callbacks                     |
++-----------------------------------------------------------------------------------------+
+                                           │
+                                           │ Dynamic JIT Reflection & Symbol Linking
+                                           │ (kernel/symbols/symbols.c, AAPCS64 D0-D7)
+                                           ▼
++-----------------------------------------------------------------------------------------+
+|                           THE MINIMAL C BOOTSTRAP SUBSTRATE (.c)                        |
+|  - Firmware Handoff: boot/uefi/uefi_main.c (PE32+, GOP discovery, page allocation)       |
+|  - Early Serial Stdio: boot/uefi/stdio.c (PL011 UART register mirror)                   |
+|  - Hardware Vector & SMP Control: kernel/arch/aarch64/ (vectors.S, gic, timer, smp.c)   |
+|  - Primitive Allocators: kernel/memory/ (pmm.c page frame allocator, heap.c slab)     |
+|  - Global Symbol Registry: kernel/symbols/symbols.c (dynamic C-to-HolyC resolution)     |
+|  - Low-Level MMIO Drivers: drivers/block/virtio_blk.c, drivers/gpu/virtio_gpu.c         |
+|  - Native AArch64 Compiler Engine: compiler/jit_arm64.c (the compiler itself)          |
++-----------------------------------------------------------------------------------------+
+```
+
+### 10.2 What MUST Remain in C (The Bootstrap Substrate)
+1. **Firmware Entry & GOP Binding (`boot/uefi/`)**: Interfacing with UEFI firmware tables (`EFI_GRAPHICS_OUTPUT_PROTOCOL`, `EFI_SYSTEM_TABLE`) requires PE32+ ABI compatibility and early assembly initialization.
+2. **Exception Vectors & Low-Level Hardware (`kernel/arch/aarch64/`)**: `vectors.S`, `ESR_EL1` fault decoding, GICv2/v3 distributor setup, Generic Timer initialization (`cntvct_el0`), and secondary core bring-up via PSCI (`CPU_ON`).
+3. **Memory Foundations (`kernel/memory/`)**: The physical page frame allocator (`pmm.c`) and 16-byte aligned kernel heap allocator (`heap.c`).
+4. **Symbol Reflection Registry (`kernel/symbols/symbols.c`)**: The global hash table exposing C functions, drivers, and math routines to the JIT compiler.
+5. **The HolyC Compiler Itself (`compiler/jit_arm64.c`)**: The compiler engine emitting native 32-bit ARM machine code directly into memory pages. (This must remain in C until NeoOS achieves self-hosting HolyC compilation).
+6. **Hardware MMIO Drivers (`drivers/`)**: Direct register I/O for VirtIO-Block, VirtIO-GPU, and PS/2 / UART keyboard and mouse.
+
+### 10.3 What Belongs in HolyC (`.HC`) & The Migration Path
+All application logic, window widgets, text editing, file browsing, 3D animations, and system monitoring belong exclusively in HolyC. 
+
+To eliminate legacy C application bloat:
+- `gui/filer.c` is slated for deprecation in favor of `apps/Filer.HC`.
+- `gui/editor.c` is slated for deprecation in favor of `apps/Editor.HC`.
+- `gui/top_app.c` is slated for deprecation in favor of `apps/Top.HC`.
+- `kernel/bench/bench3d.c` is slated for deprecation in favor of `apps/Bench3D.HC`.
+- The primary technical blocker to completing this retirement is resolving **J1 (the one-compile-per-boot limitation)**, enabling continuous, dynamic compilation and execution of multiple HolyC programs throughout a single OS session.
+
+---
+
+## 11. The 5-Commit System Merge & Lifecycle Consolidation (`hcapp`)
+
+### 11.1 The Dirty Tree Reconciliation
+Prior to consolidation, the workspace contained an uncoordinated mix of 4 pre-existing tracked modifications, 9 untracked source files, regenerated binary artifacts (`boot/uefi/*.o`, `libuefi.a`), broken test scripts, and conflicting documentation. 
+
+This state was reconciled and committed as **5 logical, build-consistent commits** (from baseline `2369ffe` to `328dc6a`):
+
+| Commit | Slice | Scope & Contents |
+|:---:|:---|:---|
+| `e6faa98` | **Scripts Portability & Hygiene** | Replaced 176 instances of `/home/carlos/...` across 24 scripts with `NEO_ROOT`. Replaced hardcoded `-display gtk` with `NEO_DISPLAY`. Added `.gitignore` rules for `__pycache__` and byte-code. |
+| `3af1ee9` | **`hcapp` Subsystem & Conway's Life** | Added `gui/hcapp.c` and `gui/hcapp.h`. Added Conway's Life backend (`gui/life.c`, `gui/life.h`) and HolyC frontends (`apps/Life.HC`, `apps/PRIMES.HC`). Updated `Makefile` and `boot/main.c`. |
+| `976c4d8` | **JIT Hardening & Shell Integration** | Fixed infinite compilation freeze on unhandled tokens. Added cooperative `task_yield()` emission on loop back-edges in `compiler/jit_arm64.c`. Implemented array declarations and indexing. Added `paste` shell verb. |
+| `c526698` | **3D Cube Rotation Fix** | Created `apps/HolyGLCube.HC` demonstrating 6-face HolyGL animation in pure HolyC via `hcapp`, fixing the degree-vs-radian rotation defect. |
+| `328dc6a` | **Documentation & Harness Unification** | Authored `AGENTS.md` and `docs/holyc_apps.md`. Appended dated correction notices to `docs/audit.md` and `docs/dossier.md`. Added `scripts/neo_web_console.py` and `scripts/test_primes_live.py`. |
+
+### 11.2 The App Lifecycle Revolution: From Blocking Scripts to `hcapp`
+A central defect that surfaced during development was the **"hanged q..." system freeze**:
+
+#### The Flawed Synchronous Model
+In earlier builds, executing a HolyC program that animated in a tight loop (`while(1) { render(); }`) executed synchronously on the main cooperative kernel thread. Because the scheduler lacked hardware preemption, this loop completely starved `shell_poll()`, `mouse_poll()`, window dragging, and QEMU's event pump. The entire system locked up, appearing to hang on a keystroke (such as "q").
+
+#### The Consolidated `hcapp` Callback Architecture
+To solve this permanently, NeoOS introduced the **`hcapp` exclusive-window callback model** ([`gui/hcapp.c`](file:///home/carlos/.gemini/antigravity/scratch/neo-os/gui/hcapp.c) / [`gui/hcapp.h`](file:///home/carlos/.gemini/antigravity/scratch/neo-os/gui/hcapp.h)):
+1. A HolyC program calls `hcapp_open("Window Title", width, height)`.
+2. It registers a drawing function pointer: `hcapp_set_render(&MyFrameCallback);`.
+3. It sets optional cleanup handlers: `hcapp_set_close(&MyCloseCallback);`.
+4. **It immediately returns to the shell**.
+
+#### Redesigning the Kernel Animation Pump
+Previously, the kernel's main event loop in `boot/main.c` only drove animation when `bench_unified_is_active()` was true. 
+Under the new design, the main loop checks:
+```c
+if (wm_has_animating_windows()) {
+    wm_render_animating_windows();
+}
+```
+Each window with a registered `custom_render` callback is invoked on every frame tick. This decouples animation from execution: HolyC applications animate at a smooth 60 FPS while the interactive shell, mouse pointer, window manager, and menus remain fully responsive.
+
+### 11.3 The Five Major System Unifications
+
+```
+1. Host Path Schemes:
+   24 scripts with 176 hardcoded paths  ───►  Unified NEO_ROOT & NEO_DISPLAY
+
+2. Animation Driving:
+   Benchmark-only rendering loop        ───►  Universal wm_has_animating_windows()
+
+3. Execution Paradigm:
+   Blocking synchronous script loops    ───►  Non-blocking hcapp callback model
+
+4. Live Stream Verification:
+   Broken 0-byte MJPEG streams          ───►  Pillow-backed Content-Length aware harness
+
+5. Documentation Truth:
+   Conflicting legacy audit claims      ───►  Consolidated AGENTS.md & holyc_apps.md
+```
+
+---
+
+## 12. One-Line Summary of Every Applied Fix
 
 1. **Makefile `-MMD -MP`**: Fixed memory-corrupting data aborts caused by stale struct layouts after header edits (**R1**).
 2. **Degree-based `glRotatef`**: Restored 360° continuous rotation across all cube faces by passing integer degrees (**R2**).
@@ -199,3 +314,6 @@ The following items are deliberately recorded as **open / not fixed**, with the 
 26. **QMP Greeting Drain**: Fixed socket handshake crashes across test automation scripts (**E6**).
 27. **README Screenshot Path Restoration**: Restored broken image embeds across project documentation (**C9**).
 28. **RedSea Application Packaging**: Automated packaging of HolyC applications into the data disk image (**D1**).
+29. **Exclusive-Window Callback Architecture (`hcapp`)**: Replaced blocking loops with non-blocking window render callbacks, permanently curing the "hanged q..." system freeze (**A1/A2**).
+30. **Universal Window Animation Pump (`wm_has_animating_windows`)**: Unified the main event loop to animate arbitrary HolyC applications alongside shell and mouse input.
+
