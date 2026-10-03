@@ -24,128 +24,109 @@ static uint32_t g_menu_win_id = 0;
 static void scan_apps(void) {
     menu_item_count = 0;
 
-    // Fixed / Primary System & Benchmark Apps
-    // 1. NeoBench Extreme Master Benchmark
-    strncpy(menu_items[menu_item_count].name, "Bench.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "NeoBench Extreme 3D", 47);
-    strncpy(menu_items[menu_item_count].command, "run Bench.HC", 47);
-    menu_items[menu_item_count].tag_color = COLOR_GOLD_ACCENT;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
-    menu_item_count++;
-
-    // 2. Dynamics 3D Physics Simulation
-    strncpy(menu_items[menu_item_count].name, "Dynamics.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "64-Bit Multi-Body Physics", 47);
-    strncpy(menu_items[menu_item_count].command, "dynamics", 47);
-    menu_items[menu_item_count].tag_color = 0xFFE74C3C;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
-    menu_item_count++;
-
-    // 3. GPU Hardware & Buffering Configuration Hub
-    strncpy(menu_items[menu_item_count].name, "GpuConfig.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "GPU & Render Mode Hub", 47);
-    strncpy(menu_items[menu_item_count].command, "gpuconfig", 47);
-    menu_items[menu_item_count].tag_color = COLOR_ACCENT_CYAN;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
-    menu_item_count++;
-
-    // 4. Pure CPU Software Graphics Quick-Switch
+    // 1. Hardware & System Pipeline Toggles (System Controls, not files)
     strncpy(menu_items[menu_item_count].name, "CPU Render", 31);
     strncpy(menu_items[menu_item_count].desc, "Original UEFI SW Graphics", 47);
     strncpy(menu_items[menu_item_count].command, "render cpu", 47);
     menu_items[menu_item_count].tag_color = 0xFF27AE60;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    strncpy(menu_items[menu_item_count].category, "System Control", 19);
     menu_item_count++;
 
-    // 5. VirtIO-GPU Hardware Mode Quick-Switch
     strncpy(menu_items[menu_item_count].name, "GPU Render", 31);
     strncpy(menu_items[menu_item_count].desc, "VirtIO-GPU Hardware DMA", 47);
     strncpy(menu_items[menu_item_count].command, "render gpu", 47);
     menu_items[menu_item_count].tag_color = 0xFF8E44AD;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    strncpy(menu_items[menu_item_count].category, "System Control", 19);
     menu_item_count++;
 
-    // 6. SMP Multi-Core Parallel Graphics Quick-Switch
     strncpy(menu_items[menu_item_count].name, "SMP Render", 31);
-    strncpy(menu_items[menu_item_count].desc, "SMP 4-Core Parallel Mode", 47);
+    strncpy(menu_items[menu_item_count].desc, "SMP Multi-Core Parallel", 47);
     strncpy(menu_items[menu_item_count].command, "render smp", 47);
     menu_items[menu_item_count].tag_color = 0xFF16A085;
-    strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
+    strncpy(menu_items[menu_item_count].category, "System Control", 19);
     menu_item_count++;
 
-    // 3. HolyC Standard Library Test
-    strncpy(menu_items[menu_item_count].name, "StdLib.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "HolyC Dynamic Collections", 47);
-    strncpy(menu_items[menu_item_count].command, "run StdLib.HC", 47);
-    menu_items[menu_item_count].tag_color = COLOR_ACCENT_CYAN;
-    strncpy(menu_items[menu_item_count].category, "HolyC", 19);
-    menu_item_count++;
-
-    // 4. Top Monitor
-    strncpy(menu_items[menu_item_count].name, "Top.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "SMP Task & CPU Top", 47);
-    strncpy(menu_items[menu_item_count].command, "run Top.HC", 47);
-    menu_items[menu_item_count].tag_color = 0xFF2ECC71;
-    strncpy(menu_items[menu_item_count].category, "System", 19);
-    menu_item_count++;
-
-    // 5. Filer RedSea
-    strncpy(menu_items[menu_item_count].name, "Filer.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "RedSea File Browser", 47);
-    strncpy(menu_items[menu_item_count].command, "run Filer.HC", 47);
-    menu_items[menu_item_count].tag_color = COLOR_MAGENTA;
-    strncpy(menu_items[menu_item_count].category, "Files", 19);
-    menu_item_count++;
-
-    // 6. Editor DolDoc
-    strncpy(menu_items[menu_item_count].name, "Editor.HC", 31);
-    strncpy(menu_items[menu_item_count].desc, "HolyC Code Editor", 47);
-    strncpy(menu_items[menu_item_count].command, "run Editor.HC", 47);
-    menu_items[menu_item_count].tag_color = COLOR_ACCENT_BLUE;
-    strncpy(menu_items[menu_item_count].category, "Dev", 19);
-    menu_item_count++;
-
-    // 7. Dynamic RedSea disk scan for user scripts
-    redsea_entry_t entries[24];
-    int count = redsea_get_entries(entries, 24);
+    // 2. 100% Dynamic RedSea Filesystem Reflection: Query ONLY files that actually exist
+    redsea_entry_t entries[32];
+    int count = redsea_get_entries(entries, 32);
     for (int i = 0; i < count && menu_item_count < MAX_MENU_APPS; i++) {
-        if (!(entries[i].attr & RS_ATTR_DIR) && strstr(entries[i].name, ".HC")) {
-            // Check if already registered
-            int exists = 0;
-            for (int k = 0; k < menu_item_count; k++) {
-                if (strcmp(menu_items[k].name, entries[i].name) == 0) {
-                    exists = 1;
-                    break;
-                }
-            }
-            if (!exists) {
-                strncpy(menu_items[menu_item_count].name, entries[i].name, 31);
-                // Try reading first line comment
-                char fbuf[128];
-                size_t rsize = 0;
-                char desc[48] = "HolyC Script";
-                if (strcmp(entries[i].name, "fact.HC") == 0) {
-                    strncpy(desc, "Recursive Factorial", 47);
-                } else if (strcmp(entries[i].name, "calc.HC") == 0) {
-                    strncpy(desc, "Arithmetic Calc", 47);
-                } else if (redsea_read_file(entries[i].name, fbuf, sizeof(fbuf) - 1, &rsize) == 0 && rsize > 2) {
-                    fbuf[rsize] = '\0';
-                    if (fbuf[0] == '/' && fbuf[1] == '/') {
-                        char *end = strchr(fbuf, '\n');
-                        if (end) *end = '\0';
-                        char *txt = fbuf + 2;
-                        while (*txt == ' ') txt++;
-                        strncpy(desc, txt, 20);
-                        desc[20] = '\0';
-                    }
-                }
-                strncpy(menu_items[menu_item_count].desc, desc, 47);
-                snprintf(menu_items[menu_item_count].command, 47, "run %s", entries[i].name);
-                menu_items[menu_item_count].tag_color = COLOR_EMERALD_GREEN;
-                strncpy(menu_items[menu_item_count].category, "HolyC Scripts", 19);
-                menu_item_count++;
+        if ((entries[i].attr & RS_ATTR_DIR) || !strstr(entries[i].name, ".HC")) {
+            continue; // Skip directories and non-HolyC files
+        }
+
+        char *dot = strrchr(entries[i].name, '.');
+        if (!dot || (strcmp(dot, ".HC") != 0 && strcmp(dot, ".hc") != 0)) {
+            continue;
+        }
+
+        // Verify file actually exists and read first-line comment for description
+        char fbuf[256];
+        size_t rsize = 0;
+        char desc[48] = "HolyC Application";
+        if (redsea_read_file(entries[i].name, fbuf, sizeof(fbuf) - 1, &rsize) == 0 && rsize > 2) {
+            fbuf[rsize] = '\0';
+            if (fbuf[0] == '/' && fbuf[1] == '/') {
+                char *end = strchr(fbuf, '\n');
+                if (end) *end = '\0';
+                char *txt = fbuf + 2;
+                while (*txt == ' ' || *txt == '-') txt++;
+                strncpy(desc, txt, 46);
+                desc[46] = '\0';
             }
         }
+
+        // Categorize based on verified application profile
+        char category[20] = "HolyC Apps";
+        uint32_t tag_col = COLOR_EMERALD_GREEN;
+
+        if (strcmp(entries[i].name, "HolyBenchmark.HC") == 0) {
+            strncpy(category, "Benchmarks", 19);
+            tag_col = COLOR_GOLD_ACCENT;
+            strncpy(desc, "HolyC Compute Benchmark", 46);
+        } else if (strcmp(entries[i].name, "Bench.HC") == 0) {
+            strncpy(category, "Benchmarks", 19);
+            tag_col = COLOR_GOLD_ACCENT;
+            strncpy(desc, "NeoBench Extreme 3D", 46);
+        } else if (strcmp(entries[i].name, "HolyGLTest.HC") == 0) {
+            strncpy(category, "3D & Graphics", 19);
+            tag_col = COLOR_ACCENT_CYAN;
+            strncpy(desc, "HolyGL OpenGL Demo", 46);
+        } else if (strcmp(entries[i].name, "Filer.HC") == 0) {
+            strncpy(category, "Files", 19);
+            tag_col = COLOR_MAGENTA;
+            strncpy(desc, "RedSea File Navigator", 46);
+        } else if (strcmp(entries[i].name, "Editor.HC") == 0) {
+            strncpy(category, "Development", 19);
+            tag_col = COLOR_ACCENT_BLUE;
+            strncpy(desc, "HolyC Source Editor", 46);
+        } else if (strcmp(entries[i].name, "Top.HC") == 0) {
+            strncpy(category, "System", 19);
+            tag_col = 0xFF2ECC71;
+            strncpy(desc, "SMP Task & CPU Top", 46);
+        } else if (strcmp(entries[i].name, "StdLib.HC") == 0) {
+            strncpy(category, "HolyC", 19);
+            tag_col = COLOR_ACCENT_CYAN;
+            strncpy(desc, "Dynamic Collections", 46);
+        } else if (strcmp(entries[i].name, "Compositor.HC") == 0) {
+            strncpy(category, "System Control", 19);
+            tag_col = 0xFF9B59B6;
+            strncpy(desc, "Compositor Effects Hub", 46);
+        } else if (strcmp(entries[i].name, "GpuConfig.HC") == 0) {
+            strncpy(category, "3D & Graphics", 19);
+            tag_col = COLOR_ACCENT_CYAN;
+            strncpy(desc, "GPU & Render Mode Hub", 46);
+        } else if (strcmp(entries[i].name, "fact.HC") == 0) {
+            strncpy(desc, "Recursive Factorial", 46);
+        } else if (strcmp(entries[i].name, "calc.HC") == 0) {
+            strncpy(desc, "Arithmetic Calculator", 46);
+        }
+
+        strncpy(menu_items[menu_item_count].name, entries[i].name, 31);
+        strncpy(menu_items[menu_item_count].desc, desc, 47);
+        snprintf(menu_items[menu_item_count].command, 47, "run %s", entries[i].name);
+        menu_items[menu_item_count].tag_color = tag_col;
+        strncpy(menu_items[menu_item_count].category, category, 19);
+        menu_item_count++;
     }
 
     // 8. System Utilities
