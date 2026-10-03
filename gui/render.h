@@ -96,5 +96,7 @@ int      doldoc_handle_click(int mouse_x, int mouse_y);
 void     doldoc_scroll_up(int lines);
 void     doldoc_scroll_down(int lines);
 int      doldoc_get_scroll_offset(void);
+void     doldoc_set_bg_color(uint32_t bg);
+uint32_t doldoc_get_bg_color(void);
 
 #endif // NEO_RENDER_H

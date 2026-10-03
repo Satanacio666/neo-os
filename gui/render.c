@@ -786,7 +786,7 @@ void doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doc_term.cursor_x = x + 8;
     doc_term.cursor_y = y + 8;
     doc_term.text_color = COLOR_GREEN_TERMINAL;
-    doc_term.bg_color = 0x00000000;
+    doc_term.bg_color = 0xFF1B1E20;
 
     doc_grid_cols = (w > 16) ? (w - 16) / 8 : 80;
     doc_grid_rows = (h > 16) ? (h - 16) / 18 : 24;
@@ -794,6 +794,15 @@ void doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     if (doc_grid_rows > DOLDOC_GRID_ROWS) doc_grid_rows = DOLDOC_GRID_ROWS;
 
     doldoc_clear();
+}
+
+void doldoc_set_bg_color(uint32_t bg) {
+    doc_term.bg_color = bg;
+    doldoc_mark_all_dirty();
+}
+
+uint32_t doldoc_get_bg_color(void) {
+    return doc_term.bg_color ? doc_term.bg_color : 0xFF1B1E20;
 }
 
 static uint64_t s_doc_dirty_mask = 0xFFFFFFFFFFFFFFFFULL;
@@ -814,27 +823,29 @@ void doldoc_clear(void) {
     doc_term.cursor_x = doc_term.x + 8;
     doc_term.cursor_y = doc_term.y + 8;
     doldoc_mark_all_dirty();
-    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, 0xFF1B1E20);
+    uint32_t bg = doldoc_get_bg_color();
+    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, bg);
     gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
 }
 
 void doldoc_redraw(void) {
     if (s_doc_dirty_mask == 0) return; // 0.0 ms if nothing changed!
 
+    uint32_t bg = doldoc_get_bg_color();
     if (s_doc_dirty_mask == 0xFFFFFFFFFFFFFFFFULL) {
-        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, 0xFF1B1E20);
+        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, bg);
         gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
     }
 
     if (doc_scroll_offset == 0) {
         for (int r = 0; r < doc_grid_rows; r++) {
             if (r < 64 && !(s_doc_dirty_mask & (1ULL << r))) continue;
-            gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, 0xFF1B1E20);
+            gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, bg);
             for (int c = 0; c < doc_grid_cols; c++) {
                 doldoc_cell_t *cell = &doc_grid[r][c];
                 if (cell->c >= 32 && cell->c <= 126) {
                     gfx_draw_char(doc_term.x + 8 + c * 8, doc_term.y + 8 + r * 18,
-                                  cell->c, cell->fg, cell->bg);
+                                  cell->c, cell->fg, cell->bg ? cell->bg : bg);
                 }
             }
         }
@@ -849,12 +860,12 @@ void doldoc_redraw(void) {
                 if (grid_r < doc_grid_rows) row_cells = doc_grid[grid_r];
             }
             if (row_cells) {
-                gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, 0xFF1B1E20);
+                gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, bg);
                 for (int c = 0; c < doc_grid_cols; c++) {
                     doldoc_cell_t *cell = &row_cells[c];
                     if (cell->c >= 32 && cell->c <= 126) {
                         gfx_draw_char(doc_term.x + 8 + c * 8, doc_term.y + 8 + r * 18,
-                                      cell->c, cell->fg, cell->bg);
+                                      cell->c, cell->fg, cell->bg ? cell->bg : bg);
                     }
                 }
             }
@@ -1033,7 +1044,7 @@ void doldoc_print(const char *str) {
             tag[tlen] = '\0';
             if (*str == '$') str++; // skip closing $
 
-            // Tag 1: Color tags: $FG,RED$, $FG,GREEN$, $FG$, etc.
+            // Tag 1: Color tags: $FG,RED$, $FG,GREEN$, $FG$, $BG,DARK$, etc.
             if (strcmp(tag, "FG,RED") == 0) {
                 doc_term.text_color = COLOR_BTN_CLOSE;
             } else if (strcmp(tag, "FG,GREEN") == 0) {
@@ -1050,6 +1061,16 @@ void doldoc_print(const char *str) {
                 doc_term.text_color = COLOR_TEXT_MUTED;
             } else if (strcmp(tag, "FG,DEFAULT") == 0 || strcmp(tag, "FG") == 0) {
                 doc_term.text_color = COLOR_GREEN_TERMINAL;
+            } else if (strcmp(tag, "BG,BLACK") == 0) {
+                doldoc_set_bg_color(0xFF14171A);
+            } else if (strcmp(tag, "BG,DARK") == 0) {
+                doldoc_set_bg_color(0xFF1B1E20);
+            } else if (strcmp(tag, "BG,WINDOW") == 0) {
+                doldoc_set_bg_color(COLOR_WINDOW_BODY);
+            } else if (strcmp(tag, "BG,BLUE") == 0) {
+                doldoc_set_bg_color(0xFF1B3A57);
+            } else if (strcmp(tag, "BG,DEFAULT") == 0 || strcmp(tag, "BG") == 0) {
+                doldoc_set_bg_color(0xFF1B1E20);
             }
             // Tag 2: Hyperlinks: $LK,"Label",A="command"$
             else if (strncmp(tag, "LK,", 3) == 0) {
@@ -1060,6 +1081,11 @@ void doldoc_print(const char *str) {
                 const char *ap = strstr(tp, "A=");
                 if (ap) {
                     parse_quoted_string(ap + 2, cmd, sizeof(cmd));
+                }
+
+                int link_len = (int)strlen(label) + 2;
+                if (doc_cur_col > 0 && (doc_cur_col + link_len >= doc_grid_cols)) {
+                    doldoc_putc('\n');
                 }
 
                 uint32_t old_fg = doc_term.text_color;
@@ -1082,6 +1108,11 @@ void doldoc_print(const char *str) {
                 const char *lmp = strstr(tp, "LM=");
                 if (lmp) {
                     parse_quoted_string(lmp + 3, cmd, sizeof(cmd));
+                }
+
+                int btn_len = (int)strlen(label) + 4;
+                if (doc_cur_col > 0 && (doc_cur_col + btn_len >= doc_grid_cols)) {
+                    doldoc_putc('\n');
                 }
 
                 uint32_t old_fg = doc_term.text_color;
@@ -1113,6 +1144,11 @@ void doldoc_print(const char *str) {
 
                 int bar_width = 20;
                 int filled = (val * bar_width) / max_val;
+                int pb_len = bar_width + 8;
+                if (doc_cur_col > 0 && (doc_cur_col + pb_len >= doc_grid_cols)) {
+                    doldoc_putc('\n');
+                }
+
                 uint32_t old_fg = doc_term.text_color;
                 doc_term.text_color = COLOR_TEXT_MUTED;
                 doldoc_putc('[');
@@ -1135,6 +1171,11 @@ void doldoc_print(const char *str) {
             else if (strncmp(tag, "TR,", 3) == 0) {
                 char title[64] = {0};
                 parse_quoted_string(tag + 3, title, sizeof(title));
+                int tr_len = (int)strlen(title) + 4;
+                if (doc_cur_col > 0 && (doc_cur_col + tr_len >= doc_grid_cols)) {
+                    doldoc_putc('\n');
+                }
+
                 uint32_t old_fg = doc_term.text_color;
                 doc_term.text_color = COLOR_ACCENT_CYAN;
                 doldoc_putc('[');
@@ -1148,6 +1189,19 @@ void doldoc_print(const char *str) {
                 doc_term.text_color = old_fg;
             }
             continue;
+        }
+
+        // Word-level flow wrapping: prevent splitting words across row boundaries
+        if (*str != ' ' && *str != '\n' && *str != '\t' && *str != '\r') {
+            const char *wp = str;
+            int wlen = 0;
+            while (*wp && *wp != ' ' && *wp != '\n' && *wp != '\t' && *wp != '\r' && *wp != '$') {
+                wlen++;
+                wp++;
+            }
+            if (wlen > 0 && wlen < doc_grid_cols && doc_cur_col > 0 && (doc_cur_col + wlen >= doc_grid_cols)) {
+                doldoc_putc('\n');
+            }
         }
 
         doldoc_putc(*str);

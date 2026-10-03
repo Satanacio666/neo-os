@@ -540,6 +540,28 @@ void shell_run_command(const char *raw_cmd) {
         gfx_swap_buffers();
         extern int64_t psci_call_hvc(uint64_t func, uint64_t arg1, uint64_t arg2, uint64_t arg3);
         psci_call_hvc(0x84000009ULL, 0, 0, 0); // PSCI 0.2+ SYSTEM_RESET
+    } else if (strstr(cmd, ".HC") != NULL || strstr(cmd, ".hc") != NULL) {
+        char fname[64];
+        strncpy(fname, cmd, sizeof(fname) - 1);
+        fname[sizeof(fname) - 1] = '\0';
+        char *end = fname + strlen(fname) - 1;
+        while (end > fname && (*end == ' ' || *end == ';' || *end == '\r' || *end == '\n')) {
+            *end-- = '\0';
+        }
+        char fbuf[8192];
+        size_t fsize = 0;
+        if (redsea_read_file(fname, fbuf, sizeof(fbuf) - 1, &fsize) == 0) {
+            fbuf[fsize] = '\0';
+            doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%llu bytes)...\n", fname, (unsigned long long)fsize);
+            int64_t res = jit_compile_and_run(fbuf);
+            doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", (long long)res, (unsigned long long)res);
+        } else {
+            int is_func = (strstr(cmd, "{") != NULL);
+            int64_t val = jit_compile_and_run(cmd);
+            if (!is_func) {
+                doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", (long long)val, (unsigned long long)val);
+            }
+        }
     } else {
         // Execute C/HolyC source code through AArch64 JIT
         int is_func = (strstr(cmd, "{") != NULL && (strstr(cmd, "I64 ") != NULL || strstr(cmd, "U0 ") != NULL || strstr(cmd, "F64 ") != NULL || strstr(cmd, "int ") != NULL));
