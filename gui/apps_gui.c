@@ -101,7 +101,6 @@ void filer_render(window_t *win, void *user_data) {
 
         uint32_t name_col = COLOR_TEXT_WHITE;
         if (strcmp(ext, "HC") == 0 || strcmp(ext, "NC") == 0) name_col = 0xFF2ECC71;
-        else if (strcmp(ext, "lua") == 0) name_col = 0xFF3498DB;
         else if (strcmp(ext, "TXT") == 0 || strcmp(ext, "LOG") == 0) name_col = 0xFFF1C40F;
 
         gfx_draw_string(cx + 16, row_y + 6, entries[i].name, name_col, 0);
@@ -109,7 +108,6 @@ void filer_render(window_t *win, void *user_data) {
         // Type
         const char *type_str = (entries[i].attr & RS_ATTR_DIR) ? "Directory" :
                                (strcmp(ext, "HC") == 0) ? "HolyC / NeoC" :
-                               (strcmp(ext, "lua") == 0) ? "Lua Script" :
                                (strcmp(ext, "LOG") == 0) ? "Audit Log" : "Text Document";
         gfx_draw_string(cx + 180, row_y + 6, type_str, COLOR_TEXT_MUTED, 0);
 

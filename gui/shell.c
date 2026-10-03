@@ -3,7 +3,6 @@
 #include "wm.h"
 #include "menu.h"
 #include "../compiler/jit_arm64.h"
-#include "../compiler/lua_bridge.h"
 #include "../drivers/input/keyboard.h"
 #include "../kernel/mem/kheap.h"
 #include "../kernel/sched/sched.h"
@@ -71,7 +70,6 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print(" $FG,YELLOW$V-Sync Frame Pacing:$FG$  vsync <on | off | 60 | 120 | 144 | 240>\n");
         doldoc_print(" $FG,YELLOW$Zero-RAM Buffer:$FG$      zeroram (on, off, status)\n");
         doldoc_print(" $FG,YELLOW$JIT Engine:$FG$           jit <expr>, jittest, arithmetic, loops, switch/case\n");
-        doldoc_print(" $FG,YELLOW$Lua 5.4.7 Engine:$FG$     lua <expr>, run <file.lua>\n");
         doldoc_print(" $FG,YELLOW$System Telemetry:$FG$     top, smp, affinity <task> <core>, tasks, mem, sym\n");
         doldoc_print(" $FG,YELLOW$Storage & RedSea:$FG$     ls, cd, mkdir, rm, cat, write, run\n");
         doldoc_print(" $FG,YELLOW$Arithmetic & HolyC:$FG$   10 + 4 * 8;, I64 x = 10; x * 2;\n");
@@ -496,51 +494,17 @@ void shell_run_command(const char *raw_cmd) {
         const char *jcode = skip_leading_ws(cmd + 4);
         int64_t val = jit_compile_and_run(jcode);
         doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", (long long)val, (unsigned long long)val);
-    } else if (strncmp(cmd, "lua ", 4) == 0) {
-        const char *lcode = skip_leading_ws(cmd + 4);
-        size_t len = strlen(lcode);
-        int is_file = 0;
-        char file_to_run[64] = {0};
-
-        if (len > 4 && (strcmp(lcode + len - 4, ".lua") == 0 || strcmp(lcode + len - 4, ".LUA") == 0)) {
-            strncpy(file_to_run, lcode, sizeof(file_to_run) - 1);
-            is_file = 1;
-        } else if (len > 0 && strchr(lcode, ' ') == NULL && strchr(lcode, '(') == NULL && strchr(lcode, '=') == NULL) {
-            char try_path[64];
-            snprintf(try_path, sizeof(try_path), "%s.lua", lcode);
-            char dummy[16];
-            size_t dummy_sz = 0;
-            if (redsea_read_file(try_path, dummy, sizeof(dummy), &dummy_sz) == 0) {
-                strncpy(file_to_run, try_path, sizeof(file_to_run) - 1);
-                is_file = 1;
-            } else if (redsea_read_file(lcode, dummy, sizeof(dummy), &dummy_sz) == 0) {
-                strncpy(file_to_run, lcode, sizeof(file_to_run) - 1);
-                is_file = 1;
-            }
-        }
-
-        if (is_file) {
-            neo_lua_dofile(file_to_run);
-        } else {
-            int64_t res = neo_lua_eval(lcode);
-            doldoc_printf("$FG,YELLOW$--> %lld$FG$\n", (long long)res);
-        }
     } else if (strncmp(cmd, "run ", 4) == 0) {
         const char *fname = skip_leading_ws(cmd + 4);
-        size_t flen = strlen(fname);
-        if (flen > 4 && strcmp(fname + flen - 4, ".lua") == 0) {
-            neo_lua_dofile(fname);
+        char fbuf[8192];
+        size_t fsize = 0;
+        if (redsea_read_file(fname, fbuf, sizeof(fbuf) - 1, &fsize) == 0) {
+            fbuf[fsize] = '\0';
+            doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%llu bytes)...\n", fname, (unsigned long long)fsize);
+            int64_t res = jit_compile_and_run(fbuf);
+            doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", (long long)res, (unsigned long long)res);
         } else {
-            char fbuf[8192];
-            size_t fsize = 0;
-            if (redsea_read_file(fname, fbuf, sizeof(fbuf) - 1, &fsize) == 0) {
-                fbuf[fsize] = '\0';
-                doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%llu bytes)...\n", fname, (unsigned long long)fsize);
-                int64_t res = jit_compile_and_run(fbuf);
-                doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", (long long)res, (unsigned long long)res);
-            } else {
-                doldoc_printf("$FG,RED$File not found: %s$FG$\n", fname);
-            }
+            doldoc_printf("$FG,RED$File not found: %s$FG$\n", fname);
         }
     } else if (strncmp(cmd, "write ", 6) == 0) {
         const char *p = skip_leading_ws(cmd + 6);

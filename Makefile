@@ -27,8 +27,6 @@ SRCS_C = boot/main.c \
          compiler/lexer.c \
          compiler/table.c \
          compiler/jit_arm64.c \
-         compiler/lua_bridge.c \
-         compiler/lua_compat.c \
          gui/render.c \
          gui/wm.c \
          gui/shell.c \
@@ -61,13 +59,13 @@ OBJS_S = $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_S))
 ALL_OBJS = $(OBJS_C) $(OBJS_S)
 
 CFLAGS = -fshort-wchar -fno-strict-aliasing -ffreestanding -fno-stack-protector \
-         -fno-stack-check -I$(UEFI_DIR) -Ikernel -Icompiler -Igui -Idrivers -Ifs -Icompiler/lua -D__aarch64__ \
+         -fno-stack-check -I$(UEFI_DIR) -Ikernel -Icompiler -Igui -Idrivers -Ifs -D__aarch64__ \
          -Wno-builtin-declaration-mismatch -fpic -fPIC -O2 -Wall -MMD -MP
 
 ASFLAGS = -Ikernel
 
-LDFLAGS = -nostdlib -shared -Bsymbolic -T $(UEFI_DIR)/elf_aarch64_efi.lds -L$(UEFI_DIR) -Lcompiler/lua
-LIBS = $(UEFI_DIR)/crt_aarch64.o $(UEFI_DIR)/reloc.o $(ALL_OBJS) -luefi -llua
+LDFLAGS = -nostdlib -shared -Bsymbolic -T $(UEFI_DIR)/elf_aarch64_efi.lds -L$(UEFI_DIR)
+LIBS = $(UEFI_DIR)/crt_aarch64.o $(UEFI_DIR)/reloc.o $(ALL_OBJS) -luefi
 
 QEMU = taskset -c 0 qemu-system-aarch64
 QEMU_BIOS = /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
@@ -110,10 +108,7 @@ $(BUILD_DIR)/%.o: %.S | $(BUILD_DIR)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-compiler/lua/liblua.a:
-	$(MAKE) -C compiler/lua
-
-$(TARGET_SO): $(ALL_OBJS) libuefi compiler/lua/liblua.a
+$(TARGET_SO): $(ALL_OBJS) libuefi
 	$(LD) $(LDFLAGS) $(LIBS) -o $@
 
 $(TARGET_EFI): $(TARGET_SO)

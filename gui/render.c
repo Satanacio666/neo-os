@@ -1147,19 +1147,6 @@ void doldoc_print(const char *str) {
                 for (size_t i = 0; title[i]; i++) doldoc_putc(title[i]);
                 doc_term.text_color = old_fg;
             }
-            // Tag 6: Reactive Lua Expression Tag: $LUA,"lua_code"$
-            else if (strncmp(tag, "LUA,", 4) == 0) {
-                char lcode[128] = {0};
-                parse_quoted_string(tag + 4, lcode, sizeof(lcode));
-                extern int64_t neo_lua_eval(const char *code);
-                int64_t lres = neo_lua_eval(lcode);
-                char lbuf[32];
-                snprintf(lbuf, sizeof(lbuf), "%lld", (long long)lres);
-                uint32_t old_fg = doc_term.text_color;
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-                for (size_t i = 0; lbuf[i]; i++) doldoc_putc(lbuf[i]);
-                doc_term.text_color = old_fg;
-            }
             continue;
         }
 

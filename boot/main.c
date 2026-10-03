@@ -1,4 +1,3 @@
-#include "../compiler/lua_bridge.h"
 #include <uefi.h>
 #include "../kernel/mem/kheap.h"
 #include "../kernel/symbols/symbols.h"
@@ -131,8 +130,6 @@ int main(int argc, char **argv)
     symbols_register("gfx_blend_rect", (void*)gfx_blend_rect, SYM_FUNC);
     symbols_register("gfx_draw_line", (void*)gfx_draw_line, SYM_FUNC);
     symbols_register("gfx_dirty_expand", (void*)gfx_dirty_expand, SYM_FUNC);
-    symbols_register("neo_lua_eval", (void*)neo_lua_eval, SYM_FUNC);
-    symbols_register("neo_lua_dofile", (void*)neo_lua_dofile, SYM_FUNC);
     symbols_register("gpu_config_open", (void*)gpu_config_open, SYM_FUNC);
     symbols_register("gpu_config_close", (void*)gpu_config_close, SYM_FUNC);
     symbols_register("gpu_set_buffering", (void*)gpu_set_buffering, SYM_FUNC);
@@ -277,8 +274,6 @@ int main(int argc, char **argv)
     // 8. Initialize Native AArch64 JIT Compiler & Shell
     printf("[TRACE] Calling jit_init...\r\n");
     jit_init();
-    printf("[TRACE] Calling neo_lua_init...\r\n");
-    neo_lua_init();
     printf("[TRACE] Calling shell_init...\r\n");
     shell_init();
     printf("[TRACE] shell_init done\r\n");

@@ -73,12 +73,12 @@ static void scan_apps(void) {
     strncpy(menu_items[menu_item_count].category, "3D & Graphics", 19);
     menu_item_count++;
 
-    // 3. Lua 3D Benchmark Script
-    strncpy(menu_items[menu_item_count].name, "bench.lua", 31);
-    strncpy(menu_items[menu_item_count].desc, "Lua 5.4.7 3D Controller", 47);
-    strncpy(menu_items[menu_item_count].command, "run bench.lua", 47);
+    // 3. HolyC Standard Library Test
+    strncpy(menu_items[menu_item_count].name, "StdLib.HC", 31);
+    strncpy(menu_items[menu_item_count].desc, "HolyC Dynamic Collections", 47);
+    strncpy(menu_items[menu_item_count].command, "run StdLib.HC", 47);
     menu_items[menu_item_count].tag_color = COLOR_ACCENT_CYAN;
-    strncpy(menu_items[menu_item_count].category, "Scripting", 19);
+    strncpy(menu_items[menu_item_count].category, "HolyC", 19);
     menu_item_count++;
 
     // 4. Top Monitor
