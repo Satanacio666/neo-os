@@ -128,6 +128,9 @@ int main(int argc, char **argv)
     symbols_register("redsea_read_file", (void*)redsea_read_file, SYM_FUNC);
     symbols_register("redsea_write_file", (void*)redsea_write_file, SYM_FUNC);
     symbols_register("redsea_change_dir", (void*)redsea_change_dir, SYM_FUNC);
+    symbols_register("redsea_get_pwd", (void*)redsea_get_pwd, SYM_FUNC);
+    symbols_register("timer_get_uptime_us", (void*)timer_get_uptime_us, SYM_FUNC);
+    symbols_register("timer_get_ticks", (void*)timer_get_ticks, SYM_FUNC);
     symbols_register("ramdisk_write_file", (void*)ramdisk_write_file, SYM_FUNC);
     symbols_register("ramdisk_read_file", (void*)ramdisk_read_file, SYM_FUNC);
     symbols_register("ramdisk_delete_file", (void*)ramdisk_delete_file, SYM_FUNC);
