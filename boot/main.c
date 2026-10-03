@@ -139,6 +139,16 @@ int main(int argc, char **argv)
     symbols_register("gfx_draw_rect", (void*)gfx_draw_rect, SYM_FUNC);
     symbols_register("gfx_blend_rect", (void*)gfx_blend_rect, SYM_FUNC);
     symbols_register("gfx_draw_line", (void*)gfx_draw_line, SYM_FUNC);
+    symbols_register("gfx_clear", (void*)gfx_clear, SYM_FUNC);
+    symbols_register("gfx_swap_buffers", (void*)gfx_swap_buffers, SYM_FUNC);
+    symbols_register("gfx_get_backbuffer", (void*)gfx_get_backbuffer, SYM_FUNC);
+    symbols_register("gfx_get_canvas_width", (void*)gfx_get_canvas_width, SYM_FUNC);
+    symbols_register("gfx_get_canvas_height", (void*)gfx_get_canvas_height, SYM_FUNC);
+    symbols_register("gfx_get_canvas_pitch", (void*)gfx_get_canvas_pitch, SYM_FUNC);
+    symbols_register("gfx_draw_triangle_fill", (void*)gfx_draw_triangle_fill, SYM_FUNC);
+    symbols_register("gfx_draw_triangle_wire", (void*)gfx_draw_triangle_wire, SYM_FUNC);
+    symbols_register("gfx_draw_string", (void*)gfx_draw_string, SYM_FUNC);
+    symbols_register("gfx_draw_char", (void*)gfx_draw_char, SYM_FUNC);
     symbols_register("gfx_dirty_expand", (void*)gfx_dirty_expand, SYM_FUNC);
     symbols_register("gpu_config_open", (void*)gpu_config_open, SYM_FUNC);
     symbols_register("gpu_config_close", (void*)gpu_config_close, SYM_FUNC);

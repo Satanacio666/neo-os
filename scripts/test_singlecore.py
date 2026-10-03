@@ -14,7 +14,7 @@ cmd = (
 )
 
 print("[TEST] Spawning single-core QEMU instance...")
-child = pexpect.spawn(cmd, encoding='utf-8', timeout=40)
+child = pexpect.spawn(cmd, encoding='latin-1', timeout=40)
 child.logfile = sys.stdout
 
 try:
@@ -45,6 +45,38 @@ try:
     child.expect("Filer.HC", timeout=15)
     child.expect("neo:/>", timeout=10)
     print("\n[TEST] filer command verified successfully!")
+
+    print("\n[TEST] Sending 'run RasterTile.HC' (pure HolyC L1-Tiled Pineda engine)...")
+    child.sendline("run RasterTile.HC")
+    child.expect("RasterTile.HC", timeout=15)
+    child.expect("Analytical edge equations exact", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] RasterTile.HC verified successfully!")
+
+    print("\n[TEST] Sending 'run FontVector.HC' (pure HolyC Bézier Vector typography)...")
+    child.sendline("run FontVector.HC")
+    child.expect("FontVector.HC", timeout=15)
+    child.expect("boundary conditions verified", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] FontVector.HC verified successfully!")
+
+    print("\n[TEST] Sending 'run Menu.HC' (pure HolyC App Drawer)...")
+    child.sendline("run Menu.HC")
+    child.expect("Menu.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] Menu.HC verified successfully!")
+
+    print("\n[TEST] Sending 'run WM.HC' (pure HolyC Window Manager)...")
+    child.sendline("run WM.HC")
+    child.expect("WM.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] WM.HC verified successfully!")
+
+    print("\n[TEST] Sending 'run Shell.HC' (pure HolyC Shell Console)...")
+    child.sendline("run Shell.HC")
+    child.expect("Shell.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] Shell.HC verified successfully!")
 
     print("\n[TEST] All single-core tests PASSED perfectly!")
 except Exception as e:
