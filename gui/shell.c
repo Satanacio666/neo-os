@@ -12,7 +12,6 @@
 #include "../kernel/bench/bench_unified.h"
 #include "../drivers/input/mouse.h"
 #include "../drivers/gpu/gfx_backend.h"
-#include "apps_gui.h"
 #include <uefi.h>
 
 #define SHELL_MAX_LINE 256
@@ -390,17 +389,11 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print("$FG,CYAN$[COMPOSITOR]$FG$ Opened Dedicated Desktop Compositor & Effects Window.\n");
         return;
     } else if (strcmp(cmd, "filer") == 0 || strcmp(cmd, "files") == 0) {
-        filer_open();
-        doldoc_print("$FG,CYAN$[FILER]$FG$ Opened Dedicated DolDoc File Explorer Window.\n");
+        shell_run_command("run Filer.HC");
         return;
     } else if (strncmp(cmd, "edit", 4) == 0) {
-        const char *target_file = "fact.HC";
-        if (strlen(cmd) > 4) {
-            target_file = skip_leading_ws(cmd + 4);
-            if (*target_file == '\0') target_file = "fact.HC";
-        }
-        editor_open(target_file);
-        doldoc_printf("$FG,CYAN$[EDITOR]$FG$ Opened Dedicated Code Editor Window for '%s'.\n", target_file);
+        shell_run_command("run Editor.HC");
+        return;
     } else if (strcmp(cmd, "top") == 0) {
         top_print_doldoc();
     } else if (strncmp(cmd, "affinity ", 9) == 0) {

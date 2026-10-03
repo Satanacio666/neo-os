@@ -47,7 +47,6 @@ SRCS_C = boot/main.c \
          kernel/math/holygl.c \
          kernel/bench/bench_unified.c \
          kernel/bench/perf_overlay.c \
-         gui/apps_gui.c \
          gui/menu.c
 
 SRCS_S = kernel/sched/switch.S \

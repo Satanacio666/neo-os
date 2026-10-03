@@ -149,14 +149,6 @@ int main(int argc, char **argv)
     symbols_register("compositor_set_vsync", (void*)compositor_set_vsync, SYM_FUNC);
     symbols_register("compositor_set_shadows", (void*)compositor_set_shadows, SYM_FUNC);
     symbols_register("compositor_set_glass", (void*)compositor_set_glass, SYM_FUNC);
-    extern void filer_open(void);
-    extern void filer_close(void);
-    extern void editor_open(const char *filename);
-    extern void editor_close(void);
-    symbols_register("filer_open", (void*)filer_open, SYM_FUNC);
-    symbols_register("filer_close", (void*)filer_close, SYM_FUNC);
-    symbols_register("editor_open", (void*)editor_open, SYM_FUNC);
-    symbols_register("editor_close", (void*)editor_close, SYM_FUNC);
     symbols_register("glViewport", (void*)glViewport, SYM_FUNC);
     symbols_register("glMatrixMode", (void*)glMatrixMode, SYM_FUNC);
     symbols_register("glLoadIdentity", (void*)glLoadIdentity, SYM_FUNC);
