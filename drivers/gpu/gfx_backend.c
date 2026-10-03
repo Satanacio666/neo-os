@@ -16,7 +16,7 @@ gfx_backend_state_t g_gfx_backend = {
     .feature_flags = 0x01,
     .ops_counter = 0,
     .dma_transfers_bytes = 0,
-    .raster_engine = RASTER_ENGINE_SCANLINE,
+    .raster_engine = RASTER_ENGINE_TILED_L1,
     .tile_size = TILE_SIZE_64,
     .smp_cores = 4,
     .shading_mode = RASTER_SHADE_GOURAUD,
@@ -38,7 +38,7 @@ void gfx_backend_init(void) {
     g_gfx_backend.feature_flags = 0x01;
     g_gfx_backend.ops_counter = 0;
     g_gfx_backend.dma_transfers_bytes = 0;
-    g_gfx_backend.raster_engine = RASTER_ENGINE_SCANLINE;
+    g_gfx_backend.raster_engine = RASTER_ENGINE_TILED_L1;
     g_gfx_backend.tile_size = TILE_SIZE_64;
     g_gfx_backend.smp_cores = 4;
     g_gfx_backend.shading_mode = RASTER_SHADE_GOURAUD;
@@ -49,7 +49,7 @@ void gfx_backend_init(void) {
     uint32_t cw = gfx_get_canvas_width() ? gfx_get_canvas_width() : 1280;
     uint32_t ch = gfx_get_canvas_height() ? gfx_get_canvas_height() : 720;
     raster_tile_init(cw, ch, TILE_SIZE_64);
-    raster_tile_set_engine(RASTER_ENGINE_SCANLINE);
+    raster_tile_set_engine(RASTER_ENGINE_TILED_L1);
     raster_tile_set_cores(4);
     raster_tile_set_shading(RASTER_SHADE_GOURAUD);
     raster_tile_set_culling(1);

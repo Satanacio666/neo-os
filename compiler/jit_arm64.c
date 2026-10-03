@@ -466,6 +466,9 @@ static int var_type_count = 0;
 static int s_expr_is_float = 0;
 
 static void register_var_type(const char *name, int scale, int is_ptr, int is_float, const char *st_name) {
+    if (scale != 1 && scale != 2 && scale != 4 && scale != 8) {
+        scale = 8; // Enforce natural alignment scale
+    }
     for (int i = 0; i < var_type_count; i++) {
         if (strcmp(var_types[i].name, name) == 0) {
             var_types[i].scale = scale;
@@ -492,6 +495,177 @@ static var_type_t* lookup_var_type(const char *name) {
         if (strcmp(var_types[i].name, name) == 0) return &var_types[i];
     }
     return NULL;
+}
+
+// ─── AArch64 JIT Self-Optimization (Peephole Pass) ───────────────────────────
+static int s_jit_total_opt_roundtrips = 0;
+static int s_jit_total_opt_deadmoves   = 0;
+static int s_jit_total_opt_deadadds    = 0;
+
+static int insn_touches_reg_or_sp(uint32_t insn, uint32_t target_reg) {
+    if (insn == 0xD503201F) return 0; // NOP is harmless
+
+    // MOVZ / MOVK: immediate in [20:5], only Rd in [4:0] is a register
+    if ((insn & 0x7F800000) == 0x52800000 || (insn & 0x7F800000) == 0x72800000) {
+        uint32_t rd = insn & 0x1F;
+        if (rd == target_reg) return 1;
+        if (rd == 31) return 1; // Touches SP
+        return 0;
+    }
+
+    // MOV reg (ORR Xd, XZR, Xm)
+    if ((insn & 0xFFE0FFE0) == 0xAA0003E0) {
+        uint32_t rd = insn & 0x1F;
+        uint32_t rm = (insn >> 16) & 0x1F;
+        if (rd == target_reg || rm == target_reg) return 1;
+        if (rd == 31 || rm == 31) return 1;
+        return 0;
+    }
+
+    // Single register load/store: [Xn]
+    if ((insn & 0x0A000000) == 0x08000000 || (insn & 0x38000000) == 0x38000000) {
+        uint32_t rt = insn & 0x1F;
+        uint32_t rn = (insn >> 5) & 0x1F;
+        if (rt == target_reg || rn == target_reg) return 1;
+        if (rn == 31) return 1; // Base is SP
+        return 0;
+    }
+
+    // Standard 3-register data processing
+    uint32_t rd = insn & 0x1F;
+    uint32_t rn = (insn >> 5) & 0x1F;
+    uint32_t rm = (insn >> 16) & 0x1F;
+    if (rd == target_reg || rn == target_reg || rm == target_reg) return 1;
+    if (rn == 31) return 1;
+
+    return 0;
+}
+
+static int can_collapse_stack_roundtrip(code_buffer_t *cb, size_t p, size_t q, uint32_t m_reg) {
+    if (q <= p || (q - p) > 40) return 0;
+
+    for (size_t k = p + 1; k < q; k++) {
+        uint32_t insn = cb->code[k];
+        if (insn == 0xD503201F) continue; // NOP is safe
+
+        // Function calls, SVC, RET
+        if ((insn & 0xFFFFFC1F) == 0xD63F0000) return 0; // BLR
+        if ((insn & 0xFC000000) == 0x94000000) return 0; // BL
+        if ((insn & 0xFFE0001F) == 0xD4000001) return 0; // SVC
+        if (insn == 0xD65F03C0) return 0;                 // RET
+
+        // Branches
+        if ((insn & 0xFC000000) == 0x14000000) return 0; // B
+        if ((insn & 0xFF000010) == 0x54000000) return 0; // B.cond
+        if ((insn & 0x7E000000) == 0x34000000) return 0; // CBZ / CBNZ
+
+        // Register or SP modification
+        if (insn_touches_reg_or_sp(insn, m_reg)) return 0;
+    }
+
+    // Verify no branch jumps into (p, q]
+    for (size_t b = 0; b < cb->count; b++) {
+        uint32_t binsn = cb->code[b];
+        int32_t target = -1;
+        if ((binsn & 0xFC000000) == 0x14000000) { // B
+            int32_t imm26 = binsn & 0x03FFFFFF;
+            if (imm26 & 0x02000000) imm26 |= (int32_t)0xFC000000;
+            target = (int32_t)b + imm26;
+        } else if ((binsn & 0xFF000010) == 0x54000000) { // B.cond
+            int32_t imm19 = (binsn >> 5) & 0x7FFFF;
+            if (imm19 & 0x40000) imm19 |= (int32_t)0xFFF80000;
+            target = (int32_t)b + imm19;
+        } else if ((binsn & 0x7E000000) == 0x34000000) { // CBZ/CBNZ
+            int32_t imm19 = (binsn >> 5) & 0x7FFFF;
+            if (imm19 & 0x40000) imm19 |= (int32_t)0xFFF80000;
+            target = (int32_t)b + imm19;
+        }
+        if (target > (int32_t)p && target <= (int32_t)q) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static void jit_optimize_peephole(code_buffer_t *cb) {
+    if (!cb || cb->has_error || !cb->code || cb->count < 2) return;
+
+    int roundtrips_in_pass = 0;
+    int deadmoves_in_pass = 0;
+    int deadadds_in_pass = 0;
+
+    int changed = 1;
+    int pass_iter = 0;
+    while (changed && pass_iter < 4) {
+        changed = 0;
+        pass_iter++;
+
+        // Pass 1: Collapse STR X0, [SP, #-16]! ... LDR X1, [SP], #16 into MOV X1, X0 ... NOP
+        for (size_t p = 0; p < cb->count; p++) {
+            if (cb->code[p] == 0xF81F0FE0) { // STR X0, [SP, #-16]!
+                for (size_t q = p + 1; q < cb->count && (q - p) <= 40; q++) {
+                    if (cb->code[q] == 0xF84107E1) { // LDR X1, [SP], #16
+                        if (can_collapse_stack_roundtrip(cb, p, q, 1)) {
+                            cb->code[p] = 0xAA0003E1; // MOV X1, X0
+                            cb->code[q] = 0xD503201F; // NOP
+                            roundtrips_in_pass++;
+                            changed = 1;
+                            p = q;
+                            break;
+                        }
+                    } else if (cb->code[q] == 0xF84107E0) { // LDR X0, [SP], #16
+                        if (can_collapse_stack_roundtrip(cb, p, q, 0)) {
+                            cb->code[p] = 0xD503201F; // NOP
+                            cb->code[q] = 0xD503201F; // NOP
+                            roundtrips_in_pass++;
+                            changed = 1;
+                            p = q;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Dead Move Elimination (MOV Xn, Xn -> NOP)
+        for (size_t k = 0; k < cb->count; k++) {
+            uint32_t insn = cb->code[k];
+            if ((insn & 0xFFE0FFFF) == 0xAA0003E0) {
+                uint32_t rm = (insn >> 16) & 0x1F;
+                uint32_t rd = insn & 0x1F;
+                if (rm == rd) {
+                    cb->code[k] = 0xD503201F; // NOP
+                    deadmoves_in_pass++;
+                    changed = 1;
+                }
+            }
+        }
+
+        // Pass 3: Redundant Zero Additions (ADD Xd, Xd, #0 -> NOP)
+        for (size_t k = 0; k < cb->count; k++) {
+            uint32_t insn = cb->code[k];
+            if ((insn & 0xFFC00000) == 0x91000000) {
+                uint32_t imm12 = (insn >> 10) & 0xFFF;
+                uint32_t rn = (insn >> 5) & 0x1F;
+                uint32_t rd = insn & 0x1F;
+                if (imm12 == 0 && rn == rd) {
+                    cb->code[k] = 0xD503201F; // NOP
+                    deadadds_in_pass++;
+                    changed = 1;
+                }
+            }
+        }
+    }
+
+    s_jit_total_opt_roundtrips += roundtrips_in_pass;
+    s_jit_total_opt_deadmoves   += deadmoves_in_pass;
+    s_jit_total_opt_deadadds    += deadadds_in_pass;
+
+    if (roundtrips_in_pass > 0 || deadmoves_in_pass > 0 || deadadds_in_pass > 0) {
+        printf("[JIT OPT] Peephole Pass: collapsed %d stack round-trip(s), %d dead move(s), %d dead add(s)\n",
+               roundtrips_in_pass, deadmoves_in_pass, deadadds_in_pass);
+    }
 }
 
 // Forward Declarations for Recursive Descent Parser
@@ -720,14 +894,23 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                     if (vt && vt->struct_type[0] != '\0') {
                         struct_def_t *st = find_struct_def(vt->struct_type);
                         if (st) {
+                            int found = 0;
                             int offset = 0;
                             int fsize = 8;
                             for (int m = 0; m < st->member_count; m++) {
                                 if (strcmp(st->members[m].name, field) == 0) {
                                     offset = st->members[m].offset;
                                     fsize = st->members[m].size;
+                                    found = 1;
                                     break;
                                 }
+                            }
+                            if (!found) {
+                                cb->has_error = 1;
+                                snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                         "Type error: struct '%s' has no member '%s'", vt->struct_type, field);
+                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                                return;
                             }
                             emit_mov_imm64(cb, 1, (uint64_t)offset);
                             emit_add(cb, 0, 0, 1); // X0 = base + offset
@@ -1804,6 +1987,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     return;
                 }
 
+                jit_optimize_peephole(&fn_cb);
                 cb_commit_persistent(&fn_cb);
                 arm64_flush_cache(fn_cb.code, fn_cb.count * sizeof(uint32_t));
                 printf("[JIT] Compiled function '%s' to RAM at 0x%p (%u instrs, %zu bytes)\n",
@@ -2020,12 +2204,21 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     if (vt && vt->struct_type[0] != '\0') {
                         struct_def_t *st = find_struct_def(vt->struct_type);
                         if (st) {
+                            int found = 0;
                             int offset = 0;
                             for (int m = 0; m < st->member_count; m++) {
                                 if (strcmp(st->members[m].name, field_name) == 0) {
                                     offset = st->members[m].offset;
+                                    found = 1;
                                     break;
                                 }
+                            }
+                            if (!found) {
+                                cb->has_error = 1;
+                                snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                         "Type error: struct '%s' has no member '%s'", vt->struct_type, field_name);
+                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                                return;
                             }
                             if (vt->is_ptr) {
                                 emit_mov_imm64(cb, 16, (uint64_t)storage);
@@ -2077,14 +2270,23 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 if (vt && vt->struct_type[0] != '\0') {
                     struct_def_t *st = find_struct_def(vt->struct_type);
                     if (st) {
+                        int found = 0;
                         int offset = 0;
                         int fsize = 8;
                         for (int m = 0; m < st->member_count; m++) {
                             if (strcmp(st->members[m].name, field_name) == 0) {
                                 offset = st->members[m].offset;
                                 fsize = st->members[m].size;
+                                found = 1;
                                 break;
                             }
+                        }
+                        if (!found) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: struct '%s' has no member '%s'", vt->struct_type, field_name);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                            return;
                         }
                         if (vt->is_ptr) {
                             emit_mov_imm64(cb, 16, (uint64_t)storage);
@@ -2235,6 +2437,7 @@ int64_t jit_eval(const char *expr_source) {
         return 0;
     }
 
+    jit_optimize_peephole(&cb);
     arm64_flush_cache(cb.code, cb.count * sizeof(uint32_t));
 
     jit_func_t fn = (jit_func_t)cb.code;
@@ -2272,6 +2475,7 @@ int64_t jit_compile_and_run(const char *source) {
         return -1;
     }
 
+    jit_optimize_peephole(&cb);
     arm64_flush_cache(cb.code, cb.count * sizeof(uint32_t));
 
     jit_func_t fn = (jit_func_t)cb.code;

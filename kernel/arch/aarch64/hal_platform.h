@@ -9,22 +9,36 @@
  * Supports QEMU virt, Raspberry Pi 4/5, Rockchip RK3588, and custom silicon.
  */
 
+typedef enum {
+    HAL_PLATFORM_QEMU_VIRT = 0,
+    HAL_PLATFORM_RPI4      = 1,
+    HAL_PLATFORM_RPI5      = 2
+} hal_platform_id_t;
+
 typedef struct {
-    const char *name;
-    uintptr_t   uart_base;
-    uintptr_t   gicd_base;
-    uintptr_t   gicc_base;
-    uintptr_t   virtio_base;
-    uint32_t    virtio_slots;
-    uint32_t    virtio_stride;
-    uint32_t    irq_timer;
-    uint32_t    irq_uart;
+    hal_platform_id_t id;
+    const char       *name;
+    uintptr_t         uart_base;
+    uintptr_t         gicd_base;
+    uintptr_t         gicc_base;
+    uintptr_t         virtio_base;
+    uint32_t          virtio_slots;
+    uint32_t          virtio_stride;
+    uint32_t          irq_timer;
+    uint32_t          irq_uart;
+    uint64_t          timer_freq_hz;
 } hal_platform_t;
 
 // Platform lifecycle
 void                   hal_platform_init(void);
 const hal_platform_t*  hal_get_platform(void);
 void                   hal_set_platform(const hal_platform_t *platform);
+int                    hal_platform_select(hal_platform_id_t id);
+
+// Pre-defined Board Profiles
+extern const hal_platform_t g_platform_qemu_virt;
+extern const hal_platform_t g_platform_rpi4;
+extern const hal_platform_t g_platform_rpi5;
 
 // Cached global accessors (Zero-overhead single LDR instructions)
 extern uintptr_t g_hal_uart_base;
