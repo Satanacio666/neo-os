@@ -47,6 +47,7 @@ SRCS_C = boot/main.c \
          kernel/math/holygl.c \
          kernel/bench/bench_unified.c \
          kernel/bench/perf_overlay.c \
+         kernel/bench/profiler.c \
          gui/menu.c
 
 SRCS_S = kernel/sched/switch.S \
@@ -70,7 +71,7 @@ LIBS = $(UEFI_DIR)/crt_aarch64.o $(UEFI_DIR)/reloc.o $(ALL_OBJS) -luefi
 QEMU = taskset -c 0 qemu-system-aarch64
 QEMU_BIOS = /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 QEMU_FLAGS = -M virt,gic-version=2 \
-             -accel tcg,thread=single,tb-size=256 \
+             -accel tcg,thread=single,tb-size=512 \
              -cpu cortex-a72 \
              -smp 4 \
              -m 1024 \
@@ -78,13 +79,14 @@ QEMU_FLAGS = -M virt,gic-version=2 \
              -device ramfb \
              -device virtio-gpu-device,xres=1024,yres=768 \
              -device usb-ehci \
+             -device usb-kbd \
              -device usb-tablet \
              -net none \
              -drive file=$(DISK_IMG),format=raw,id=disk,if=none \
              -device virtio-blk-pci,drive=disk,bootindex=0 \
              -drive file=$(REDSEA_IMG),format=raw,id=redsea,if=none \
              -device virtio-blk-device,drive=redsea \
-             -display sdl \
+             -display gtk \
              -serial stdio
 
 .PHONY: all clean run run-headless disk libuefi

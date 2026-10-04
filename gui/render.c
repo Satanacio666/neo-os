@@ -480,6 +480,50 @@ void gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t col
     }
 }
 
+void gfx_blend_rect_scalar(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color_rgba) {
+    if ((int)w <= 0 || (int)h <= 0) return;
+    int min_x = (int)x;
+    int min_y = (int)y;
+    int max_x = min_x + (int)w;
+    int max_y = min_y + (int)h;
+
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x > (int)canvas.width) max_x = (int)canvas.width;
+    if (max_y > (int)canvas.height) max_y = (int)canvas.height;
+
+    if (clip_rect.active) {
+        if (min_x < clip_rect.x0) min_x = clip_rect.x0;
+        if (min_y < clip_rect.y0) min_y = clip_rect.y0;
+        if (max_x > clip_rect.x1) max_x = clip_rect.x1;
+        if (max_y > clip_rect.y1) max_y = clip_rect.y1;
+    }
+    if (min_x >= max_x || min_y >= max_y) return;
+
+    uint32_t a = (color_rgba >> 24) & 0xFF;
+    if (a == 0) return;
+    if (a == 255) {
+        gfx_draw_rect(min_x, min_y, max_x - min_x, max_y - min_y, color_rgba);
+        return;
+    }
+
+    uint32_t inv_a = 255 - a;
+    uint32_t src_r = ((color_rgba >> 16) & 0xFF) * a + 128;
+    uint32_t src_g = ((color_rgba >> 8)  & 0xFF) * a + 128;
+    uint32_t src_b = ((color_rgba)       & 0xFF) * a + 128;
+
+    for (int j = min_y; j < max_y; j++) {
+        uint32_t *row = &canvas.back_buffer[j * canvas.pitch];
+        for (int i = min_x; i < max_x; i++) {
+            uint32_t dst = row[i];
+            uint32_t r = (src_r + ((dst >> 16) & 0xFF) * inv_a) >> 8;
+            uint32_t g = (src_g + ((dst >> 8)  & 0xFF) * inv_a) >> 8;
+            uint32_t b = (src_b + ((dst)       & 0xFF) * inv_a) >> 8;
+            row[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 void gfx_draw_rounded_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t radius, uint32_t color) {
     if (radius > w / 2) radius = w / 2;
     if (radius > h / 2) radius = h / 2;

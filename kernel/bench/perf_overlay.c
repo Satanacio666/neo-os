@@ -1,4 +1,5 @@
 #include "perf_overlay.h"
+#include "profiler.h"
 #include "../../gui/render.h"
 #include "../../fs/redsea.h"
 #include "../../drivers/gpu/gfx_backend.h"
@@ -82,11 +83,12 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     s->fps_current = (dt > 0) ? (1000000.0f / (float)dt) : 60.0f;
 
     // Track initial cold-start warmup spike (TCG translation + Z-Buffer alloc)
-    if (s->total_frames <= 3) {
+    if (s->total_frames <= 20) {
         if (dt > 30000ULL && dt > s->warmup_spike_us) {
             s->warmup_spike_us = dt;
         }
         s->warmup_frames = (uint32_t)s->total_frames;
+        return; // Discard initial compilation warmup from steady-state statistics
     }
 
     // Classify spike levels
@@ -95,7 +97,7 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     else if (dt > 50000ULL) s->spike_count_50ms++;
 
     // High-Resolution Forensic Spike Tracking (>33.3ms = drops below 30 FPS)
-    if (dt > 33333ULL && s->total_frames > 2) {
+    if (dt > 33333ULL && s->total_frames > 20) {
         spike_cause_t cause = SPIKE_CAUSE_NONE;
         if (s->last_wm_overhead_us > 15000) {
             cause = SPIKE_CAUSE_WM_FULL_REDRAW;
@@ -148,11 +150,9 @@ void perf_overlay_end_frame(perf_stats_t *s) {
                  (uint64_t)(s->last_smp_wait_us / 1000), (uint64_t)((s->last_smp_wait_us % 1000) / 100),
                  cause_str);
 
-        // Only emit to UART for significant latency stalls (>400ms) or first 3 frames
-        // to avoid self-inducing UART emulation stalls on every frame!
-        if (dt > 400000ULL || s->total_frames <= 3) {
-            uart_puts(spk_msg);
-        }
+        // Do not emit UART synchronously during frame loop to avoid UART emulation stalls!
+        // Spikes are preserved in s->spike_records ring buffer and g_profiler for export.
+        (void)spk_msg;
     }
 
     // Reset per-frame tracking accumulators
@@ -374,10 +374,10 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
     if (!s || !s->overlay_visible) return;
 
     // Semi-transparent dark background panel (alpha 0xDD = 87%)
-    gfx_blend_rect(x, y, 248, 148, 0xDD0D0F12);
+    gfx_blend_rect(x, y, 248, 166, 0xDD0D0F12);
 
     // Cyan left accent bar
-    gfx_draw_rect(x, y, 2, 148, COLOR_ACCENT_CYAN);
+    gfx_draw_rect(x, y, 2, 166, COLOR_ACCENT_CYAN);
 
     // Render text with bg=0 so it blends onto translucent glass panel
     uint32_t bg_col = 0;
@@ -448,7 +448,16 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
     uint32_t rn_i = (uint32_t)s->render_avg_ms;
     uint32_t rn_f = (uint32_t)((s->render_avg_ms - (float)rn_i) * 10.0f);
     snprintf(buf, sizeof(buf), "3D:%u.%u Blit:%u.%ums", rn_i, rn_f, bl_i, bl_f);
-    gfx_draw_string(x + 8, ly, buf, COLOR_ACCENT_CYAN, bg_col);
+    gfx_draw_string(x + 8, ly, buf, COLOR_ACCENT_CYAN, bg_col); ly += lh;
+
+    // Bottleneck diagnosis
+    const char *bn_str = profiler_bottleneck_str(g_profiler.last_bottleneck);
+    snprintf(buf, sizeof(buf), "Diag: %s", bn_str);
+    uint32_t col_bn = (g_profiler.last_bottleneck == BOTTLENECK_PACED_VSYNC) ? COLOR_BTN_MAX :
+                      (g_profiler.last_bottleneck == BOTTLENECK_MEM_BANDWIDTH) ? 0xFF8E44AD :
+                      (g_profiler.last_bottleneck == BOTTLENECK_SMP_CONTENTION) ? 0xFFE67E22 :
+                      (g_profiler.last_bottleneck == BOTTLENECK_HOST_LATENCY) ? COLOR_BTN_CLOSE : COLOR_GOLD_ACCENT;
+    gfx_draw_string(x + 8, ly, buf, col_bn, bg_col);
 }
 
 // ─── Empirical Benchmark Log Export ───────────────────────────────────────────

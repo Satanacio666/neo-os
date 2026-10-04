@@ -53,169 +53,195 @@ void bench_unified_record_blit(uint64_t blit_us) {
 
 // ─── Suite Phase Configuration Applicator ─────────────────────────────────────
 
+static const char *s_cat_names[5] = {
+    "Gears", "Cubes", "Dynamics", "Sphere", "Fillrate"
+};
+static const char *s_var_names[8] = {
+    "SW 1C Base", "SW NEON L1", "SW SMP 4C", "SW DirectVRAM",
+    "HW VirtIO",  "HW DMA+SMP", "HW Wireframe", "HW VSync 60Hz"
+};
+
 static void bench_apply_suite_phase(int phase) {
+    if (phase < 0 || phase >= BENCH_SUITE_TOTAL_PHASES) return;
+
     g_bench.render_w = 640;
     g_bench.render_h = 360;
     gpu_set_shading(RASTER_SHADE_GOURAUD);
 
-    if (phase == 0) {
-        // Ph 1: CPU SW Double-Buffer, 1 Core, 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_CPU_SW;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(1);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 1) {
-        // Ph 2: CPU SW Direct VRAM (Zero-RAM), 1 Core, 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_CPU_SW;
-        gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(1);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 2) {
-        // Ph 3: VirtIO-GPU Hardware DMA Scanout, 1 Core, 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_GPU_HW;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(1);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 3) {
-        // Ph 4: VirtIO HW + Direct VRAM, 1 Core, 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_GPU_HW;
-        gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(1);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 4) {
-        // Ph 5: Dual-Core SMP Parallel Slicing (2 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(2);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 5) {
-        // Ph 6: Quad-Core SMP Parallel Grid (4 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 6) {
-        // Ph 7: Sovereign L1 Tile NEON (1 Core), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_CPU_SW;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(1);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 7) {
-        // Ph 8: Sovereign L1 Tile NEON (2 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(2);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 8) {
-        // Ph 9: Sovereign L1 Tile NEON (4 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 9) {
-        // Ph 10: Sovereign L1 Tile Flat Shading (4 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gpu_set_shading(RASTER_SHADE_FLAT);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 10) {
-        // Ph 11: Sovereign L1 Tile Wireframe (4 Cores), 360p, Uncapped
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gpu_set_shading(RASTER_SHADE_WIREFRAME);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 11) {
-        // Ph 12: Scaled Resolution 480p (4 Cores L1 Tile, Uncapped)
-        g_bench.render_w = 640;
-        g_bench.render_h = 480;
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 12) {
-        // Ph 13: Native Resolution 720p (4 Cores L1 Tile, Uncapped)
-        g_bench.render_w = 1280;
-        g_bench.render_h = 720;
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 13) {
-        // Ph 14: Native 720p + Direct VRAM (4 Cores L1 Tile, Uncapped)
-        g_bench.render_w = 1280;
-        g_bench.render_h = 720;
-        g_gfx_backend.mode = GFX_MODE_CPU_SW;
-        gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(0, 0);
-    } else if (phase == 14) {
-        // Ph 15: V-Sync Locked 30 FPS (4 Cores L1 Tile, 360p)
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(1, 30);
-    } else if (phase == 15) {
-        // Ph 16: V-Sync Locked 60 FPS (4 Cores L1 Tile, 720p Native)
-        g_bench.render_w = 1280;
-        g_bench.render_h = 720;
-        g_gfx_backend.mode = GFX_MODE_SMP_TILED;
-        gpu_set_buffering(GFX_BUFFER_DOUBLE);
-        gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
-        gpu_set_smp_cores(4);
-        gfx_vsync_set(1, 60);
+    int cat = phase / 8; // 0=Gears, 1=Cubes, 2=Dynamics, 3=Sphere, 4=Fillrate
+    int var = phase % 8; // 0..7
+
+    if (cat == 2) {
+        physics3d_world_init();
     }
 
-    static const char *s_phase_names[BENCH_SUITE_TOTAL_PHASES] = {
-        "CPU SW + DoubleBuf (1C, 360p)",
-        "CPU Direct VRAM (1C, 360p)",
-        "VirtIO-GPU HW DMA (1C, 360p)",
-        "VirtIO HW + Direct VRAM (1C)",
-        "Dual-Core SMP Slicing (2C, 360p)",
-        "Quad-Core SMP Grid (4C, 360p)",
-        "Sovereign L1 Tile (1C, 360p)",
-        "Sovereign L1 Tile (2C, 360p)",
-        "Sovereign L1 Tile (4C, 360p)",
-        "Sovereign L1 Flat Shade (4C)",
-        "Sovereign L1 Wireframe (4C)",
-        "Scaled 480p L1 Tile (4C)",
-        "Native 720p L1 Tile (4C)",
-        "Native 720p Direct VRAM (4C)",
-        "VSync Locked 30 FPS (4C, 360p)",
-        "VSync Locked 60 FPS (4C, 720p)"
-    };
-
-    if (phase >= 0 && phase < BENCH_SUITE_TOTAL_PHASES) {
-        strncpy(g_bench.comparison_records[phase].name, s_phase_names[phase], sizeof(g_bench.comparison_records[phase].name) - 1);
+    switch (var) {
+        case 0: // V1: SW Baseline 1C
+            g_gfx_backend.mode = GFX_MODE_CPU_SW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_SCANLINE);
+            gpu_set_smp_cores(1);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 1: // V2: SW NEON SIMD L1-Tile
+            g_gfx_backend.mode = GFX_MODE_CPU_SW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(1);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 2: // V3: SW SMP 4C
+            g_gfx_backend.mode = GFX_MODE_SMP_TILED;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(4);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 3: // V4: SW Zero-RAM Direct VRAM
+            g_gfx_backend.mode = GFX_MODE_CPU_SW;
+            gpu_set_buffering(GFX_BUFFER_DIRECT_VRAM);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(4);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 4: // V5: HW VirtIO DMA (1C)
+            g_gfx_backend.mode = GFX_MODE_GPU_HW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(1);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 5: // V6: HW VirtIO DMA + SMP 4C
+            g_gfx_backend.mode = GFX_MODE_GPU_HW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(4);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(0, 0);
+            break;
+        case 6: // V7: HW Wireframe
+            g_gfx_backend.mode = GFX_MODE_GPU_HW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(4);
+            gpu_set_shading(RASTER_SHADE_WIREFRAME);
+            gfx_vsync_set(0, 0);
+            break;
+        case 7: // V8: HW VSync Locked 60Hz
+            g_gfx_backend.mode = GFX_MODE_GPU_HW;
+            gpu_set_buffering(GFX_BUFFER_DOUBLE);
+            gpu_set_raster_engine(RASTER_ENGINE_TILED_L1);
+            gpu_set_smp_cores(4);
+            gpu_set_shading(RASTER_SHADE_GOURAUD);
+            gfx_vsync_set(1, 60);
+            break;
     }
+
+    snprintf(g_bench.comparison_records[phase].name, sizeof(g_bench.comparison_records[phase].name),
+             "%s: %s", s_cat_names[cat], s_var_names[var]);
 
     g_bench.suite_phase_start_ticks = read_cntvct();
     uint64_t freq = read_cntfrq();
     if (freq == 0) freq = 62500000ULL;
-    // Exactly 15.0 seconds per test = 240 seconds total test suite!
-    g_bench.suite_phase_duration_ticks = (freq * 15ULL);
+    // Exactly 1.5 seconds per individual test (60 seconds total full 40-phase suite)
+    g_bench.suite_phase_duration_ticks = (freq * 3ULL) / 2ULL;
     g_bench.suite_phase_elapsed_sec = 0.0f;
     g_bench.suite_ticks = 0;
+    profiler_phase_reset(15);
     perf_overlay_init(&g_bench.perf_stats);
 }
 
 // ─── Initialization ──────────────────────────────────────────────────────────
+
+typedef struct {
+    vec3_t  vertices[128];
+    int     num_vertices;
+    tri3d_t triangles[256];
+    int     num_triangles;
+} mesh3d_sphere_t;
+
+static mesh3d_sphere_t s_sphere;
+static float s_sphere_rot = 0.0f;
+
+static void init_sphere_mesh(mesh3d_sphere_t *sph, float radius, int rings, int sectors) {
+    if (rings > 8) rings = 8;
+    if (sectors > 12) sectors = 12;
+    sph->num_vertices = 0;
+    sph->num_triangles = 0;
+    float const R = 1.0f / (float)(rings - 1);
+    float const S = 1.0f / (float)(sectors - 1);
+    for (int r = 0; r < rings; ++r) {
+        for (int s = 0; s < sectors; ++s) {
+            float y = math3d_sin((float)r * 180.0f * R - 90.0f);
+            float x = math3d_cos((float)s * 360.0f * S) * math3d_cos((float)r * 180.0f * R - 90.0f);
+            float z = math3d_sin((float)s * 360.0f * S) * math3d_cos((float)r * 180.0f * R - 90.0f);
+            if (sph->num_vertices < 128) {
+                sph->vertices[sph->num_vertices].x = x * radius;
+                sph->vertices[sph->num_vertices].y = y * radius;
+                sph->vertices[sph->num_vertices].z = z * radius;
+                sph->num_vertices++;
+            }
+        }
+    }
+    for (int r = 0; r < rings - 1; ++r) {
+        for (int s = 0; s < sectors - 1; ++s) {
+            int i0 = r * sectors + s;
+            int i1 = r * sectors + (s + 1);
+            int i2 = (r + 1) * sectors + (s + 1);
+            int i3 = (r + 1) * sectors + s;
+            if (sph->num_triangles < 254) {
+                sph->triangles[sph->num_triangles].v[0] = i0;
+                sph->triangles[sph->num_triangles].v[1] = i1;
+                sph->triangles[sph->num_triangles].v[2] = i2;
+                sph->triangles[sph->num_triangles].color = ((r + s) % 2) ? 0xFF3498DB : 0xFF2ECC71;
+                sph->num_triangles++;
+                sph->triangles[sph->num_triangles].v[0] = i0;
+                sph->triangles[sph->num_triangles].v[1] = i2;
+                sph->triangles[sph->num_triangles].v[2] = i3;
+                sph->triangles[sph->num_triangles].color = ((r + s) % 2) ? 0xFFE74C3C : 0xFFF1C40F;
+                sph->num_triangles++;
+            }
+        }
+    }
+}
+
+static void render_sphere_mesh(const mesh3d_sphere_t *sph, const mat4_t *mvp, int vp_x, int vp_y, int vp_w, int vp_h, int wireframe) {
+    if (!sph || !mvp) return;
+    int sx[128], sy[128], valid[128];
+    float half_w = (float)vp_w * 0.5f, half_h = (float)vp_h * 0.5f;
+    float cx = (float)vp_x + half_w, cy = (float)vp_y + half_h;
+    for (int i = 0; i < sph->num_vertices; i++) {
+        vec4_t v = {sph->vertices[i].x, sph->vertices[i].y, sph->vertices[i].z, 1.0f};
+        vec4_t p;
+        mat4_mul_vec4(&p, mvp, &v);
+        if (p.w > 0.05f) {
+            float inv_w = 1.0f / p.w;
+            sx[i] = (int)(cx + p.x * inv_w * half_w);
+            sy[i] = (int)(cy - p.y * inv_w * half_h);
+            valid[i] = 1;
+        } else {
+            valid[i] = 0;
+        }
+    }
+    for (int i = 0; i < sph->num_triangles; i++) {
+        int i0 = sph->triangles[i].v[0];
+        int i1 = sph->triangles[i].v[1];
+        int i2 = sph->triangles[i].v[2];
+        if (valid[i0] && valid[i1] && valid[i2]) {
+            if (wireframe) {
+                gfx_draw_triangle_wire(sx[i0], sy[i0], sx[i1], sy[i1], sx[i2], sy[i2], COLOR_ACCENT_CYAN);
+            } else {
+                gfx_draw_triangle_fill(sx[i0], sy[i0], sx[i1], sy[i1], sx[i2], sy[i2], sph->triangles[i].color);
+                gfx_draw_triangle_wire(sx[i0], sy[i0], sx[i1], sy[i1], sx[i2], sy[i2], 0xFF1B1E20);
+            }
+        }
+    }
+}
 
 void bench_unified_init(void) {
     memset(&g_bench, 0, sizeof(g_bench));
@@ -228,6 +254,7 @@ void bench_unified_init(void) {
     g_bench.render_h = 360;
 
     math3d_init();
+    init_sphere_mesh(&s_sphere, 2.8f, 8, 12);
 
     // 1. Gears Setup
     zbuffer_init(&g_bench.zbuffer, 640, 360);
@@ -249,27 +276,18 @@ void bench_unified_init(void) {
 
     // 3. Suite Setup (6 Phases)
     mesh3d_init_cube(&g_bench.suite_cube, 2.0f);
-    physics3d_init(&g_bench.suite_physics, 1.8f);
+    physics3d_world_init();
     texture_generate_procedural(g_bench.suite_tex_neon, 64, 64, 0);
     texture_generate_procedural(g_bench.suite_tex_check, 64, 64, 1);
     g_bench.suite_phase = PHASE_IDLE;
     g_bench.suite_cycle = 0;
     g_bench.suite_finished = 0;
 
-    const char *names[BENCH_SUITE_TOTAL_PHASES] = {
-        "CPU SW (UEFI GOP) + DoubleBuf (1C)",
-        "CPU Direct VRAM (Zero-RAM GOP) (1C)",
-        "VirtIO-GPU Hardware DMA Scanout (1C)",
-        "VirtIO Hardware + Direct VRAM (1C)",
-        "Dual-Core SMP Parallel Slicing (2C)",
-        "Quad-Core SMP Parallel Grid (4C)",
-        "Sovereign L1 Tile NEON (1C)",
-        "Sovereign L1 Tile NEON + 4C SMP",
-        "Mixed: L1 Tile + 4C + Direct VRAM",
-        "Mixed: L1 Tile + 4C + 60fps Lock"
-    };
     for (int p = 0; p < BENCH_SUITE_TOTAL_PHASES; p++) {
-        strncpy(g_bench.comparison_records[p].name, names[p], sizeof(g_bench.comparison_records[p].name) - 1);
+        int cat = p / 8;
+        int var = p % 8;
+        snprintf(g_bench.comparison_records[p].name, sizeof(g_bench.comparison_records[p].name),
+                 "%s: %s", s_cat_names[cat], s_var_names[var]);
     }
 
     perf_overlay_init(&g_bench.perf_stats);
@@ -356,38 +374,16 @@ void bench_unified_set_mode(bench_mode_t mode) {
 
 // ─── Export Benchmark Logs & Comparison Matrix to RedSea Filesystem ───────────
 
-static void pad_right(char *dst, const char *src, int width) {
-    int len = 0;
-    while (*src && len < width) {
-        dst[len++] = *src++;
-    }
-    while (len < width) {
-        dst[len++] = ' ';
-    }
-    dst[len] = '\0';
-}
-
-static void pad_left(char *dst, const char *src, int width) {
-    int slen = 0;
-    const char *p = src;
-    while (*p++) slen++;
-    int spaces = (width > slen) ? (width - slen) : 0;
-    int pos = 0;
-    for (int i = 0; i < spaces; i++) dst[pos++] = ' ';
-    for (int i = 0; i < slen && pos < width; i++) dst[pos++] = src[i];
-    dst[pos] = '\0';
-}
-
 int bench_unified_export_comparison(void) {
-    char buf[4096];
+    static char buf[8192];
     int len = 0;
     len += snprintf(buf + len, sizeof(buf) - len,
-        "=============================================================================================================\n"
-        "                       NeoOS NeoBench Extreme: 16-Phase Comparative Telemetry Matrix\n"
-        "                                  Target: AArch64 Ring 0 SASOS (4x Cortex-A72)\n"
-        "=============================================================================================================\n"
-        "Phase | Configuration              | Avg FPS | 1%% Low | Avg FT (ms) | Render (ms) | Blit (ms) | Jitter | Spikes\n"
-        "------+----------------------------+---------+--------+-------------+-------------+-----------+--------+-------\n"
+        "========================================================================================================================\n"
+        "                               NeoOS HolyBenchmark 2.0: 40-Phase Symmetrical Telemetry Matrix                           \n"
+        "                                       Target: AArch64 Ring 0 SASOS (4x Cortex-A72)                                     \n"
+        "========================================================================================================================\n"
+        "Ph | Category | Variation    | Avg FPS | 1%% Low | Avg FT (ms) | Render (ms) | Blit (ms) | Jitter | Primary Bottleneck\n"
+        "---+----------+--------------+---------+--------+-------------+-------------+-----------+--------+----------------------\n"
     );
 
     int winner_idx = 0;
@@ -401,70 +397,90 @@ int bench_unified_export_comparison(void) {
 
     for (int p = 0; p < BENCH_SUITE_TOTAL_PHASES; p++) {
         bench_comparison_record_t *r = &g_bench.comparison_records[p];
-        uint32_t fps_i = (uint32_t)r->fps_avg;
-        uint32_t fps_f = (uint32_t)((r->fps_avg - (float)fps_i) * 10.0f);
-        uint32_t l1_i = (uint32_t)r->fps_1pct_low;
-        uint32_t l1_f = (uint32_t)((r->fps_1pct_low - (float)l1_i) * 10.0f);
-        uint32_t ft_i = (uint32_t)r->frametime_avg_ms;
-        uint32_t ft_f = (uint32_t)((r->frametime_avg_ms - (float)ft_i) * 10.0f);
-        uint32_t rn_i = (uint32_t)r->render_time_ms;
-        uint32_t rn_f = (uint32_t)((r->render_time_ms - (float)rn_i) * 10.0f);
-        uint32_t bl_i = (uint32_t)r->blit_time_ms;
-        uint32_t bl_f = (uint32_t)((r->blit_time_ms - (float)bl_i) * 10.0f);
-        uint32_t jt_i = (uint32_t)r->jitter_ms;
-        uint32_t jt_f = (uint32_t)((r->jitter_ms - (float)jt_i) * 10.0f);
+        int cat = p / 8;
+        int var = p % 8;
 
-        char c_name[32], c_fps[16], c_l1[16], c_ft[16], c_rn[16], c_bl[16], c_jt[16], c_spk[16];
-        char fps_tmp[16], l1_tmp[16], ft_tmp[16], rn_tmp[16], bl_tmp[16], jt_tmp[16], spk_tmp[16];
-
-        pad_right(c_name, r->name, 26);
-
-        snprintf(fps_tmp, sizeof(fps_tmp), "%llu.%llu", (uint64_t)fps_i, (uint64_t)fps_f);
-        pad_left(c_fps, fps_tmp, 7);
-
-        snprintf(l1_tmp, sizeof(l1_tmp), "%llu.%llu", (uint64_t)l1_i, (uint64_t)l1_f);
-        pad_left(c_l1, l1_tmp, 6);
-
-        snprintf(ft_tmp, sizeof(ft_tmp), "%llu.%llu", (uint64_t)ft_i, (uint64_t)ft_f);
-        pad_left(c_ft, ft_tmp, 11);
-
-        snprintf(rn_tmp, sizeof(rn_tmp), "%llu.%llu", (uint64_t)rn_i, (uint64_t)rn_f);
-        pad_left(c_rn, rn_tmp, 11);
-
-        snprintf(bl_tmp, sizeof(bl_tmp), "%llu.%llu", (uint64_t)bl_i, (uint64_t)bl_f);
-        pad_left(c_bl, bl_tmp, 9);
-
-        snprintf(jt_tmp, sizeof(jt_tmp), "%llu.%llums", (uint64_t)jt_i, (uint64_t)jt_f);
-        pad_left(c_jt, jt_tmp, 8);
-
-        snprintf(spk_tmp, sizeof(spk_tmp), "%llu", (uint64_t)r->spike_count);
-        pad_left(c_spk, spk_tmp, 6);
+        uint64_t fps_i = (uint64_t)r->fps_avg;
+        uint64_t fps_f = (uint64_t)((r->fps_avg - (float)fps_i) * 10.0f);
+        uint64_t l1_i = (uint64_t)r->fps_1pct_low;
+        uint64_t l1_f = (uint64_t)((r->fps_1pct_low - (float)l1_i) * 10.0f);
+        uint64_t ft_i = (uint64_t)r->frametime_avg_ms;
+        uint64_t ft_f = (uint64_t)((r->frametime_avg_ms - (float)ft_i) * 10.0f);
+        uint64_t rn_i = (uint64_t)r->render_time_ms;
+        uint64_t rn_f = (uint64_t)((r->render_time_ms - (float)rn_i) * 10.0f);
+        uint64_t bl_i = (uint64_t)r->blit_time_ms;
+        uint64_t bl_f = (uint64_t)((r->blit_time_ms - (float)bl_i) * 10.0f);
+        uint64_t jt_i = (uint64_t)r->jitter_ms;
+        uint64_t jt_f = (uint64_t)((r->jitter_ms - (float)jt_i) * 10.0f);
 
         len += snprintf(buf + len, sizeof(buf) - len,
-            "  %llu   | %s | %s | %s | %s | %s | %s | %s | %s  %s\n",
-            (uint64_t)(p + 1), c_name, c_fps, c_l1, c_ft, c_rn, c_bl, c_jt, c_spk,
+            "%2llu | %-8s | %-12s | %4llu.%llu  | %4llu.%llu |   %4llu.%llu    |   %4llu.%llu    |  %3llu.%llu    | %3llu.%llu| %s %s\n",
+            (unsigned long long)(p + 1), s_cat_names[cat], s_var_names[var],
+            (unsigned long long)fps_i, (unsigned long long)fps_f,
+            (unsigned long long)l1_i, (unsigned long long)l1_f,
+            (unsigned long long)ft_i, (unsigned long long)ft_f,
+            (unsigned long long)rn_i, (unsigned long long)rn_f,
+            (unsigned long long)bl_i, (unsigned long long)bl_f,
+            (unsigned long long)jt_i, (unsigned long long)jt_f,
+            r->bottleneck ? r->bottleneck : "BALANCED",
             (p == winner_idx) ? "[WINNER]" : ""
         );
+
+        if ((p % 8) == 7 && p < BENCH_SUITE_TOTAL_PHASES - 1) {
+            len += snprintf(buf + len, sizeof(buf) - len,
+                "---+----------+--------------+---------+--------+-------------+-------------+-----------+--------+----------------------\n"
+            );
+        }
     }
 
-    uint32_t w_fps_i = (uint32_t)g_bench.comparison_records[winner_idx].fps_avg;
-    uint32_t w_fps_f = (uint32_t)((g_bench.comparison_records[winner_idx].fps_avg - (float)w_fps_i) * 10.0f);
-
+    // 8x5 Comparative Matrix Summary
     len += snprintf(buf + len, sizeof(buf) - len,
-        "=============================================================================================================\n"
+        "========================================================================================================================\n"
+        "                                  Symmetrical 8x5 Comparative Matrix (FPS by Engine)\n"
+        "========================================================================================================================\n"
+        "Variation       | GLXGears 3D  | Dual Cubes   | 3D Dynamics  | Sphere Mesh  | Fillrate     | Variance Mean\n"
+        "----------------+--------------+--------------+--------------+--------------+--------------+---------------\n"
+    );
+
+    for (int v = 0; v < 8; v++) {
+        float f0 = g_bench.comparison_records[0 * 8 + v].fps_avg;
+        float f1 = g_bench.comparison_records[1 * 8 + v].fps_avg;
+        float f2 = g_bench.comparison_records[2 * 8 + v].fps_avg;
+        float f3 = g_bench.comparison_records[3 * 8 + v].fps_avg;
+        float f4 = g_bench.comparison_records[4 * 8 + v].fps_avg;
+        float f_mean = (f0 + f1 + f2 + f3 + f4) / 5.0f;
+
+        uint64_t ui_f0 = (uint64_t)f0, ud_f0 = (uint64_t)((f0 - (float)ui_f0) * 10.0f);
+        uint64_t ui_f1 = (uint64_t)f1, ud_f1 = (uint64_t)((f1 - (float)ui_f1) * 10.0f);
+        uint64_t ui_f2 = (uint64_t)f2, ud_f2 = (uint64_t)((f2 - (float)ui_f2) * 10.0f);
+        uint64_t ui_f3 = (uint64_t)f3, ud_f3 = (uint64_t)((f3 - (float)ui_f3) * 10.0f);
+        uint64_t ui_f4 = (uint64_t)f4, ud_f4 = (uint64_t)((f4 - (float)ui_f4) * 10.0f);
+        uint64_t ui_fm = (uint64_t)f_mean, ud_fm = (uint64_t)((f_mean - (float)ui_fm) * 10.0f);
+
+        len += snprintf(buf + len, sizeof(buf) - len,
+            "%-15s | %5llu.%llu FPS  | %5llu.%llu FPS  | %5llu.%llu FPS  | %5llu.%llu FPS  | %5llu.%llu FPS  | %5llu.%llu FPS\n",
+            s_var_names[v],
+            (unsigned long long)ui_f0, (unsigned long long)ud_f0,
+            (unsigned long long)ui_f1, (unsigned long long)ud_f1,
+            (unsigned long long)ui_f2, (unsigned long long)ud_f2,
+            (unsigned long long)ui_f3, (unsigned long long)ud_f3,
+            (unsigned long long)ui_f4, (unsigned long long)ud_f4,
+            (unsigned long long)ui_fm, (unsigned long long)ud_fm
+        );
+    }
+    len += snprintf(buf + len, sizeof(buf) - len,
+        "========================================================================================================================\n"
         "Architectural Telemetry Conclusion:\n"
-        "Empirical Winner: Phase %llu (%s) at %llu.%llu FPS.\n"
+        "Empirical Winner: Phase %u (%s) at %u.%u FPS.\n"
         "Direct hardware scanout and parallelized math pipelines achieve tear-free low-latency presentation.\n"
-        "=============================================================================================================\n",
-        (uint64_t)(winner_idx + 1),
-        g_bench.comparison_records[winner_idx].name,
-        (uint64_t)w_fps_i, (uint64_t)w_fps_f
+        "========================================================================================================================\n",
+        (unsigned long long)(winner_idx + 1), g_bench.comparison_records[winner_idx].name,
+        (unsigned long long)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg,
+        (unsigned long long)((g_bench.comparison_records[winner_idx].fps_avg - (float)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg) * 10.0f)
     );
 
     redsea_write_file("BENCH_COMPARISON.TXT", buf, (size_t)len);
-    uart_puts(buf);
-    uart_puts("[NEOBENCH] Exported scientific comparison matrix to /BENCH_COMPARISON.TXT\r\n");
-    doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Exported scientific comparison matrix to $FG,YELLOW$/BENCH_COMPARISON.TXT$FG$\n");
+    uart_puts("[NEOBENCH] Exported 40-Phase Symmetrical Matrix to /BENCH_COMPARISON.TXT\r\n");
     return 0;
 }
 
@@ -539,9 +555,7 @@ int bench_unified_export_log(void) {
 
     redsea_write_file("BENCH_REPORT.TXT", buf, (size_t)len);
     redsea_write_file("GEARS_BENCHMARK.LOG", buf, (size_t)len);
-    perf_export_spike_log(&g_bench.perf_stats, "BENCH_SPIKES.LOG");
-    uart_puts("[NEOBENCH] Exported BENCH_REPORT.TXT, GEARS_BENCHMARK.LOG, and BENCH_SPIKES.LOG to RedSea disk.\r\n");
-    doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Exported reports to $FG,YELLOW$/BENCH_REPORT.TXT$FG$ and $FG,YELLOW$/BENCH_SPIKES.LOG$FG$\n");
+    uart_puts("[NEOBENCH] Exported BENCH_REPORT.TXT and GEARS_BENCHMARK.LOG to RedSea disk.\r\n");
     return 0;
 }
 
@@ -570,7 +584,7 @@ void bench_unified_render(window_t *win, void *user_data) {
             "1. GLXGears 3D",
             "2. Cubes SMP",
             "3. Dynamics 64b",
-            "4. 16-Phase Suite"
+            "4. 40-Phase Suite"
         };
 
         for (int t = 0; t < 4; t++) {
@@ -828,33 +842,14 @@ void bench_unified_render(window_t *win, void *user_data) {
         gfx_draw_string(vp_x + 22, vp_y + 46, dyn_str2, COLOR_TEXT_MUTED, 0);
 
     } else if (g_bench.current_mode == BENCH_MODE_SUITE) {
-        // Mode 4: Automated 6-Phase Scientific Comparison Suite
-        const char *phase_names[BENCH_SUITE_TOTAL_PHASES] = {
-            "Ph 1/16: CPU SW + DoubleBuf (1C, 360p)",
-            "Ph 2/16: CPU Direct VRAM (1C, 360p)",
-            "Ph 3/16: VirtIO-GPU Hardware DMA (1C, 360p)",
-            "Ph 4/16: VirtIO Hardware + Direct VRAM (1C)",
-            "Ph 5/16: Dual-Core SMP Slicing (2C, 360p)",
-            "Ph 6/16: Quad-Core SMP Grid (4C, 360p)",
-            "Ph 7/16: Sovereign L1 Tile NEON (1C, 360p)",
-            "Ph 8/16: Sovereign L1 Tile NEON (2C, 360p)",
-            "Ph 9/16: Sovereign L1 Tile NEON (4C, 360p)",
-            "Ph 10/16: Sovereign L1 Tile Flat Shade (4C)",
-            "Ph 11/16: Sovereign L1 Tile Wireframe (4C)",
-            "Ph 12/16: Scaled Resolution 480p (4C)",
-            "Ph 13/16: Native Resolution 720p (4C)",
-            "Ph 14/16: Native 720p + Direct VRAM (4C)",
-            "Ph 15/16: V-Sync Locked 30 FPS (4C, 360p)",
-            "Ph 16/16: V-Sync Locked 60 FPS (4C, 720p)"
-        };
-
+        // Mode 4: Automated 40-Phase Symmetrical Scientific Suite (5 Engines x 8 Architectures)
         if (g_bench.suite_finished) {
-            // ─── Render Final 16-Phase Comparison Scorecard Matrix ───
-            gfx_blend_rect(vp_x + 10, vp_y + 10, vp_w - 20, vp_h - 20, 0xF214171A);
-            gfx_draw_rect_outline(vp_x + 10, vp_y + 10, vp_w - 20, vp_h - 20, COLOR_ACCENT_CYAN);
+            // ─── Render Final 8x5 Symmetrical Scorecard Matrix ───
+            gfx_blend_rect(vp_x + 8, vp_y + 6, vp_w - 16, vp_h - 12, 0xF214171A);
+            gfx_draw_rect_outline(vp_x + 8, vp_y + 6, vp_w - 16, vp_h - 12, COLOR_ACCENT_CYAN);
 
-            gfx_draw_string(vp_x + 20, vp_y + 14, "✦ NeoBench Extreme: 16-Phase Multi-Configuration Comparison Matrix ✦", COLOR_GOLD_ACCENT, 0);
-            gfx_draw_string(vp_x + 20, vp_y + 28, "Target Architecture: AArch64 Ring 0 SASOS (4x Cortex-A72 @ 1.5 GHz)", COLOR_TEXT_MUTED, 0);
+            gfx_draw_string(vp_x + 18, vp_y + 12, "✦ HolyBenchmark 2.0: 40-Phase Symmetrical Performance Matrix ✦", COLOR_GOLD_ACCENT, 0);
+            gfx_draw_string(vp_x + 18, vp_y + 26, "Target Architecture: AArch64 Ring 0 SASOS (4x Cortex-A72) | 5 Engines x 8 Variations", COLOR_TEXT_MUTED, 0);
 
             int winner_idx = 0;
             float max_fps = -1.0f;
@@ -866,107 +861,76 @@ void bench_unified_render(window_t *win, void *user_data) {
             }
 
             int row_y = vp_y + 44;
-            gfx_draw_rect(vp_x + 18, row_y, vp_w - 36, 18, 0xFF2C3E50);
-            gfx_draw_string(vp_x + 24, row_y + 2, "Ph | Configuration         |  Avg  | 1%Low | Avg FT | Render |  Blit | Jitter", COLOR_TEXT_WHITE, 0);
+            gfx_draw_rect(vp_x + 14, row_y, vp_w - 28, 18, 0xFF2C3E50);
+            gfx_draw_string(vp_x + 18,  row_y + 2, "Architecture", COLOR_TEXT_WHITE, 0);
+            gfx_draw_string(vp_x + 148, row_y + 2, "GLXGears",     COLOR_ACCENT_CYAN, 0);
+            gfx_draw_string(vp_x + 236, row_y + 2, "DualCubes",    COLOR_ACCENT_CYAN, 0);
+            gfx_draw_string(vp_x + 328, row_y + 2, "Dynamics",     COLOR_ACCENT_CYAN, 0);
+            gfx_draw_string(vp_x + 418, row_y + 2, "Sphere",       COLOR_ACCENT_CYAN, 0);
+            gfx_draw_string(vp_x + 498, row_y + 2, "Fillrate",     COLOR_ACCENT_CYAN, 0);
+            gfx_draw_string(vp_x + 578, row_y + 2, "Mean FPS",     COLOR_GOLD_ACCENT, 0);
             row_y += 20;
 
-            for (int p = 0; p < BENCH_SUITE_TOTAL_PHASES; p++) {
-                bench_comparison_record_t *r = &g_bench.comparison_records[p];
-                int is_winner = (p == winner_idx);
-                uint32_t row_bg = is_winner ? 0xFF145A32 : ((p % 2 == 0) ? 0xFF1E242B : 0xFF171B20);
-                gfx_draw_rect(vp_x + 18, row_y, vp_w - 36, 18, row_bg);
+            for (int v = 0; v < 8; v++) {
+                uint32_t row_bg = (v % 2 == 0) ? 0xFF1E242B : 0xFF171B20;
+                gfx_draw_rect(vp_x + 14, row_y, vp_w - 28, 18, row_bg);
 
-                char row_str[128];
-                uint32_t f_i = (uint32_t)r->fps_avg;
-                uint32_t f_d = (uint32_t)((r->fps_avg - (float)f_i) * 10.0f);
-                uint32_t l_i = (uint32_t)r->fps_1pct_low;
-                uint32_t l_d = (uint32_t)((r->fps_1pct_low - (float)l_i) * 10.0f);
-                uint32_t ft_i = (uint32_t)r->frametime_avg_ms;
-                uint32_t ft_d = (uint32_t)((r->frametime_avg_ms - (float)ft_i) * 10.0f);
-                uint32_t rn_i = (uint32_t)r->render_time_ms;
-                uint32_t rn_d = (uint32_t)((r->render_time_ms - (float)rn_i) * 10.0f);
-                uint32_t bl_i = (uint32_t)r->blit_time_ms;
-                uint32_t bl_d = (uint32_t)((r->blit_time_ms - (float)bl_i) * 10.0f);
-                uint32_t jt_i = (uint32_t)r->jitter_ms;
-                uint32_t jt_d = (uint32_t)((r->jitter_ms - (float)jt_i) * 10.0f);
+                gfx_draw_string(vp_x + 18, row_y + 2, s_var_names[v], COLOR_TEXT_WHITE, 0);
 
-                char c_name[32], c_fps[16], c_l1[16], c_ft[16], c_rn[16], c_bl[16], c_jt[16];
-                char fps_t[16], l1_t[16], ft_t[16], rn_t[16], bl_t[16], jt_t[16];
+                float f0 = g_bench.comparison_records[0 * 8 + v].fps_avg;
+                float f1 = g_bench.comparison_records[1 * 8 + v].fps_avg;
+                float f2 = g_bench.comparison_records[2 * 8 + v].fps_avg;
+                float f3 = g_bench.comparison_records[3 * 8 + v].fps_avg;
+                float f4 = g_bench.comparison_records[4 * 8 + v].fps_avg;
+                float f_mean = (f0 + f1 + f2 + f3 + f4) / 5.0f;
 
-                pad_right(c_name, r->name, 23);
+                char c0[16], c1[16], c2[16], c3[16], c4[16], cm[16];
+                snprintf(c0, sizeof(c0), "%4u.%u", (uint32_t)f0, (uint32_t)((f0 - (float)(uint32_t)f0) * 10.0f));
+                snprintf(c1, sizeof(c1), "%4u.%u", (uint32_t)f1, (uint32_t)((f1 - (float)(uint32_t)f1) * 10.0f));
+                snprintf(c2, sizeof(c2), "%4u.%u", (uint32_t)f2, (uint32_t)((f2 - (float)(uint32_t)f2) * 10.0f));
+                snprintf(c3, sizeof(c3), "%4u.%u", (uint32_t)f3, (uint32_t)((f3 - (float)(uint32_t)f3) * 10.0f));
+                snprintf(c4, sizeof(c4), "%4u.%u", (uint32_t)f4, (uint32_t)((f4 - (float)(uint32_t)f4) * 10.0f));
+                snprintf(cm, sizeof(cm), "%4u.%u", (uint32_t)f_mean, (uint32_t)((f_mean - (float)(uint32_t)f_mean) * 10.0f));
 
-                snprintf(fps_t, sizeof(fps_t), "%llu.%llu", (uint64_t)f_i, (uint64_t)f_d);
-                pad_left(c_fps, fps_t, 5);
+                gfx_draw_string(vp_x + 150, row_y + 2, c0, COLOR_TEXT_WHITE, 0);
+                gfx_draw_string(vp_x + 238, row_y + 2, c1, COLOR_TEXT_WHITE, 0);
+                gfx_draw_string(vp_x + 330, row_y + 2, c2, COLOR_TEXT_WHITE, 0);
+                gfx_draw_string(vp_x + 420, row_y + 2, c3, COLOR_TEXT_WHITE, 0);
+                gfx_draw_string(vp_x + 500, row_y + 2, c4, COLOR_TEXT_WHITE, 0);
+                gfx_draw_string(vp_x + 580, row_y + 2, cm, COLOR_EMERALD_GREEN, 0);
 
-                snprintf(l1_t, sizeof(l1_t), "%llu.%llu", (uint64_t)l_i, (uint64_t)l_d);
-                pad_left(c_l1, l1_t, 5);
-
-                snprintf(ft_t, sizeof(ft_t), "%llu.%llums", (uint64_t)ft_i, (uint64_t)ft_d);
-                pad_left(c_ft, ft_t, 6);
-
-                snprintf(rn_t, sizeof(rn_t), "%llu.%llums", (uint64_t)rn_i, (uint64_t)rn_d);
-                pad_left(c_rn, rn_t, 6);
-
-                snprintf(bl_t, sizeof(bl_t), "%llu.%llums", (uint64_t)bl_i, (uint64_t)bl_d);
-                pad_left(c_bl, bl_t, 5);
-
-                snprintf(jt_t, sizeof(jt_t), "%llu.%llums", (uint64_t)jt_i, (uint64_t)jt_d);
-                pad_left(c_jt, jt_t, 6);
-
-                snprintf(row_str, sizeof(row_str), "%s%2llu | %s | %s | %s | %s | %s | %s | %s",
-                         is_winner ? "*" : " ", (uint64_t)(p + 1), c_name, c_fps, c_l1, c_ft, c_rn, c_bl, c_jt);
-                gfx_draw_string(vp_x + 24, row_y + 2, row_str, is_winner ? COLOR_EMERALD_GREEN : COLOR_TEXT_WHITE, 0);
-                row_y += 20;
+                row_y += 19;
             }
 
             row_y += 6;
-            gfx_blend_rect(vp_x + 18, row_y, vp_w - 36, 40, 0xFF1C2833);
-            gfx_draw_rect(vp_x + 18, row_y, vp_w - 36, 1, COLOR_EMERALD_GREEN);
+            gfx_blend_rect(vp_x + 14, row_y, vp_w - 28, 44, 0xFF1C2833);
+            gfx_draw_rect(vp_x + 14, row_y, vp_w - 28, 1, COLOR_EMERALD_GREEN);
 
             char win_str1[96], win_str2[96];
             uint32_t w_fps_i = (uint32_t)g_bench.comparison_records[winner_idx].fps_avg;
             uint32_t w_fps_d = (uint32_t)((g_bench.comparison_records[winner_idx].fps_avg - (float)w_fps_i) * 10.0f);
-            snprintf(win_str1, sizeof(win_str1), "Empirical Winner: Phase %llu (%s)",
-                     (uint64_t)(winner_idx + 1), g_bench.comparison_records[winner_idx].name);
-            snprintf(win_str2, sizeof(win_str2), "Achieved peak throughput of %llu.%llu FPS with minimal frame jitter.",
-                     (uint64_t)w_fps_i, (uint64_t)w_fps_d);
-            gfx_draw_string(vp_x + 26, row_y + 4, win_str1, COLOR_GOLD_ACCENT, 0);
-            gfx_draw_string(vp_x + 26, row_y + 20, win_str2, COLOR_EMERALD_GREEN, 0);
+            snprintf(win_str1, sizeof(win_str1), "Empirical Peak Winner: Phase %u (%s)",
+                     winner_idx + 1, g_bench.comparison_records[winner_idx].name);
+            snprintf(win_str2, sizeof(win_str2), "Peak Throughput: %u.%u FPS | Telemetry saved to /BENCH_COMPARISON.TXT",
+                     w_fps_i, w_fps_d);
+            gfx_draw_string(vp_x + 20, row_y + 6, win_str1, COLOR_GOLD_ACCENT, 0);
+            gfx_draw_string(vp_x + 20, row_y + 24, win_str2, COLOR_TEXT_MUTED, 0);
 
             // Re-run Button
-            int btn_y = row_y + 46;
-            gfx_draw_rounded_rect(vp_x + (vp_w / 2) - 100, btn_y, 200, 24, 4, 0xFF8E44AD);
-            gfx_draw_string(vp_x + (vp_w / 2) - 80, btn_y + 5, "Re-run 16-Phase Suite", COLOR_TEXT_WHITE, 0);
+            row_y += 50;
+            gfx_draw_rounded_rect(vp_x + (vp_w / 2) - 110, row_y, 220, 24, 4, 0xFF27AE60);
+            gfx_draw_string(vp_x + (vp_w / 2) - 90, row_y + 5, "[ Click to Re-Run Suite ]", COLOR_TEXT_WHITE, 0);
 
         } else {
-            // Suite In Progress: Execute active phase
-            g_bench.suite_ticks++;
+            // ─── Render Active Symmetrical Phase (cat = cycle / 8, var = cycle % 8) ───
+            int cat = g_bench.suite_cycle / 8; // 0=Gears, 1=Cubes, 2=Dynamics, 3=Sphere, 4=Fillrate
+            int var = g_bench.suite_cycle % 8; // 0..7
 
-            // ─── Render Active Example Based on Suite Cycle ───
-            int scene_type = 0;
-            if (g_bench.suite_cycle == 4 || g_bench.suite_cycle == 5 || g_bench.suite_cycle == 13) {
-                scene_type = 1; // Dual Cubes SMP
-            } else if (g_bench.suite_cycle == 6 || g_bench.suite_cycle == 7 || g_bench.suite_cycle == 11) {
-                scene_type = 2; // Physics 3D Dynamics
-            } else if (g_bench.suite_cycle == 9) {
-                scene_type = 3; // Flat Shaded Mesh
-            } else if (g_bench.suite_cycle == 10) {
-                scene_type = 4; // Wireframe Grid Mesh
-            } else {
-                scene_type = 0; // 3D GLXGears
-            }
+            profiler_begin_frame();
 
-            if (scene_type == 0 || scene_type == 3 || scene_type == 4) {
-                // 3D GLXGears / Shading Demos: All 3 Interlocking Gears (Red, Green, Blue)
-                raster_tile_begin_scene(vp_x, vp_y, vp_w, vp_h, gfx_get_backbuffer(), gfx_get_canvas_pitch(), 0xFF14171A);
-                if (scene_type == 3) {
-                    raster_tile_set_shading(RASTER_SHADE_FLAT);
-                } else if (scene_type == 4) {
-                    raster_tile_set_shading(RASTER_SHADE_WIREFRAME);
-                } else {
-                    raster_tile_set_shading(RASTER_SHADE_GOURAUD);
-                }
-
+            if (cat == 0) {
+                // Category 0: 3D GLXGears
+                profiler_mark_logic_start();
                 g_bench.gear_angle += 2.0f;
                 if (g_bench.gear_angle >= 360.0f) g_bench.gear_angle -= 360.0f;
                 g_bench.gear1.angle = g_bench.gear_angle;
@@ -981,22 +945,27 @@ void bench_unified_render(window_t *win, void *user_data) {
                 mat4_mul(&rot_tmp, &rx, &ry);
                 mat4_mul(&view, &view, &rot_tmp);
                 mat4_mul(&vp, &proj, &view);
+                profiler_mark_logic_end();
 
-                gear_render(&g_bench.gear1, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (scene_type == 4));
-                gear_render(&g_bench.gear2, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (scene_type == 4));
-                gear_render(&g_bench.gear3, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (scene_type == 4));
-
+                profiler_mark_raster_start();
+                raster_tile_begin_scene(vp_x, vp_y, vp_w, vp_h, gfx_get_backbuffer(), gfx_get_canvas_pitch(), 0xFF14171A);
+                if (var == 6) {
+                    raster_tile_set_shading(RASTER_SHADE_WIREFRAME);
+                } else {
+                    raster_tile_set_shading(RASTER_SHADE_GOURAUD);
+                }
+                gear_render(&g_bench.gear1, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (var == 6));
+                gear_render(&g_bench.gear2, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (var == 6));
+                gear_render(&g_bench.gear3, &vp, vp_x, vp_y, vp_w, vp_h, &g_bench.zbuffer, (var == 6));
                 raster_tile_end_scene();
+                profiler_mark_raster_end();
 
-            } else if (scene_type == 1) {
-                // Dual Cubes SMP (Core 1 Parallel Wireframe left, Core 0 Solid Shaded right)
+            } else if (cat == 1) {
+                // Category 1: Dual Cubes
+                profiler_mark_logic_start();
                 int half_w = vp_w / 2;
-                gfx_draw_rect(vp_x + half_w, vp_y, 2, vp_h, 0xFF34495E);
-
-                // Left Viewport (Cube 1: Parallel Wireframe on Core 1)
                 g_bench.cube_rotx_l += 2.0f;
                 g_bench.cube_roty_l += 3.0f;
-
                 mat4_t proj_l, view_l, rx_l, ry_l, vp_l;
                 mat4_perspective(&proj_l, 45.0f, (float)half_w / (float)vp_h, 1.0f, 50.0f);
                 mat4_translate(&view_l, 0.0f, 0.0f, -6.0f);
@@ -1006,7 +975,22 @@ void bench_unified_render(window_t *win, void *user_data) {
                 mat4_mul(&view_l, &view_l, &ry_l);
                 mat4_mul(&vp_l, &proj_l, &view_l);
 
-                int smp_active = (smp_get_core_count() > 1);
+                g_bench.cube_rotx_r += 3.0f;
+                g_bench.cube_roty_r += 2.0f;
+                mat4_t proj_r, view_r, rx_r, ry_r, vp_r;
+                mat4_perspective(&proj_r, 45.0f, (float)half_w / (float)vp_h, 1.0f, 50.0f);
+                mat4_translate(&view_r, 0.0f, 0.0f, -6.0f);
+                mat4_rotate_x(&rx_r, g_bench.cube_rotx_r);
+                mat4_rotate_y(&ry_r, g_bench.cube_roty_r);
+                mat4_mul(&view_r, &view_r, &rx_r);
+                mat4_mul(&view_r, &view_r, &ry_r);
+                mat4_mul(&vp_r, &proj_r, &view_r);
+                profiler_mark_logic_end();
+
+                profiler_mark_raster_start();
+                gfx_draw_rect(vp_x + half_w, vp_y, 2, vp_h, 0xFF34495E);
+
+                int smp_active = ((var == 2 || var == 5) && smp_get_core_count() > 1);
                 if (smp_active) {
                     s_smp_cube_job.cube = &g_bench.cube_left;
                     s_smp_cube_job.vp = vp_l;
@@ -1017,37 +1001,37 @@ void bench_unified_render(window_t *win, void *user_data) {
                     s_smp_cube_job.color1 = COLOR_ACCENT_CYAN;
                     s_smp_cube_job.color2 = COLOR_EMERALD_GREEN;
                     smp_dispatch(1, worker_render_cube_wire, &s_smp_cube_job);
-                    g_bench.core1_ops += 12;
                 } else {
-                    mesh3d_render_wireframe(&g_bench.cube_left, &vp_l, vp_x, vp_y, half_w, vp_h, COLOR_ACCENT_CYAN, COLOR_EMERALD_GREEN);
-                }
-
-                // Right Viewport (Cube 2: Solid Shaded on Core 0)
-                g_bench.cube_rotx_r += 3.0f;
-                g_bench.cube_roty_r += 2.0f;
-
-                mat4_t proj_r, view_r, rx_r, ry_r, vp_r;
-                mat4_perspective(&proj_r, 45.0f, (float)half_w / (float)vp_h, 1.0f, 50.0f);
-                mat4_translate(&view_r, 0.0f, 0.0f, -6.0f);
-                mat4_rotate_x(&rx_r, g_bench.cube_rotx_r);
-                mat4_rotate_y(&ry_r, g_bench.cube_roty_r);
-                mat4_mul(&view_r, &view_r, &rx_r);
-                mat4_mul(&view_r, &view_r, &ry_r);
-                mat4_mul(&vp_r, &proj_r, &view_r);
-                vec3_t light = {0.577f, 0.577f, 0.577f};
-                mesh3d_render_solid(&g_bench.cube_right, &vp_r, vp_x + half_w, vp_y, half_w, vp_h, 0xFFE67E22, light);
-                g_bench.core2_ops += 12;
-
-                // Synchronize Core 1
-                if (smp_active) {
-                    while (!smp_is_job_done(1)) {
-                        __asm__ volatile("yield");
+                    if (var == 6) {
+                        mesh3d_render_wireframe(&g_bench.cube_left, &vp_l, vp_x, vp_y, half_w, vp_h, COLOR_ACCENT_CYAN, COLOR_EMERALD_GREEN);
+                    } else {
+                        vec3_t light = {0.577f, 0.577f, 0.577f};
+                        mesh3d_render_solid(&g_bench.cube_left, &vp_l, vp_x, vp_y, half_w, vp_h, COLOR_ACCENT_CYAN, light);
                     }
                 }
-            } else if (scene_type == 2) {
-                // Physics 3D Rigid Body Dynamics
-                physics3d_world_step(0.016f);
 
+                if (var == 6) {
+                    mesh3d_render_wireframe(&g_bench.cube_right, &vp_r, vp_x + half_w, vp_y, half_w, vp_h, 0xFFE67E22, 0xFFF39C12);
+                } else {
+                    vec3_t light = {0.577f, 0.577f, 0.577f};
+                    mesh3d_render_solid(&g_bench.cube_right, &vp_r, vp_x + half_w, vp_y, half_w, vp_h, 0xFFE67E22, light);
+                }
+
+                if (smp_active) {
+                    uint64_t w0 = read_cntvct();
+                    while (!smp_is_job_done(1)) {
+                        __asm__ volatile("wfe");
+                    }
+                    uint64_t w1 = read_cntvct();
+                    uint64_t w_us = (w1 > w0 && freq > 0) ? (((w1 - w0) * 1000000ULL) / freq) : 0;
+                    profiler_record_smp_wait(w_us);
+                }
+                profiler_mark_raster_end();
+
+            } else if (cat == 2) {
+                // Category 2: 3D Rigid Body Dynamics
+                profiler_mark_logic_start();
+                physics3d_world_step(0.016f);
                 mat4_t proj, view, vp;
                 mat4_perspective(&proj, 45.0f, (float)vp_w / (float)vp_h, 1.0f, 100.0f);
                 mat4_translate(&view, 0.0f, 0.0f, -8.0f);
@@ -1056,7 +1040,9 @@ void bench_unified_render(window_t *win, void *user_data) {
                 mat4_rotate_y(&ry, g_bench.view_roty);
                 mat4_mul(&view, &view, &rx);
                 mat4_mul(&view, &view, &ry);
+                profiler_mark_logic_end();
 
+                profiler_mark_raster_start();
                 // Arena Floor Wireframe Grid
                 for (int gx = -4; gx <= 4; gx++) {
                     vec4_t p0 = {(float)gx * 0.6f, -1.6f, -2.4f, 1.0f};
@@ -1075,44 +1061,97 @@ void bench_unified_render(window_t *win, void *user_data) {
                     }
                 }
 
-                // Render each rigid body
+                // Render rigid bodies
                 for (int i = 0; i < g_physics_world.num_bodies; i++) {
                     rigid_body_t *b = &g_physics_world.bodies[i];
                     mat4_t model, mv, mvp;
                     physics3d_get_transform(b, &model);
                     mat4_mul(&mv, &view, &model);
                     mat4_mul(&mvp, &proj, &mv);
-                    vec3_t light = {0.577f, 0.577f, 0.577f};
-                    mesh3d_render_solid(&g_bench.suite_cube, &mvp, vp_x, vp_y, vp_w, vp_h, b->color, light);
+                    if (var == 6) {
+                        mesh3d_render_wireframe(&g_bench.suite_cube, &mvp, vp_x, vp_y, vp_w, vp_h, b->color, 0xFFFFFFFF);
+                    } else {
+                        vec3_t light = {0.577f, 0.577f, 0.577f};
+                        mesh3d_render_solid(&g_bench.suite_cube, &mvp, vp_x, vp_y, vp_w, vp_h, b->color, light);
+                    }
                 }
+                profiler_mark_raster_end();
+
+            } else if (cat == 3) {
+                // Category 3: High-Poly Sphere Mesh
+                profiler_mark_logic_start();
+                s_sphere_rot += 3.0f;
+                if (s_sphere_rot >= 360.0f) s_sphere_rot -= 360.0f;
+                mat4_t proj, view, rx, ry, rot_tmp, mvp;
+                mat4_perspective(&proj, 45.0f, (float)vp_w / (float)vp_h, 1.0f, 50.0f);
+                mat4_translate(&view, 0.0f, 0.0f, -8.0f);
+                mat4_rotate_x(&rx, 25.0f);
+                mat4_rotate_y(&ry, s_sphere_rot);
+                mat4_mul(&rot_tmp, &rx, &ry);
+                mat4_mul(&view, &view, &rot_tmp);
+                mat4_mul(&mvp, &proj, &view);
+                profiler_mark_logic_end();
+
+                profiler_mark_raster_start();
+                render_sphere_mesh(&s_sphere, &mvp, vp_x, vp_y, vp_w, vp_h, (var == 6));
+                profiler_mark_raster_end();
+
+            } else if (cat == 4) {
+                // Category 4: Fillrate & Alpha Blending
+                profiler_mark_raster_start();
+                int num_quads = (var == 6) ? 70 : 35;
+                for (int i = 0; i < num_quads; i++) {
+                    int qx = vp_x + 15 + (i * 23) % (vp_w - 120);
+                    int qy = vp_y + 15 + (i * 19) % (vp_h - 100);
+                    uint32_t col = 0x50000000 | (((i * 59) & 0xFF) << 16) | (((i * 97) & 0xFF) << 8) | ((i * 149) & 0xFF);
+                    if (var == 0) {
+                        gfx_blend_rect_scalar(qx, qy, 110, 85, col);
+                    } else {
+                        gfx_blend_rect(qx, qy, 110, 85, col);
+                    }
+                }
+                profiler_mark_raster_end();
             }
 
-            // Check if active phase cycle completed (10.0s wall-clock duration)
+            // Phase Completion Check (2.5s duration)
             uint64_t now_vct = read_cntvct();
             uint64_t elapsed_ticks = (now_vct >= g_bench.suite_phase_start_ticks) ?
                                      (now_vct - g_bench.suite_phase_start_ticks) : 0;
             float elapsed_sec = (freq > 0) ? ((float)elapsed_ticks / (float)freq) : ((float)g_bench.suite_ticks / 30.0f);
             g_bench.suite_phase_elapsed_sec = elapsed_sec;
 
-            if (elapsed_ticks >= g_bench.suite_phase_duration_ticks && g_bench.perf_stats.total_frames >= 60) {
-                // Record completed phase metrics
-                perf_overlay_update_metrics(&g_bench.perf_stats);
+            if (elapsed_ticks >= g_bench.suite_phase_duration_ticks && g_profiler.valid_sample_count >= 15) {
+                profiler_compute_metrics();
                 bench_comparison_record_t *rec = &g_bench.comparison_records[g_bench.suite_cycle];
-                rec->fps_avg = g_bench.perf_stats.fps_avg;
-                rec->fps_1pct_low = g_bench.perf_stats.fps_1pct_low;
-                rec->frametime_avg_ms = g_bench.perf_stats.frame_time_avg_ms;
-                rec->render_time_ms = (float)g_bench.perf_stats.last_render_us / 1000.0f;
-                rec->blit_time_ms = (float)g_bench.perf_stats.last_blit_us / 1000.0f;
-                rec->jitter_ms = g_bench.perf_stats.frame_time_stddev_ms;
-                rec->spike_count = g_bench.perf_stats.spike_count_50ms;
+                rec->fps_avg = g_profiler.fps_avg;
+                rec->fps_1pct_low = g_profiler.fps_1pct_low;
+                rec->frametime_avg_ms = g_profiler.frame_time_avg_ms;
+                rec->render_time_ms = g_profiler.raster_avg_ms;
+                rec->blit_time_ms = g_profiler.blit_avg_ms;
+                rec->jitter_ms = g_profiler.frame_time_stddev_ms;
+                rec->spike_count = g_profiler.spikes_50ms;
+                rec->bottleneck = profiler_bottleneck_str(g_profiler.last_bottleneck);
 
-                g_bench.suite_scores[g_bench.suite_cycle] = (uint32_t)g_bench.perf_stats.fps_avg;
+                char dbg[64];
+                snprintf(dbg, sizeof(dbg), "[PHASE-TRANSITION] Completed Phase %u/40\r\n", g_bench.suite_cycle + 1);
+                uart_puts(dbg);
+
+                g_bench.suite_scores[g_bench.suite_cycle] = (uint32_t)g_profiler.fps_avg;
                 g_bench.suite_cycle++;
 
                 if (g_bench.suite_cycle >= BENCH_SUITE_TOTAL_PHASES) {
+                    uart_puts("[PHASE-TRANSITION] All 40 phases finished! Resetting VSync...\r\n");
+                    gfx_vsync_set(0, 0);
                     g_bench.suite_finished = 1;
+                    uart_puts("[PHASE-TRANSITION] Calling bench_unified_export_comparison...\r\n");
                     bench_unified_export_comparison();
+                    uart_puts("[PHASE-TRANSITION] Calling bench_unified_export_log...\r\n");
                     bench_unified_export_log();
+                    uart_puts("[PHASE-TRANSITION] Calling profiler_export_log...\r\n");
+                    profiler_export_log("BENCH_PROFILER.LOG");
+                    uart_puts("[PHASE-TRANSITION] Calling profiler_export_spikes...\r\n");
+                    profiler_export_spikes("BENCH_SPIKES.LOG");
+                    uart_puts("[PHASE-TRANSITION] ALL 40-PHASE EXPORTS COMPLETED SUCCESSFULLY!\r\n");
                 } else {
                     bench_apply_suite_phase(g_bench.suite_cycle);
                 }
@@ -1123,20 +1162,22 @@ void bench_unified_render(window_t *win, void *user_data) {
             gfx_draw_rect_outline(vp_x + 16, vp_y + 10, vp_w - 32, 60, COLOR_ACCENT_CYAN);
 
             int cur_c = (g_bench.suite_cycle < BENCH_SUITE_TOTAL_PHASES) ? g_bench.suite_cycle : (BENCH_SUITE_TOTAL_PHASES - 1);
-            gfx_draw_string(vp_x + 24, vp_y + 14, phase_names[cur_c], COLOR_TEXT_WHITE, 0);
+            char cur_title[64];
+            snprintf(cur_title, sizeof(cur_title), "Phase %2u/40: %s", cur_c + 1, g_bench.comparison_records[cur_c].name);
+            gfx_draw_string(vp_x + 24, vp_y + 14, cur_title, COLOR_TEXT_WHITE, 0);
 
             char banner_telemetry[128];
             uint32_t el_i = (uint32_t)g_bench.suite_phase_elapsed_sec;
             uint32_t el_d = (uint32_t)((g_bench.suite_phase_elapsed_sec - (float)el_i) * 10.0f);
-            if (el_i > 15) { el_i = 15; el_d = 0; }
-            uint32_t f_i = (uint32_t)g_bench.perf_stats.fps_avg;
-            uint32_t f_d = (uint32_t)((g_bench.perf_stats.fps_avg - (float)f_i) * 10.0f);
-            uint32_t l_i = (uint32_t)g_bench.perf_stats.fps_1pct_low;
-            uint32_t l_d = (uint32_t)((g_bench.perf_stats.fps_1pct_low - (float)l_i) * 10.0f);
+            if (el_i >= 1 && el_d >= 5) { el_i = 1; el_d = 5; }
+            uint32_t f_i = (uint32_t)g_profiler.fps_avg;
+            uint32_t f_d = (uint32_t)((g_profiler.fps_avg - (float)f_i) * 10.0f);
+            uint32_t l_i = (uint32_t)g_profiler.fps_1pct_low;
+            uint32_t l_d = (uint32_t)((g_profiler.fps_1pct_low - (float)l_i) * 10.0f);
             snprintf(banner_telemetry, sizeof(banner_telemetry),
-                     "Time: %llu.%llus / 15.0s (Frames: %u)  |  Live: %llu.%llu FPS  |  1%% Low: %llu.%llu FPS",
-                     (uint64_t)el_i, (uint64_t)el_d, (unsigned int)g_bench.perf_stats.total_frames,
-                     (uint64_t)f_i, (uint64_t)f_d, (uint64_t)l_i, (uint64_t)l_d);
+                     "Time: %u.%us / 1.5s (Frames: %u)  |  Live: %u.%u FPS  |  1%% Low: %u.%u FPS",
+                     el_i, el_d, (unsigned int)g_profiler.total_frames,
+                     f_i, f_d, l_i, l_d);
             gfx_draw_string(vp_x + 24, vp_y + 28, banner_telemetry, COLOR_GOLD_ACCENT, 0);
 
             // Progress Bar
@@ -1158,7 +1199,7 @@ void bench_unified_render(window_t *win, void *user_data) {
 
     // 5. Draw RivaTuner Style Telemetry HUD Overlay
     if (!g_bench.suite_finished) {
-        perf_overlay_draw(&g_bench.perf_stats, vp_x + 12, vp_y + vp_h - 130);
+        perf_overlay_draw(&g_bench.perf_stats, vp_x + 12, vp_y + vp_h - 176);
     }
 
     // 6. Presentation is performed once by the window compositor (wm_draw_animating_windows)
@@ -1226,10 +1267,10 @@ int bench_unified_click(window_t *win, int mouse_x, int mouse_y) {
     // Check Re-run Button Click in Suite Finished Scorecard
     if (g_bench.current_mode == BENCH_MODE_SUITE && g_bench.suite_finished) {
         int vp_w = cw;
-        int vp_y = cy + 52;
-        int btn_y = vp_y + 44 + 20 + (BENCH_SUITE_TOTAL_PHASES * 20) + 6 + 46;
-        if (mouse_x >= cx + (vp_w / 2) - 100 && mouse_x <= cx + (vp_w / 2) + 100 &&
-            mouse_y >= btn_y && mouse_y <= btn_y + 26) {
+        int vp_y = cy;
+        int btn_y = vp_y + 44 + 20 + (8 * 19) + 6 + 44 + 50;
+        if (mouse_x >= cx + (vp_w / 2) - 120 && mouse_x <= cx + (vp_w / 2) + 120 &&
+            mouse_y >= btn_y - 10 && mouse_y <= btn_y + 35) {
             bench_unified_set_mode(BENCH_MODE_SUITE);
             return 1;
         }

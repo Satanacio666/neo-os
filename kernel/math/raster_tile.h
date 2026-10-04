@@ -29,7 +29,8 @@ typedef enum {
 } raster_shade_mode_t;
 
 typedef enum {
-    RASTER_ENGINE_TILED_L1 = 0
+    RASTER_ENGINE_SCANLINE = 0,
+    RASTER_ENGINE_TILED_L1 = 1
 } raster_engine_type_t;
 
 // ─── Geometric Primitives for Tile Binning ────────────────────────────────────

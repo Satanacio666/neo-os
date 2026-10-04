@@ -32,15 +32,18 @@ typedef enum {
     BENCH_RES_CUSTOM = 3
 } bench_res_preset_t;
 
+#include "profiler.h"
+
 typedef struct {
-    char     name[40];
-    float    fps_avg;
-    float    fps_1pct_low;
-    float    frametime_avg_ms;
-    float    render_time_ms;
-    float    blit_time_ms;
-    float    jitter_ms;
-    uint32_t spike_count;
+    char        name[40];
+    float       fps_avg;
+    float       fps_1pct_low;
+    float       frametime_avg_ms;
+    float       render_time_ms;
+    float       blit_time_ms;
+    float       jitter_ms;
+    uint32_t    spike_count;
+    const char *bottleneck;
 } bench_comparison_record_t;
 
 typedef struct {
@@ -73,7 +76,7 @@ typedef struct {
     int           core1_ready;
     int           core2_ready;
 
-#define BENCH_SUITE_TOTAL_PHASES 16
+#define BENCH_SUITE_TOTAL_PHASES 40
 
     // Mode 3: Automated Multi-Phase Scientific Comparison Suite
     bench_phase_t suite_phase;

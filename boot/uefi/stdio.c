@@ -529,6 +529,7 @@ int vsnprintf(char_t *dst, size_t maxlen, const char_t *fmt, __builtin_va_list a
             fmt++;
             if(*fmt==CL('%')) goto put;
             len=0; pad=CL(' ');
+            while(*fmt==CL('-') || *fmt==CL('+') || *fmt==CL(' ') || *fmt==CL('#')) fmt++;
             if(*fmt==CL('0')) pad=CL('0');
             while(*fmt>=CL('0') && *fmt<=CL('9')) {
                 len *= 10;

@@ -402,10 +402,16 @@ void wm_draw_animating_windows(void) {
                 w->custom_render(w, w->user_data);
                 gfx_reset_clip();
 
+                extern void profiler_mark_blit_start(void);
+                extern void profiler_mark_blit_end(void);
+                extern void profiler_end_frame(void);
+
+                profiler_mark_blit_start();
                 uint64_t b_start = 0, b_end = 0;
                 __asm__ volatile("mrs %0, cntvct_el0" : "=r"(b_start));
                 gfx_swap_rect(client_x, client_y, client_w, client_h);
                 __asm__ volatile("mrs %0, cntvct_el0" : "=r"(b_end));
+                profiler_mark_blit_end();
 
                 uint64_t freq = 0;
                 __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
@@ -413,6 +419,12 @@ void wm_draw_animating_windows(void) {
                 uint64_t blit_us = (b_end > b_start) ? (((b_end - b_start) * 1000000ULL) / freq) : 250;
                 extern void bench_unified_record_blit(uint64_t blit_us);
                 bench_unified_record_blit(blit_us);
+
+                profiler_end_frame();
+
+                // Cooperative host yield: yields CPU slice back to QEMU's GTK main loop
+                // Prevents TCG thread from starving host display thread on 2-core host (Intel Celeron N4020)
+                __asm__ volatile("yield");
             }
         }
     }

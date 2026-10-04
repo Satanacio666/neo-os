@@ -122,7 +122,7 @@ void shell_run_command(const char *raw_cmd) {
         gfx_swap_buffers();
         return;
     } else if (strcmp(cmd, "bench") == 0 || strcmp(cmd, "benchsuite") == 0 || strcmp(cmd, "benchcompare") == 0 || strcmp(cmd, "bench3d") == 0) {
-        shell_run_command("run HolyBenchmark3D.HC");
+        shell_run_command("run HolyBenchmark.HC");
         return;
     } else if (strcmp(cmd, "stopbench") == 0 || strcmp(cmd, "closebench") == 0 || strcmp(cmd, "close3d") == 0) {
         bench_unified_stop();

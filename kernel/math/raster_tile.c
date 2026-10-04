@@ -538,8 +538,4 @@ void raster_tile_end_scene(void) {
         }
         asm volatile("dmb ish" ::: "memory");
     }
-
-    // Hardware DMA scanout present if VirtIO is enabled
-    gfx_backend_present(g_raster_scene.vp_x, g_raster_scene.vp_y,
-                        g_raster_scene.vp_w, g_raster_scene.vp_h, 1);
 }

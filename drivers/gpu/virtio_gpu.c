@@ -248,26 +248,8 @@ int virtio_gpu_init(void) {
 void virtio_gpu_flush_rect(int x, int y, int w, int h) {
     if (!mmio_base || w <= 0 || h <= 0) return;
 
-    // Cache clean for backbuffer region so host reads latest CPU-written pixels
-    uint32_t *bb = gfx_get_backbuffer();
-    if (bb) {
-        if (w == (int)screen_width && h == (int)screen_height) {
-            uintptr_t start = (uintptr_t)bb & ~63ULL;
-            uintptr_t end = (uintptr_t)bb + (size_t)screen_width * screen_height * 4;
-            for (uintptr_t p = start; p < end; p += 64) {
-                asm volatile("dc civac, %0" :: "r"(p) : "memory");
-            }
-        } else {
-            for (int r = y; r < y + h; r++) {
-                uintptr_t start = (uintptr_t)(bb + r * screen_width + x) & ~63ULL;
-                uintptr_t end = (uintptr_t)(bb + r * screen_width + x + w);
-                for (uintptr_t p = start; p < end; p += 64) {
-                    asm volatile("dc civac, %0" :: "r"(p) : "memory");
-                }
-            }
-        }
-        asm volatile("dsb sy\nisb" ::: "memory");
-    }
+    // Fast data barrier ensuring CPU frame buffer writes are visible to DMA
+    asm volatile("dsb sy" ::: "memory");
 
     memset(&cmd_transfer, 0, sizeof(cmd_transfer));
     cmd_transfer.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;

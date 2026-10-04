@@ -101,8 +101,10 @@ int main(int argc, char **argv)
     symbols_register("bench_unified_is_active", (void*)bench_unified_is_active, SYM_FUNC);
     symbols_register("bench_unified_set_mode", (void*)bench_unified_set_mode, SYM_FUNC);
     symbols_register("bench_unified_export_log", (void*)bench_unified_export_log, SYM_FUNC);
+    symbols_register("bench_unified_export_comparison", (void*)bench_unified_export_comparison, SYM_FUNC);
     symbols_register("bench_unified_trigger_impulse", (void*)bench_unified_trigger_impulse, SYM_FUNC);
     symbols_register("physics3d_world_explode", (void*)physics3d_world_explode, SYM_FUNC);
+    symbols_register("shell_run_command", (void*)shell_run_command, SYM_FUNC);
     symbols_register("top_print_doldoc", (void*)top_print_doldoc, SYM_FUNC);
     symbols_register("redsea_list_dir", (void*)redsea_list_dir, SYM_FUNC);
     symbols_register("gfx_backend_set_mode", (void*)gfx_backend_set_mode, SYM_FUNC);
@@ -313,29 +315,19 @@ int main(int argc, char **argv)
         mouse_poll();
         wm_handle_mouse(mouse_get_state());
 
-        // If 3D benchmark is active, update animating window directly
+        // If 3D benchmark is active, update animating window directly with isolated viewport swap
         if (bench_unified_is_active()) {
             if (wm_is_dirty()) {
-                uint64_t wm_start = 0, wm_end = 0;
-                __asm__ volatile("mrs %0, cntvct_el0" : "=r"(wm_start));
-                wm_draw_all();
-                gfx_swap_buffers();
-                __asm__ volatile("mrs %0, cntvct_el0" : "=r"(wm_end));
-                uint64_t freq = 0;
-                __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-                if (freq == 0) freq = 62500000ULL;
-                uint64_t wm_us = (wm_end > wm_start) ? (((wm_end - wm_start) * 1000000ULL) / freq) : 0;
-                extern void bench_unified_record_wm_overhead(uint64_t wm_us);
-                bench_unified_record_wm_overhead(wm_us);
-            } else {
-                wm_draw_animating_windows();
+                wm_clear_dirty();
             }
+            wm_draw_animating_windows();
             wm_update_tray_clock();
             gfx_vsync_wait();
         } else {
             if (wm_is_dirty()) {
                 wm_draw_all();
                 gfx_swap_buffers();
+                wm_clear_dirty();
             } else {
                 wm_update_tray_clock();
             }
