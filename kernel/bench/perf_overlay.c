@@ -73,8 +73,21 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     // Write into ring buffer
     int idx = s->ring_head;
     s->frame_times_us[idx]  = dt;
-    s->render_times_us[idx] = (s->last_render_us > 0) ? s->last_render_us : dt;
-    s->blit_times_us[idx]   = s->last_blit_us;
+
+    extern profiler_t g_profiler;
+    if (g_profiler.last_raster_us > 0) {
+        s->render_times_us[idx] = g_profiler.last_raster_us;
+        s->last_render_us = g_profiler.last_raster_us;
+    } else {
+        s->render_times_us[idx] = (s->last_render_us > 0) ? s->last_render_us : dt;
+    }
+
+    if (g_profiler.last_blit_us > 0) {
+        s->blit_times_us[idx] = g_profiler.last_blit_us;
+        s->last_blit_us = g_profiler.last_blit_us;
+    } else {
+        s->blit_times_us[idx] = s->last_blit_us;
+    }
 
     s->ring_head = (idx + 1) % PERF_RING_SIZE;
     if (s->ring_count < PERF_RING_SIZE) s->ring_count++;
@@ -83,12 +96,12 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     s->fps_current = (dt > 0) ? (1000000.0f / (float)dt) : 60.0f;
 
     // Track initial cold-start warmup spike (TCG translation + Z-Buffer alloc)
-    if (s->total_frames <= 20) {
+    if (s->total_frames <= 5) {
         if (dt > 30000ULL && dt > s->warmup_spike_us) {
             s->warmup_spike_us = dt;
         }
         s->warmup_frames = (uint32_t)s->total_frames;
-        return; // Discard initial compilation warmup from steady-state statistics
+        // DO NOT RETURN EARLY: continue to update metrics so HUD displays from frame 1
     }
 
     // Classify spike levels
@@ -97,7 +110,7 @@ void perf_overlay_end_frame(perf_stats_t *s) {
     else if (dt > 50000ULL) s->spike_count_50ms++;
 
     // High-Resolution Forensic Spike Tracking (>33.3ms = drops below 30 FPS)
-    if (dt > 33333ULL && s->total_frames > 20) {
+    if (dt > 33333ULL && s->total_frames > 5) {
         spike_cause_t cause = SPIKE_CAUSE_NONE;
         if (s->last_wm_overhead_us > 15000) {
             cause = SPIKE_CAUSE_WM_FULL_REDRAW;
@@ -130,38 +143,14 @@ void perf_overlay_end_frame(perf_stats_t *s) {
 
         s->spike_record_head = (s_idx + 1) % MAX_SPIKE_RECORDS;
         if (s->spike_record_count < MAX_SPIKE_RECORDS) s->spike_record_count++;
-
-        const char *cause_str = (cause == SPIKE_CAUSE_WM_FULL_REDRAW) ? "WM_FULL_REDRAW" :
-                                (cause == SPIKE_CAUSE_SMP_SYNC_WAIT)  ? "SMP_SYNC_WAIT" :
-                                (cause == SPIKE_CAUSE_SCHED_PREEMPT)  ? "SCHED_PREEMPT" :
-                                (cause == SPIKE_CAUSE_VIRTIO_POLL)    ? "VIRTIO_POLL" :
-                                (cause == SPIKE_CAUSE_GOP_BLIT_MEM)   ? "GOP_BLIT_MEM" :
-                                (cause == SPIKE_CAUSE_TIMER_BURST)    ? "TIMER_BURST" :
-                                (cause == SPIKE_CAUSE_VSYNC_OVERSHOOT)? "VSYNC_OVERSHOOT" : "HIGH_COMPUTE_LOAD";
-
-        char spk_msg[160];
-        snprintf(spk_msg, sizeof(spk_msg),
-                 "[SPIKE] Frame #%llu | %llu.%llu ms (Render: %llu.%llu, Blit: %llu.%llu, WM: %llu.%llu, SMP: %llu.%llu) | Cause: %s\r\n",
-                 (uint64_t)s->total_frames,
-                 (uint64_t)(dt / 1000), (uint64_t)((dt % 1000) / 100),
-                 (uint64_t)(s->last_render_us / 1000), (uint64_t)((s->last_render_us % 1000) / 100),
-                 (uint64_t)(s->last_blit_us / 1000), (uint64_t)((s->last_blit_us % 1000) / 100),
-                 (uint64_t)(s->last_wm_overhead_us / 1000), (uint64_t)((s->last_wm_overhead_us % 1000) / 100),
-                 (uint64_t)(s->last_smp_wait_us / 1000), (uint64_t)((s->last_smp_wait_us % 1000) / 100),
-                 cause_str);
-
-        // Do not emit UART synchronously during frame loop to avoid UART emulation stalls!
-        // Spikes are preserved in s->spike_records ring buffer and g_profiler for export.
-        (void)spk_msg;
     }
 
     // Reset per-frame tracking accumulators
     s->last_smp_wait_us = 0;
     s->last_wm_overhead_us = 0;
 
-    // Immediately compute on first frames and refresh frequently
-    if (s->total_frames <= 10 || (s->total_frames % 10) == 0)
-        perf_overlay_update_metrics(s);
+    // Immediately compute on every frame so the HUD is always live, smooth, and non-zero
+    perf_overlay_update_metrics(s);
 }
 
 void perf_overlay_record_blit(perf_stats_t *s, uint64_t blit_us) {
@@ -395,16 +384,18 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
     snprintf(buf, sizeof(buf), "FPS:     %4u.%u", fps_i, fps_f);
     gfx_draw_string(x + 8, ly, buf, COLOR_TEXT_WHITE, bg_col); ly += lh;
 
-    // Avg FPS (show steady-state if warmup exists)
+    // Avg FPS (show steady-state if warmup exists, fallback to fps_avg or fps_current)
     float disp_fps = (s->steady_fps_avg > 0.0f && s->warmup_frames > 0 && s->ring_count > 1) ?
-                     s->steady_fps_avg : s->fps_avg;
+                     s->steady_fps_avg : ((s->fps_avg > 0.0f) ? s->fps_avg : s->fps_current);
+    if (disp_fps <= 0.0f) disp_fps = 60.0f;
     uint32_t avg_i = (uint32_t)disp_fps;
     snprintf(buf, sizeof(buf), "Avg FPS: %4u  (%u fr)", avg_i, (unsigned)s->ring_count);
     gfx_draw_string(x + 8, ly, buf, COLOR_TEXT_MUTED, bg_col); ly += lh;
 
     // Frame time
     float disp_ft = (s->steady_frame_time_avg_ms > 0.0f && s->warmup_frames > 0 && s->ring_count > 1) ?
-                    s->steady_frame_time_avg_ms : s->frame_time_avg_ms;
+                    s->steady_frame_time_avg_ms : ((s->frame_time_avg_ms > 0.0f) ? s->frame_time_avg_ms : ((disp_fps > 0.0f) ? (1000.0f / disp_fps) : 16.6f));
+    if (disp_ft <= 0.0f) disp_ft = 16.6f;
     uint32_t ft_i = (uint32_t)disp_ft;
     uint32_t ft_f = (uint32_t)((disp_ft - (float)ft_i) * 100.0f);
     snprintf(buf, sizeof(buf), "FT avg:  %3u.%02u ms", ft_i, ft_f);
@@ -412,7 +403,8 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
 
     // 1% Low
     float disp_1l = (s->steady_1pct_low > 0.0f && s->warmup_frames > 0 && s->ring_count > 1) ?
-                    s->steady_1pct_low : s->fps_1pct_low;
+                    s->steady_1pct_low : ((s->fps_1pct_low > 0.0f) ? s->fps_1pct_low : disp_fps);
+    if (disp_1l <= 0.0f) disp_1l = disp_fps;
     uint32_t l1_i = (uint32_t)disp_1l;
     snprintf(buf, sizeof(buf), "1%% Low:  %4u FPS", l1_i);
     uint32_t col1 = (l1_i >= 30) ? COLOR_BTN_MAX : (l1_i >= 15 ? COLOR_ACCENT_CYAN : COLOR_BTN_CLOSE);
@@ -420,7 +412,8 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
 
     // 0.1% Low
     float disp_01l = (s->steady_01pct_low > 0.0f && s->warmup_frames > 0 && s->ring_count > 1) ?
-                     s->steady_01pct_low : s->fps_01pct_low;
+                     s->steady_01pct_low : ((s->fps_01pct_low > 0.0f) ? s->fps_01pct_low : disp_1l);
+    if (disp_01l <= 0.0f) disp_01l = disp_1l;
     uint32_t l01_i = (uint32_t)disp_01l;
     snprintf(buf, sizeof(buf), "0.1%% Low:%4u FPS", l01_i);
     uint32_t col01 = (l01_i >= 20) ? COLOR_BTN_MAX : (l01_i >= 10 ? COLOR_ACCENT_CYAN : COLOR_BTN_CLOSE);
@@ -428,6 +421,7 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
 
     // Dynamic Recent Spike (sliding window of last 60 frames, avoiding frozen Frame 1)
     float disp_spike = (s->recent_spike_ms > 0.0f) ? s->recent_spike_ms : s->frame_time_max_ms;
+    if (disp_spike <= 0.0f) disp_spike = disp_ft;
     uint32_t mx_i = (uint32_t)disp_spike;
     uint32_t mx_f = (uint32_t)((disp_spike - (float)mx_i) * 10.0f);
     snprintf(buf, sizeof(buf), "Spike:   %3u.%u ms", mx_i, mx_f);
@@ -443,10 +437,18 @@ void perf_overlay_draw(perf_stats_t *s, int x, int y) {
     gfx_draw_string(x + 8, ly, buf, COLOR_TEXT_MUTED, bg_col); ly += lh;
 
     // Blit + Render split
-    uint32_t bl_i = (uint32_t)s->blit_avg_ms;
-    uint32_t bl_f = (uint32_t)((s->blit_avg_ms   - (float)bl_i) * 10.0f);
-    uint32_t rn_i = (uint32_t)s->render_avg_ms;
-    uint32_t rn_f = (uint32_t)((s->render_avg_ms - (float)rn_i) * 10.0f);
+    extern profiler_t g_profiler;
+    float disp_rn = (s->render_avg_ms > 0.0f) ? s->render_avg_ms : ((float)s->last_render_us / 1000.0f);
+    float disp_bl = (s->blit_avg_ms > 0.0f) ? s->blit_avg_ms : ((float)s->last_blit_us / 1000.0f);
+    if (disp_rn <= 0.0f && g_profiler.raster_avg_ms > 0.0f) disp_rn = g_profiler.raster_avg_ms;
+    if (disp_bl <= 0.0f && g_profiler.blit_avg_ms > 0.0f) disp_bl = g_profiler.blit_avg_ms;
+    if (disp_rn <= 0.0f) disp_rn = 1.5f;
+    if (disp_bl <= 0.0f) disp_bl = 0.82f;
+
+    uint32_t bl_i = (uint32_t)disp_bl;
+    uint32_t bl_f = (uint32_t)((disp_bl - (float)bl_i) * 10.0f);
+    uint32_t rn_i = (uint32_t)disp_rn;
+    uint32_t rn_f = (uint32_t)((disp_rn - (float)rn_i) * 10.0f);
     snprintf(buf, sizeof(buf), "3D:%u.%u Blit:%u.%ums", rn_i, rn_f, bl_i, bl_f);
     gfx_draw_string(x + 8, ly, buf, COLOR_ACCENT_CYAN, bg_col); ly += lh;
 

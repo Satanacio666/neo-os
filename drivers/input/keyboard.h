@@ -17,6 +17,7 @@ void keyboard_init(void);
 int keyboard_poll(void);
 int keyboard_has_char(void);
 int keyboard_getchar(void);
+void keyboard_queue_char(int k);
 void uart_putc(char c);
 void uart_puts(const char *s);
 

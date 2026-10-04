@@ -33,6 +33,7 @@ SRCS_C = boot/main.c \
          gui/shell.c \
          drivers/input/keyboard.c \
          drivers/input/mouse.c \
+         drivers/input/virtio_input.c \
          drivers/block/virtio_blk.c \
          fs/redsea.c \
          kernel/arch/aarch64/smp.c \
@@ -78,6 +79,8 @@ QEMU_FLAGS = -M virt,gic-version=2 \
              -bios $(QEMU_BIOS) \
              -device ramfb \
              -device virtio-gpu-device,xres=1024,yres=768 \
+             -device virtio-keyboard-device \
+             -device virtio-tablet-device \
              -device usb-ehci \
              -device usb-kbd \
              -device usb-tablet \

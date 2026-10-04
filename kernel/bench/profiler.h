@@ -124,6 +124,7 @@ void profiler_end_frame(void);
 
 void profiler_compute_metrics(void);
 const char* profiler_bottleneck_str(profiler_bottleneck_t b);
+const char* profiler_get_optimization_directive(profiler_bottleneck_t b);
 
 int profiler_export_log(const char *path);
 int profiler_export_spikes(const char *path);

@@ -33,6 +33,8 @@ def main():
         "-bios", BIOS_PATH,
         "-device", "ramfb",
         "-device", "virtio-gpu-device,xres=1024,yres=768",
+        "-device", "virtio-keyboard-device",
+        "-device", "virtio-tablet-device",
         "-device", "usb-ehci",
         "-device", "usb-kbd",
         "-device", "usb-tablet",

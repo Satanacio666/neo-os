@@ -148,11 +148,11 @@ static void bench_apply_suite_phase(int phase) {
     g_bench.suite_phase_start_ticks = read_cntvct();
     uint64_t freq = read_cntfrq();
     if (freq == 0) freq = 62500000ULL;
-    // Exactly 1.5 seconds per individual test (60 seconds total full 40-phase suite)
-    g_bench.suite_phase_duration_ticks = (freq * 3ULL) / 2ULL;
+    // Robust 3.5 seconds per individual test (allowing steady-state statistical convergence)
+    g_bench.suite_phase_duration_ticks = (freq * 7ULL) / 2ULL;
     g_bench.suite_phase_elapsed_sec = 0.0f;
     g_bench.suite_ticks = 0;
-    profiler_phase_reset(15);
+    profiler_phase_reset(5);
     perf_overlay_init(&g_bench.perf_stats);
 }
 
@@ -468,15 +468,21 @@ int bench_unified_export_comparison(void) {
             (unsigned long long)ui_fm, (unsigned long long)ud_fm
         );
     }
+    extern const char* profiler_get_optimization_directive(profiler_bottleneck_t b);
+    const char *opt_dir = profiler_get_optimization_directive(g_profiler.last_bottleneck);
+
     len += snprintf(buf + len, sizeof(buf) - len,
         "========================================================================================================================\n"
-        "Architectural Telemetry Conclusion:\n"
+        "Architectural Telemetry Conclusion & Optimization Directives:\n"
         "Empirical Winner: Phase %u (%s) at %u.%u FPS.\n"
-        "Direct hardware scanout and parallelized math pipelines achieve tear-free low-latency presentation.\n"
+        "Primary System Bottleneck: %s\n"
+        "Code-Level Optimization Directives:\n%s\n"
         "========================================================================================================================\n",
-        (unsigned long long)(winner_idx + 1), g_bench.comparison_records[winner_idx].name,
-        (unsigned long long)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg,
-        (unsigned long long)((g_bench.comparison_records[winner_idx].fps_avg - (float)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg) * 10.0f)
+        (unsigned int)(winner_idx + 1), g_bench.comparison_records[winner_idx].name,
+        (unsigned int)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg,
+        (unsigned int)((g_bench.comparison_records[winner_idx].fps_avg - (float)(uint32_t)g_bench.comparison_records[winner_idx].fps_avg) * 10.0f),
+        profiler_bottleneck_str(g_profiler.last_bottleneck),
+        opt_dir
     );
 
     redsea_write_file("BENCH_COMPARISON.TXT", buf, (size_t)len);
@@ -1169,13 +1175,15 @@ void bench_unified_render(window_t *win, void *user_data) {
             char banner_telemetry[128];
             uint32_t el_i = (uint32_t)g_bench.suite_phase_elapsed_sec;
             uint32_t el_d = (uint32_t)((g_bench.suite_phase_elapsed_sec - (float)el_i) * 10.0f);
-            if (el_i >= 1 && el_d >= 5) { el_i = 1; el_d = 5; }
-            uint32_t f_i = (uint32_t)g_profiler.fps_avg;
-            uint32_t f_d = (uint32_t)((g_profiler.fps_avg - (float)f_i) * 10.0f);
-            uint32_t l_i = (uint32_t)g_profiler.fps_1pct_low;
-            uint32_t l_d = (uint32_t)((g_profiler.fps_1pct_low - (float)l_i) * 10.0f);
+            if (el_i >= 3 && el_d >= 5) { el_i = 3; el_d = 5; }
+            float cur_fps = (g_profiler.fps_avg > 0.0f) ? g_profiler.fps_avg : g_bench.perf_stats.fps_current;
+            float cur_l1  = (g_profiler.fps_1pct_low > 0.0f) ? g_profiler.fps_1pct_low : cur_fps;
+            uint32_t f_i = (uint32_t)cur_fps;
+            uint32_t f_d = (uint32_t)((cur_fps - (float)f_i) * 10.0f);
+            uint32_t l_i = (uint32_t)cur_l1;
+            uint32_t l_d = (uint32_t)((cur_l1 - (float)l_i) * 10.0f);
             snprintf(banner_telemetry, sizeof(banner_telemetry),
-                     "Time: %u.%us / 1.5s (Frames: %u)  |  Live: %u.%u FPS  |  1%% Low: %u.%u FPS",
+                     "Time: %u.%us / 3.5s (Frames: %u)  |  Live: %u.%u FPS  |  1%% Low: %u.%u FPS",
                      el_i, el_d, (unsigned int)g_profiler.total_frames,
                      f_i, f_d, l_i, l_d);
             gfx_draw_string(vp_x + 24, vp_y + 28, banner_telemetry, COLOR_GOLD_ACCENT, 0);

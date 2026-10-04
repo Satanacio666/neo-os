@@ -217,10 +217,8 @@ void profiler_end_frame(void) {
     g_profiler.sample_buffer[s_buf_idx] = total_us;
     g_profiler.sample_head++;
 
-    // Refresh telemetry metrics every 10 frames
-    if ((g_profiler.valid_sample_count % 10) == 0) {
-        profiler_compute_metrics();
-    }
+    // Refresh telemetry metrics continuously on every frame
+    profiler_compute_metrics();
 }
 
 void profiler_compute_metrics(void) {
@@ -293,6 +291,41 @@ const char* profiler_bottleneck_str(profiler_bottleneck_t b) {
     }
 }
 
+const char* profiler_get_optimization_directive(profiler_bottleneck_t b) {
+    switch (b) {
+        case BOTTLENECK_CPU_RASTER:
+            return "  1. HolyGL Juan Pineda tile rasterizer is CPU-bound in triangle edge step/Z-buffer depth testing.\n"
+                   "     -> Recommendation: Ensure NEON quad-edge evaluation (fast_rsqrt_neon) is engaged.\n"
+                   "     -> Recommendation: Pin 16x16 tile buffers to CPU L1 scratchpad (32KB cache line) to prevent DRAM write stalls.\n"
+                   "     -> Recommendation: Cull backfaces early before fixed-point subpixel vertex expansion.";
+        case BOTTLENECK_MEM_BANDWIDTH:
+            return "  1. Bus bandwidth saturation during backbuffer-to-frontbuffer presentation.\n"
+                   "     -> Recommendation: Deploy VirtIO-GPU direct scanout (zero blit memory copy overhead).\n"
+                   "     -> Recommendation: Use 128-bit streaming stores (vst1q_u32 with write combining) for dirty rect swaps.\n"
+                   "     -> Recommendation: Constrain swap rects strictly to invalidated window bounding boxes.";
+        case BOTTLENECK_SMP_CONTENTION:
+            return "  1. Multi-core worker threads spinning in smp_join or task queue arbitration.\n"
+                   "     -> Recommendation: Increase per-core tile chunk size across PSCI cores 1-3 to reduce dispatch frequency.\n"
+                   "     -> Recommendation: Eliminate inter-core cache line bouncing on completion flags with 64-byte padding.\n"
+                   "     -> Recommendation: Transition to lock-free double-buffered work queues.";
+        case BOTTLENECK_HOST_LATENCY:
+            return "  1. VirtIO queue submission poll latency on host hypervisor.\n"
+                   "     -> Recommendation: Batch TRANSFER_TO_HOST_2D commands before notifying queue.\n"
+                   "     -> Recommendation: Coalesce fence notifications to minimize host context switches.\n"
+                   "     -> Recommendation: Enable asynchronous non-blocking fence polling.";
+        case BOTTLENECK_CPU_LOGIC:
+            return "  1. High computational load in 3D physics simulation / matrix transformations.\n"
+                   "     -> Recommendation: Vectorize 4x4 matrix-vector multiplication with AArch64 NEON FMA instructions.\n"
+                   "     -> Recommendation: Limit rigid body collision impulse iterations to 4 per frame.\n"
+                   "     -> Recommendation: Offload physics step to Core 1 concurrently with Core 0 rendering.";
+        case BOTTLENECK_PACED_VSYNC:
+            return "  1. Optimal presentation cadence locked at 60 Hz display refresh ceiling.\n"
+                   "     -> Recommendation: Pipeline is operating at maximum efficiency. Zero system stalls detected.";
+        default:
+            return "  1. Balanced workload distribution across CPU logic, rasterizer, blit, and host latency.";
+    }
+}
+
 int profiler_export_log(const char *path) {
     static char buf[4096];
     int len = 0;
@@ -324,6 +357,9 @@ int profiler_export_log(const char *path) {
         "  - Drops below 20 FPS (>50.0ms): %u\n"
         "  - Severe Spikes (>100.0ms):     %u\n"
         "Primary Bottleneck:     %s\n"
+        "----------------------------------------------------------------------\n"
+        "Automated Code-Level Optimization Directives:\n"
+        "%s\n"
         "======================================================================\n",
         (unsigned int)g_profiler.total_frames, (unsigned int)g_profiler.warmup_discard_count,
         (unsigned int)g_profiler.fps_avg, (unsigned int)((g_profiler.fps_avg - (float)(unsigned int)g_profiler.fps_avg) * 10.0f),
@@ -340,7 +376,8 @@ int profiler_export_log(const char *path) {
         (unsigned int)g_profiler.dma_avg_ms, (unsigned int)((g_profiler.dma_avg_ms - (float)(unsigned int)g_profiler.dma_avg_ms) * 10.0f),
         (unsigned int)g_profiler.wm_avg_ms, (unsigned int)((g_profiler.wm_avg_ms - (float)(unsigned int)g_profiler.wm_avg_ms) * 10.0f),
         (unsigned int)g_profiler.spikes_33ms, (unsigned int)g_profiler.spikes_50ms, (unsigned int)g_profiler.spikes_100ms,
-        profiler_bottleneck_str(g_profiler.last_bottleneck)
+        profiler_bottleneck_str(g_profiler.last_bottleneck),
+        profiler_get_optimization_directive(g_profiler.last_bottleneck)
     );
 
     return redsea_write_file(path, buf, (size_t)len);

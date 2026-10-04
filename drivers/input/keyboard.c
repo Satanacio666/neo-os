@@ -36,10 +36,14 @@ static void queue_key(int k) {
     }
 }
 
+void keyboard_queue_char(int k) {
+    queue_key(k);
+}
+
 void keyboard_init(void) {
     buf_head = 0;
     buf_tail = 0;
-    printf("[KEYBOARD] Unified Keyboard Driver initialized (UEFI ConIn + PL011 UART)\n");
+    printf("[KEYBOARD] Unified Keyboard Driver initialized (VirtIO Input + UEFI ConIn + PL011 UART)\n");
 }
 
 int keyboard_has_char(void) {
@@ -66,6 +70,10 @@ static uint8_t uart_getc(void) {
 
 int keyboard_poll(void) {
     int count = 0;
+
+    // 0. Poll Native VirtIO Input (Bare-Metal Ring 0 Virtqueues)
+    extern void virtio_input_poll(void);
+    virtio_input_poll();
 
     // 1. Poll UEFI Console Input
     if (ST && ST->ConIn) {

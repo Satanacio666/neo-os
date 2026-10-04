@@ -243,9 +243,11 @@ int main(int argc, char **argv)
     install_vector_table();
     timer_init(100); // 100 Hz ARM Generic Timer ticks
 
-    // 5. Initialize Input Devices (Keyboard & Mouse)
+    // 5. Initialize Input Devices (Keyboard, Mouse & VirtIO Input)
     keyboard_init();
     mouse_init(width, height);
+    extern int virtio_input_init(uint32_t screen_width, uint32_t screen_height);
+    virtio_input_init(width, height);
 
     // 6. Initialize Window Manager & DolDoc Terminal Window
     printf("[TRACE] Calling wm_init...\r\n");

@@ -164,6 +164,10 @@ void mouse_set_pos(int x, int y) {
 
 // ─── Poll ────────────────────────────────────────────────────────────────────
 void mouse_poll(void) {
+    // 0. Poll Native VirtIO Input (Bare-Metal Ring 0 Virtqueues)
+    extern void virtio_input_poll(void);
+    virtio_input_poll();
+
     // 1. Absolute Pointer (USB tablet — QEMU -device usb-tablet)
     if (abs_pointer_proto) {
         efi_absolute_pointer_state_t state;
