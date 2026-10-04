@@ -24,6 +24,7 @@ def main():
     env["DISPLAY"] = ":0.0"
 
     cmd = [
+        "taskset", "-c", "0",
         "qemu-system-aarch64",
         "-M", "virt,gic-version=2",
         "-accel", "tcg,thread=single,tb-size=512",
@@ -74,6 +75,21 @@ def main():
     t = threading.Thread(target=reader, daemon=True)
     t.start()
 
+    # Forward host terminal stdin directly to QEMU serial UART
+    def input_forwarder():
+        while proc.poll() is None:
+            try:
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                proc.stdin.write(line.encode('latin-1'))
+                proc.stdin.flush()
+            except:
+                break
+
+    t_in = threading.Thread(target=input_forwarder, daemon=True)
+    t_in.start()
+
     print("[LAUNCH] Waiting for NeoOS to boot into graphical shell...")
     if not boot_ready.wait(timeout=35):
         print("[LAUNCH ERROR] Boot timeout!")
@@ -92,6 +108,7 @@ def main():
     print(">>> QEMU GRAPHICAL WINDOW IS NOW OPEN ON YOUR SCREEN! <<<")
     print(">>> The Symmetrical 40-Phase 3D Suite is actively running! <<<")
     print(">>> You can see the rotating gears, cubes, dynamics, and HUD. <<<")
+    print(">>> (Type commands in this terminal to send them to NeoOS UART) <<<")
     print("=" * 60 + "\n")
 
     # Keep running so the user can watch the benchmark live
