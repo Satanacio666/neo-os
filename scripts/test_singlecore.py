@@ -78,6 +78,33 @@ try:
     child.expect("neo:/>", timeout=10)
     print("\n[TEST] Shell.HC verified successfully!")
 
+    print("\n[TEST] Sending 'gears' (pure HolyC 3D GLXGears)...")
+    child.sendline("gears")
+    child.expect("Gears.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    child.sendline("stopbench")
+    child.expect("closed", timeout=10)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] gears verified successfully!")
+
+    print("\n[TEST] Sending 'physics' (pure HolyC 3D Dynamics)...")
+    child.sendline("physics")
+    child.expect("Physics3D.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    child.sendline("stopbench")
+    child.expect("closed", timeout=10)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] physics verified successfully!")
+
+    print("\n[TEST] Sending 'bench' (pure HolyC Unified 3D Benchmark)...")
+    child.sendline("bench")
+    child.expect("HolyBenchmark3D.HC", timeout=15)
+    child.expect("neo:/>", timeout=10)
+    child.sendline("stopbench")
+    child.expect("closed", timeout=10)
+    child.expect("neo:/>", timeout=10)
+    print("\n[TEST] bench verified successfully!")
+
     print("\n[TEST] All single-core tests PASSED perfectly!")
 except Exception as e:
     print(f"\n[TEST ERROR] {e}")

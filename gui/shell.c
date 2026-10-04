@@ -76,11 +76,21 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print(" $FG,YELLOW$Interactive Tags:$FG$     $BT,\"NeoMenu\",LM=\"menu\"$ $BT,\"HolyBench\",LM=\"run HolyBenchmark.HC\"$ $BT,\"Files\",LM=\"filer\"$ $BT,\"Top\",LM=\"top\"$ $BT,\"GPU\",LM=\"run GpuConfig.HC\"$\n");
         doldoc_print("$FG,CYAN$------------------------------------$FG$\n");
     } else if (strcmp(cmd, "menu") == 0) {
-        menu_toggle();
-        doldoc_print("$FG,CYAN$[NEOMENU]$FG$ Toggled NeoMenu application hub.\n");
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
+        shell_run_command("run Menu.HC");
+        return;
+    } else if (strcmp(cmd, "wm") == 0) {
+        shell_run_command("run WM.HC");
+        return;
+    } else if (strcmp(cmd, "font") == 0 || strcmp(cmd, "vector") == 0 || strcmp(cmd, "fontvector") == 0) {
+        shell_run_command("run FontVector.HC");
+        return;
+    } else if (strcmp(cmd, "explode") == 0) {
+        physics3d_world_explode();
+        doldoc_print("$FG,ORANGE$[PHYSICS]$FG$ Triggered radial explosive impulse in 3D physics!\n");
+        return;
+    } else if (strcmp(cmd, "impulse") == 0) {
+        bench_unified_trigger_impulse();
+        doldoc_print("$FG,GREEN$[PHYSICS]$FG$ Applied vertical impulse to dynamics world.\n");
         return;
     } else if (strcmp(cmd, "clear") == 0 || strcmp(cmd, "cls") == 0) {
         doldoc_clear();
@@ -111,48 +121,29 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_scroll_down(10);
         gfx_swap_buffers();
         return;
-    } else if (strcmp(cmd, "bench") == 0 || strcmp(cmd, "benchsuite") == 0 || strcmp(cmd, "benchcompare") == 0) {
-        bench_unified_start(BENCH_MODE_SUITE);
-        doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Launched Sovereign 16-Phase Multi-Configuration Benchmark Suite!\n");
-        doldoc_print(" Testing CPU SW, Direct VRAM, VirtIO-GPU, SMP 1C/2C/4C, Resolutions (360p/480p/720p), and VSync.\n");
-        doldoc_print(" Autonomous execution: no interaction required. Results will auto-export to /BENCH_COMPARISON.TXT.\n");
-        wm_set_dirty();
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
+    } else if (strcmp(cmd, "bench") == 0 || strcmp(cmd, "benchsuite") == 0 || strcmp(cmd, "benchcompare") == 0 || strcmp(cmd, "bench3d") == 0) {
+        shell_run_command("run HolyBenchmark3D.HC");
         return;
-    } else if (strcmp(cmd, "stopbench") == 0 || strcmp(cmd, "closebench") == 0) {
-        bench_unified_stop();
-        doldoc_print("$FG,YELLOW$[NEOBENCH]$FG$ NeoBench Extreme closed. Focus returned to shell.\n");
-        wm_set_dirty();
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
-        return;
-    } else if (strcmp(cmd, "bench3d") == 0 || strcmp(cmd, "cube2") == 0) {
-        bench_unified_start(BENCH_MODE_CUBES_SMP);
-        doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Launched Dual Cubes SMP on Core 1 & Core 2!\n");
-        wm_set_dirty();
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
-        return;
-    } else if (strcmp(cmd, "dynamics") == 0 || strcmp(cmd, "bench_dyn") == 0 || strcmp(cmd, "physics") == 0) {
-        bench_unified_start(BENCH_MODE_DYNAMICS);
-        doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Launched 3D Multi-Body Rigid Dynamics & Collisions!\n");
-        doldoc_print(" Click viewport or [Explode!] to trigger impulse dynamics. Type $FG,YELLOW$stopbench$FG$ to dismiss.\n");
-        wm_set_dirty();
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
-        return;
-    } else if (strcmp(cmd, "close3d") == 0 || strcmp(cmd, "bench3d stop") == 0 || strcmp(cmd, "bench3d close") == 0) {
+    } else if (strcmp(cmd, "stopbench") == 0 || strcmp(cmd, "closebench") == 0 || strcmp(cmd, "close3d") == 0) {
         bench_unified_stop();
         doldoc_print("$FG,YELLOW$[NEOBENCH]$FG$ Benchmark viewports closed. Focus returned to shell.\n");
         wm_set_dirty();
         wm_draw_all();
         gfx_swap_buffers();
         mouse_draw_cursor_front();
+        print_prompt();
+        return;
+    } else if (strcmp(cmd, "cube2") == 0) {
+        bench_unified_start(BENCH_MODE_CUBES_SMP);
+        doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Launched Dual Cubes SMP on Core 1 & Core 2!\n");
+        wm_set_dirty();
+        wm_draw_all();
+        gfx_swap_buffers();
+        mouse_draw_cursor_front();
+        print_prompt();
+        return;
+    } else if (strcmp(cmd, "dynamics") == 0 || strcmp(cmd, "bench_dyn") == 0 || strcmp(cmd, "physics") == 0) {
+        shell_run_command("run Physics3D.HC");
         return;
     } else if (strncmp(cmd, "zeroram", 7) == 0) {
         const char *arg = cmd + 7;
@@ -237,13 +228,7 @@ void shell_run_command(const char *raw_cmd) {
         print_prompt();
         return;
     } else if (strcmp(cmd, "gears") == 0 || strcmp(cmd, "glxgears") == 0) {
-        bench_unified_start(BENCH_MODE_GEARS);
-        doldoc_print("$FG,GREEN$[NEOBENCH]$FG$ Launched Authentic 3D GLXGears with Z-Buffer & Lighting!\n");
-        doldoc_print(" Click and drag mouse inside window to rotate view. Type $FG,YELLOW$stopbench$FG$ to dismiss.\n");
-        wm_set_dirty();
-        wm_draw_all();
-        gfx_swap_buffers();
-        mouse_draw_cursor_front();
+        shell_run_command("run Gears.HC");
         return;
     } else if (strcmp(cmd, "gears_wire") == 0) {
         bench_unified_start(BENCH_MODE_GEARS);
@@ -386,12 +371,10 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print(" Testing CPU SW, Zero-RAM GOP, VirtIO DMA, Direct VRAM, 2C/4C SMP, Unified L1 Tile NEON & Mixed Modes.\n");
         return;
     } else if (strcmp(cmd, "gpuconfig") == 0 || strcmp(cmd, "gpu") == 0) {
-        gpu_config_open();
-        doldoc_print("$FG,CYAN$[GPU-CONFIG]$FG$ Opened Dedicated GPU Hardware & Buffering Configuration Window.\n");
+        shell_run_command("run GpuConfig.HC");
         return;
     } else if (strcmp(cmd, "compositor") == 0 || strcmp(cmd, "comp") == 0) {
-        compositor_config_open();
-        doldoc_print("$FG,CYAN$[COMPOSITOR]$FG$ Opened Dedicated Desktop Compositor & Effects Window.\n");
+        shell_run_command("run Compositor.HC");
         return;
     } else if (strcmp(cmd, "filer") == 0 || strcmp(cmd, "files") == 0) {
         shell_run_command("run Filer.HC");
@@ -400,7 +383,8 @@ void shell_run_command(const char *raw_cmd) {
         shell_run_command("run Editor.HC");
         return;
     } else if (strcmp(cmd, "top") == 0) {
-        top_print_doldoc();
+        shell_run_command("run Top.HC");
+        return;
     } else if (strncmp(cmd, "affinity ", 9) == 0) {
         const char *p = skip_leading_ws(cmd + 9);
         uint64_t tid = (uint64_t)atoi(p);
