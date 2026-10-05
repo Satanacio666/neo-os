@@ -1,4 +1,6 @@
 #include "lexer.h"
+#include "../kernel/symbols/symbols.h"
+#include "../kernel/mem/kheap.h"
 
 static int is_digit(char c) {
     return c >= '0' && c <= '9';
@@ -24,6 +26,8 @@ static int is_alpha(char c) {
 void lexer_init(lexer_t *l, const char *source) {
     l->src = source ? source : "";
     l->pos = 0;
+    l->line = 1;
+    l->col = 1;
     lexer_next(l); // Prime the first token
 }
 
@@ -37,8 +41,17 @@ token_t lexer_next(lexer_t *l) {
     // Skip whitespace
     while (l->src[l->pos] && (l->src[l->pos] == ' ' || l->src[l->pos] == '\t' ||
            l->src[l->pos] == '\n' || l->src[l->pos] == '\r')) {
+        if (l->src[l->pos] == '\n') {
+            l->line++;
+            l->col = 1;
+        } else {
+            l->col++;
+        }
         l->pos++;
     }
+
+    tok.line = l->line;
+    tok.col = l->col;
 
     char c = l->src[l->pos];
     if (c == '\0') {
@@ -50,8 +63,79 @@ token_t lexer_next(lexer_t *l) {
     // Skip single-line comments // ...
     if (c == '/' && l->src[l->pos + 1] == '/') {
         l->pos += 2;
+        l->col += 2;
         while (l->src[l->pos] && l->src[l->pos] != '\n') {
             l->pos++;
+            l->col++;
+        }
+        return lexer_next(l);
+    }
+
+    // Preprocessor directives (#define, #include, etc.)
+    if (c == '#') {
+        l->pos++;
+        l->col++;
+        while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') {
+            l->pos++;
+            l->col++;
+        }
+        if (strncmp(&l->src[l->pos], "define", 6) == 0 && (l->src[l->pos + 6] == ' ' || l->src[l->pos + 6] == '\t')) {
+            l->pos += 6;
+            l->col += 6;
+            while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') {
+                l->pos++;
+                l->col++;
+            }
+            char def_name[64];
+            size_t nlen = 0;
+            while (is_alpha(l->src[l->pos]) || is_digit(l->src[l->pos])) {
+                if (nlen < sizeof(def_name) - 1) def_name[nlen++] = l->src[l->pos];
+                l->pos++;
+                l->col++;
+            }
+            def_name[nlen] = '\0';
+            while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') {
+                l->pos++;
+                l->col++;
+            }
+            int64_t def_val = 1;
+            int is_neg = 0;
+            if (l->src[l->pos] == '-') {
+                is_neg = 1;
+                l->pos++;
+                l->col++;
+            }
+            if (is_digit(l->src[l->pos])) {
+                if (l->src[l->pos] == '0' && (l->src[l->pos + 1] == 'x' || l->src[l->pos + 1] == 'X')) {
+                    l->pos += 2;
+                    l->col += 2;
+                    def_val = 0;
+                    while (is_hex_digit(l->src[l->pos])) {
+                        def_val = (def_val << 4) | hex_val(l->src[l->pos]);
+                        l->pos++;
+                        l->col++;
+                    }
+                } else {
+                    def_val = 0;
+                    while (is_digit(l->src[l->pos])) {
+                        def_val = def_val * 10 + (l->src[l->pos] - '0');
+                        l->pos++;
+                        l->col++;
+                    }
+                }
+                if (is_neg) def_val = -def_val;
+            }
+            if (def_name[0]) {
+                int64_t *storage = (int64_t*)kmalloc(sizeof(int64_t));
+                if (storage) {
+                    *storage = def_val;
+                    symbols_register(def_name, storage, SYM_VAR);
+                }
+            }
+        }
+        while (l->src[l->pos] && l->src[l->pos] != '\n') {
+            l->pos++;
+            l->col++;
         }
         return lexer_next(l);
     }

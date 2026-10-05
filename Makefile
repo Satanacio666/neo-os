@@ -48,8 +48,7 @@ SRCS_C = boot/main.c \
          kernel/math/holygl.c \
          kernel/bench/bench_unified.c \
          kernel/bench/perf_overlay.c \
-         kernel/bench/profiler.c \
-         gui/menu.c
+         kernel/bench/profiler.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \

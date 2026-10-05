@@ -122,16 +122,13 @@ int smp_dispatch(uint32_t core_id, smp_task_fn fn, void *arg) {
     if (core_id == 0 || core_id >= SMP_MAX_CORES) return -1;
     if (!g_smp.core_online[core_id]) return -1;
 
-    smp_spin_lock(&g_smp.lock);
-
+    // Lockless Single-Producer Single-Consumer (SPSC) Slot Dispatch
+    g_smp.jobs[core_id].completed = 0;
     g_smp.jobs[core_id].fn = fn;
     g_smp.jobs[core_id].arg = arg;
-    g_smp.jobs[core_id].completed = 0;
 
     asm volatile("dmb ish" ::: "memory");
     g_smp.jobs[core_id].pending = 1;
-
-    smp_spin_unlock(&g_smp.lock);
 
     asm volatile("dmb ish" ::: "memory");
     asm volatile("sev");

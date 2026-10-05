@@ -16,6 +16,9 @@ void          mouse_poll(void);
 void          mouse_set_pos(int x, int y);
 void          mouse_set_button(int left, int right);
 mouse_state_t mouse_get_state(void);
+int           mouse_get_x(void);
+int           mouse_get_y(void);
+int           mouse_get_btn(void);
 
 // Backbuffer cursor (legacy — still used in zero-copy mode back==front)
 void          mouse_draw_cursor(void);

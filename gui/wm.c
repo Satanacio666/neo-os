@@ -163,6 +163,20 @@ void wm_sweep_destroyed_windows(void) {
     }
 }
 
+void wm_recover_shell(void) {
+    for (int i = window_count - 1; i >= 1; i--) {
+        wm_destroy_window(window_list[i].id);
+    }
+    wm_sweep_destroyed_windows();
+
+    if (window_count > 0) {
+        window_list[0].is_minimized = 0;
+        window_list[0].is_active = 1;
+        active_window_idx = 0;
+    }
+    wm_set_dirty();
+}
+
 window_t* wm_get_window_by_id(uint32_t id) {
     for (int i = 0; i < window_count; i++) {
         if (window_list[i].id == id && !window_list[i].marked_for_destruction) return &window_list[i];
@@ -474,7 +488,10 @@ static int drag_win_idx = -1;
 static int drag_offset_x = 0;
 static int drag_offset_y = 0;
 static int prev_left_btn = 0;
-static int app_menu_open = 0;
+void menu_toggle(void) {
+    extern void shell_run_command(const char *cmd);
+    shell_run_command("run Menu.HC");
+}
 
 void wm_handle_mouse(mouse_state_t mouse) {
     wm_sweep_destroyed_windows();
@@ -575,32 +592,6 @@ void wm_handle_mouse(mouse_state_t mouse) {
             }
         }
 
-        // B. Check App Menu Items if open
-        if (app_menu_open && mouse.x >= 8 && mouse.x <= 208) {
-            uint32_t menu_y = panel_y - 164;
-            if (mouse.y >= (int)menu_y && mouse.y < (int)panel_y) {
-                int item = (mouse.y - menu_y) / 28;
-                app_menu_open = 0;
-                extern void shell_run_command(const char *cmd);
-                if (item == 0) shell_run_command("help");
-                else if (item == 1) shell_run_command("mem");
-                else if (item == 2) shell_run_command("tasks");
-                else if (item == 3) shell_run_command("sym");
-                else if (item == 4) shell_run_command("reboot");
-                wm_draw_all();
-                doldoc_redraw();
-                mouse_draw_cursor();
-                gfx_swap_buffers();
-                prev_left_btn = 1;
-                return;
-            }
-        }
-        if (app_menu_open) {
-            app_menu_open = 0;
-            wm_draw_all();
-            doldoc_redraw();
-        }
-
         // C. Check Window Resizing, Titlebars & Controls
         for (int i = window_count - 1; i >= 0; i--) {
             window_t *win = &window_list[i];
@@ -628,6 +619,8 @@ void wm_handle_mouse(mouse_state_t mouse) {
                     if (win->id == 1) {
                         win->is_minimized = 1;
                     } else {
+                        extern void bench_unified_stop(void);
+                        bench_unified_stop();
                         wm_destroy_window(win->id);
                     }
                     wm_draw_all();

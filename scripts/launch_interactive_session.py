@@ -23,11 +23,12 @@ def main():
     subprocess.run(["killall", "-9", "qemu-system-aarch64"], stderr=subprocess.DEVNULL)
     time.sleep(0.5)
 
-    if os.path.exists(FIFO_PATH):
-        try:
-            os.remove(FIFO_PATH)
-        except OSError:
-            pass
+    for p in [FIFO_PATH, "/tmp/qemu-hmp.sock"]:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
     try:
         os.mkfifo(FIFO_PATH)
     except OSError as e:
@@ -45,8 +46,8 @@ def main():
         "-smp", "4",
         "-m", "1024",
         "-bios", BIOS_PATH,
-        "-device", "ramfb",
-        "-device", "virtio-gpu-device,xres=1024,yres=768",
+        "-device", "ramfb,id=ramfb0",
+        "-device", "virtio-gpu-device,id=gpu0,xres=1024,yres=768",
         "-device", "virtio-keyboard-device",
         "-device", "virtio-tablet-device",
         "-device", "usb-ehci",
@@ -58,6 +59,7 @@ def main():
         "-drive", f"file={REDSEA_IMG},format=raw,id=redsea,if=none",
         "-device", "virtio-blk-device,drive=redsea",
         "-display", "gtk",
+        "-monitor", "unix:/tmp/qemu-hmp.sock,server,nowait",
         "-serial", "stdio"
     ]
 
@@ -88,14 +90,14 @@ def main():
             log_file.write(dec)
             log_file.flush()
             buf += dec
-            if "Interactive Shell operational. Starting main loop..." in buf:
+            if "Entering Sovereign HolyC WMEventLoop" in buf or "Interactive Shell operational" in buf:
                 boot_ready.set()
 
     t_reader = threading.Thread(target=reader, daemon=True)
     t_reader.start()
 
     print("[INTERACTIVE] Booting UEFI & Ring 0 Kernel...")
-    if not boot_ready.wait(timeout=35):
+    if not boot_ready.wait(timeout=60):
         print("[INTERACTIVE ERROR] Boot timeout!")
         proc.kill()
         sys.exit(1)
@@ -126,7 +128,8 @@ def main():
     t_fifo.start()
 
     try:
-        proc.wait()
+        ret = proc.wait()
+        print(f"[INTERACTIVE] QEMU exited with code {ret}")
     except KeyboardInterrupt:
         print("[INTERACTIVE] Stopping session...")
         proc.terminate()

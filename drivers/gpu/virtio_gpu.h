@@ -89,5 +89,6 @@ int virtio_gpu_init(void);
 void virtio_gpu_flush_rect(int x, int y, int w, int h);
 void virtio_gpu_flush_full(void);
 int virtio_gpu_is_available(void);
+void virtio_gpu_page_flip(uint32_t resource_id);
 
 #endif

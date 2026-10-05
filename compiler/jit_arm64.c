@@ -69,9 +69,13 @@ int jit_is_in_code_pool(const void *ptr) {
     return is_in_jit_pool(ptr);
 }
 
+static int s_jit_scratch_in_use = 0;
+
 static void cb_release(code_buffer_t *cb) {
     if (!cb || !cb->code) return;
-    if (!is_in_jit_pool(cb->code)) {
+    if (cb->code == s_jit_scratch_code) {
+        s_jit_scratch_in_use = 0;
+    } else if (!is_in_jit_pool(cb->code)) {
         kfree(cb->code);
     }
     cb->code = NULL;
@@ -84,7 +88,8 @@ static void cb_init_scratch(code_buffer_t *cb, size_t max_instructions) {
     cb->count = 0;
     cb->has_error = 0;
     cb->error_msg[0] = '\0';
-    if (s_jit_scratch_code && max_instructions <= JIT_SCRATCH_INSTRS) {
+    if (!s_jit_scratch_in_use && s_jit_scratch_code && max_instructions <= JIT_SCRATCH_INSTRS) {
+        s_jit_scratch_in_use = 1;
         cb->code = s_jit_scratch_code;
         cb->capacity = JIT_SCRATCH_INSTRS;
     } else {
@@ -119,6 +124,53 @@ static void cb_commit_persistent(code_buffer_t *cb) {
     if (is_in_jit_pool(cb->code) && cb->code != s_jit_scratch_code) {
         size_t actual_bytes = (cb->count * sizeof(uint32_t) + 63) & ~63ULL;
         s_jit_pool_offset += actual_bytes;
+    }
+}
+
+static void jit_syntax_error(lexer_t *l, code_buffer_t *cb, const char *fmt, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    if (cb) cb->has_error = 1;
+    int line = l ? l->current.line : 0;
+    int col = l ? l->current.col : 0;
+    if (cb) snprintf(cb->error_msg, sizeof(cb->error_msg), "[Line %d, Col %d] %s", line, col, buf);
+
+    // 1. Direct hardware UART output (always visible on serial/fifo)
+    printf("\n[JIT SYNTAX ERROR] [Line %d, Col %d] %s\n", line, col, buf);
+
+    // Find and print source snippet
+    if (l && l->src) {
+        int cur_line = 1;
+        const char *p = l->src;
+        const char *line_start = p;
+        while (*p && cur_line < line) {
+            if (*p == '\n') {
+                cur_line++;
+                line_start = p + 1;
+            }
+            p++;
+        }
+        const char *line_end = line_start;
+        while (*line_end && *line_end != '\n' && *line_end != '\r') line_end++;
+
+        char line_snippet[128];
+        size_t slen = (size_t)(line_end - line_start);
+        if (slen > sizeof(line_snippet) - 1) slen = sizeof(line_snippet) - 1;
+        memcpy(line_snippet, line_start, slen);
+        line_snippet[slen] = '\0';
+
+        printf("  %4d | %s\n", line, line_snippet);
+        printf("       | ");
+        for (int c = 1; c < col && c < 60; c++) printf(" ");
+        printf("^\n");
+
+        // 2. DolDoc GUI console output (visible in terminal window)
+        doldoc_printf("$FG,RED$[JIT SYNTAX ERROR]$FG$ [Line %d, Col %d] %s\n", line, col, buf);
+        doldoc_printf("$FG,YELLOW$  %4d |$FG$ %s\n", line, line_snippet);
     }
 }
 
@@ -813,9 +865,9 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 strcmp(ident_name, "glClearColor") == 0
             );
 
-            for (int i = 0; i < arg_count; i++) {
-                emit_fmov_d_x(cb, i, i);
-                if (is_holygl_float_func) {
+            if (is_holygl_float_func) {
+                for (int i = 0; i < arg_count; i++) {
+                    emit_fmov_d_x(cb, i, i);
                     emit_fcvt_s_d(cb, i, i);
                 }
             }
@@ -1006,6 +1058,14 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
         if (lexer_peek(l).type == TOK_RPAREN) {
             lexer_next(l); // eat ')'
         }
+    } else {
+        token_t unk = lexer_peek(l);
+        if (unk.type != TOK_EOF && unk.type != TOK_SEMICOLON && unk.type != TOK_RPAREN && unk.type != TOK_RBRACE && unk.type != TOK_COMMA) {
+            jit_syntax_error(l, cb, "Unexpected token '%s' (type %d) in expression",
+                             unk.str_value[0] ? unk.str_value : "<symbol>",
+                             (int)unk.type);
+            lexer_next(l); // GUARANTEE forward progress
+        }
     }
 }
 
@@ -1065,16 +1125,70 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
             emit_ldr64(cb, 0, 0);
         }
     } else if (tok.type == TOK_AMPERSAND) {
-        lexer_next(l);
+        lexer_next(l); // eat '&'
         token_t id = lexer_peek(l);
         if (id.type == TOK_IDENT) {
-            symbol_t *sym = symbols_lookup_entry(id.str_value);
+            char base_name[64];
+            strncpy(base_name, id.str_value, 63);
+            base_name[63] = '\0';
+            lexer_next(l); // eat ident
+
+            symbol_t *sym = symbols_lookup_entry(base_name);
+            var_type_t *vt = lookup_var_type(base_name);
             if (sym) {
-                emit_mov_imm64(cb, 0, (uint64_t)sym->address);
+                if (vt && vt->is_ptr) {
+                    emit_mov_imm64(cb, 16, (uint64_t)sym->address);
+                    emit_ldr_ptr(cb, 0, 16); // X0 = pointer value
+                } else {
+                    emit_mov_imm64(cb, 0, (uint64_t)sym->address); // X0 = &variable
+                }
             } else {
                 emit_mov_imm64(cb, 0, 0);
             }
-            lexer_next(l);
+
+            char cur_st[32] = {0};
+            if (vt && vt->struct_type[0]) {
+                strncpy(cur_st, vt->struct_type, 31);
+            }
+
+            while (lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW || lexer_peek(l).type == TOK_LBRACKET) {
+                if (lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) {
+                    lexer_next(l); // eat '.' or '->'
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_IDENT) {
+                        char field[32];
+                        strncpy(field, f_tok.str_value, 31);
+                        field[31] = '\0';
+                        lexer_next(l);
+
+                        struct_def_t *st = find_struct_def(cur_st);
+                        if (st) {
+                            for (int m = 0; m < st->member_count; m++) {
+                                if (strcmp(st->members[m].name, field) == 0) {
+                                    emit_mov_imm64(cb, 1, (uint64_t)st->members[m].offset);
+                                    emit_add(cb, 0, 0, 1); // X0 = base + offset
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } else if (lexer_peek(l).type == TOK_LBRACKET) {
+                    lexer_next(l); // eat '['
+                    emit_push_x(cb, 0); // save base address
+                    parse_expr(l, cb);  // index in X0
+                    if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                    emit_pop_x(cb, 1);  // X1 = base address
+
+                    int elem_sz = 8;
+                    struct_def_t *st = find_struct_def(cur_st);
+                    if (st && st->total_size > 0) {
+                        elem_sz = st->total_size;
+                    }
+                    emit_mov_imm64(cb, 2, (uint64_t)elem_sz);
+                    emit_mul(cb, 0, 0, 2); // X0 = index * elem_sz
+                    emit_add(cb, 0, 1, 0); // X0 = base + index * elem_sz
+                }
+            }
         }
     } else if (tok.type == TOK_SIZEOF) {
         lexer_next(l);
@@ -1375,7 +1489,15 @@ static void parse_block(lexer_t *l, code_buffer_t *cb) {
     if (lexer_peek(l).type == TOK_LBRACE) {
         lexer_next(l); // eat '{'
         while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+            size_t prev_pos = l->pos;
             parse_statement(l, cb);
+            if (cb->has_error) break;
+            if (l->pos <= prev_pos && lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+                jit_syntax_error(l, cb, "Unparsed token '%s' (type %d) inside block",
+                                 l->current.str_value[0] ? l->current.str_value : "<symbol>",
+                                 (int)l->current.type);
+                lexer_next(l); // GUARANTEE forward progress: never hang!
+            }
         }
         if (lexer_peek(l).type == TOK_RBRACE) {
             lexer_next(l); // eat '}'
@@ -1387,6 +1509,7 @@ static void parse_block(lexer_t *l, code_buffer_t *cb) {
 
 // Statements (Function Decls, Variable Decls, Assignments, If, While, For, Expressions, Classes, Format Strings)
 static void parse_statement(lexer_t *l, code_buffer_t *cb) {
+    s_expr_is_float = 0;
     token_t tok = lexer_peek(l);
 
     // Format String Statement: "Format %d\n", arg1, ...;
@@ -1469,6 +1592,11 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     if (m_type == TOK_TYPE_U8) m_size = 1;
                     else if (m_type == TOK_TYPE_U16) m_size = 2;
                     else if (m_type == TOK_TYPE_U32) m_size = 4;
+                    else if (m_type == TOK_IDENT) {
+                        struct_def_t *nested_st = find_struct_def(lexer_peek(l).str_value);
+                        if (nested_st && nested_st->total_size > 0) m_size = nested_st->total_size;
+                        else m_size = 8;
+                    }
                     else m_size = 8;
                     lexer_next(l); // eat type
 
@@ -1491,6 +1619,31 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         mem->size = m_size;
                         cur_offset += m_size;
                         lexer_next(l);
+
+                        // Check for array member: ident[size]
+                        if (lexer_peek(l).type == TOK_LBRACKET) {
+                            lexer_next(l); // eat '['
+                            int arr_count = 1;
+                            token_t num_tok = lexer_peek(l);
+                            if (num_tok.type == TOK_NUMBER) {
+                                arr_count = (int)num_tok.int_value;
+                                lexer_next(l);
+                            } else if (num_tok.type == TOK_IDENT) {
+                                symbol_t *c_sym = symbols_lookup_entry(num_tok.str_value);
+                                if (c_sym && c_sym->type == SYM_VAR && c_sym->address) {
+                                    arr_count = *(int*)c_sym->address;
+                                } else if (strcmp(num_tok.str_value, "MAX_WINDOWS") == 0) {
+                                    arr_count = 16;
+                                }
+                                lexer_next(l);
+                            }
+                            if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                            if (arr_count > 1) {
+                                cur_offset -= m_size;
+                                mem->size = m_size * arr_count;
+                                cur_offset += mem->size;
+                            }
+                        }
                     }
                     if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
                 }
@@ -1748,7 +1901,15 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         if (lexer_peek(l).type == TOK_LBRACE) {
             lexer_next(l); // eat '{'
             while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+                size_t prev_pos = l->pos;
                 parse_statement(l, cb);
+                if (cb->has_error) break;
+                if (l->pos <= prev_pos && lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+                    jit_syntax_error(l, cb, "Unparsed token '%s' (type %d) inside switch",
+                                     l->current.str_value[0] ? l->current.str_value : "<symbol>",
+                                     (int)l->current.type);
+                    lexer_next(l);
+                }
             }
             if (lexer_peek(l).type == TOK_RBRACE) lexer_next(l);
         } else {
@@ -1797,6 +1958,14 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         token_t val_tok = lexer_peek(l);
         if (val_tok.type == TOK_NUMBER) {
             case_val = is_neg ? -val_tok.int_value : val_tok.int_value;
+            lexer_next(l);
+        } else if (val_tok.type == TOK_IDENT) {
+            symbol_t *csym = symbols_lookup_entry(val_tok.str_value);
+            if (csym && csym->type == SYM_VAR && csym->address) {
+                case_val = is_neg ? -(*(int64_t*)csym->address) : (*(int64_t*)csym->address);
+            } else {
+                jit_syntax_error(l, cb, "Undefined constant in case label: '%s'", val_tok.str_value);
+            }
             lexer_next(l);
         }
         if (lexer_peek(l).type == TOK_COLON) {
@@ -2465,8 +2634,15 @@ int64_t jit_compile_and_run(const char *source) {
     emit_push_lr(&cb);
 
     while (lexer_peek(&l).type != TOK_EOF) {
+        size_t prev_pos = l.pos;
         parse_statement(&l, &cb);
         if (cb.has_error) break;
+        if (l.pos <= prev_pos && lexer_peek(&l).type != TOK_EOF) {
+            jit_syntax_error(&l, &cb, "Unparsed token '%s' (type %d) at top level",
+                             l.current.str_value[0] ? l.current.str_value : "<symbol>",
+                             (int)l.current.type);
+            lexer_next(&l); // GUARANTEE forward progress: never hang!
+        }
     }
 
     emit_pop_lr(&cb);

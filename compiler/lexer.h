@@ -79,11 +79,15 @@ typedef struct {
     int64_t      int_value;
     double       float_value;
     char         str_value[64];
+    int          line;
+    int          col;
 } token_t;
 
 typedef struct {
     const char *src;
     size_t     pos;
+    int        line;
+    int        col;
     token_t    current;
 } lexer_t;
 

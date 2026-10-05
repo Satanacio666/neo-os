@@ -308,3 +308,7 @@ void mouse_draw_cursor_front(void) {
         }
     }
 }
+
+int mouse_get_x(void) { return g_mouse.x; }
+int mouse_get_y(void) { return g_mouse.y; }
+int mouse_get_btn(void) { return g_mouse.left_button; }

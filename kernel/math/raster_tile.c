@@ -4,6 +4,11 @@
 #include "../../gui/render.h"
 #include <uefi.h>
 
+// GCC AArch64 128-bit Vector Extensions (Native NEON SIMD)
+typedef float    float32x4_t __attribute__((vector_size(16)));
+typedef uint32_t uint32x4_t  __attribute__((vector_size(16)));
+typedef uint64_t uint64x2_t  __attribute__((vector_size(16)));
+
 raster_scene_t g_raster_scene = {0};
 
 // ─── Statically Allocated Per-Core 24 KB L1 Tile Scratchpads ──────────────────
@@ -277,6 +282,10 @@ void raster_tile_triangle_neon(tile_scratchpad_t *pad,
 
     uint32_t flat_c = tri->flat_color;
 
+    float32x4_t v_step_a0 = {0.0f, A0, 2.0f * A0, 3.0f * A0};
+    float32x4_t v_step_a1 = {0.0f, A1, 2.0f * A1, 3.0f * A1};
+    float32x4_t v_step_a2 = {0.0f, A2, 2.0f * A2, 3.0f * A2};
+
     // Scanline Row Stepping
     for (int py = min_py; py < max_py; py++) {
         float py_c = (float)py + 0.5f;
@@ -298,22 +307,26 @@ void raster_tile_triangle_neon(tile_scratchpad_t *pad,
         int px = min_px;
         int bulk_end = min_px + ((max_px - min_px) & ~3);
 
-        // 4-Pixel Vector Processing Loop
+        // 4-Pixel Vector NEON Processing Loop
         if (shade_mode == RASTER_SHADE_FLAT) {
             for (; px < bulk_end; px += 4) {
-                for (int i = 0; i < 4; i++) {
-                    float pe0 = e0 + (float)i * A0;
-                    float pe1 = e1 + (float)i * A1;
-                    float pe2 = e2 + (float)i * A2;
+                float32x4_t ve0 = (float32x4_t){e0, e0, e0, e0} + v_step_a0;
+                float32x4_t ve1 = (float32x4_t){e1, e1, e1, e1} + v_step_a1;
+                float32x4_t ve2 = (float32x4_t){e2, e2, e2, e2} + v_step_a2;
+                uint32x4_t mask = (uint32x4_t)(ve0 >= 0.0f) & (uint32x4_t)(ve1 >= 0.0f) & (uint32x4_t)(ve2 >= 0.0f);
+                uint64x2_t m64 = (uint64x2_t)mask;
 
-                    if (pe0 >= 0.0f && pe1 >= 0.0f && pe2 >= 0.0f) {
-                        float pz = z_cur + (float)i * dz_dx;
-                        uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
-
-                        int p_idx = px + i;
-                        if (!depth_test || z_val < zbuf[p_idx]) {
-                            if (depth_test) zbuf[p_idx] = z_val;
-                            cbuf[p_idx] = flat_c;
+                // Rejection: if all 4 pixels are outside, skip depth/color math entirely
+                if ((m64[0] | m64[1]) != 0) {
+                    for (int i = 0; i < 4; i++) {
+                        if (mask[i]) {
+                            float pz = z_cur + (float)i * dz_dx;
+                            uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
+                            int p_idx = px + i;
+                            if (!depth_test || z_val < zbuf[p_idx]) {
+                                if (depth_test) zbuf[p_idx] = z_val;
+                                cbuf[p_idx] = flat_c;
+                            }
                         }
                     }
                 }
@@ -324,28 +337,30 @@ void raster_tile_triangle_neon(tile_scratchpad_t *pad,
             }
         } else {
             for (; px < bulk_end; px += 4) {
-                for (int i = 0; i < 4; i++) {
-                    float pe0 = e0 + (float)i * A0;
-                    float pe1 = e1 + (float)i * A1;
-                    float pe2 = e2 + (float)i * A2;
+                float32x4_t ve0 = (float32x4_t){e0, e0, e0, e0} + v_step_a0;
+                float32x4_t ve1 = (float32x4_t){e1, e1, e1, e1} + v_step_a1;
+                float32x4_t ve2 = (float32x4_t){e2, e2, e2, e2} + v_step_a2;
+                uint32x4_t mask = (uint32x4_t)(ve0 >= 0.0f) & (uint32x4_t)(ve1 >= 0.0f) & (uint32x4_t)(ve2 >= 0.0f);
+                uint64x2_t m64 = (uint64x2_t)mask;
 
-                    if (pe0 >= 0.0f && pe1 >= 0.0f && pe2 >= 0.0f) {
-                        float pz = z_cur + (float)i * dz_dx;
-                        uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
-
-                        int p_idx = px + i;
-                        if (!depth_test || z_val < zbuf[p_idx]) {
-                            if (depth_test) zbuf[p_idx] = z_val;
-
-                            if (shade_mode == RASTER_SHADE_WIREFRAME) {
-                                if (pe0 < 1.2f || pe1 < 1.2f || pe2 < 1.2f) {
-                                    cbuf[p_idx] = 0xFFFFFFFF;
+                if ((m64[0] | m64[1]) != 0) {
+                    for (int i = 0; i < 4; i++) {
+                        if (mask[i]) {
+                            float pz = z_cur + (float)i * dz_dx;
+                            uint16_t z_val = (uint16_t)(clampi((int)(pz * 65534.0f), 0, 65534));
+                            int p_idx = px + i;
+                            if (!depth_test || z_val < zbuf[p_idx]) {
+                                if (depth_test) zbuf[p_idx] = z_val;
+                                if (shade_mode == RASTER_SHADE_WIREFRAME) {
+                                    if (ve0[i] < 1.2f || ve1[i] < 1.2f || ve2[i] < 1.2f) {
+                                        cbuf[p_idx] = 0xFFFFFFFF;
+                                    }
+                                } else {
+                                    uint32_t pr = (uint32_t)clampi((int)(r_cur + (float)i * dr_dx), 0, 255);
+                                    uint32_t pg = (uint32_t)clampi((int)(g_cur + (float)i * dg_dx), 0, 255);
+                                    uint32_t pb = (uint32_t)clampi((int)(b_cur + (float)i * db_dx), 0, 255);
+                                    cbuf[p_idx] = 0xFF000000 | (pr << 16) | (pg << 8) | pb;
                                 }
-                            } else {
-                                uint32_t pr = (uint32_t)clampi((int)(r_cur + (float)i * dr_dx), 0, 255);
-                                uint32_t pg = (uint32_t)clampi((int)(g_cur + (float)i * dg_dx), 0, 255);
-                                uint32_t pb = (uint32_t)clampi((int)(b_cur + (float)i * db_dx), 0, 255);
-                                cbuf[p_idx] = 0xFF000000 | (pr << 16) | (pg << 8) | pb;
                             }
                         }
                     }

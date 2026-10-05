@@ -44,6 +44,7 @@ void          wm_init(uint32_t screen_w, uint32_t screen_h);
 window_t*     wm_create_window(const char *title, int x, int y, int w, int h);
 void          wm_destroy_window(uint32_t id);
 void          wm_sweep_destroyed_windows(void);
+void          wm_recover_shell(void);
 void          wm_draw_desktop(void);
 void          wm_draw_window(window_t *win);
 void          wm_draw_all(void);

@@ -21,6 +21,7 @@
 #include "../gui/wm.h"
 #include "../gui/menu.h"
 #include "../kernel/math/holygl.h"
+#include "../kernel/math/raster_tile.h"
 #include "../kernel/arch/aarch64/hal_platform.h"
 
 extern void install_vector_table(void);
@@ -36,6 +37,35 @@ static inline void aarch64_enable_fp(void) {
     asm volatile("mrs %0, cpacr_el1" : "=r"(val));
     val |= (3ULL << 20); // Bits [21:20] = 0b11: Enable FP/ASIMD instructions without EL1/EL0 traps
     asm volatile("msr cpacr_el1, %0\nisb" :: "r"(val));
+}
+
+void wm_step_frame(void) {
+    shell_poll();
+    mouse_poll();
+    wm_handle_mouse(mouse_get_state());
+
+    if (bench_unified_is_active()) {
+        if (wm_is_dirty()) {
+            wm_clear_dirty();
+        }
+        wm_draw_animating_windows();
+        wm_update_tray_clock();
+        gfx_vsync_wait();
+    } else {
+        if (wm_is_dirty()) {
+            wm_draw_all();
+            gfx_swap_buffers();
+            wm_clear_dirty();
+        } else {
+            wm_update_tray_clock();
+        }
+    }
+
+    task_yield();
+
+    if (!bench_unified_is_active() && !wm_is_dirty() && !keyboard_has_char()) {
+        asm volatile("yield");
+    }
 }
 
 int main(int argc, char **argv)
@@ -96,6 +126,11 @@ int main(int argc, char **argv)
     symbols_register("symbols_print_doldoc", (void*)symbols_print_doldoc, SYM_FUNC);
     symbols_register("mouse_set_pos", (void*)mouse_set_pos, SYM_FUNC);
     symbols_register("mouse_set_button", (void*)mouse_set_button, SYM_FUNC);
+    symbols_register("mouse_get_x", (void*)mouse_get_x, SYM_FUNC);
+    symbols_register("mouse_get_y", (void*)mouse_get_y, SYM_FUNC);
+    symbols_register("mouse_get_btn", (void*)mouse_get_btn, SYM_FUNC);
+    symbols_register("keyboard_has_char", (void*)keyboard_has_char, SYM_FUNC);
+    symbols_register("keyboard_getchar", (void*)keyboard_getchar, SYM_FUNC);
     symbols_register("bench_unified_start", (void*)bench_unified_start, SYM_FUNC);
     symbols_register("bench_unified_stop", (void*)bench_unified_stop, SYM_FUNC);
     symbols_register("bench_unified_is_active", (void*)bench_unified_is_active, SYM_FUNC);
@@ -124,6 +159,17 @@ int main(int argc, char **argv)
     symbols_register("gfx_is_zero_ram_mode", (void*)gfx_is_zero_ram_mode, SYM_FUNC);
     symbols_register("kheap_is_valid_ptr", (void*)kheap_is_valid_ptr, SYM_FUNC);
     symbols_register("wm_sweep_destroyed_windows", (void*)wm_sweep_destroyed_windows, SYM_FUNC);
+    symbols_register("wm_is_dirty", (void*)wm_is_dirty, SYM_FUNC);
+    symbols_register("wm_clear_dirty", (void*)wm_clear_dirty, SYM_FUNC);
+    symbols_register("wm_draw_all", (void*)wm_draw_all, SYM_FUNC);
+    symbols_register("wm_draw_animating_windows", (void*)wm_draw_animating_windows, SYM_FUNC);
+    symbols_register("wm_update_tray_clock", (void*)wm_update_tray_clock, SYM_FUNC);
+    symbols_register("wm_handle_mouse", (void*)wm_handle_mouse, SYM_FUNC);
+    symbols_register("wm_step_frame", (void*)wm_step_frame, SYM_FUNC);
+    symbols_register("mouse_poll", (void*)mouse_poll, SYM_FUNC);
+    symbols_register("mouse_get_state", (void*)mouse_get_state, SYM_FUNC);
+    symbols_register("shell_poll", (void*)shell_poll, SYM_FUNC);
+    symbols_register("gfx_vsync_wait", (void*)gfx_vsync_wait, SYM_FUNC);
     symbols_register("zbuffer_resize", (void*)zbuffer_resize, SYM_FUNC);
     symbols_register("redsea_mkdir", (void*)redsea_mkdir, SYM_FUNC);
     symbols_register("redsea_delete_file", (void*)redsea_delete_file, SYM_FUNC);
@@ -147,6 +193,16 @@ int main(int argc, char **argv)
     symbols_register("gfx_get_canvas_width", (void*)gfx_get_canvas_width, SYM_FUNC);
     symbols_register("gfx_get_canvas_height", (void*)gfx_get_canvas_height, SYM_FUNC);
     symbols_register("gfx_get_canvas_pitch", (void*)gfx_get_canvas_pitch, SYM_FUNC);
+    symbols_register("gfx_get_frontbuffer", (void*)gfx_get_frontbuffer, SYM_FUNC);
+    symbols_register("virtio_gpu_page_flip", (void*)virtio_gpu_page_flip, SYM_FUNC);
+    symbols_register("smp_get_current_core", (void*)smp_get_current_core, SYM_FUNC);
+    symbols_register("smp_get_core_count", (void*)smp_get_core_count, SYM_FUNC);
+    symbols_register("smp_dispatch", (void*)smp_dispatch, SYM_FUNC);
+    symbols_register("smp_is_job_done", (void*)smp_is_job_done, SYM_FUNC);
+    symbols_register("smp_wait_job", (void*)smp_wait_job, SYM_FUNC);
+    symbols_register("raster_tile_begin_scene", (void*)raster_tile_begin_scene, SYM_FUNC);
+    symbols_register("raster_tile_add_triangle", (void*)raster_tile_add_triangle, SYM_FUNC);
+    symbols_register("raster_tile_end_scene", (void*)raster_tile_end_scene, SYM_FUNC);
     symbols_register("gfx_draw_triangle_fill", (void*)gfx_draw_triangle_fill, SYM_FUNC);
     symbols_register("gfx_draw_triangle_wire", (void*)gfx_draw_triangle_wire, SYM_FUNC);
     symbols_register("gfx_draw_string", (void*)gfx_draw_string, SYM_FUNC);
@@ -284,7 +340,6 @@ int main(int argc, char **argv)
     virtio_blk_init();
     printf("[TRACE] Calling redsea_init...\r\n");
     redsea_init(0);
-    menu_init();
     symbols_register("menu", (void*)menu_toggle, SYM_FUNC);
 
     // 8. Initialize Native AArch64 JIT Compiler & Shell
@@ -308,7 +363,22 @@ int main(int argc, char **argv)
 
     enable_interrupts();
 
-    // 10. Interactive Main Loop (Polls input, renders UI, handles animation)
+    // 10. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
+    printf("[BOOT] Sovereign Handover: Transferring primary execution to Pure HolyC WM.HC...\r\n");
+    static char wm_src[16384];
+    size_t wm_src_len = 0;
+    if (redsea_read_file("WM.HC", wm_src, sizeof(wm_src) - 1, &wm_src_len) == 0) {
+        wm_src[wm_src_len] = '\0';
+        printf("[BOOT] Compiling WM.HC (%llu bytes)...\r\n", (unsigned long long)wm_src_len);
+        int64_t res = jit_compile_and_run(wm_src);
+        printf("[BOOT] WM.HC compiled, res = %lld\r\n", (long long)res);
+        printf("[BOOT] Entering Sovereign HolyC WMEventLoop()...\r\n");
+        jit_compile_and_run("WMEventLoop();");
+    } else {
+        printf("[BOOT WARN] Could not read WM.HC from RedSea disk, falling back to C loop.\r\n");
+    }
+
+    // 11. Fallback Main Loop (Only if HolyC returns)
     while (1) {
         // Poll keyboard & execute shell commands
         shell_poll();
@@ -338,10 +408,9 @@ int main(int argc, char **argv)
         // Cooperative yield between active Ring 0 scheduler tasks
         task_yield();
 
-        // CPU Cycle Budgeting: When system is idle (no animation, WM clean, no keystrokes),
-        // wait for interrupt (WFI) to enter low-power standby and preserve CPU cycles
+        // CPU Cycle Budgeting: When system is idle, yield CPU execution slice
         if (!bench_unified_is_active() && !wm_is_dirty() && !keyboard_has_char()) {
-            asm volatile("wfi");
+            asm volatile("yield");
         }
     }
 

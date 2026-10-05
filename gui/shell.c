@@ -15,10 +15,43 @@
 #include <uefi.h>
 
 #define SHELL_MAX_LINE 256
+#define SHELL_HISTORY_MAX 16
+
 static char cmd_buf[SHELL_MAX_LINE];
 static int  cmd_len = 0;
 static int  cursor_visible = 1;
 static uint32_t cursor_ticks = 0;
+
+static char s_history[SHELL_HISTORY_MAX][SHELL_MAX_LINE];
+static int  s_history_count = 0;
+static int  s_history_head = 0;
+static int  s_history_nav = -1;
+
+static const char *s_autocompletes[] = {
+    "help", "menu", "filer", "edit", "top", "perf", "vsync", "zeroram",
+    "render", "raster", "clear", "reboot", "tasks", "mem", "sym", "explode",
+    "run HolyBenchmark.HC", "run Gears.HC", "run Physics3D.HC", "run GpuConfig.HC",
+    "run Editor.HC", "run Filer.HC", "run Top.HC", "run Compositor.HC",
+    "run Menu.HC", "run WM.HC", "run BenchCpu.HC", "run BenchReport.HC",
+    "run RasterTile.HC", "run FontVector.HC", "run StdLib.HC",
+    NULL
+};
+
+static void shell_add_history(const char *cmd) {
+    if (!cmd || !*cmd) return;
+    if (s_history_count > 0) {
+        int last_idx = (s_history_head - 1 + SHELL_HISTORY_MAX) % SHELL_HISTORY_MAX;
+        if (strcmp(s_history[last_idx], cmd) == 0) {
+            s_history_nav = -1;
+            return;
+        }
+    }
+    strncpy(s_history[s_history_head], cmd, SHELL_MAX_LINE - 1);
+    s_history[s_history_head][SHELL_MAX_LINE - 1] = '\0';
+    s_history_head = (s_history_head + 1) % SHELL_HISTORY_MAX;
+    if (s_history_count < SHELL_HISTORY_MAX) s_history_count++;
+    s_history_nav = -1;
+}
 
 static void print_prompt(void) {
     doldoc_printf("$FG,CYAN$neo:%s>$FG,WHITE$ ", redsea_get_pwd());
@@ -57,6 +90,7 @@ void shell_run_command(const char *raw_cmd) {
         print_prompt();
         return;
     }
+    shell_add_history(cmd);
 
     if (strcmp(cmd, "help") == 0) {
         doldoc_print("$FG,CYAN$--- NeoOS Interactive Shell Help ---$FG$\n");
@@ -77,6 +111,17 @@ void shell_run_command(const char *raw_cmd) {
         doldoc_print("$FG,CYAN$------------------------------------$FG$\n");
     } else if (strcmp(cmd, "menu") == 0) {
         shell_run_command("run Menu.HC");
+        return;
+    } else if (strcmp(cmd, "reset") == 0 || strcmp(cmd, "recover") == 0) {
+        extern void bench_unified_stop(void);
+        extern void wm_recover_shell(void);
+        bench_unified_stop();
+        wm_recover_shell();
+        doldoc_clear();
+        shell_init();
+        wm_draw_all();
+        mouse_draw_cursor();
+        gfx_swap_buffers();
         return;
     } else if (strcmp(cmd, "wm") == 0) {
         shell_run_command("run WM.HC");
@@ -584,9 +629,109 @@ void shell_poll(void) {
         } else if (c == KEY_PAGE_UP) {
             doldoc_scroll_up(5);
             doldoc_swap_term();
-        } else if (c == KEY_PAGE_DOWN) {
-            doldoc_scroll_down(5);
-            doldoc_swap_term();
+        } else if (c == KEY_ESC || c == 0x03) {
+            extern void bench_unified_stop(void);
+            extern void wm_recover_shell(void);
+            bench_unified_stop();
+            wm_recover_shell();
+            cmd_len = 0;
+            cmd_buf[0] = '\0';
+            doldoc_print("\n$FG,YELLOW$[BREAK]$FG$ Task interrupted. Sovereign shell recovered.\n");
+            print_prompt();
+            doldoc_draw_cursor(1);
+            wm_draw_all();
+            mouse_draw_cursor();
+            gfx_swap_buffers();
+        } else if (c == KEY_UP) {
+            if (s_history_count > 0) {
+                doldoc_draw_cursor(0);
+                while (cmd_len > 0) {
+                    cmd_len--;
+                    doldoc_backspace();
+                }
+                if (s_history_nav == -1) {
+                    s_history_nav = s_history_count - 1;
+                } else if (s_history_nav > 0) {
+                    s_history_nav--;
+                }
+                int h_idx = (s_history_head - s_history_count + s_history_nav + SHELL_HISTORY_MAX) % SHELL_HISTORY_MAX;
+                strncpy(cmd_buf, s_history[h_idx], SHELL_MAX_LINE - 1);
+                cmd_buf[SHELL_MAX_LINE - 1] = '\0';
+                cmd_len = (int)strlen(cmd_buf);
+                for (int i = 0; i < cmd_len; i++) {
+                    doldoc_putc(cmd_buf[i]);
+                }
+                doldoc_draw_cursor(1);
+                doldoc_swap_term();
+            }
+        } else if (c == KEY_DOWN) {
+            if (s_history_count > 0 && s_history_nav != -1) {
+                doldoc_draw_cursor(0);
+                while (cmd_len > 0) {
+                    cmd_len--;
+                    doldoc_backspace();
+                }
+                s_history_nav++;
+                if (s_history_nav >= s_history_count) {
+                    s_history_nav = -1;
+                    cmd_len = 0;
+                    cmd_buf[0] = '\0';
+                } else {
+                    int h_idx = (s_history_head - s_history_count + s_history_nav + SHELL_HISTORY_MAX) % SHELL_HISTORY_MAX;
+                    strncpy(cmd_buf, s_history[h_idx], SHELL_MAX_LINE - 1);
+                    cmd_buf[SHELL_MAX_LINE - 1] = '\0';
+                    cmd_len = (int)strlen(cmd_buf);
+                    for (int i = 0; i < cmd_len; i++) {
+                        doldoc_putc(cmd_buf[i]);
+                    }
+                }
+                doldoc_draw_cursor(1);
+                doldoc_swap_term();
+            }
+        } else if (c == '\t') {
+            if (cmd_len > 0) {
+                cmd_buf[cmd_len] = '\0';
+                const char *match = NULL;
+                int match_count = 0;
+                for (int i = 0; s_autocompletes[i]; i++) {
+                    if (strncmp(s_autocompletes[i], cmd_buf, cmd_len) == 0) {
+                        match = s_autocompletes[i];
+                        match_count++;
+                    }
+                }
+                if (match_count == 1 && match) {
+                    doldoc_draw_cursor(0);
+                    while (cmd_len > 0) {
+                        cmd_len--;
+                        doldoc_backspace();
+                    }
+                    strncpy(cmd_buf, match, SHELL_MAX_LINE - 1);
+                    cmd_buf[SHELL_MAX_LINE - 1] = '\0';
+                    cmd_len = (int)strlen(cmd_buf);
+                    for (int i = 0; i < cmd_len; i++) {
+                        doldoc_putc(cmd_buf[i]);
+                    }
+                    doldoc_draw_cursor(1);
+                    doldoc_swap_term();
+                } else if (match_count > 1) {
+                    doldoc_draw_cursor(0);
+                    doldoc_print("\n$FG,YELLOW$[SUGGEST]$FG$ ");
+                    for (int i = 0; s_autocompletes[i]; i++) {
+                        if (strncmp(s_autocompletes[i], cmd_buf, cmd_len) == 0) {
+                            doldoc_printf("%s  ", s_autocompletes[i]);
+                        }
+                    }
+                    doldoc_putc('\n');
+                    print_prompt();
+                    for (int i = 0; i < cmd_len; i++) {
+                        doldoc_putc(cmd_buf[i]);
+                    }
+                    doldoc_draw_cursor(1);
+                    wm_draw_all();
+                    mouse_draw_cursor();
+                    gfx_swap_buffers();
+                }
+            }
         } else if (c >= 32 && c < 127) {
             if (cmd_len < SHELL_MAX_LINE - 1) {
                 doldoc_draw_cursor(0);

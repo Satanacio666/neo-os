@@ -727,9 +727,9 @@ void zbuffer_clear(zbuffer_t *zb) {
     if (!zb || !zb->buffer) return;
     size_t total_elements = (size_t)zb->width * (size_t)zb->height;
     size_t total_bytes = total_elements * sizeof(uint16_t);
-    size_t aligned_bytes = total_bytes & ~63ULL; // Multiple of 64 bytes
+    size_t aligned_bytes = total_bytes & ~127ULL; // Multiple of 128 bytes
 
-    if (aligned_bytes > 0) {
+    if (aligned_bytes >= 128) {
         uint8_t *ptr = (uint8_t*)zb->buffer;
         size_t n = aligned_bytes;
         __asm__ volatile(
@@ -737,18 +737,23 @@ void zbuffer_clear(zbuffer_t *zb) {
             "   movi v1.16b, #0xff\n"
             "   movi v2.16b, #0xff\n"
             "   movi v3.16b, #0xff\n"
+            "   movi v4.16b, #0xff\n"
+            "   movi v5.16b, #0xff\n"
+            "   movi v6.16b, #0xff\n"
+            "   movi v7.16b, #0xff\n"
             "1:\n"
-            "   stnp q0, q1, [%[p], #0]\n"
-            "   stnp q2, q3, [%[p], #32]\n"
-            "   add  %[p], %[p], #64\n"
-            "   subs %[n], %[n], #64\n"
-            "   b.hi 1b\n"
+            "   stp  q0, q1, [%[p]], #32\n"
+            "   stp  q2, q3, [%[p]], #32\n"
+            "   stp  q4, q5, [%[p]], #32\n"
+            "   stp  q6, q7, [%[p]], #32\n"
+            "   subs %[n], %[n], #128\n"
+            "   b.ne 1b\n"
             : [p] "+r"(ptr), [n] "+r"(n)
             :
-            : "v0", "v1", "v2", "v3", "memory"
+            : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "memory"
         );
     }
-    // Tail elements (0..31 pixels)
+    // Tail elements (0..63 pixels)
     uint16_t *tail = (uint16_t*)((uint8_t*)zb->buffer + aligned_bytes);
     size_t rem = (total_bytes - aligned_bytes) >> 1;
     for (size_t i = 0; i < rem; i++) {

@@ -44,6 +44,7 @@ uint32_t smp_get_core_count(void);
 uint32_t smp_get_current_core(void);
 int  smp_dispatch(uint32_t core_id, smp_task_fn fn, void *arg);
 int  smp_is_job_done(uint32_t core_id);
+void smp_wait_job(uint32_t core_id);
 void smp_spin_lock(spinlock_t *l);
 void smp_spin_unlock(spinlock_t *l);
 uint32_t smp_get_core_load_pct(uint32_t core_id);

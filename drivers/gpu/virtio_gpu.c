@@ -9,6 +9,7 @@ static uint32_t screen_width = 1280;
 static uint32_t screen_height = 720;
 
 extern uint32_t* gfx_get_backbuffer(void);
+extern uint32_t* gfx_get_frontbuffer(void);
 extern uint32_t gfx_get_canvas_width(void);
 extern uint32_t gfx_get_canvas_height(void);
 
@@ -74,6 +75,144 @@ static int virtio_gpu_send_cmd(void *cmd, uint32_t cmd_size, void *resp, uint32_
 
     if (timeout == 0) {
         printf("[VIRTIO-GPU] Command timeout!\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int virtio_gpu_send_batch2(void *cmd1, uint32_t cmd1_size, void *resp1, uint32_t resp1_size,
+                                  void *cmd2, uint32_t cmd2_size, void *resp2, uint32_t resp2_size) {
+    uint16_t last_used = vq_used->idx;
+
+    // Descriptor chain 1: [0] -> [1]
+    vq_desc[0].addr = (uint64_t)(uintptr_t)cmd1;
+    vq_desc[0].len = cmd1_size;
+    vq_desc[0].flags = VRING_DESC_F_NEXT;
+    vq_desc[0].next = 1;
+
+    vq_desc[1].addr = (uint64_t)(uintptr_t)resp1;
+    vq_desc[1].len = resp1_size;
+    vq_desc[1].flags = VRING_DESC_F_WRITE;
+    vq_desc[1].next = 0;
+
+    // Descriptor chain 2: [2] -> [3]
+    vq_desc[2].addr = (uint64_t)(uintptr_t)cmd2;
+    vq_desc[2].len = cmd2_size;
+    vq_desc[2].flags = VRING_DESC_F_NEXT;
+    vq_desc[2].next = 3;
+
+    vq_desc[3].addr = (uint64_t)(uintptr_t)resp2;
+    vq_desc[3].len = resp2_size;
+    vq_desc[3].flags = VRING_DESC_F_WRITE;
+    vq_desc[3].next = 0;
+
+    uint16_t avail_idx = vq_avail->idx;
+    vq_avail->ring[avail_idx % g_queue_num] = 0;
+    vq_avail->ring[(avail_idx + 1) % g_queue_num] = 2;
+
+    asm volatile("dmb sy" ::: "memory");
+    vq_avail->idx = avail_idx + 2;
+    asm volatile("dmb sy" ::: "memory");
+
+    flush_cache_range((uintptr_t)cmd1, cmd1_size);
+    flush_cache_range((uintptr_t)resp1, resp1_size);
+    flush_cache_range((uintptr_t)cmd2, cmd2_size);
+    flush_cache_range((uintptr_t)resp2, resp2_size);
+    flush_cache_range((uintptr_t)vq_desc, sizeof(vring_desc_t) * 4);
+    flush_cache_range((uintptr_t)vq_avail, sizeof(vring_avail_t) + sizeof(uint16_t) * g_queue_num);
+
+    asm volatile("dsb sy" ::: "memory");
+    mmio_write32(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+
+    uint32_t timeout = 1000000;
+    while ((uint16_t)(*(volatile uint16_t*)&vq_used->idx - last_used) < 2 && --timeout) {
+        asm volatile("dmb ld\nyield" ::: "memory");
+    }
+
+    flush_cache_range((uintptr_t)vq_used, sizeof(vring_used_t) + sizeof(vring_used_elem_t) * 4);
+    flush_cache_range((uintptr_t)resp1, resp1_size);
+    flush_cache_range((uintptr_t)resp2, resp2_size);
+
+    if (timeout == 0) {
+        printf("[VIRTIO-GPU] Batch timeout!\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int virtio_gpu_send_batch3(void *cmd1, uint32_t cmd1_size, void *resp1, uint32_t resp1_size,
+                                  void *cmd2, uint32_t cmd2_size, void *resp2, uint32_t resp2_size,
+                                  void *cmd3, uint32_t cmd3_size, void *resp3, uint32_t resp3_size) {
+    uint16_t last_used = vq_used->idx;
+
+    // Chain 1: [0] -> [1]
+    vq_desc[0].addr = (uint64_t)(uintptr_t)cmd1;
+    vq_desc[0].len = cmd1_size;
+    vq_desc[0].flags = VRING_DESC_F_NEXT;
+    vq_desc[0].next = 1;
+
+    vq_desc[1].addr = (uint64_t)(uintptr_t)resp1;
+    vq_desc[1].len = resp1_size;
+    vq_desc[1].flags = VRING_DESC_F_WRITE;
+    vq_desc[1].next = 0;
+
+    // Chain 2: [2] -> [3]
+    vq_desc[2].addr = (uint64_t)(uintptr_t)cmd2;
+    vq_desc[2].len = cmd2_size;
+    vq_desc[2].flags = VRING_DESC_F_NEXT;
+    vq_desc[2].next = 3;
+
+    vq_desc[3].addr = (uint64_t)(uintptr_t)resp2;
+    vq_desc[3].len = resp2_size;
+    vq_desc[3].flags = VRING_DESC_F_WRITE;
+    vq_desc[3].next = 0;
+
+    // Chain 3: [4] -> [5]
+    vq_desc[4].addr = (uint64_t)(uintptr_t)cmd3;
+    vq_desc[4].len = cmd3_size;
+    vq_desc[4].flags = VRING_DESC_F_NEXT;
+    vq_desc[4].next = 5;
+
+    vq_desc[5].addr = (uint64_t)(uintptr_t)resp3;
+    vq_desc[5].len = resp3_size;
+    vq_desc[5].flags = VRING_DESC_F_WRITE;
+    vq_desc[5].next = 0;
+
+    uint16_t avail_idx = vq_avail->idx;
+    vq_avail->ring[avail_idx % g_queue_num] = 0;
+    vq_avail->ring[(avail_idx + 1) % g_queue_num] = 2;
+    vq_avail->ring[(avail_idx + 2) % g_queue_num] = 4;
+
+    asm volatile("dmb sy" ::: "memory");
+    vq_avail->idx = avail_idx + 3;
+    asm volatile("dmb sy" ::: "memory");
+
+    flush_cache_range((uintptr_t)cmd1, cmd1_size);
+    flush_cache_range((uintptr_t)resp1, resp1_size);
+    flush_cache_range((uintptr_t)cmd2, cmd2_size);
+    flush_cache_range((uintptr_t)resp2, resp2_size);
+    flush_cache_range((uintptr_t)cmd3, cmd3_size);
+    flush_cache_range((uintptr_t)resp3, resp3_size);
+    flush_cache_range((uintptr_t)vq_desc, sizeof(vring_desc_t) * 6);
+    flush_cache_range((uintptr_t)vq_avail, sizeof(vring_avail_t) + sizeof(uint16_t) * g_queue_num);
+
+    asm volatile("dsb sy" ::: "memory");
+    mmio_write32(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+
+    uint32_t timeout = 1000000;
+    while ((uint16_t)(*(volatile uint16_t*)&vq_used->idx - last_used) < 3 && --timeout) {
+        asm volatile("dmb ld\nyield" ::: "memory");
+    }
+
+    flush_cache_range((uintptr_t)vq_used, sizeof(vring_used_t) + sizeof(vring_used_elem_t) * 6);
+    flush_cache_range((uintptr_t)resp1, resp1_size);
+    flush_cache_range((uintptr_t)resp2, resp2_size);
+    flush_cache_range((uintptr_t)resp3, resp3_size);
+
+    if (timeout == 0) {
+        printf("[VIRTIO-GPU] Batch3 timeout!\n");
         return -1;
     }
 
@@ -226,6 +365,27 @@ int virtio_gpu_init(void) {
     cmd_attach.entry.length = screen_width * screen_height * 4;
     virtio_gpu_send_cmd(&cmd_attach, sizeof(cmd_attach), &resp_attach, sizeof(resp_attach));
 
+    // Allocate Resource 2 for zero-copy hardware page-flipping
+    uint32_t* frontbuffer = gfx_get_frontbuffer();
+    if (frontbuffer && frontbuffer != backbuffer) {
+        memset(&cmd_create, 0, sizeof(cmd_create));
+        cmd_create.hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+        cmd_create.resource_id = 2;
+        cmd_create.format = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+        cmd_create.width = screen_width;
+        cmd_create.height = screen_height;
+        virtio_gpu_send_cmd(&cmd_create, sizeof(cmd_create), &resp_create, sizeof(resp_create));
+
+        memset(&cmd_attach, 0, sizeof(cmd_attach));
+        cmd_attach.cmd.hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+        cmd_attach.cmd.resource_id = 2;
+        cmd_attach.cmd.nr_entries = 1;
+        cmd_attach.entry.addr = (uint64_t)(uintptr_t)frontbuffer;
+        cmd_attach.entry.length = screen_width * screen_height * 4;
+        virtio_gpu_send_cmd(&cmd_attach, sizeof(cmd_attach), &resp_attach, sizeof(resp_attach));
+        printf("[VIRTIO-GPU] Dual-buffer ping-pong allocated (Res 1: %p, Res 2: %p)\n", backbuffer, frontbuffer);
+    }
+
     memset(&cmd_scanout, 0, sizeof(cmd_scanout));
     cmd_scanout.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
     cmd_scanout.scanout_id = 0;
@@ -238,11 +398,56 @@ int virtio_gpu_init(void) {
 
     symbols_register("virtio_gpu_flush_rect", (void*)virtio_gpu_flush_rect, SYM_FUNC);
     symbols_register("virtio_gpu_flush_full", (void*)virtio_gpu_flush_full, SYM_FUNC);
+    symbols_register("virtio_gpu_page_flip", (void*)virtio_gpu_page_flip, SYM_FUNC);
 
     virtio_gpu_flush_full();
 
     printf("[VIRTIO-GPU] Initialized.\n");
     return 0;
+}
+
+static uint32_t s_active_scanout_resource = 1;
+
+void virtio_gpu_page_flip(uint32_t resource_id) {
+    if (!mmio_base) return;
+
+    uint32_t target_res = resource_id ? resource_id : (s_active_scanout_resource == 1 ? 2 : 1);
+
+    asm volatile("dsb sy" ::: "memory");
+
+    memset(&cmd_transfer, 0, sizeof(cmd_transfer));
+    cmd_transfer.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+    cmd_transfer.resource_id = target_res;
+    cmd_transfer.offset = 0;
+    cmd_transfer.r.x = 0;
+    cmd_transfer.r.y = 0;
+    cmd_transfer.r.width = screen_width;
+    cmd_transfer.r.height = screen_height;
+
+    memset(&cmd_scanout, 0, sizeof(cmd_scanout));
+    cmd_scanout.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    cmd_scanout.scanout_id = 0;
+    cmd_scanout.resource_id = target_res;
+    cmd_scanout.r.x = 0;
+    cmd_scanout.r.y = 0;
+    cmd_scanout.r.width = screen_width;
+    cmd_scanout.r.height = screen_height;
+
+    memset(&cmd_flush, 0, sizeof(cmd_flush));
+    cmd_flush.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    cmd_flush.resource_id = target_res;
+    cmd_flush.r.x = 0;
+    cmd_flush.r.y = 0;
+    cmd_flush.r.width = screen_width;
+    cmd_flush.r.height = screen_height;
+
+    virtio_gpu_send_batch3(&cmd_transfer, sizeof(cmd_transfer), &resp_transfer, sizeof(resp_transfer),
+                           &cmd_scanout, sizeof(cmd_scanout), &resp_scanout, sizeof(resp_scanout),
+                           &cmd_flush, sizeof(cmd_flush), &resp_flush, sizeof(resp_flush));
+
+    s_active_scanout_resource = target_res;
+    g_gfx_backend.ops_counter += 3;
+    g_gfx_backend.dma_transfers_bytes += (uint64_t)screen_width * screen_height * 4;
 }
 
 void virtio_gpu_flush_rect(int x, int y, int w, int h) {
@@ -259,7 +464,6 @@ void virtio_gpu_flush_rect(int x, int y, int w, int h) {
     cmd_transfer.r.y = y;
     cmd_transfer.r.width = w;
     cmd_transfer.r.height = h;
-    virtio_gpu_send_cmd(&cmd_transfer, sizeof(cmd_transfer), &resp_transfer, sizeof(resp_transfer));
 
     memset(&cmd_flush, 0, sizeof(cmd_flush));
     cmd_flush.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
@@ -268,10 +472,12 @@ void virtio_gpu_flush_rect(int x, int y, int w, int h) {
     cmd_flush.r.y = y;
     cmd_flush.r.width = w;
     cmd_flush.r.height = h;
-    virtio_gpu_send_cmd(&cmd_flush, sizeof(cmd_flush), &resp_flush, sizeof(resp_flush));
+
+    virtio_gpu_send_batch2(&cmd_transfer, sizeof(cmd_transfer), &resp_transfer, sizeof(resp_transfer),
+                           &cmd_flush, sizeof(cmd_flush), &resp_flush, sizeof(resp_flush));
 
     g_gfx_backend.dma_transfers_bytes += (uint64_t)w * h * 4;
-    g_gfx_backend.ops_counter++;
+    g_gfx_backend.ops_counter += 2;
 }
 
 void virtio_gpu_flush_full(void) {

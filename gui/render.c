@@ -9,24 +9,28 @@ static uint32_t *s_dedicated_backbuffer = NULL;
 
 #include "../drivers/gpu/gfx_backend.h"
 
-// ─── NEON Non-Temporal Streaming Blit ────────────────────────────────────────
-// ldnp/stnp bypass L1/L2 — ideal for Write-Combining framebuffer writes
-// 64 bytes per iteration (4×128-bit NEON registers)
+// ─── NEON 128-Byte Unrolled Streaming Blit ──────────────────────────────────
+// Post-indexed ldp/stp bypasses explicit address arithmetic; 8x128-bit NEON registers
+// 128 bytes per iteration cuts TCG branch/loop overhead by 50%
 static void gfx_neon_blit_nt(void *dst, const void *src, size_t bytes) {
-    // bytes must be multiple of 64; caller guarantees this via align mask
+    if (bytes < 128) return;
     __asm__ volatile(
         "1:\n"
-        "   ldnp q0, q1, [%[s], #0]\n"
-        "   ldnp q2, q3, [%[s], #32]\n"
-        "   stnp q0, q1, [%[d], #0]\n"
+        "   prfm pldl1keep, [%[s], #128]\n"
+        "   ldp  q0, q1, [%[s]], #32\n"
+        "   ldp  q2, q3, [%[s]], #32\n"
+        "   ldp  q4, q5, [%[s]], #32\n"
+        "   ldp  q6, q7, [%[s]], #32\n"
+        "   stnp q0, q1, [%[d]]\n"
         "   stnp q2, q3, [%[d], #32]\n"
-        "   add  %[s], %[s], #64\n"
-        "   add  %[d], %[d], #64\n"
-        "   subs %[n], %[n], #64\n"
-        "   b.hi 1b\n"
+        "   stnp q4, q5, [%[d], #64]\n"
+        "   stnp q6, q7, [%[d], #96]\n"
+        "   add  %[d], %[d], #128\n"
+        "   subs %[n], %[n], #128\n"
+        "   b.ne 1b\n"
         : [d] "+r"(dst), [s] "+r"(src), [n] "+r"(bytes)
         :
-        : "q0","q1","q2","q3","memory"
+        : "q0","q1","q2","q3","q4","q5","q6","q7","memory"
     );
 }
 
@@ -718,15 +722,16 @@ void gfx_swap_buffers(void) {
     if (dw <= 0 || dh <= 0) { s_dirty.valid = 0; return; }
 
     // Full-frame blit: if dirty rect covers ≥75% of canvas, blit whole frame
-    // with NEON NT (faster than row-by-row overhead for large rects)
+    // with 128-byte unrolled NEON streaming blit
     int total = (int)canvas.width * (int)canvas.height;
     uint64_t c0, c1;
     __asm__ volatile("mrs %0, cntvct_el0" : "=r"(c0));
     if (dw * dh >= total * 3 / 4) {
         size_t bytes    = canvas.buffer_size_bytes;
-        size_t aligned  = bytes & ~63ULL;
-        gfx_neon_blit_nt(canvas.front_buffer, canvas.back_buffer, aligned);
-        // tail bytes (0..63)
+        size_t aligned  = bytes & ~127ULL;
+        if (aligned >= 128)
+            gfx_neon_blit_nt(canvas.front_buffer, canvas.back_buffer, aligned);
+        // tail bytes (0..127)
         uint8_t *fd = (uint8_t*)canvas.front_buffer + aligned;
         const uint8_t *fs = (const uint8_t*)canvas.back_buffer + aligned;
         for (size_t i = 0; i < (bytes - aligned); i++) fd[i] = fs[i];
@@ -742,8 +747,8 @@ void gfx_swap_buffers(void) {
             void *d = canvas.front_buffer + row * canvas.pitch + dx;
             const void *s = canvas.back_buffer + row * canvas.pitch + dx;
             size_t bytes_row = (size_t)dw * 4;
-            size_t aligned_row = bytes_row & ~63ULL;
-            if (aligned_row > 0)
+            size_t aligned_row = bytes_row & ~127ULL;
+            if (aligned_row >= 128)
                 gfx_neon_blit_nt(d, s, aligned_row);
             // scalar tail
             uint8_t *rd = (uint8_t*)d + aligned_row;
@@ -776,8 +781,8 @@ void gfx_swap_rect(int x, int y, int w, int h) {
             void *d = canvas.front_buffer + row * canvas.pitch + x;
             const void *s = canvas.back_buffer + row * canvas.pitch + x;
             size_t bytes_row = (size_t)w * 4;
-            size_t aligned_row = bytes_row & ~63ULL;
-            if (aligned_row > 0)
+            size_t aligned_row = bytes_row & ~127ULL;
+            if (aligned_row >= 128)
                 gfx_neon_blit_nt(d, s, aligned_row);
             uint8_t *rd = (uint8_t*)d + aligned_row;
             const uint8_t *rs = (const uint8_t*)s + aligned_row;

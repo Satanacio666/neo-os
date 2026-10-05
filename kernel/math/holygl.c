@@ -279,6 +279,16 @@ void glVertex2f(float x, float y) {
 static inline void holygl_rasterize_tri(const holygl_vertex_t *v0, const holygl_vertex_t *v1, const holygl_vertex_t *v2) {
     if (v0->w <= 0.001f || v1->w <= 0.001f || v2->w <= 0.001f) return;
 
+    // Fast Frustum Culling in Clip Space (Homogeneous Coordinates)
+    if ((v0->x < -v0->w && v1->x < -v1->w && v2->x < -v2->w) ||
+        (v0->x >  v0->w && v1->x >  v1->w && v2->x >  v2->w) ||
+        (v0->y < -v0->w && v1->y < -v1->w && v2->y < -v2->w) ||
+        (v0->y >  v0->w && v1->y >  v1->w && v2->y >  v2->w) ||
+        (v0->z < -v0->w && v1->z < -v1->w && v2->z < -v2->w) ||
+        (v0->z >  v0->w && v1->z >  v1->w && v2->z >  v2->w)) {
+        return;
+    }
+
     float inv_w0 = 1.0f / v0->w;
     float inv_w1 = 1.0f / v1->w;
     float inv_w2 = 1.0f / v2->w;
