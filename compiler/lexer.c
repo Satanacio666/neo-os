@@ -295,8 +295,23 @@ token_t lexer_next(lexer_t *l) {
         return tok;
     }
 
-    // Two-character operators
+    // Three-character operators
     char next_c = l->src[l->pos + 1];
+    char next_c2 = next_c ? l->src[l->pos + 2] : '\0';
+    if (c == '<' && next_c == '<' && next_c2 == '=') {
+        l->pos += 3;
+        tok.type = TOK_SHLEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '>' && next_c == '>' && next_c2 == '=') {
+        l->pos += 3;
+        tok.type = TOK_SHREQ;
+        l->current = tok;
+        return tok;
+    }
+
+    // Two-character operators
     if (c == '<' && next_c == '<') {
         l->pos += 2;
         tok.type = TOK_SHL;
@@ -330,6 +345,42 @@ token_t lexer_next(lexer_t *l) {
     if (c == '-' && next_c == '=') {
         l->pos += 2;
         tok.type = TOK_MINUSEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '*' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_STAREQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '/' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_SLASHEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '%' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_PERCENTEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '&' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_ANDEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '|' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_PIPEEQ;
+        l->current = tok;
+        return tok;
+    }
+    if (c == '^' && next_c == '=') {
+        l->pos += 2;
+        tok.type = TOK_CARETEQ;
         l->current = tok;
         return tok;
     }
