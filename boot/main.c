@@ -68,6 +68,34 @@ void wm_step_frame(void) {
     }
 }
 
+void kheap_dump_doldoc(void) {
+    heap_stats_t stats;
+    kheap_get_stats(&stats);
+    doldoc_print("$FG,CYAN$--- KERNEL HEAP ALLOCATOR STATS ---$FG$\n");
+    doldoc_printf(" Total Memory:     %llu MB (%llu bytes)\n",
+                  (unsigned long long)(stats.total_memory / (1024 * 1024)),
+                  (unsigned long long)stats.total_memory);
+    doldoc_printf(" Allocated (Used): %llu KB (%llu bytes)\n",
+                  (unsigned long long)(stats.used_memory / 1024),
+                  (unsigned long long)stats.used_memory);
+    doldoc_printf(" Free Space:       %llu MB (%llu bytes)\n",
+                  (unsigned long long)(stats.free_memory / (1024 * 1024)),
+                  (unsigned long long)stats.free_memory);
+    doldoc_printf(" Live Allocations: %llu (Total frees: %llu)\n",
+                  (unsigned long long)stats.allocation_count,
+                  (unsigned long long)stats.free_count);
+    uint64_t pct = (stats.total_memory > 0) ? ((stats.used_memory * 100) / stats.total_memory) : 0;
+    doldoc_printf(" Heap Utilization: $PB,VAL=%llu,MAX=100$\n", (unsigned long long)pct);
+    doldoc_print("$FG,CYAN$-----------------------------------$FG$\n");
+}
+
+void hal_reset_system(void) {
+    doldoc_print("$FG,RED$Rebooting system via ARM PSCI...$FG$\n");
+    gfx_swap_buffers();
+    extern int64_t psci_call_hvc(uint64_t func, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+    psci_call_hvc(0x84000009ULL, 0, 0, 0); // PSCI 0.2+ SYSTEM_RESET
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -252,6 +280,19 @@ int main(int argc, char **argv)
     symbols_register("timer_sleep_ms", (void*)timer_sleep_ms, SYM_FUNC);
     symbols_register("gfx_dirty_all", (void*)gfx_dirty_all, SYM_FUNC);
     symbols_register("wm_set_holyc_active", (void*)wm_set_holyc_active, SYM_FUNC);
+    symbols_register("doldoc_putc", (void*)doldoc_putc, SYM_FUNC);
+    symbols_register("doldoc_backspace", (void*)doldoc_backspace, SYM_FUNC);
+    symbols_register("doldoc_draw_cursor", (void*)doldoc_draw_cursor, SYM_FUNC);
+    symbols_register("doldoc_swap_term", (void*)doldoc_swap_term, SYM_FUNC);
+    symbols_register("doldoc_swap_cursor", (void*)doldoc_swap_cursor, SYM_FUNC);
+    symbols_register("doldoc_scroll_up", (void*)doldoc_scroll_up, SYM_FUNC);
+    symbols_register("doldoc_scroll_down", (void*)doldoc_scroll_down, SYM_FUNC);
+    symbols_register("redsea_get_entries", (void*)redsea_get_entries, SYM_FUNC);
+    symbols_register("kheap_dump_doldoc", (void*)kheap_dump_doldoc, SYM_FUNC);
+    symbols_register("hal_reset_system", (void*)hal_reset_system, SYM_FUNC);
+    symbols_register("shell_register_holyc", (void*)shell_register_holyc, SYM_FUNC);
+    symbols_register("strstr", (void*)strstr, SYM_FUNC);
+    symbols_register("menu_toggle", (void*)menu_toggle, SYM_FUNC);
 
     // 3. Initialize Graphics (GOP) & Double-Buffered Canvas
     efi_guid_t gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -375,7 +416,20 @@ int main(int argc, char **argv)
 
     enable_interrupts();
 
-    // 10. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
+    // 10A. Sovereign Handover: Compile Pure HolyC Shell.HC
+    printf("[BOOT] Sovereign Handover: Loading Pure HolyC Shell.HC...\r\n");
+    static char shell_src[32768];
+    size_t shell_src_len = 0;
+    if (redsea_read_file("Shell.HC", shell_src, sizeof(shell_src) - 1, &shell_src_len) == 0) {
+        shell_src[shell_src_len] = '\0';
+        printf("[BOOT] Compiling Shell.HC (%llu bytes)...\r\n", (unsigned long long)shell_src_len);
+        int64_t sres = jit_compile_and_run(shell_src);
+        printf("[BOOT] Shell.HC compiled, res = %lld\r\n", (long long)sres);
+    } else {
+        printf("[BOOT WARN] Could not read Shell.HC from RedSea disk!\r\n");
+    }
+
+    // 10B. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
     printf("[BOOT] Sovereign Handover: Transferring primary execution to Pure HolyC WM.HC...\r\n");
     static char wm_src[32768];
     size_t wm_src_len = 0;

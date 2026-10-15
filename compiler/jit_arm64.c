@@ -1756,24 +1756,43 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         }
     }
 
-    // If Statement: if (cond) block [else block]
+    // If Statement: if (cond) block [else if (cond) block]* [else block]
     if (tok.type == TOK_IF) {
-        lexer_next(l); // eat 'if'
-        if (lexer_peek(l).type == TOK_LPAREN) lexer_next(l);
-        parse_expr(l, cb); // Condition in X0
-        if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l);
+        size_t end_branches[64];
+        int end_branch_count = 0;
 
-        size_t cbz_idx = emit_cbz_placeholder(cb, 0); // Jump to else/end if X0 == 0
-        parse_block(l, cb);
+        while (1) {
+            lexer_next(l); // eat 'if'
+            if (lexer_peek(l).type == TOK_LPAREN) lexer_next(l);
+            parse_expr(l, cb); // Condition in X0
+            if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l);
 
-        if (lexer_peek(l).type == TOK_ELSE) {
-            lexer_next(l); // eat 'else'
-            size_t b_idx = emit_b_placeholder(cb); // Jump over else block
-            patch_cbz(cb, cbz_idx, cb->count);
+            size_t cbz_idx = emit_cbz_placeholder(cb, 0); // Jump to next branch if false
             parse_block(l, cb);
-            patch_b(cb, b_idx, cb->count);
-        } else {
-            patch_cbz(cb, cbz_idx, cb->count);
+
+            if (lexer_peek(l).type == TOK_ELSE) {
+                lexer_next(l); // eat 'else'
+                if (end_branch_count < 64) {
+                    end_branches[end_branch_count++] = emit_b_placeholder(cb); // Jump over remaining blocks
+                }
+                patch_cbz(cb, cbz_idx, cb->count);
+                if (lexer_peek(l).type == TOK_IF) {
+                    // Iteratively parse the 'else if' without stack recursion!
+                    continue;
+                } else {
+                    // Final trailing 'else' block
+                    parse_block(l, cb);
+                    break;
+                }
+            } else {
+                patch_cbz(cb, cbz_idx, cb->count);
+                break;
+            }
+        }
+
+        // Patch all end jumps to after the entire if-else chain
+        for (int i = 0; i < end_branch_count; i++) {
+            patch_b(cb, end_branches[i], cb->count);
         }
         return;
     }
@@ -2285,6 +2304,22 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         arr_decl_count = 16;
                     }
                     lexer_next(l);
+                }
+                while (lexer_peek(l).type == TOK_STAR || lexer_peek(l).type == TOK_PLUS) {
+                    token_type_t op = lexer_peek(l).type;
+                    lexer_next(l);
+                    int factor = 1;
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_NUMBER) {
+                        factor = (int)f_tok.int_value;
+                        lexer_next(l);
+                    } else if (f_tok.type == TOK_IDENT) {
+                        symbol_t *c_sym = symbols_lookup_entry(f_tok.str_value);
+                        if (c_sym && c_sym->type == SYM_VAR && c_sym->address) factor = *(int*)c_sym->address;
+                        lexer_next(l);
+                    }
+                    if (op == TOK_STAR) arr_decl_count *= factor;
+                    else arr_decl_count += factor;
                 }
                 if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
             }

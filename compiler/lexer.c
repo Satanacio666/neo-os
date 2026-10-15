@@ -105,7 +105,30 @@ token_t lexer_next(lexer_t *l) {
                 l->pos++;
                 l->col++;
             }
-            if (is_digit(l->src[l->pos])) {
+            if (l->src[l->pos] == '\'') {
+                l->pos++;
+                l->col++;
+                char ch = 0;
+                if (l->src[l->pos] == '\\' && l->src[l->pos + 1]) {
+                    l->pos++;
+                    l->col++;
+                    char esc = l->src[l->pos++];
+                    l->col++;
+                    if (esc == 'n') ch = '\n';
+                    else if (esc == 'r') ch = '\r';
+                    else if (esc == 't') ch = '\t';
+                    else if (esc == '0') ch = '\0';
+                    else ch = esc;
+                } else if (l->src[l->pos] && l->src[l->pos] != '\'') {
+                    ch = l->src[l->pos++];
+                    l->col++;
+                }
+                if (l->src[l->pos] == '\'') {
+                    l->pos++;
+                    l->col++;
+                }
+                def_val = (int64_t)ch;
+            } else if (is_digit(l->src[l->pos])) {
                 if (l->src[l->pos] == '0' && (l->src[l->pos + 1] == 'x' || l->src[l->pos + 1] == 'X')) {
                     l->pos += 2;
                     l->col += 2;

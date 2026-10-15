@@ -584,6 +584,10 @@ U0 WMEventLoop() {
     while (1) {
         // 1. Non-blocking keyboard & shell poll
         shell_poll();
+        if (g_shell_dirty) {
+            g_wm.is_dirty = 1;
+            g_shell_dirty = 0;
+        }
 
         // 2. Non-blocking mouse poll & dispatch
         mouse_poll();
