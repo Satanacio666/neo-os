@@ -98,7 +98,7 @@ U0 ShellNavHistory(I64 dir) {
 U0 ShellAutocomplete() {
     if (g_shell_len <= 0) return;
 
-    U8 *builtins[18];
+    U8 *builtins[26];
     builtins[0] = "help";
     builtins[1] = "ls";
     builtins[2] = "dir";
@@ -112,11 +112,19 @@ U0 ShellAutocomplete() {
     builtins[10] = "bench";
     builtins[11] = "gears";
     builtins[12] = "physics";
-    builtins[13] = "perf";
-    builtins[14] = "vsync ";
-    builtins[15] = "zeroram ";
-    builtins[16] = "render ";
-    builtins[17] = 0;
+    builtins[13] = "holygl";
+    builtins[14] = "stopbench";
+    builtins[15] = "explode";
+    builtins[16] = "impulse";
+    builtins[17] = "filer";
+    builtins[18] = "edit";
+    builtins[19] = "smp";
+    builtins[20] = "perf";
+    builtins[21] = "vsync ";
+    builtins[22] = "zeroram ";
+    builtins[23] = "render ";
+    builtins[24] = "save ";
+    builtins[25] = 0;
 
     U8 entries[3072];
     I64 file_count = redsea_get_entries(entries, 48);
@@ -266,6 +274,21 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         return;
     } else if (strcmp(cmd, "physics") == 0) {
         ShellRunCommand("run Physics3D.HC");
+        return;
+    } else if (strcmp(cmd, "holygl") == 0) {
+        ShellRunCommand("run HolyGL.HC");
+        return;
+    } else if (strcmp(cmd, "stopbench") == 0) {
+        bench_unified_stop();
+        doldoc_print("$FG,YELLOW$[3D VIEWPORT]$FG$ Stopped 3D rendering pipeline.\n");
+        return;
+    } else if (strcmp(cmd, "explode") == 0) {
+        physics3d_world_explode();
+        doldoc_print("$FG,RED$[3D DYNAMICS]$FG$ 💥 Polyhedral explosion impulse applied!\n");
+        return;
+    } else if (strcmp(cmd, "impulse") == 0) {
+        bench_unified_trigger_impulse();
+        doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n");
         return;
     } else if (strcmp(cmd, "top") == 0 || strcmp(cmd, "tasks") == 0) {
         top_print_doldoc();

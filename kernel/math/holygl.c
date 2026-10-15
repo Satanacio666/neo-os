@@ -372,11 +372,16 @@ void glEnd(void) {
             }
         }
     }
+
+    if (g_holygl.scene_active) {
+        glFlush();
+    }
 }
 
 void glFlush(void) {
     if (g_raster_scene.target_buffer != NULL) {
         raster_tile_end_scene();
         g_holygl.scene_active = 0;
+        gfx_dirty_expand(g_holygl.vp_x, g_holygl.vp_y, g_holygl.vp_w, g_holygl.vp_h);
     }
 }

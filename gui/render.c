@@ -277,6 +277,14 @@ void gfx_blend_pixel(uint32_t x, uint32_t y, uint32_t color_rgba) {
 }
 
 void gfx_draw_line_clipped(int x0, int y0, int x1, int y1, uint32_t color) {
+    int min_x = (x0 < x1) ? x0 : x1;
+    int max_x = (x0 > x1) ? x0 : x1;
+    int min_y = (y0 < y1) ? y0 : y1;
+    int max_y = (y0 > y1) ? y0 : y1;
+    if (max_x >= min_x && max_y >= min_y) {
+        gfx_dirty_expand(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
+    }
+
     int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
     int sx = (x0 < x1) ? 1 : -1;
     int dy = (y1 > y0) ? (y0 - y1) : (y1 - y0);
@@ -329,6 +337,14 @@ static void swap_int(int *a, int *b) {
 }
 
 void gfx_draw_triangle_fill(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t color) {
+    int min_x = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+    int max_x = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+    int min_y = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+    int max_y = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+    if (max_x >= min_x && max_y >= min_y) {
+        gfx_dirty_expand(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
+    }
+
     if (y0 > y1) { swap_int(&y0, &y1); swap_int(&x0, &x1); }
     if (y1 > y2) { swap_int(&y1, &y2); swap_int(&x1, &x2); }
     if (y0 > y1) { swap_int(&y0, &y1); swap_int(&x0, &x1); }

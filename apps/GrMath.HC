@@ -29,6 +29,14 @@ U0 Mat4x4Identity(Mat4x4 *out) {
     }
 }
 
+// Copy 4x4 Matrix: dst = src
+U0 Mat4x4Copy(Mat4x4 *dst, Mat4x4 *src) {
+    I64 i;
+    for (i = 0; i < 16; i++) {
+        dst->m[i] = src->m[i];
+    }
+}
+
 // 4x4 Matrix Multiplication: out = a * b
 U0 Mat4x4Mul(Mat4x4 *out, Mat4x4 *a, Mat4x4 *b) {
     Mat4x4 temp;
@@ -67,12 +75,12 @@ U0 Mat4x4Scale(Mat4x4 *out, F64 sx, F64 sy, F64 sz) {
     Mat4x4Mul(out, &sc, out);
 }
 
-// Rotation Matrix about X-axis
-U0 Mat4x4RotateX(Mat4x4 *out, F64 angle_rad) {
+// Rotation Matrix about X-axis (angle in degrees)
+U0 Mat4x4RotateX(Mat4x4 *out, F64 angle_deg) {
     Mat4x4 rot;
     Mat4x4Identity(&rot);
-    F64 c = math3d_cos(angle_rad);
-    F64 s = math3d_sin(angle_rad);
+    F64 c = math3d_cos(angle_deg);
+    F64 s = math3d_sin(angle_deg);
     rot.m[5]  = c;
     rot.m[6]  = -s;
     rot.m[9]  = s;
@@ -80,12 +88,12 @@ U0 Mat4x4RotateX(Mat4x4 *out, F64 angle_rad) {
     Mat4x4Mul(out, &rot, out);
 }
 
-// Rotation Matrix about Y-axis
-U0 Mat4x4RotateY(Mat4x4 *out, F64 angle_rad) {
+// Rotation Matrix about Y-axis (angle in degrees)
+U0 Mat4x4RotateY(Mat4x4 *out, F64 angle_deg) {
     Mat4x4 rot;
     Mat4x4Identity(&rot);
-    F64 c = math3d_cos(angle_rad);
-    F64 s = math3d_sin(angle_rad);
+    F64 c = math3d_cos(angle_deg);
+    F64 s = math3d_sin(angle_deg);
     rot.m[0]  = c;
     rot.m[2]  = s;
     rot.m[8]  = -s;
@@ -93,12 +101,12 @@ U0 Mat4x4RotateY(Mat4x4 *out, F64 angle_rad) {
     Mat4x4Mul(out, &rot, out);
 }
 
-// Rotation Matrix about Z-axis
-U0 Mat4x4RotateZ(Mat4x4 *out, F64 angle_rad) {
+// Rotation Matrix about Z-axis (angle in degrees)
+U0 Mat4x4RotateZ(Mat4x4 *out, F64 angle_deg) {
     Mat4x4 rot;
     Mat4x4Identity(&rot);
-    F64 c = math3d_cos(angle_rad);
-    F64 s = math3d_sin(angle_rad);
+    F64 c = math3d_cos(angle_deg);
+    F64 s = math3d_sin(angle_deg);
     rot.m[0] = c;
     rot.m[1] = -s;
     rot.m[4] = s;
@@ -106,10 +114,16 @@ U0 Mat4x4RotateZ(Mat4x4 *out, F64 angle_rad) {
     Mat4x4Mul(out, &rot, out);
 }
 
-// Perspective Projection Matrix
-U0 Mat4x4Perspective(Mat4x4 *out, F64 fov_y_rad, F64 aspect, F64 z_near, F64 z_far) {
+// Perspective Projection Matrix (fov_y in degrees)
+U0 Mat4x4Perspective(Mat4x4 *out, F64 fov_y_deg, F64 aspect, F64 z_near, F64 z_far) {
     Mat4x4Identity(out);
-    F64 tan_half = math3d_sin(fov_y_rad / 2.0) / math3d_cos(fov_y_rad / 2.0);
+    F64 half_fov = fov_y_deg * 0.5;
+    F64 s = math3d_sin(half_fov);
+    F64 c = math3d_cos(half_fov);
+    F64 tan_half = 1.0;
+    if (s > 0.0001) {
+        tan_half = s / c;
+    }
     F64 f = 1.0 / tan_half;
 
     out->m[0]  = f / aspect;
@@ -133,11 +147,11 @@ U0 Mat4x4Ortho(Mat4x4 *out, F64 left, F64 right, F64 bottom, F64 top, F64 near, 
 }
 
 // Vector Transformation: out = mat * (x, y, z, w)
-U0 Mat4x4Transform(Mat4x4 *mat, F64 x, F64 y, F64 z, F64 w, F64 *ox, F64 *oy, F64 *oz, F64 *ow) {
-    *ox = mat->m[0] * x + mat->m[1] * y + mat->m[2] * z  + mat->m[3] * w;
-    *oy = mat->m[4] * x + mat->m[5] * y + mat->m[6] * z  + mat->m[7] * w;
-    *oz = mat->m[8] * x + mat->m[9] * y + mat->m[10] * z + mat->m[11] * w;
-    *ow = mat->m[12]* x + mat->m[13]* y + mat->m[14]* z + mat->m[15]* w;
+U0 Mat4x4Transform(Mat4x4 *mat, F64 x, F64 y, F64 z, F64 w, F64 *out_vec) {
+    out_vec[0] = mat->m[0] * x + mat->m[1] * y + mat->m[2] * z  + mat->m[3] * w;
+    out_vec[1] = mat->m[4] * x + mat->m[5] * y + mat->m[6] * z  + mat->m[7] * w;
+    out_vec[2] = mat->m[8] * x + mat->m[9] * y + mat->m[10] * z + mat->m[11] * w;
+    out_vec[3] = mat->m[12]* x + mat->m[13]* y + mat->m[14]* z + mat->m[15]* w;
 }
 
 // ------------------------------------------------------------------------------

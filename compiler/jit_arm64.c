@@ -504,6 +504,9 @@ typedef struct {
     char name[32];
     int offset;
     int size;
+    int is_array;
+    int elem_size;
+    char type_name[32];
 } struct_member_t;
 
 #define MAX_STRUCT_DEFS 256
@@ -974,6 +977,11 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 emit_mov_imm64(cb, 0, 0);
             }
 
+            char cur_st_name[32] = {0};
+            if (vt && vt->struct_type[0] != '\0') {
+                strncpy(cur_st_name, vt->struct_type, 31);
+            }
+
             // Member access: ident.field or ident->field
             while (lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) {
                 lexer_next(l); // eat '.' or '->'
@@ -984,10 +992,9 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                     field[31] = '\0';
                     lexer_next(l);
 
-                    var_type_t *vt = lookup_var_type(ident_name);
                     struct_def_t *st = NULL;
-                    if (vt && vt->struct_type[0] != '\0') {
-                        st = find_struct_def(vt->struct_type);
+                    if (cur_st_name[0] != '\0') {
+                        st = find_struct_def(cur_st_name);
                     }
                     if (!st) {
                         for (int s = 0; s < struct_def_count; s++) {
@@ -1004,10 +1011,18 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                         int found = 0;
                         int offset = 0;
                         int fsize = 8;
+                        int is_arr = 0;
+                        int is_nst = 0;
+                        char sub_st[32] = {0};
                         for (int m = 0; m < st->member_count; m++) {
                             if (strcmp(st->members[m].name, field) == 0) {
                                 offset = st->members[m].offset;
                                 fsize = st->members[m].size;
+                                is_arr = st->members[m].is_array;
+                                if (st->members[m].type_name[0]) {
+                                    strncpy(sub_st, st->members[m].type_name, 31);
+                                    if (find_struct_def(sub_st)) is_nst = 1;
+                                }
                                 found = 1;
                                 break;
                             }
@@ -1021,10 +1036,15 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                         }
                         emit_mov_imm64(cb, 1, (uint64_t)offset);
                         emit_add(cb, 0, 0, 1); // X0 = base + offset
+                        if (is_arr || is_nst) {
+                            if (sub_st[0]) strncpy(cur_st_name, sub_st, 31);
+                            continue;
+                        }
                         if (fsize == 1) emit_ldrb(cb, 0, 0);
                         else if (fsize == 2) emit_ldrh(cb, 0, 0);
                         else if (fsize == 4) emit_ldr32(cb, 0, 0);
                         else emit_ldr64(cb, 0, 0);
+                        if (sub_st[0]) strncpy(cur_st_name, sub_st, 31);
                         continue;
                     }
 
@@ -1252,6 +1272,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
             }
 
             char cur_st[32] = {0};
+            int cur_elem_sz = 8;
             if (vt && vt->struct_type[0]) {
                 strncpy(cur_st, vt->struct_type, 31);
             }
@@ -1267,11 +1288,26 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                         lexer_next(l);
 
                         struct_def_t *st = find_struct_def(cur_st);
+                        if (!st) {
+                            for (int s = 0; s < struct_def_count; s++) {
+                                for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                    if (strcmp(struct_defs[s].members[m].name, field) == 0) {
+                                        st = &struct_defs[s];
+                                        break;
+                                    }
+                                }
+                                if (st) break;
+                            }
+                        }
                         if (st) {
                             for (int m = 0; m < st->member_count; m++) {
                                 if (strcmp(st->members[m].name, field) == 0) {
                                     emit_mov_imm64(cb, 1, (uint64_t)st->members[m].offset);
                                     emit_add(cb, 0, 0, 1); // X0 = base + offset
+                                    if (st->members[m].type_name[0]) {
+                                        strncpy(cur_st, st->members[m].type_name, 31);
+                                    }
+                                    cur_elem_sz = st->members[m].elem_size > 0 ? st->members[m].elem_size : 8;
                                     break;
                                 }
                             }
@@ -1288,6 +1324,8 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                     struct_def_t *st = find_struct_def(cur_st);
                     if (st && st->total_size > 0) {
                         elem_sz = st->total_size;
+                    } else if (cur_elem_sz > 0) {
+                        elem_sz = cur_elem_sz;
                     }
                     emit_mov_imm64(cb, 2, (uint64_t)elem_sz);
                     emit_mul(cb, 0, 0, 2); // X0 = index * elem_sz
@@ -1678,13 +1716,16 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             st_name[31] = '\0';
             lexer_next(l); // eat ident
 
-            if (struct_def_count >= MAX_STRUCT_DEFS) {
-                printf("[JIT] Error: Maximum struct definitions (%d) exceeded\n", MAX_STRUCT_DEFS);
-                cb->has_error = 1;
-                return;
+            struct_def_t *st = find_struct_def(st_name);
+            if (!st) {
+                if (struct_def_count >= MAX_STRUCT_DEFS) {
+                    printf("[JIT] Error: Maximum struct definitions (%d) exceeded\n", MAX_STRUCT_DEFS);
+                    cb->has_error = 1;
+                    return;
+                }
+                st = &struct_defs[struct_def_count++];
             }
 
-            struct_def_t *st = &struct_defs[struct_def_count++];
             memset(st, 0, sizeof(struct_def_t));
             strncpy(st->name, st_name, 31);
 
@@ -1693,6 +1734,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 int cur_offset = 0;
                 while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
                     token_type_t m_type = lexer_peek(l).type;
+                    char m_type_str[32] = {0};
+                    if (m_type == TOK_IDENT) {
+                        strncpy(m_type_str, lexer_peek(l).str_value, 31);
+                    }
                     int m_size = 8;
                     if (m_type == TOK_TYPE_U8) m_size = 1;
                     else if (m_type == TOK_TYPE_U16) m_size = 2;
@@ -1713,10 +1758,12 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         if (fn_id.type == TOK_IDENT) {
                             if (st->member_count < MAX_STRUCT_MEMBERS) {
                                 struct_member_t *mem = &st->members[st->member_count++];
+                                memset(mem, 0, sizeof(struct_member_t));
                                 strncpy(mem->name, fn_id.str_value, 31);
                                 mem->name[31] = '\0';
                                 mem->offset = cur_offset;
                                 mem->size = 8; // 64-bit function pointer
+                                mem->elem_size = 8;
                                 cur_offset += 8;
                             }
                             lexer_next(l); // eat ident
@@ -1746,10 +1793,14 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                                 return;
                             }
                             struct_member_t *mem = &st->members[st->member_count++];
+                            memset(mem, 0, sizeof(struct_member_t));
                             strncpy(mem->name, m_id.str_value, 31);
                             mem->name[31] = '\0';
                             mem->offset = cur_offset;
                             mem->size = m_size;
+                            mem->elem_size = m_size;
+                            mem->is_array = 0;
+                            if (m_type_str[0]) strncpy(mem->type_name, m_type_str, 31);
                             cur_offset += m_size;
                             lexer_next(l);
 
@@ -1774,6 +1825,8 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                                 if (arr_count > 1) {
                                     cur_offset -= m_size;
                                     mem->size = m_size * arr_count;
+                                    mem->elem_size = m_size;
+                                    mem->is_array = 1;
                                     cur_offset += mem->size;
                                 }
                             }
@@ -2395,6 +2448,44 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 emit_str_ptr(cb, 0, 16); // *storage = X0
             }
 
+            while (lexer_peek(l).type == TOK_COMMA) {
+                lexer_next(l); // eat ','
+                int next_is_ptr = 0;
+                while (lexer_peek(l).type == TOK_STAR) {
+                    next_is_ptr = 1;
+                    lexer_next(l); // eat '*'
+                }
+                token_t next_id = lexer_peek(l);
+                if (next_id.type == TOK_IDENT) {
+                    char next_name[64];
+                    strncpy(next_name, next_id.str_value, sizeof(next_name) - 1);
+                    next_name[sizeof(next_name) - 1] = '\0';
+                    lexer_next(l); // eat ident
+
+                    size_t next_alloc_sz = sizeof(int64_t);
+                    if (known_st && !next_is_ptr) {
+                        next_alloc_sz = known_st->total_size > 8 ? known_st->total_size : 8;
+                    }
+                    symbol_t *ex_sym = symbols_lookup_entry(next_name);
+                    int64_t *next_storage = NULL;
+                    if (ex_sym && ex_sym->type == SYM_VAR && ex_sym->address) {
+                        next_storage = (int64_t*)ex_sym->address;
+                    } else {
+                        next_storage = (int64_t*)kmalloc(next_alloc_sz);
+                        memset(next_storage, 0, next_alloc_sz);
+                        symbols_register(next_name, next_storage, SYM_VAR);
+                    }
+                    register_var_type(next_name, scale, next_is_ptr, (base_type == TOK_TYPE_F64 && !next_is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
+
+                    if (lexer_peek(l).type == TOK_EQUAL) {
+                        lexer_next(l); // eat '='
+                        parse_expr(l, cb);
+                        emit_mov_imm64(cb, 16, (uint64_t)next_storage);
+                        emit_str_ptr(cb, 0, 16);
+                    }
+                }
+            }
+
             if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
             return;
         }
@@ -2593,31 +2684,51 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         } else if (lookahead.current.type == TOK_DOT || lookahead.current.type == TOK_ARROW) {
             lexer_t dot_la = *l;
             lexer_next(&dot_la); // past ident
-            lexer_next(&dot_la); // past '.' or '->'
             int is_member_assign = 0;
             int is_member_arr_assign = 0;
-            if (dot_la.current.type == TOK_IDENT) {
-                lexer_next(&dot_la); // past field
-                if (dot_la.current.type == TOK_EQUAL || is_compound_assign_tok(dot_la.current.type)) {
-                    is_member_assign = 1;
-                } else if (dot_la.current.type == TOK_LBRACKET) {
+            int is_member_inc = 0;
+            while (dot_la.current.type == TOK_DOT || dot_la.current.type == TOK_ARROW) {
+                lexer_next(&dot_la); // past '.' or '->'
+                if (dot_la.current.type != TOK_IDENT) break;
+                lexer_next(&dot_la); // past field ident
+            }
+            if (dot_la.current.type == TOK_EQUAL || is_compound_assign_tok(dot_la.current.type)) {
+                is_member_assign = 1;
+            } else if (dot_la.current.type == TOK_PLUSPLUS || dot_la.current.type == TOK_MINUSMINUS) {
+                is_member_inc = 1;
+            } else if (dot_la.current.type == TOK_LBRACKET) {
+                int bracket_depth = 1;
+                lexer_next(&dot_la); // past '['
+                while (dot_la.current.type != TOK_EOF && bracket_depth > 0) {
+                    if (dot_la.current.type == TOK_LBRACKET) bracket_depth++;
+                    else if (dot_la.current.type == TOK_RBRACKET) bracket_depth--;
+                    lexer_next(&dot_la);
+                }
+                if (bracket_depth == 0 && (dot_la.current.type == TOK_EQUAL || is_compound_assign_tok(dot_la.current.type))) {
                     is_member_arr_assign = 1;
                 }
             }
 
             if (is_member_arr_assign) {
-                // Member Array Assignment: ident->field[index] = expr;
+                // Member Array Assignment: ident.f1...fN[index] = expr; or ident->f1...fN[index] = expr;
                 char var_name[64];
                 strncpy(var_name, tok.str_value, 63);
                 var_name[63] = '\0';
                 lexer_next(l); // eat ident
-                lexer_next(l); // eat '.' or '->'
 
-                token_t f_tok = lexer_peek(l);
-                char field_name[32] = {0};
-                if (f_tok.type == TOK_IDENT) {
-                    strncpy(field_name, f_tok.str_value, 31);
-                    lexer_next(l);
+                char field_chain[16][32];
+                int chain_len = 0;
+                while ((lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) && chain_len < 16) {
+                    lexer_next(l); // eat '.' or '->'
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_IDENT) {
+                        strncpy(field_chain[chain_len], f_tok.str_value, 31);
+                        field_chain[chain_len][31] = '\0';
+                        chain_len++;
+                        lexer_next(l); // eat field ident
+                    } else {
+                        break;
+                    }
                 }
 
                 if (lexer_peek(l).type == TOK_LBRACKET) {
@@ -2627,8 +2738,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
                 }
 
-                if (lexer_peek(l).type == TOK_EQUAL) {
-                    lexer_next(l); // eat '='
+                token_type_t op_type = lexer_peek(l).type;
+                if (op_type == TOK_EQUAL || is_compound_assign_tok(op_type)) {
+                    lexer_next(l); // eat '=' or op=
                     parse_expr(l, cb); // RHS in X0
                     emit_push_x(cb, 0); // save RHS
 
@@ -2636,61 +2748,246 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     int64_t *storage = sym ? (int64_t*)sym->address : NULL;
 
                     var_type_t *vt = lookup_var_type(var_name);
+                    char cur_st_name[32] = {0};
                     if (vt && vt->struct_type[0] != '\0') {
-                        struct_def_t *st = find_struct_def(vt->struct_type);
-                        if (st) {
-                            int found = 0;
-                            int offset = 0;
-                            for (int m = 0; m < st->member_count; m++) {
-                                if (strcmp(st->members[m].name, field_name) == 0) {
-                                    offset = st->members[m].offset;
-                                    found = 1;
-                                    break;
+                        strncpy(cur_st_name, vt->struct_type, 31);
+                    }
+
+                    if (vt && vt->is_ptr) {
+                        emit_mov_imm64(cb, 16, (uint64_t)storage);
+                        emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
+                    } else {
+                        emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                    }
+
+                    int elem_sz = 8;
+                    for (int k = 0; k < chain_len; k++) {
+                        struct_def_t *st = NULL;
+                        if (cur_st_name[0] != '\0') {
+                            st = find_struct_def(cur_st_name);
+                        }
+                        if (!st) {
+                            for (int s = 0; s < struct_def_count; s++) {
+                                for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                    if (strcmp(struct_defs[s].members[m].name, field_chain[k]) == 0) {
+                                        st = &struct_defs[s];
+                                        break;
+                                    }
                                 }
+                                if (st) break;
                             }
-                            if (!found) {
-                                cb->has_error = 1;
-                                snprintf(cb->error_msg, sizeof(cb->error_msg),
-                                         "Type error: struct '%s' has no member '%s'", vt->struct_type, field_name);
-                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
-                                return;
-                            }
-                            if (vt->is_ptr) {
-                                emit_mov_imm64(cb, 16, (uint64_t)storage);
-                                emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
-                            } else {
-                                emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
-                            }
-                            emit_mov_imm64(cb, 2, (uint64_t)offset);
-                            emit_add(cb, 1, 1, 2);   // X1 = &arr->field
-                            emit_ldr64(cb, 2, 1);    // X2 = arr->field (base of array)
-
-                            emit_pop_x(cb, 0); // X0 = RHS value
-                            emit_pop_x(cb, 1); // X1 = index
-                            emit_mov_imm64(cb, 3, 8); // 8 bytes per element
-                            emit_mul(cb, 1, 1, 3);
-                            emit_add(cb, 2, 2, 1); // X2 = base + index * 8
-                            emit_str64(cb, 0, 2); // *(base + index * 8) = RHS
-
-                            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                        }
+                        if (!st) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: unknown struct for member '%s'", field_chain[k]);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
                             return;
                         }
+
+                        int found = 0;
+                        int offset = 0;
+                        int is_arr = 0;
+                        char sub_st[32] = {0};
+                        for (int m = 0; m < st->member_count; m++) {
+                            if (strcmp(st->members[m].name, field_chain[k]) == 0) {
+                                offset = st->members[m].offset;
+                                is_arr = st->members[m].is_array;
+                                if (st->members[m].elem_size > 0) elem_sz = st->members[m].elem_size;
+                                if (st->members[m].type_name[0]) {
+                                    strncpy(sub_st, st->members[m].type_name, 31);
+                                }
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: struct '%s' has no member '%s'", st->name, field_chain[k]);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                            return;
+                        }
+
+                        emit_mov_imm64(cb, 2, (uint64_t)offset);
+                        emit_add(cb, 1, 1, 2); // X1 = &current->field
+
+                        if (k < chain_len - 1) {
+                            if (sub_st[0]) {
+                                strncpy(cur_st_name, sub_st, 31);
+                            }
+                        } else {
+                            if (!is_arr) {
+                                emit_ldr64(cb, 1, 1); // pointer to array
+                            }
+                        }
                     }
+
+                    emit_pop_x(cb, 0); // X0 = RHS value
+                    emit_pop_x(cb, 2); // X2 = index
+                    emit_mov_imm64(cb, 3, (uint64_t)elem_sz);
+                    emit_mul(cb, 2, 2, 3);
+                    emit_add(cb, 1, 1, 2); // X1 = base + index * elem_sz
+
+                    if (is_compound_assign_tok(op_type)) {
+                        emit_mov_reg(cb, 2, 1); // X2 = target address
+                        if (elem_sz == 1) emit_ldrb(cb, 1, 2);
+                        else if (elem_sz == 2) emit_ldrh(cb, 1, 2);
+                        else if (elem_sz == 4) emit_ldr32(cb, 1, 2);
+                        else emit_ldr64(cb, 1, 2); // X1 = old val
+                        emit_compound_op(cb, op_type); // X0 = X1 (op) X0
+                        emit_mov_reg(cb, 1, 2); // X1 = target address
+                    }
+
+                    if (elem_sz == 1) emit_strb(cb, 0, 1);
+                    else if (elem_sz == 2) emit_strh(cb, 0, 1);
+                    else if (elem_sz == 4) emit_str32(cb, 0, 1);
+                    else emit_str64(cb, 0, 1);
+
+                    if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                    return;
                 }
             }
 
-            if (is_member_assign) {
-                // Member Assignment: ident.field = expr; or ident->field op= expr;
+            if (is_member_inc) {
+                // Member Increment / Decrement: ident.f1...fN++; or --;
                 char var_name[64];
                 strncpy(var_name, tok.str_value, 63);
+                var_name[63] = '\0';
                 lexer_next(l); // eat ident
-                lexer_next(l); // eat '.' or '->'
 
-                token_t f_tok = lexer_peek(l);
-                char field_name[32] = {0};
-                if (f_tok.type == TOK_IDENT) {
-                    strncpy(field_name, f_tok.str_value, 31);
-                    lexer_next(l);
+                char field_chain[16][32];
+                int chain_len = 0;
+                while ((lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) && chain_len < 16) {
+                    lexer_next(l); // eat '.' or '->'
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_IDENT) {
+                        strncpy(field_chain[chain_len], f_tok.str_value, 31);
+                        field_chain[chain_len][31] = '\0';
+                        chain_len++;
+                        lexer_next(l);
+                    } else {
+                        break;
+                    }
+                }
+
+                token_type_t inc_type = lexer_peek(l).type;
+                lexer_next(l); // eat '++' or '--'
+
+                symbol_t *sym = symbols_lookup_entry(var_name);
+                int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+
+                var_type_t *vt = lookup_var_type(var_name);
+                char cur_st_name[32] = {0};
+                if (vt && vt->struct_type[0] != '\0') {
+                    strncpy(cur_st_name, vt->struct_type, 31);
+                }
+
+                if (vt && vt->is_ptr) {
+                    emit_mov_imm64(cb, 16, (uint64_t)storage);
+                    emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
+                } else {
+                    emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                }
+
+                int fsize = 8;
+                for (int k = 0; k < chain_len; k++) {
+                    struct_def_t *st = NULL;
+                    if (cur_st_name[0] != '\0') {
+                        st = find_struct_def(cur_st_name);
+                    }
+                    if (!st) {
+                        for (int s = 0; s < struct_def_count; s++) {
+                            for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                if (strcmp(struct_defs[s].members[m].name, field_chain[k]) == 0) {
+                                    st = &struct_defs[s];
+                                    break;
+                                }
+                            }
+                            if (st) break;
+                        }
+                    }
+                    if (!st) {
+                        cb->has_error = 1;
+                        snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                 "Type error: unknown struct for member '%s'", field_chain[k]);
+                        printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                        return;
+                    }
+
+                    int found = 0;
+                    int offset = 0;
+                    char sub_st[32] = {0};
+                    for (int m = 0; m < st->member_count; m++) {
+                        if (strcmp(st->members[m].name, field_chain[k]) == 0) {
+                            offset = st->members[m].offset;
+                            fsize = st->members[m].size;
+                            if (st->members[m].type_name[0]) {
+                                strncpy(sub_st, st->members[m].type_name, 31);
+                            }
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        cb->has_error = 1;
+                        snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                 "Type error: struct '%s' has no member '%s'", st->name, field_chain[k]);
+                        printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                        return;
+                    }
+
+                    emit_mov_imm64(cb, 2, (uint64_t)offset);
+                    emit_add(cb, 1, 1, 2); // X1 = base + offset
+
+                    if (k < chain_len - 1) {
+                        if (sub_st[0]) {
+                            strncpy(cur_st_name, sub_st, 31);
+                        }
+                    }
+                }
+
+                if (fsize == 1) emit_ldrb(cb, 0, 1);
+                else if (fsize == 2) emit_ldrh(cb, 0, 1);
+                else if (fsize == 4) emit_ldr32(cb, 0, 1);
+                else emit_ldr64(cb, 0, 1);
+
+                emit_mov_imm64(cb, 2, 1);
+                if (inc_type == TOK_PLUSPLUS) {
+                    emit_add(cb, 0, 0, 2);
+                } else {
+                    emit_sub(cb, 0, 0, 2);
+                }
+
+                if (fsize == 1) emit_strb(cb, 0, 1);
+                else if (fsize == 2) emit_strh(cb, 0, 1);
+                else if (fsize == 4) emit_str32(cb, 0, 1);
+                else emit_str64(cb, 0, 1);
+
+                if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                return;
+            }
+
+            if (is_member_assign) {
+                // Member Assignment: ident.field1...fieldN = expr; or op= expr;
+                char var_name[64];
+                strncpy(var_name, tok.str_value, 63);
+                var_name[63] = '\0';
+                lexer_next(l); // eat ident
+
+                char field_chain[16][32];
+                int chain_len = 0;
+                while ((lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) && chain_len < 16) {
+                    lexer_next(l); // eat '.' or '->'
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_IDENT) {
+                        strncpy(field_chain[chain_len], f_tok.str_value, 31);
+                        field_chain[chain_len][31] = '\0';
+                        chain_len++;
+                        lexer_next(l);
+                    } else {
+                        break;
+                    }
                 }
 
                 token_type_t op_type = lexer_peek(l).type;
@@ -2703,29 +3000,82 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     int64_t *storage = sym ? (int64_t*)sym->address : NULL;
 
                     var_type_t *vt = lookup_var_type(var_name);
-                    struct_def_t *st = NULL;
+                    char cur_st_name[32] = {0};
                     if (vt && vt->struct_type[0] != '\0') {
-                        st = find_struct_def(vt->struct_type);
+                        strncpy(cur_st_name, vt->struct_type, 31);
                     }
-                    if (!st) {
+
+                    if (chain_len == 1 && (!vt || vt->struct_type[0] == '\0')) {
+                        int is_st = 0;
                         for (int s = 0; s < struct_def_count; s++) {
                             for (int m = 0; m < struct_defs[s].member_count; m++) {
-                                if (strcmp(struct_defs[s].members[m].name, field_name) == 0) {
-                                    st = &struct_defs[s];
+                                if (strcmp(struct_defs[s].members[m].name, field_chain[0]) == 0) {
+                                    is_st = 1;
                                     break;
                                 }
                             }
-                            if (st) break;
+                            if (is_st) break;
+                        }
+                        if (!is_st) {
+                            // Dynamic Table set: table_set(tbl, field, val)
+                            emit_pop_x(cb, 2); // RHS in X2
+                            emit_mov_imm64(cb, 16, (uint64_t)storage);
+                            emit_ldr_ptr(cb, 0, 16); // X0 = tbl
+
+                            char *f_copy = (char*)kmalloc(strlen(field_chain[0]) + 1);
+                            if (f_copy) strcpy(f_copy, field_chain[0]);
+                            emit_mov_imm64(cb, 1, (uint64_t)f_copy); // X1 = key
+
+                            emit_mov_imm64(cb, 16, (uint64_t)table_set);
+                            emit_blr(cb, 16);
+
+                            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                            return;
                         }
                     }
-                    if (st) {
+
+                    if (vt && vt->is_ptr) {
+                        emit_mov_imm64(cb, 16, (uint64_t)storage);
+                        emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
+                    } else {
+                        emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                    }
+
+                    int fsize = 8;
+                    for (int k = 0; k < chain_len; k++) {
+                        struct_def_t *st = NULL;
+                        if (cur_st_name[0] != '\0') {
+                            st = find_struct_def(cur_st_name);
+                        }
+                        if (!st) {
+                            for (int s = 0; s < struct_def_count; s++) {
+                                for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                    if (strcmp(struct_defs[s].members[m].name, field_chain[k]) == 0) {
+                                        st = &struct_defs[s];
+                                        break;
+                                    }
+                                }
+                                if (st) break;
+                            }
+                        }
+                        if (!st) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: unknown struct for member '%s'", field_chain[k]);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                            return;
+                        }
+
                         int found = 0;
                         int offset = 0;
-                        int fsize = 8;
+                        char sub_st[32] = {0};
                         for (int m = 0; m < st->member_count; m++) {
-                            if (strcmp(st->members[m].name, field_name) == 0) {
+                            if (strcmp(st->members[m].name, field_chain[k]) == 0) {
                                 offset = st->members[m].offset;
                                 fsize = st->members[m].size;
+                                if (st->members[m].type_name[0]) {
+                                    strncpy(sub_st, st->members[m].type_name, 31);
+                                }
                                 found = 1;
                                 break;
                             }
@@ -2733,51 +3083,38 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         if (!found) {
                             cb->has_error = 1;
                             snprintf(cb->error_msg, sizeof(cb->error_msg),
-                                     "Type error: struct '%s' has no member '%s'", st->name, field_name);
+                                     "Type error: struct '%s' has no member '%s'", st->name, field_chain[k]);
                             printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
                             return;
                         }
-                        if (vt && vt->is_ptr) {
-                            emit_mov_imm64(cb, 16, (uint64_t)storage);
-                            emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer)
-                        } else {
-                            emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
-                        }
+
                         emit_mov_imm64(cb, 2, (uint64_t)offset);
-                        emit_add(cb, 1, 1, 2);   // X1 = base + offset
+                        emit_add(cb, 1, 1, 2); // X1 = base + offset
 
-                        if (is_compound_assign_tok(op_type)) {
-                            emit_mov_reg(cb, 2, 1); // X2 = target address
-                            if (fsize == 1) emit_ldrb(cb, 1, 2);
-                            else if (fsize == 2) emit_ldrh(cb, 1, 2);
-                            else if (fsize == 4) emit_ldr32(cb, 1, 2);
-                            else emit_ldr64(cb, 1, 2); // X1 = old val
-                            emit_pop_x(cb, 0); // X0 = RHS
-                            emit_compound_op(cb, op_type); // X0 = X1 (op) X0
-                            emit_mov_reg(cb, 1, 2); // X1 = target address
-                        } else {
-                            emit_pop_x(cb, 0); // X0 = RHS
+                        if (k < chain_len - 1) {
+                            if (sub_st[0]) {
+                                strncpy(cur_st_name, sub_st, 31);
+                            }
                         }
-                        if (fsize == 1) emit_strb(cb, 0, 1);
-                        else if (fsize == 2) emit_strh(cb, 0, 1);
-                        else if (fsize == 4) emit_str32(cb, 0, 1);
-                        else emit_str64(cb, 0, 1);
-
-                        if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
-                        return;
                     }
 
-                // Dynamic Table set: table_set(tbl, field, val)
-                emit_pop_x(cb, 2); // RHS in X2
-                emit_mov_imm64(cb, 16, (uint64_t)storage);
-                emit_ldr_ptr(cb, 0, 16); // X0 = tbl
+                    if (is_compound_assign_tok(op_type)) {
+                        emit_mov_reg(cb, 2, 1); // X2 = target address
+                        if (fsize == 1) emit_ldrb(cb, 1, 2);
+                        else if (fsize == 2) emit_ldrh(cb, 1, 2);
+                        else if (fsize == 4) emit_ldr32(cb, 1, 2);
+                        else emit_ldr64(cb, 1, 2); // X1 = old val
+                        emit_pop_x(cb, 0); // X0 = RHS
+                        emit_compound_op(cb, op_type); // X0 = X1 (op) X0
+                        emit_mov_reg(cb, 1, 2); // X1 = target address
+                    } else {
+                        emit_pop_x(cb, 0); // X0 = RHS
+                    }
 
-                char *f_copy = (char*)kmalloc(strlen(field_name) + 1);
-                if (f_copy) strcpy(f_copy, field_name);
-                emit_mov_imm64(cb, 1, (uint64_t)f_copy); // X1 = key
-
-                emit_mov_imm64(cb, 16, (uint64_t)table_set);
-                emit_blr(cb, 16);
+                    if (fsize == 1) emit_strb(cb, 0, 1);
+                    else if (fsize == 2) emit_strh(cb, 0, 1);
+                    else if (fsize == 4) emit_str32(cb, 0, 1);
+                    else emit_str64(cb, 0, 1);
 
                     if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
                     return;

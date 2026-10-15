@@ -468,7 +468,20 @@ int main(int argc, char **argv)
         printf("[BOOT WARN] Could not read Shell.HC from RedSea disk!\r\n");
     }
 
-    // 10C. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
+    // 10D. Sovereign Handover: Compile Pure HolyC HolyGL.HC (3D Graphics Substrate)
+    printf("[BOOT] Sovereign Handover: Loading Pure HolyC HolyGL.HC...\r\n");
+    static char hgl_src[32768];
+    size_t hgl_src_len = 0;
+    if (redsea_read_file("HolyGL.HC", hgl_src, sizeof(hgl_src) - 1, &hgl_src_len) == 0) {
+        hgl_src[hgl_src_len] = '\0';
+        printf("[BOOT] Compiling HolyGL.HC (%llu bytes)...\r\n", (unsigned long long)hgl_src_len);
+        int64_t hres = jit_compile_and_run(hgl_src);
+        printf("[BOOT] HolyGL.HC compiled, res = %lld\r\n", (long long)hres);
+    } else {
+        printf("[BOOT WARN] Could not read HolyGL.HC from RedSea disk!\r\n");
+    }
+
+    // 10E. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
     printf("[BOOT] Sovereign Handover: Transferring primary execution to Pure HolyC WM.HC...\r\n");
     static char wm_src[32768];
     size_t wm_src_len = 0;
