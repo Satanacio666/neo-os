@@ -188,6 +188,7 @@ int main(int argc, char **argv)
     symbols_register("kheap_is_valid_ptr", (void*)kheap_is_valid_ptr, SYM_FUNC);
     symbols_register("wm_sweep_destroyed_windows", (void*)wm_sweep_destroyed_windows, SYM_FUNC);
     symbols_register("wm_is_dirty", (void*)wm_is_dirty, SYM_FUNC);
+    symbols_register("wm_set_dirty", (void*)wm_set_dirty, SYM_FUNC);
     symbols_register("wm_clear_dirty", (void*)wm_clear_dirty, SYM_FUNC);
     symbols_register("wm_draw_all", (void*)wm_draw_all, SYM_FUNC);
     symbols_register("wm_draw_animating_windows", (void*)wm_draw_animating_windows, SYM_FUNC);
@@ -236,6 +237,14 @@ int main(int argc, char **argv)
     symbols_register("gfx_draw_string", (void*)gfx_draw_string, SYM_FUNC);
     symbols_register("gfx_draw_char", (void*)gfx_draw_char, SYM_FUNC);
     symbols_register("gfx_dirty_expand", (void*)gfx_dirty_expand, SYM_FUNC);
+    symbols_register("gfx_draw_rounded_rect", (void*)gfx_draw_rounded_rect, SYM_FUNC);
+    symbols_register("gfx_draw_rounded_rect_outline", (void*)gfx_draw_rounded_rect_outline, SYM_FUNC);
+    symbols_register("gfx_draw_shadow", (void*)gfx_draw_shadow, SYM_FUNC);
+    symbols_register("gfx_swap_rect", (void*)gfx_swap_rect, SYM_FUNC);
+    symbols_register("gfx_get_pixel", (void*)gfx_get_pixel, SYM_FUNC);
+    symbols_register("gfx_draw_rect_outline", (void*)gfx_draw_rect_outline, SYM_FUNC);
+    symbols_register("gfx_fill_circle", (void*)gfx_fill_circle, SYM_FUNC);
+    symbols_register("atoi", (void*)atoi, SYM_FUNC);
     symbols_register("gpu_config_open", (void*)gpu_config_open, SYM_FUNC);
     symbols_register("gpu_config_close", (void*)gpu_config_close, SYM_FUNC);
     symbols_register("gpu_set_buffering", (void*)gpu_set_buffering, SYM_FUNC);
@@ -433,7 +442,20 @@ int main(int argc, char **argv)
         printf("[BOOT WARN] Could not read DolDoc.HC from RedSea disk!\r\n");
     }
 
-    // 10B. Sovereign Handover: Compile Pure HolyC Shell.HC
+    // 10B. Sovereign Handover: Compile Pure HolyC Compositor.HC
+    printf("[BOOT] Sovereign Handover: Loading Pure HolyC Compositor.HC...\r\n");
+    static char comp_src[32768];
+    size_t comp_src_len = 0;
+    if (redsea_read_file("Compositor.HC", comp_src, sizeof(comp_src) - 1, &comp_src_len) == 0) {
+        comp_src[comp_src_len] = '\0';
+        printf("[BOOT] Compiling Compositor.HC (%llu bytes)...\r\n", (unsigned long long)comp_src_len);
+        int64_t cres = jit_compile_and_run(comp_src);
+        printf("[BOOT] Compositor.HC compiled, res = %lld\r\n", (long long)cres);
+    } else {
+        printf("[BOOT WARN] Could not read Compositor.HC from RedSea disk!\r\n");
+    }
+
+    // 10C. Sovereign Handover: Compile Pure HolyC Shell.HC
     printf("[BOOT] Sovereign Handover: Loading Pure HolyC Shell.HC...\r\n");
     static char shell_src[32768];
     size_t shell_src_len = 0;

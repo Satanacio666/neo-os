@@ -129,29 +129,30 @@ U0 WMInit() {
 
 U0 WMDrawShadow(CWindow *win) {
     if (!win || win->is_minimized) return;
-    // Layer 1: Ambient diffusion (8px spread)
-    gfx_blend_rect(win->x - 8, win->y - 4, win->w + 16, win->h + 16, 0x1A000000);
-    // Layer 2: Penumbra (5px spread)
-    gfx_blend_rect(win->x - 5, win->y - 2, win->w + 10, win->h + 11, 0x2E000000);
-    // Layer 3: Umbra (2px spread)
-    gfx_blend_rect(win->x - 2, win->y - 1, win->w + 4,  win->h + 5,  0x4D000000);
+    CompositorDrawShadow(win->x, win->y, win->w, win->h, 8);
 }
 
 U0 WMDrawWindow(CWindow *win) {
     if (!win || win->is_minimized) return;
 
-    // 1. Soft Drop Shadow
+    // 1. Soft Drop Shadow via Compositor
     WMDrawShadow(win);
 
     // 2. Window Border (Accent Sapphire glow if active, Surface0 if inactive)
-    I64 border_col = (win->id == g_wm.active_id) ? 0xFF89B4FA : 0xFF313244;
+    I64 border_col = (win->id == g_wm.active_id) ? CAT_BLUE : CAT_SURFACE0;
     gfx_draw_rect(win->x - 1, win->y - 1, win->w + 2, win->h + 2, border_col);
 
-    // 3. Window Body
-    gfx_draw_rect(win->x, win->y, win->w, win->h, win->bg_color);
+    // 3. Window Body: Acrylic Glass or Catppuccin Base
+    if (g_comp.glass_enabled) {
+        CompositorDrawGlass(win->x, win->y, win->w, win->h, 0xCC);
+    } else if (g_comp.rounded_corners) {
+        gfx_draw_rounded_rect(win->x, win->y, win->w, win->h, 6, win->bg_color);
+    } else {
+        gfx_draw_rect(win->x, win->y, win->w, win->h, win->bg_color);
+    }
 
     // 4. Titlebar
-    I64 tb_col = (win->id == g_wm.active_id) ? 0xFF313244 : 0xFF181825;
+    I64 tb_col = (win->id == g_wm.active_id) ? CAT_SURFACE0 : CAT_MANTLE;
     gfx_draw_rect(win->x, win->y, win->w, 32, tb_col);
 
     // Accent line below titlebar
@@ -527,8 +528,10 @@ U0 WMHandleMouse() {
         if (ny > g_wm.screen_h - 50) ny = g_wm.screen_h - 50;
 
         if (win->x != nx || win->y != ny) {
+            CompositorDamageWindow(win->x, win->y, win->w, win->h);
             win->x = nx;
             win->y = ny;
+            CompositorDamageWindow(win->x, win->y, win->w, win->h);
             if (win->id == 1) {
                 doldoc_move(win->x + 12, win->y + 40, win->w - 24, win->h - 48);
             }
@@ -575,7 +578,7 @@ U0 WMEventLoop() {
     WMDrawDesktop();
     WMDrawWindows();
     WMDrawTaskbar();
-    gfx_swap_buffers();
+    CompositorPresent();
     mouse_draw_cursor_front();
     g_wm.is_dirty = 0;
 
@@ -603,12 +606,12 @@ U0 WMEventLoop() {
         if (bench_unified_is_active()) {
             wm_draw_animating_windows();
             gfx_vsync_wait();
-        } else if (g_wm.is_dirty) {
+        } else if (g_wm.is_dirty || g_comp.dmg_active) {
             gfx_dirty_all();
             WMDrawDesktop();
             WMDrawWindows();
             WMDrawTaskbar();
-            gfx_swap_buffers();
+            CompositorPresent();
             mouse_draw_cursor_front();
             g_wm.is_dirty = 0;
         }

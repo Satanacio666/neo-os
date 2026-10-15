@@ -240,12 +240,12 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         doldoc_print(" Engine      : Pure HolyC JIT Execution Substrate (No C in userland)\n");
         doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");
         doldoc_print(" Sovereign Commands & Quick Actions:\n");
-        doldoc_print("  System Apps : $BT,\"✦ NeoMenu\",LM=\"menu\"$  $BT,\"Files\",LM=\"ls\"$  $BT,\"Editor\",LM=\"run Editor.HC\"$  $BT,\"Top\",LM=\"top\"$\n");
+        doldoc_print("  System Apps : $BT,\"✦ NeoMenu\",LM=\"menu\"$  $BT,\"Compositor\",LM=\"compositor\"$  $BT,\"Files\",LM=\"ls\"$  $BT,\"Editor\",LM=\"run Editor.HC\"$  $BT,\"Top\",LM=\"top\"$\n");
         doldoc_print("  Benchmarks  : $BT,\"HolyBenchmark\",LM=\"bench\"$  $BT,\"Scorecard\",LM=\"run BenchReport.HC\"$\n");
         doldoc_print("  3D Graphics : $BT,\"GLXGears 3D\",LM=\"gears\"$  $BT,\"Physics 3D\",LM=\"physics\"$  $BT,\"Shaders\",LM=\"run ShaderEditor.HC\"$\n");
         doldoc_print("  Telemetry   : $BT,\"RTSS Telemetry\",LM=\"perf\"$  $BT,\"Heap Memory\",LM=\"mem\"$  $BT,\"Task Manager\",LM=\"top\"$\n");
         doldoc_print("  Storage     : $FG,YELLOW$ls$FG$, $FG,YELLOW$cd <dir>$FG$, $FG,YELLOW$mkdir <dir>$FG$, $FG,YELLOW$rm <file>$FG$, $FG,YELLOW$cat <file>$FG$, $FG,YELLOW$run <file.HC>$FG$\n");
-        doldoc_print("  Control     : $FG,YELLOW$clear$FG$, $FG,YELLOW$vsync <60|120|off>$FG$, $FG,YELLOW$zeroram <on|off>$FG$, $FG,YELLOW$render <cpu|gpu|smp>$FG$, $FG,YELLOW$reboot$FG$\n");
+        doldoc_print("  Control     : $FG,YELLOW$compositor$FG$, $FG,YELLOW$clear$FG$, $FG,YELLOW$vsync <60|120|off>$FG$, $FG,YELLOW$zeroram <on|off>$FG$, $FG,YELLOW$render <cpu|gpu|smp>$FG$, $FG,YELLOW$reboot$FG$\n");
         doldoc_print("  Expressions : Type any HolyC arithmetic or statement directly (e.g. $FG,YELLOW$2 + 2 * 10;$FG$)\n");
         doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
     } else if (strcmp(cmd, "clear") == 0 || strcmp(cmd, "cls") == 0) {
@@ -284,6 +284,8 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         doldoc_print("  Trees      : $TR,\"Kernel System Subsystems\"$\n");
         doldoc_print("  Divider    : $HR$\n");
         doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
+    } else if (strcmp(cmd, "compositor") == 0 || strncmp(cmd, "compositor ", 11) == 0) {
+        CompositorCmd(cmd + 10);
     } else if (strcmp(cmd, "perf") == 0) {
         doldoc_print("$FG,CYAN$=======================================================$FG$\n");
         doldoc_print("$FG,WHITE$ NeoOS RivaTuner (RTSS) Empirical Hardware Telemetry $FG$\n");
