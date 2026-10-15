@@ -2530,6 +2530,42 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
             }
 
+            // Member access on array element: ident[i].field = expr;
+            if (lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) {
+                lexer_next(l); // eat '.' or '->'
+                token_t f_tok = lexer_peek(l);
+                if (f_tok.type == TOK_IDENT) {
+                    char field_name[32];
+                    strncpy(field_name, f_tok.str_value, 31);
+                    field_name[31] = '\0';
+                    lexer_next(l);
+
+                    struct_def_t *st = NULL;
+                    if (vt && vt->struct_type[0]) st = find_struct_def(vt->struct_type);
+                    if (!st) {
+                        for (int s = 0; s < struct_def_count; s++) {
+                            for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                if (strcmp(struct_defs[s].members[m].name, field_name) == 0) {
+                                    st = &struct_defs[s];
+                                    break;
+                                }
+                            }
+                            if (st) break;
+                        }
+                    }
+                    if (st) {
+                        for (int m = 0; m < st->member_count; m++) {
+                            if (strcmp(st->members[m].name, field_name) == 0) {
+                                emit_mov_imm64(cb, 3, (uint64_t)st->members[m].offset);
+                                emit_add(cb, 2, 2, 3); // X2 = elem_addr + offset
+                                scale = st->members[m].size;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             token_type_t op_type = lexer_peek(l).type;
             if (op_type == TOK_EQUAL || is_compound_assign_tok(op_type)) {
                 lexer_next(l); // eat '=' or 'op='

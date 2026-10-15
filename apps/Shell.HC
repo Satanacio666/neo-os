@@ -366,6 +366,9 @@ U0 ShellRunCommand(U8 *raw_cmd) {
     } else if (strcmp(cmd, "edit") == 0) {
         ShellRunCommand("run Editor.HC");
         return;
+    } else if (strcmp(cmd, "smp") == 0) {
+        ShellRunCommand("run SmpDemo.HC");
+        return;
     } else if (strncmp(cmd, "save ", 5) == 0) {
         U8 *arg = cmd + 5;
         while (*arg == ' ') arg++;
