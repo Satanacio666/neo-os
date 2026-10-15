@@ -65,6 +65,8 @@ window_t*     wm_get_window_by_id(uint32_t id);
 void          wm_bring_to_front_by_id(uint32_t id);
 int           wm_get_window_count(void);
 void          wm_handle_mouse(mouse_state_t mouse);
+void          wm_set_holyc_active(int active);
+int           wm_is_holyc_active(void);
 
 typedef struct {
     uint32_t vsync_hz;

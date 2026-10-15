@@ -240,6 +240,18 @@ int main(int argc, char **argv)
     symbols_register("glEnable", (void*)glEnable, SYM_FUNC);
     symbols_register("glDisable", (void*)glDisable, SYM_FUNC);
     symbols_register("glClearColor", (void*)glClearColor, SYM_FUNC);
+    symbols_register("gfx_set_clip", (void*)gfx_set_clip, SYM_FUNC);
+    symbols_register("gfx_reset_clip", (void*)gfx_reset_clip, SYM_FUNC);
+    symbols_register("mouse_draw_cursor_front", (void*)mouse_draw_cursor_front, SYM_FUNC);
+    symbols_register("mouse_erase_cursor_front", (void*)mouse_erase_cursor_front, SYM_FUNC);
+    symbols_register("doldoc_redraw", (void*)doldoc_redraw, SYM_FUNC);
+    symbols_register("doldoc_move", (void*)doldoc_move, SYM_FUNC);
+    symbols_register("doldoc_handle_click", (void*)doldoc_handle_click, SYM_FUNC);
+    symbols_register("doldoc_mark_all_dirty", (void*)doldoc_mark_all_dirty, SYM_FUNC);
+    symbols_register("timer_get_uptime_sec", (void*)timer_get_uptime_sec, SYM_FUNC);
+    symbols_register("timer_sleep_ms", (void*)timer_sleep_ms, SYM_FUNC);
+    symbols_register("gfx_dirty_all", (void*)gfx_dirty_all, SYM_FUNC);
+    symbols_register("wm_set_holyc_active", (void*)wm_set_holyc_active, SYM_FUNC);
 
     // 3. Initialize Graphics (GOP) & Double-Buffered Canvas
     efi_guid_t gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -365,7 +377,7 @@ int main(int argc, char **argv)
 
     // 10. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
     printf("[BOOT] Sovereign Handover: Transferring primary execution to Pure HolyC WM.HC...\r\n");
-    static char wm_src[16384];
+    static char wm_src[32768];
     size_t wm_src_len = 0;
     if (redsea_read_file("WM.HC", wm_src, sizeof(wm_src) - 1, &wm_src_len) == 0) {
         wm_src[wm_src_len] = '\0';
@@ -373,7 +385,9 @@ int main(int argc, char **argv)
         int64_t res = jit_compile_and_run(wm_src);
         printf("[BOOT] WM.HC compiled, res = %lld\r\n", (long long)res);
         printf("[BOOT] Entering Sovereign HolyC WMEventLoop()...\r\n");
-        jit_compile_and_run("WMEventLoop();");
+        wm_set_holyc_active(1);
+        int64_t wm_loop_res = jit_compile_and_run("WMEventLoop();");
+        printf("[BOOT] HolyC WMEventLoop returned: %lld\r\n", (long long)wm_loop_res);
     } else {
         printf("[BOOT WARN] Could not read WM.HC from RedSea disk, falling back to C loop.\r\n");
     }

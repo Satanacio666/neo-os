@@ -379,6 +379,7 @@ void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t colo
     if (min_x >= max_x || min_y >= max_y) return;
 
     int span_w = max_x - min_x;
+    dirty_expand(min_x, min_y, span_w, max_y - min_y);
     uint64_t color64 = ((uint64_t)color << 32) | (uint32_t)color;
 
     for (int j = min_y; j < max_y; j++) {
@@ -417,6 +418,7 @@ void gfx_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t col
         if (max_y > clip_rect.y1) max_y = clip_rect.y1;
     }
     if (min_x >= max_x || min_y >= max_y) return;
+    dirty_expand(min_x, min_y, max_x - min_x, max_y - min_y);
 
     uint32_t a = (color_rgba >> 24) & 0xFF;
     if (a == 0) return;

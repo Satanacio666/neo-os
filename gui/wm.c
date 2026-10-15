@@ -392,7 +392,18 @@ void wm_draw_window(window_t *win) {
     }
 }
 
+static int s_holyc_wm_active = 0;
+
+void wm_set_holyc_active(int active) {
+    s_holyc_wm_active = active;
+}
+
+int wm_is_holyc_active(void) {
+    return s_holyc_wm_active;
+}
+
 void wm_draw_all(void) {
+    if (s_holyc_wm_active) return;
     wm_sweep_destroyed_windows();
     wm_draw_desktop();
     for (int i = 0; i < window_count; i++) {
@@ -494,6 +505,7 @@ void menu_toggle(void) {
 }
 
 void wm_handle_mouse(mouse_state_t mouse) {
+    if (s_holyc_wm_active) return;
     wm_sweep_destroyed_windows();
     uint32_t panel_h = 44;
     uint32_t panel_y = screen_height - panel_h;

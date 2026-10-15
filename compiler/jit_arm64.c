@@ -966,6 +966,8 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                     emit_mov_imm64(cb, 16, (uint64_t)sym->address);
                     emit_ldr_ptr(cb, 0, 16); // X0 = *address
                 }
+            } else if (sym && sym->type == SYM_FUNC) {
+                emit_mov_imm64(cb, 0, (uint64_t)sym->address);
             } else {
                 emit_mov_imm64(cb, 0, 0);
             }
@@ -2288,7 +2290,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             }
 
             if (arr_decl_count > 0) {
-                int elem_sz = is_ptr ? 8 : (scale > 0 ? scale : 8);
+                int elem_sz = is_ptr ? 8 : ((known_st && known_st->total_size > 0) ? known_st->total_size : (scale > 0 ? scale : 8));
                 size_t total_buf_sz = (size_t)arr_decl_count * elem_sz;
                 void *arr_buf = kmalloc(total_buf_sz);
                 if (arr_buf) memset(arr_buf, 0, total_buf_sz);
