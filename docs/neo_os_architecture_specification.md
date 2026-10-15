@@ -14,7 +14,7 @@ O NeoOS elimina a separação de privilégios de anéis de hardware (Ring 0 / Ri
 +-------------------------------------------------------------------------+
 | EL3: Secure Monitor / Firmware                                          |
 | EL2: Hypervisor (KVM / Virtualização)                                  |
-| EL1: NeoOS Kernel, Drivers, Compiladores, Lua VM & Apps (SASOS RING 0)  |
+| EL1: NeoOS Kernel, Drivers, Compiladores, HolyC JIT & Apps (SASOS RING 0)  |
 | EL0: Não utilizado (Zero context switch penalty)                        |
 +-------------------------------------------------------------------------+
 ```
@@ -325,10 +325,9 @@ Herdada diretamente da filosofia de Terry Davis, toda função ou variável expo
 
 ```c
 typedef enum {
-    SYM_FUNCTION = 1,
-    SYM_VARIABLE,
-    SYM_HARDWARE_REG,
-    SYM_LUA_EXPORT
+    SYM_FUNC = 1,
+    SYM_VAR = 2,
+    SYM_HARDWARE = 3
 } symbol_type_t;
 
 typedef struct symbol {
@@ -416,48 +415,28 @@ static inline uint32_t blend_pixel(uint32_t src, uint32_t dst) {
 
 ---
 
-## 7. Runtime de Linguagem: Lua 5.4 em Ring 0 / EL1
+## 7. Runtime de Linguagem: Compilador HolyC JIT em Ring 0 / EL1
 
-O interpretador oficial de Lua 5.4 opera dentro do próprio kernel sem bibliotecas `libc` externas.
+O NeoOS utiliza um compilador Just-In-Time (JIT) nativo para HolyC (`compiler/jit_arm64.c`), emitindo instruções de máquina AArch64 diretamente em memória executável em Ring 0:
 
-### 7.1 Alocador de Memória Bare-Metal (`lua_Alloc`)
+### 7.1 Emissão Direta de Código de Máquina AArch64
 
+O compilador JIT traduz código fonte HolyC (`.HC`) para instruções nativas de 32 bits little-endian:
+- Prólogo e epílogo padrão AAPCS64 com frame de pilha (`stp x29, x30, [sp, #-frame_size]!`).
+- Passagem de argumentos inteiros em `X0-X7` e espelhamento em registradores vetoriais `D0-D7` para compatibilidade com chamadas gráficas float.
+- Coerência de cache garantida após compilação via `dc civac` e `ic ivau` seguidos de barreiras `dsb ish` e `isb`.
+
+### 7.2 Reflexão Dinâmica com a Tabela de Símbolos
+
+Funções declaradas no kernel ou em scripts HolyC são registradas dinamicamente:
 ```c
-static void* l_kernel_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
-    (void)ud;
-    (void)osize;
-    if (nsize == 0) {
-        if (ptr) kfree(ptr);
-        return NULL;
-    }
-    return krealloc(ptr, nsize);
-}
-
-lua_State* lua_kernel_create_state(void) {
-    return lua_newstate(l_kernel_alloc, NULL);
-}
+symbols_register("gfx_draw_rect", (void*)gfx_draw_rect, SYM_FUNC);
+symbols_register("glVertex3f", (void*)glVertex3f, SYM_FUNC);
 ```
+O JIT resolve identificadores globais consultando `symbols_lookup()`, gerando um salto direto via `blr x16`.
 
-### 7.2 Ponte com a Tabela Global de Símbolos (FFI Dinâmico)
-
-Os scripts Lua podem acessar funções do kernel através do módulo global `neo`:
-
-```c
-static int lua_neo_call_symbol(lua_State *L) {
-    const char *sym_name = luaL_checkstring(L, 1);
-    void *fn = k_symbol_lookup(sym_name);
-    if (!fn) {
-        return luaL_error(L, "Simbolo do kernel nao encontrado: %s", sym_name);
-    }
-    // Invoca função genérica do kernel
-    typedef int64_t (*generic_fn)(int64_t, int64_t);
-    int64_t arg1 = luaL_optinteger(L, 2, 0);
-    int64_t arg2 = luaL_optinteger(L, 3, 0);
-    int64_t res = ((generic_fn)fn)(arg1, arg2);
-    lua_pushinteger(L, res);
-    return 1;
-}
-```
+> [!NOTE]
+> O runtime Lua 5.4.7 inicialmente planejado foi completamente descartado e removido do codebase em prol da soberania absoluta do HolyC (TempleOS spirit), eliminando dependências externas, shims de libc e fragmentação de heap.
 
 ---
 
@@ -471,27 +450,46 @@ static int lua_neo_call_symbol(lua_State *L) {
 │   └── /uefi/                        # Runtime posix-uefi AArch64 (crt, link.ld, uefi.h)
 ├── /kernel/
 │   ├── /arch/aarch64/
-│   │   ├── mmu.h / mmu.c             # Tradução 1:1, TCR_EL1, MAIR_EL1
-│   │   ├── vectors.S                 # Vetor de 16 exceções ARM64 (VBAR_EL1)
-│   │   ├── gic.h / gic.c             # Driver do Controlador GICv2/v3
-│   │   └── timer.h / timer.c         # Driver do ARM Generic Timer (1000 Hz)
+│   │   ├── smp.c / smp.h             # Multiprocessamento simétrico (PSCI)
+│   │   ├── timer.c / timer.h         # Driver do ARM Generic Timer (CNTVCT_EL0)
+│   │   ├── gic.c / gic.h             # Driver do Controlador GICv2
+│   │   ├── vectors.S                 # Vetor de exceções ARM64 (VBAR_EL1)
+│   │   └── exceptions.c              # Tratamento e dump de exceções
 │   ├── /mem/
-│   │   ├── pmm.h / pmm.c             # Physical Memory Manager (Bitmap 4KB)
-│   │   └── kheap.h / kheap.c         # Slab/Buddy Allocator (kmalloc/kfree)
+│   │   └── kheap.c / kheap.h         # Dynamic Arena Heap 32MB (kmalloc/kfree)
 │   ├── /sched/
-│   │   ├── task.h                    # TCB e enumerações de estado
-│   │   ├── switch.S                  # Rotina de troca de registradores em 20ns
-│   │   └── sched.h / sched.c         # Scheduler preemptivo Round-Robin
+│   │   ├── sched.c / sched.h         # Scheduler cooperativo / yield
+│   │   ├── switch.S                  # Rotina de troca de contexto de registradores
+│   │   └── task.h                    # TCB e definições de tarefas
 │   ├── /symbols/
-│   │   ├── symbols.h / symbols.c     # Tabela Hash Global de Símbolos
-│   └── /lua/
-│       ├── lua_kernel.h / lua_kernel.c # Adaptador do Lua 5.4 para EL1
+│   │   └── symbols.c / symbols.h     # Tabela Hash Global de Símbolos
+│   ├── /math/
+│   │   ├── math3d.c / math3d.h       # Matrizes, vetores e rasterizador scanline
+│   │   ├── raster_tile.c / .h        # Rasterizador NEON por blocos L1 (32x32)
+│   │   ├── holygl.c / holygl.h       # API C OpenGL 1.3 / HolyGL
+│   │   └── gears3d.c / .h            # Gerador procedural de engrenagens 3D
+│   ├── /physics/
+│   │   └── physics3d.c / .h          # Dinâmica de corpos rígidos 3D
+│   └── /bench/
+│       ├── bench_unified.c / .h      # Benchmark unificado de 16 fases
+│       └── perf_overlay.c / .h       # Overlay RTSS de telemetria
+├── /compiler/
+│   ├── jit_arm64.c / jit_arm64.h     # Compilador JIT nativo AArch64
+│   ├── lexer.c / lexer.h             # Tokenizador HolyC
+│   └── table.c / table.h             # Tabelas de escopo e variáveis
 ├── /drivers/
-│   ├── /serial/uart_pl011.c          # Console serial bare-metal
-│   └── /video/gop_lfb.c              # Linear Framebuffer GOP
-└── /gui/
-    ├── render.h / render.c           # Motor gráfico 2D (Alpha blending, double buffer)
-    └── font.h / font.c               # Tipografia TrueType / DolDoc 2.0 Canvas
+│   ├── /block/virtio_blk.c / .h      # Driver VirtIO-Block MMIO
+│   ├── /gpu/virtio_gpu.c / .h        # Driver VirtIO-GPU 2D
+│   ├── /gpu/gfx_backend.c / .h       # Seletor unificado de backend (GOP vs VirtIO)
+│   └── /input/                       # Drivers de teclado e mouse (VirtIO/UEFI)
+├── /fs/
+│   └── redsea.c / redsea.h           # Sistema de arquivos RedSea 64-bit
+├── /gui/
+│   ├── render.c / render.h           # Motor gráfico 2D, alpha blend NEON e DolDoc
+│   ├── wm.c / wm.h                   # Window Manager, janelas e foco
+│   ├── shell.c / shell.h             # Bridge C para shell DolDoc
+│   └── menu.c / menu.h               # Barra de menu superior
+└── /apps/                            # 29 Aplicações nativas em HolyC (.HC)
 ```
 
 ---

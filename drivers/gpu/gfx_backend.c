@@ -444,7 +444,7 @@ void gpu_config_render(window_t *win, void *user_data) {
         // Huge Action Button
         gfx_draw_rounded_rect(cx + 24, y_suite + 20, cw - 48, 54, 6, 0xFF8E44AD);
         gfx_draw_string(cx + 64, y_suite + 34, "✦ Launch Automated 6-Phase Scientific Comparison Suite ✦", COLOR_TEXT_WHITE, 0);
-        gfx_draw_string(cx + 80, y_suite + 52, "Runs CPU SW, Zero-RAM, VirtIO, SMP, L1 Tile & LuaGL side-by-side with full RTSS telemetry", 0xFFD2B4DE, 0);
+        gfx_draw_string(cx + 80, y_suite + 52, "Runs CPU SW, Zero-RAM, VirtIO, SMP, L1 Tile & HolyGL side-by-side with full RTSS telemetry", 0xFFD2B4DE, 0);
     }
 
     // Bottom Bar with Close Button

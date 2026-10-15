@@ -15,7 +15,7 @@ In earlier structural schematics, HolyGL was visually encapsulated inside the ge
 ```
                                  [ USER APPLICATION LAYER ]
                  ┌────────────────────────────────────────────────────────┐
-                 │  HolyC 2.0 (.HC)   │   Lua 5.4.7 (.lua)  │  Native C   │
+                 │  HolyC 2.0 (.HC)   │  Apps (HolyGL.HC)   │  Native C   │
                  └─────────┬──────────────────────┬─────────┴──────┬──────┘
                            │                      │                │
                            ▼                      ▼                │
@@ -33,6 +33,7 @@ In earlier structural schematics, HolyGL was visually encapsulated inside the ge
                  │  - Directional Diffuse + Ambient Lighting (fast_rsqrt) │
                  │  - Sutherland-Hodgman w < 0.5f Near-Plane Clipping     │
                  │  - Screen-Space Cross-Product CCW Backface Culling     │
+                 │  - Pure HolyC implementation in apps/HolyGL.HC         │
                  └────────────────────────┬───────────────────────────────┘
                                           │
                                           ▼
@@ -54,7 +55,7 @@ In earlier structural schematics, HolyGL was visually encapsulated inside the ge
    └──────────────────────────────────┘        └──────────────────────────────────┘
 ```
 
-HolyGL does not sit behind an X11 server, Wayland compositor, or POSIX socket bridge. An application written in HolyC, Lua, or C calls `glBegin(GL_TRIANGLES)` and `glVertex3f(...)` directly as standard function symbols. The geometry traverses the SIMD matrix pipeline, is binned into L1 cache tiles, rasterized in per-core scratchpad RAM, and streamed to the scanout buffer with **sub-millisecond frame times**.
+HolyGL does not sit behind an X11 server, Wayland compositor, or POSIX socket bridge. An application written in HolyC or C calls `glBegin(GL_TRIANGLES)` and `glVertex3f(...)` directly as standard function symbols. The geometry traverses the SIMD matrix pipeline, is binned into L1 cache tiles, rasterized in per-core scratchpad RAM, and streamed to the scanout buffer with **sub-millisecond frame times**.
 
 ---
 

@@ -73,7 +73,7 @@ NeoOS retains 100% of Terry's philosophy (SASOS, Ring 0, identity paging 1:1, di
                             THE SOVEREIGN SINGLE-CORE GRAPHICS PIPELINE
                             
     ┌─────────────────────────────────────────────────────────────────────────────┐
-    │                      HolyC / Lua / C Ring 0 Application                     │
+    │                         HolyC / C Ring 0 Application                        │
     └──────────────────────────────────────┬──────────────────────────────────────┘
                                            │
     ┌──────────────────────────────────────▼──────────────────────────────────────┐

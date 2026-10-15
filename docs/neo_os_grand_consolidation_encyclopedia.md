@@ -11,11 +11,11 @@ By eliminating the traditional user/kernel memory boundary, address space transl
 1. A **Direct UEFI GOP / VirtIO-GPU Dual-Mode Graphics Pipeline** with zero-RAM direct scanout.
 2. A **Sovereign L1 Tiled NEON 3D Rasterizer & HolyGL (OpenGL 1.3/2.0) State Machine**.
 3. A **Native HolyC Just-In-Time (JIT) Compiler** emitting native AArch64 machine instructions with full AAPCS64 calling convention compatibility, floating-point D0–D7 mirroring, and C struct reflection.
-4. An embedded **Lua 5.4.7** runtime with zero external dependencies and direct HolyGL bindings.
+4. A **Pure HolyC 2.0 Sovereign Application Ecosystem** (29 `.HC` applications in `apps/`) executing natively in Ring 0 with zero external scripting runtimes, zero libc shims, and zero garbage collection heap fragmentation.
 5. The **RedSea 64-bit Contiguous Block Filesystem** running over VirtIO-Block storage.
 6. The **DolDoc Dynamic Hypertext Document Engine** powering the window manager, interactive shell, text editor, and application suite.
 
-This document serves as the permanent, exhaustive encyclopedia of every subsystem, source file (`.c`, `.h`, `.HC`, `.lua`), pipeline stage, bootstrap mechanism, empirical hardware finding, and future engineering frontier.
+This document serves as the permanent, exhaustive encyclopedia of every subsystem, source file (`.c`, `.h`, `.HC`), pipeline stage, bootstrap mechanism, empirical hardware finding, and future engineering frontier.
 
 ---
 
@@ -46,15 +46,15 @@ NeoOS rejects this dichotomy. Operating exclusively in **EL1 (Ring 0)**:
 - **Identity-Mapped Flat Memory**: All physical RAM, device MMIO, framebuffers, and heap allocations share a single, unified address space.
 - **Zero-Cost Function Calls**: Applications do not issue `SVC` or syscall traps. They call kernel functions directly via standard AArch64 branch links (`bl` / `blr`).
 - **Direct Hardware Access**: Any program or JIT-compiled HolyC function can directly read and write MMIO registers, framebuffers, and DMA descriptors without permission checks.
-- **Pointer Freedom**: Pointers are universal 64-bit absolute addresses. Pointers can be passed between the kernel, HolyC scripts, Lua runtimes, and window manager widgets with zero serialization or copying.
+- **Pointer Freedom**: Pointers are universal 64-bit absolute addresses. Pointers can be passed between the kernel, HolyC programs, and window manager widgets with zero serialization or copying.
 
-### 1.2 Multi-Language Ring 0 Unification
-NeoOS unifies three distinct programming tiers in a single address space:
-1. **Core C Engine**: Performance-critical hardware drivers, interrupt handlers, SIMD rasterizers, and memory allocators.
-2. **HolyC JIT Compiler**: JIT-compiled C dialect supporting C++ class-like structures, dynamic pointer arithmetic, and interactive REPL evaluation.
-3. **Embedded Lua 5.4.7**: High-level scripting engine with complete bindings to the HolyGL 3D pipeline (`luagl`) and UI subsystem.
+### 1.2 Two-Tier Sovereign Architecture (C Bootstrap + Pure HolyC 2.0)
+NeoOS strictly partitions the system into two complementary tiers:
+1. **Core C Engine (Hardware Substrate)**: A minimal, pre-compiled C99 layer handling CPU exceptions, GICv2 interrupts, VirtIO MMIO hardware drivers, NEON-accelerated rasterization primitives, and the AArch64 JIT compiler itself.
+2. **Sovereign HolyC 2.0 (Userland & Applications)**: All applications (`apps/`), dynamic data structures (`apps/StdLib.HC`), window management logic (`apps/WM.HC`), document layout (`apps/DolDoc.HC`), interactive shell (`apps/Shell.HC`), and 3D graphics state machines (`apps/HolyGL.HC`) execute in pure HolyC compiled directly into executable memory by the JIT.
 
-All three tiers share the same global symbol table (`symbols.c`), allowing a HolyC script to call a C kernel function, which invokes a Lua callback, which writes directly to the GOP framebuffer.
+> [!NOTE]
+> **Complete Excision of Foreign Scripting Runtimes**: An experimental Lua 5.4.7 integration was permanently excised in Phase 5. Forensic audit revealed that embedding Lua introduced 35 foreign C files, 13,000+ lines of external code, fragile POSIX libc shims in Ring 0, and continuous heap fragmentation. Removing Lua restored 100% HolyC sovereignty, adhering strictly to Terry Davis's philosophy of a single universal language across userland.
 
 ---
 
@@ -128,62 +128,74 @@ flowchart TD
 neo-os/
 ├── boot/
 │   ├── main.c                  # Kernel entry point, symbol registration, subsystem orchestration
-│   ├── uefi/
-│   │   ├── uefi_main.c         # UEFI PE32+ loader, GOP framebuffer discovery, early UART setup
-│   │   ├── stdio.c             # C stdio emulation (printf, snprintf, vprintf, puts) with UART mirroring
-│   │   └── uefi.h              # UEFI specification typedefs, protocols, and table definitions
+│   └── uefi/
+│       ├── uefi_main.c         # UEFI PE32+ loader, GOP framebuffer discovery, early UART setup
+│       ├── stdio.c             # C stdio emulation (printf, snprintf, vprintf, puts) with UART mirroring
+│       ├── uefi.h              # UEFI specification typedefs, protocols, and table definitions
+│       └── [crt/support files] # Bare-metal AArch64 CRT, string routines, and relocator
 ├── kernel/
 │   ├── arch/aarch64/
 │   │   ├── smp.c / smp.h       # Multi-core PSCI bring-up, per-CPU stacks, spinlocks, WFE/SEV synchronization
-│   │   ├── vectors.S           # AArch64 exception vector table (Sync, IRQ, FIQ, SError for EL1t/EL1h)
+│   │   ├── timer.c / timer.h   # Monotonic 64-bit hardware timekeeping (CNTVCT_EL0, 62.5MHz)
+│   │   ├── gic.c / gic.h       # ARM Generic Interrupt Controller (GICv2) setup
+│   │   ├── vectors.S           # AArch64 exception vector table (Sync, IRQ, FIQ, SError)
 │   │   └── exceptions.c        # Exception handling, register dump, panic state machine
-│   ├── memory/
-│   │   ├── heap.c / heap.h     # Dynamic kernel heap allocator, malloc/free/calloc/realloc, alignment guarantees
-│   │   └── pmm.c / pmm.h       # Physical memory manager, page frame allocation
+│   ├── mem/
+│   │   └── kheap.c / kheap.h   # 32MB dynamic kernel heap allocator, malloc/free/calloc
 │   ├── sched/
-│   │   └── sched.c / sched.h   # Task control blocks (TCBs), cooperative yield(), priority scheduling
+│   │   ├── sched.c / sched.h   # Task control blocks (TCBs), cooperative yield(), priority queues
+│   │   ├── switch.S            # Callee-saved context switch routine
+│   │   └── task.h              # Task structure and state definitions
 │   ├── symbols/
 │   │   └── symbols.c / symbols.h # Global kernel symbol hash table for runtime linking & JIT reflection
-│   ├── jit/
-│   │   ├── jit_compiler.c      # HolyC AArch64 JIT compiler (lexer, parser, code generator, reflection)
-│   │   └── jit_compiler.h      # JIT data structures, token definitions, struct/member descriptors
-│   ├── lua/
-│   │   ├── luagl.c / luagl.h   # Lua 5.4.7 bindings for the HolyGL 3D graphics state machine
-│   │   └── [lua core sources]  # Complete, self-contained ANSI C Lua 5.4.7 interpreter
 │   ├── math/
-│   │   ├── math3d.c / math3d.h # Vector/matrix math, classic scanline SIMD rasterizer, Sutherland-Hodgman clipping
-│   │   ├── raster_tile.c / .h  # Sovereign L1 Tiled NEON 3D rasterizer (16x16 binning, SIMD coverage testing)
-│   │   ├── holygl.c / holygl.h # Sovereign OpenGL 1.3/2.0 API implementation in Ring 0
-│   │   └── gears3d.c / .h      # Procedural 3D GLXGears geometry generator and animation engine
+│   │   ├── math3d.c / math3d.h # Vector/matrix math, classic scanline SIMD rasterizer, clipping
+│   │   ├── raster_tile.c / .h  # Sovereign L1 Tiled NEON 3D rasterizer (16x16 / 32x32 binning)
+│   │   ├── holygl.c / holygl.h # C fallback / HAL bridge for HolyGL OpenGL state machine
+│   │   └── gears3d.c / .h      # Procedural 3D GLXGears geometry generator
 │   ├── physics/
-│   │   └── physics3d.c / .h    # 3D rigid body dynamics, impulse collisions, bounding boxes, gravity
+│   │   └── physics3d.c / .h    # 3D rigid body dynamics, impulse collisions, gravity
 │   └── bench/
 │       ├── bench_unified.c     # 16-phase automated comparative benchmark suite
 │       ├── bench_unified.h     # Phase definitions, timing state machine, telemetry export
-│       └── perf_overlay.c / .h # Real-time RTSS-style on-screen telemetry overlay (FPS, ms, blit time)
+│       ├── perf_overlay.c / .h # Real-time RTSS-style on-screen telemetry overlay (FPS, ms, blit time)
+│       └── profiler.c / .h     # Low-level performance profiling hooks
+├── compiler/
+│   ├── jit_arm64.c / .h        # Native AArch64 JIT compiler (lexer, recursive descent parser, code emitter)
+│   ├── lexer.c / .h            # Tokenizer for HolyC source tokens
+│   └── table.c / .h            # Symbol and local variable scope tables
 ├── drivers/
 │   ├── block/
-│   │   ├── virtio_blk.c        # VirtIO-Block MMIO storage driver (v1 legacy & v2 modern)
-│   │   └── virtio_blk.h        # VirtIO MMIO registers, vring descriptors, block request headers
+│   │   ├── virtio_blk.c / .h   # VirtIO-Block MMIO storage driver (v1 legacy & v2 modern)
 │   ├── gpu/
-│   │   ├── virtio_gpu.c        # VirtIO-GPU 2D driver (resource create, backing, transfer, flush)
-│   │   ├── virtio_gpu.h        # VirtIO-GPU protocol headers, command structs, memory entries
+│   │   ├── virtio_gpu.c / .h   # VirtIO-GPU 2D driver (resource create, backing, transfer, flush)
 │   │   └── gfx_backend.c / .h  # Unified graphics backend switcher (GOP direct vs VirtIO-GPU)
 │   └── input/
-│       ├── keyboard.c / .h     # PS/2 and VirtIO keyboard driver, scancode mapping, input buffers
-│       └── mouse.c / .h        # PS/2 and VirtIO mouse driver, 3-button packet decoding, cursor tracking
+│       ├── keyboard.c / .h     # VirtIO / UEFI keyboard driver, scancode mapping
+│       ├── mouse.c / .h        # VirtIO / UEFI mouse driver, cursor tracking
+│       └── virtio_input.c / .h # VirtIO input event transport
 ├── fs/
-│   └── redsea/
-│       ├── redsea.c            # Terry Davis RedSea 64-bit filesystem implementation
-│       └── redsea.h            # RedSea directory entry structures, cluster bitmap, allocation logic
-└── gui/
-    ├── render.c / render.h     # 2D graphics engine, NEON alpha blend, primitives, double buffering
-    ├── wm.c / wm.h             # Sovereign Window Manager, Z-order, window chrome, focus, dirty rects
-    ├── doldoc.c / doldoc.h     # TempleOS DolDoc rich text engine, formatting tags, interactive links
-    ├── menu.c / menu.h         # System top menu bar, dropdown menus, keyboard shortcuts
-    ├── filer.c / filer.h       # Visual file manager application
-    ├── top_app.c / top_app.h   # Graphical system monitor (CPU load, memory usage, thread list)
-    └── editor.c / editor.h     # DolDoc-enabled text and code editor
+│   └── redsea.c / redsea.h     # Terry Davis RedSea 64-bit contiguous filesystem driver
+├── gui/
+│   ├── render.c / render.h     # 2D graphics engine, NEON alpha blend, GOP raster, DolDoc terminal rendering
+│   ├── wm.c / wm.h             # Sovereign Window Manager, Z-order, window chrome, focus, dirty rects
+│   ├── shell.c / shell.h       # Thin C shell bridge connecting kernel to DolDoc / HolyC
+│   ├── menu.c / menu.h         # System top menu bar, dropdown menus, keyboard shortcuts
+│   ├── font_ttf.c / font_ttf.h # TrueType vector font loader
+│   ├── stb_truetype.h          # Single-header TrueType rasterizer
+│   └── font_ubuntu_mono.c      # Embedded fallback bitmap font
+└── apps/                       # 29 Native HolyC (.HC) applications and 2 text guides
+    ├── StdLib.HC               # Dynamic arrays (CArray) and hash maps (CDict)
+    ├── HolyGL.HC               # Pure HolyC 3D Graphics pipeline & OpenGL state machine
+    ├── DolDoc.HC               # Rich text document engine in HolyC
+    ├── Shell.HC                # Sovereign interactive shell in HolyC
+    ├── WM.HC                   # Window manager in HolyC
+    ├── Compositor.HC           # Compositor & window effects in HolyC
+    ├── Editor.HC               # Text and code editor in HolyC
+    ├── Filer.HC                # Visual file manager in HolyC
+    ├── Top.HC                  # Multi-core system monitor in HolyC
+    ├── Compiler.HC             # Self-hosting AArch64 compiler prototype in HolyC
+    └── ... (19 other .HC apps) # Additional games, math tests, and benchmark drivers
 ```
 
 ---
@@ -247,7 +259,7 @@ HolyC in NeoOS provides the scripting and application layer. It executes at nati
 
 ## 5. The HolyC JIT Compiler: AArch64 Machine Code Generation & Reflection
 
-The HolyC JIT compiler (`kernel/jit/jit_compiler.c`) is a pure C, single-pass compiler that converts HolyC source code directly into executable 64-bit ARM machine code in Ring 0.
+The HolyC JIT compiler (`compiler/jit_arm64.c`) is a pure C, single-pass compiler that converts HolyC source code directly into executable 64-bit ARM machine code in Ring 0.
 
 ### 5.1 Architecture of the JIT Pipeline
 
@@ -536,4 +548,4 @@ While NeoOS has achieved a working sovereign kernel, graphics pipeline, JIT comp
 
 ## Conclusion: The Sovereign Achievement
 
-NeoOS proves that the **TempleOS SASOS Ring 0 philosophy** can be translated to the modern 64-bit ARM architecture. By bypassing traditional operating system overhead and constructing a unified render stack where C, HolyC, and Lua collaborate in a single address space, NeoOS delivers high-performance 3D graphics, responsive window management, and rapid JIT compilation on minimal hardware.
+NeoOS proves that the **TempleOS SASOS Ring 0 philosophy** can be translated to the modern 64-bit ARM architecture. By bypassing traditional operating system overhead and constructing a unified render stack where C and pure HolyC collaborate seamlessly in a single address space, NeoOS delivers high-performance 3D graphics, responsive window management, and rapid JIT compilation on minimal hardware.

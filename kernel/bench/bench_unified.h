@@ -15,7 +15,7 @@ typedef enum {
     PHASE_VIRTIO_HW = 3,
     PHASE_SMP_4C = 4,
     PHASE_L1_TILE = 5,
-    PHASE_LUAGL_PHYSICS = 6
+    PHASE_HOLYGL_PHYSICS = 6
 } bench_phase_t;
 
 typedef enum {

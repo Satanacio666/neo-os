@@ -116,10 +116,10 @@ A tabela a seguir consolida os **132 arquivos** e todos os módulos do NeoOS.
 | :--- | :--- | :--- | :--- | :--- |
 | **Boot & Firmware** | `boot/main.c`, `boot/uefi/*` | **100% Funcional** | UEFI AArch64 GOP, Hand-off para EL1, Stack e Heap dedicados | ExitBootServices completo para isolamento absoluto de ACPI |
 | **Memória & Heap** | `kernel/mem/kheap.c`, `kheap.h` | **100% Funcional** | 32 MB Arena Heap em Ring 0, malloc/free/calloc sem fragmentation leak | Buddy Allocator com paginação física 4KB/64KB |
-| **Multitarefa & SMP** | `kernel/sched/*`, `kernel/arch/aarch64/smp.c` | **100% Funcional** | 4 Cores ARM Cortex-A72 ativos via PSCI CPU_ON, Round-Robin preemptivo | Sincronização lock-free com Atomics C11 (LDREX/STREX) |
+| **Multitarefa & SMP** | `kernel/sched/*`, `kernel/arch/aarch64/smp.c` | **Funcional (Cooperativo)** | 4 Cores ARM Cortex-A72 ativos via PSCI CPU_ON, escalonamento cooperativo via `yield()` | Preempção por interrupção de timer (salvando registradores em `vectors.S`) |
 | **Interrupções & Timer** | `gic.c`, `timer.c`, `vectors.S` | **100% Funcional** | GICv2 configurado, ARM Generic Timer a 100 Hz, `cntvct_el0` | Suporte a interrupções PCIe MSI/MSI-X |
-| **Compilador HolyC JIT** | `compiler/lexer.c`, `table.c`, `jit_arm64.c` | **100% Funcional** | Compila expressões C/HolyC para código de máquina nativo AArch64 | Suporte a structs multidimensionais e classes HolyC |
-| **Runtime Lua 5.4.7** | `compiler/lua/*`, `lua_bridge.c`, `lua_compat.c` | **100% Funcional** | Lua completo em EL1 sem glibc, integrado aos símbolos HolyC | Bridges bidirecionais automáticos para chamadas JIT C |
+| **Compilador HolyC JIT** | `compiler/lexer.c`, `table.c`, `jit_arm64.c` | **100% Funcional** | Compila expressões, structs, arrays e funções HolyC para código AArch64 | Auto-hospedagem completa (compilador em HolyC) e otimizador SSA |
+| **Aplicações HolyC 2.0** | `apps/*.HC` (29 aplicações) | **100% Funcional** | 29 apps nativos em HolyC (StdLib, HolyGL, DolDoc, Shell, WM, Filer, Top) | Excisão completa de Lua para manter soberania absoluta HolyC |
 | **Sistema de Arquivos** | `drivers/block/virtio_blk.c`, `fs/redsea.c` | **100% Funcional** | VirtIO-BLK MMIO, RedSea 2.0 contíguo, RAMDisk 16MB | Suporte a subdiretórios hierárquicos profundos |
 | **Gráficos & Render** | `gui/render.c`, `render.h`, `font_ttf.c` | **100% Funcional** | Blit NEON NT (0.35ms), Dirty Rects, VSync, TrueType Ubuntu Mono | Aceleração por hardware VirtIO-GPU 3D (VirGL) |
 | **Mouse & Teclado** | `drivers/input/keyboard.c`, `drivers/input/mouse.c` | **100% Funcional** | SimplePointer, Tablet, Teclado UEFI + UART, Cursor frontbuffer | Suporte a scroll wheel USB |

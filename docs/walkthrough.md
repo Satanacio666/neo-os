@@ -31,9 +31,10 @@ All requirements set forth have been systematically integrated, empirically prov
    - Supported multi-level pointer syntax (`**buckets`) and registered standard C string/memory functions (`strcmp`, `strlen`, `strcpy`, `memset`, `memcpy`).
    - Created [`apps/StdLib.HC`](file:///home/carlos/.gemini/antigravity/scratch/neo-os/apps/StdLib.HC) implementing `CArray` (dynamic arrays) and `CDict` (dynamic hash maps) in pure HolyC, verified by `StdLibTest()` returning **726**.
 
-6. **Unified Scripting Tier (Lua 5.4.7 + Native AArch64 AAPCS FFI)**:
-   - Full Lua 5.4.7 runtime integrated with HolyC symbol table reflection.
-   - Verified execution of `demo.lua` (sum 1..10 = 55) and `bench.lua` (direct AAPCS register calls to `fast_sqrt_neon`, `fast_sqrt_d`, `math3d_sin`, and real-time 3D dynamics control).
+6. **Sovereign HolyC 2.0 Execution & Dynamic Reflection**:
+   - Complete TempleOS-style HolyC language execution in Ring 0 with direct AAPCS64 calling conventions and symbol table reflection.
+   - Verified execution of `apps/StdLib.HC` (returning **726**), `apps/TestJitP0.HC`, `apps/HolyGL.HC` (pure HolyC OpenGL 1.3/2.0 state machine), and 29 native `.HC` applications.
+   - Foreign scripting runtimes (Lua 5.4.7) were completely excised to enforce pure HolyC sovereignty with zero libc shims and zero garbage collection heap fragmentation.
 
 ---
 
@@ -57,22 +58,17 @@ The system boots calmly to 0.0% CPU load, responsive to interactive commands and
 
 ---
 
-### 2. Multi-Tier Language Execution (Assembly, HolyC 2.0, Lua 5.4.7)
+### 2. Sovereign HolyC 2.0 Native Execution
 
 #### HolyC 2.0 Standard Library (`run StdLib.HC`):
 Compiles dynamic arrays (`CArray`) and hash maps (`CDict`) with full struct reflection, returning exact mathematical verification **726**:
 
 ![HolyC StdLib Execution](images/shell_05_run_stdlib.png)
 
-#### High-Level Scripting (`run demo.lua`):
-Lua 5.4.7 executing directly in Ring 0 EL1, outputting cleanly to DolDoc terminal:
+#### Sovereign Pure HolyC OpenGL State Machine (`run HolyGL.HC`):
+Full 3D graphics pipeline written entirely in pure HolyC, featuring immediate mode geometry, matrix stack manipulation, Lambertian lighting, and direct frame presentation:
 
-![Lua 5.4.7 Execution](images/shell_06_run_demo_lua.png)
-
-#### LuaGL 3D Controller & Direct AAPCS FFI (`run bench.lua`):
-Invokes real-time 3D rigid body dynamics and tests register-level SIMD math functions:
-
-![LuaGL 3D Dynamics Bridge](images/shell_07_run_bench_lua.png)
+![HolyGL API in HolyC](images/shell_08_run_holygl.png)
 
 #### HolyGL OpenGL 1.3/2.0 API in HolyC (`run HolyGLTest.HC`):
 Native HolyC program issuing direct OpenGL commands to the HolyGL state machine:

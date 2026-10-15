@@ -44,8 +44,10 @@ Every finding falls into one of eight distinct categories:
 | **C13** | *"`make run-headless` works out of the box"* | `run-headless` was declared `.PHONY` with no recipe (a silent no-op); `make run` hardcoded `-display gtk`. | **Fixed**: Parameterized Makefile with `NEO_DISPLAY` defaulting to `none`. |
 | **C14** | *README QEMU flags match build* | README documented `-cpu cortex-a57` while Makefile configured `-cpu cortex-a72`. | Synchronized QEMU flags across Makefile and test runners. |
 | **C15** | *`redsea.img` documented* | Storage disk image generation was entirely omitted from README build instructions. | Documented `scripts/mkredsea.py` and `build/redsea.img` generation. |
-| **C16** | *Git clone URL* | README clone URL pointed to an external repository. | Corrected to `https://github.com/Satanacio666/neo-os.git`. |
 | **C17** | *Outdated audit documentation* | `docs/audit.md` claimed Lua 5.4 was absent; `docs/dossier.md` claimed arrays, floats, and VirtIO-GPU were unimplemented. | **Fixed**: Appended dated correction notices across all legacy audit files. |
+| **C18** | *Lua 5.4.7 integration claims* | `docs/walkthrough.md`, `docs/consolidation_dossier.md`, and encyclopedia claimed Lua 5.4.7 runtime was 100% functional in Ring 0. | **Corrected**: Lua was permanently excised in Phase 5 to eliminate 35 foreign C files and restore 100% HolyC sovereignty. Updated all docs. |
+| **C19** | *Ring 0 Native Embeddings Engine* | Architecture manifesto claimed an in-kernel INT8 6-layer transformer and `sdot` dispatch engine was running in Ring 0. | **Corrected**: Clarified as a conceptual research manifesto; 0 weights and 0 transformer inference code exist in the kernel. |
+| **C20** | *Physical Mobile SoC Bring-up* | Manifestos claimed board support for Snapdragon 865, Rockchip RK3326, PMIC, and touch digitizers. | **Corrected**: Current codebase exclusively targets QEMU ARMv8-A `virt` platform with Cortex-A72, GICv2, and VirtIO devices. |
 
 ---
 

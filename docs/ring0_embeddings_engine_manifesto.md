@@ -1,6 +1,9 @@
 # Ring 0 Native Embeddings Engine: The Sovereign Intent Architecture
 *A Pure Mathematical, Non-Generative Vector Dispatch System for NeoOS & HolyC*
 
+> [!NOTE]
+> **Architectural Research Manifesto**: This document establishes the conceptual blueprint, mathematical formulations, and engineering design for a future Ring 0 semantic intent dispatcher. It is a research manifesto and target architecture specification; no transformer model weights or vector inference engine are currently linked into the running NeoOS kernel binary.
+
 ---
 
 ## Table of Contents

@@ -93,15 +93,14 @@ The repository currently has a dual-tier structure:
    - L1-Tiled Rasterizer & Immediate Mode (`kernel/math/raster_tile.c`, `kernel/math/holygl.c`)
    - The Benchmark Monolith (`kernel/bench/bench_unified.c`)
    - The JIT Compiler itself (`compiler/jit_arm64.c`)
-2. **Tier 2 (JIT-Compiled Scripts in Ring 0)**:
-   - Applications: `apps/Bench.HC`, `apps/HolyGLTest.HC`, `apps/Top.HC`, `apps/Editor.HC`.
-   - Scripting: `apps/bench.lua`, `apps/demo.lua`.
+2. **Tier 2 (JIT-Compiled Sovereign HolyC in Ring 0)**:
+   - Applications: 29 native HolyC (`.HC`) applications in `apps/` (`apps/HolyGL.HC`, `apps/StdLib.HC`, `apps/Compositor.HC`, `apps/DolDoc.HC`, `apps/Shell.HC`, `apps/WM.HC`, `apps/Editor.HC`, `apps/Filer.HC`, `apps/Top.HC`, `apps/Compiler.HC`).
 
 ### The Linguistic Spectrum
-- **Traditional C**: C99 compiled ahead-of-time into ELF machine code by GCC `-O2`.
-- **Authentic TempleOS HolyC**: Terry Davis's language featuring `U0`, `I64`, `F64`, bare strings as print statements (`"Hello\n";`), inline bracketed assembly (`[MOV RAX, 1]`), classes with default parameters, and immediate top-level execution.
-- **NeoC (Current JIT)**: Our custom handwritten AArch64 JIT compiler. It parses C-like syntax and directly emits 32-bit ARM64 machine instructions into an executable memory pool.
-- **NeoLua**: Embedded standard Lua 5.4.7 running as an in-kernel scripting guest, bound to DolDoc and HolyGL via C bridges.
+- **Traditional C**: C99 compiled ahead-of-time into ELF machine code by GCC `-O2` (bootloader, drivers, JIT engine).
+- **Authentic TempleOS HolyC**: Terry Davis's language featuring `U0`, `I64`, `F64`, bare strings as print statements (`"Hello\n";`), dynamic structs, member indexing, and immediate top-level execution.
+- **NeoC / HolyC 2.0 (Current JIT)**: Our custom handwritten AArch64 JIT compiler (`compiler/jit_arm64.c`). It parses HolyC syntax and directly emits 32-bit ARM64 machine instructions into an executable memory pool.
+- **Excision of Lua**: An earlier experimental Lua 5.4.7 integration was permanently removed in Phase 5 to prevent heap fragmentation, eliminate libc shims, and guarantee 100% pure HolyC language sovereignty across userland.
 
 ---
 
@@ -344,6 +343,9 @@ The TempleOS single-address-space philosophy scales from $4 microcontrollers up 
 
 ## 13. Mobile Silicon Realities: Touch, Audio, PMIC, and Vendor-Locked GPUs
 
+> [!NOTE]
+> **Design Proposal & Future Roadmap**: This section outlines the engineering architecture for future bare-metal ports to physical ARM SoCs (Snapdragon 865, Rockchip RK3326/RK3399). In the current verified implementation, NeoOS targets the QEMU ARMv8-A `virt` platform with Cortex-A72, GICv2, PL011 UART, UEFI GOP, and VirtIO devices.
+
 ### 1. Modern SoC Bus Topology
 There is no Northbridge or Southbridge; everything communicates across the on-die **Network-on-Chip (NoC)**.
 
@@ -362,6 +364,9 @@ There is no Northbridge or Southbridge; everything communicates across the on-di
 ---
 
 ## 14. The Native Ring 0 Embeddings Engine: Deterministic Semantic Dispatch
+
+> [!NOTE]
+> **Architectural Specification & Research Manifesto**: This section formalizes the theoretical blueprint for a non-generative vector dispatch mechanism in Ring 0. It is a research and architectural treatise; no in-kernel transformer weights or vector inference engine are linked in the current kernel binary.
 
 To execute commands naturally without generative LLM hallucinations:
 

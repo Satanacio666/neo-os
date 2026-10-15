@@ -12,8 +12,7 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 - **No gambiarras** — no workarounds, no mockups, no abstraction layers hiding reality
 - **No userspace** — all code runs at EL1 (Ring 0 equivalent on AArch64) with full hardware access
 - **Single Address Space** — kernel, JIT-compiled HolyC scripts, drivers, and apps share one flat 64-bit virtual address space
-- **Real hardware execution** — every screenshot is a real QEMU framebuffer capture from a Cortex-A72 SMP machine
-- **Zero-RAM rendering** — default boot mode writes pixels directly to VRAM (GOP framebuffer), eliminating the 3.14 MB RAM backbuffer entirely
+- **Zero-RAM & Double-Buffered Dual Mode** — NEON non-temporal blits (`stnp`) by default for artifact-free rendering, with on-demand zero-copy direct VRAM scanout (`zeroram on`) eliminating the 3.14 MB backbuffer entirely
 - **Sovereign L1 Tile NEON SIMD** — hardware-aligned tile rasterizer with cache-resident depth and color rendering
 
 <p align="center">
@@ -25,16 +24,16 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 
 ## 📚 Architectural Manifestos & Deep Dives
 
-- [**Grand Architectural Consolidation Encyclopedia**](docs/neo_os_grand_consolidation_encyclopedia.md): The definitive, all-inclusive master synthesis of every subsystem, .c and .hc file, pipeline stage, bootstrap sequence, empirical discovery, and future engineering frontier.
-- [**Consolidated Defect, Design-Change & Fix Record**](docs/neo_os_consolidated_defect_record.md): Single authoritative problem-only register documenting all 18 documentation contradictions, dead code, integration gaps, code defects, JIT compiler limits, video flaws, retracted premises, and their concrete fixes.
-- [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Comprehensive, unvarnished architectural post-mortem covering all bottlenecks, hardware traps, TCG host contention, DolDoc repaint bugs, lighting math caching, and JIT struct reflection fixes.
-- [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Complete blueprint covering SoC brings-up (Qualcomm Snapdragon / Poco X3 Pro, Rockchip RK3326), DRM/KMS/KGSL acceleration, bare-metal audio, cellular baseband drivers, HolyGL Quake/Half-Life engine ports, and Ring 0 game compatibility.
-- [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL 1.3/2.0 state machine, L1 tiled NEON rasterization, matrix stacks, and zero-overhead Ring 0 multi-language bindings.
+- [**Grand Architectural Consolidation Encyclopedia**](docs/neo_os_grand_consolidation_encyclopedia.md): Comprehensive synthesis of system pipelines, files, findings, and architectural history.
+- [**Consolidated Defect, Design-Change & Fix Record**](docs/neo_os_consolidated_defect_record.md): Authoritative problem-only register documenting defects, integration gaps, JIT compiler limits, and concrete fixes.
+- [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Architectural post-mortem covering bottlenecks, hardware traps, TCG host contention, and JIT struct reflection fixes.
+- [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Architectural design blueprint for future SoC brings-up (Qualcomm Snapdragon, Rockchip RK3326), bare-metal audio, and Ring 0 game compatibility.
+- [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL state machine, L1 tiled NEON rasterization, matrix stacks, and Ring 0 HolyC graphics continuum.
 - [**Complete Render Stack Master Evaluation**](docs/complete_render_stack_master_evaluation.md): Deep-dive into memory topologies, scanline vs. tiled SIMD rasterization, non-temporal streaming stores, and double-buffering.
 - [**Single-Core Sovereign Master Audit**](docs/single_core_sovereign_master_audit.md): Systematic single-core benchmarking, frame timing rigor, and CPU budget allocation.
 - [**NeoOS Formal Architecture Specification**](docs/neo_os_architecture_specification.md): Technical specification of the Single Address Space OS, memory layouts, scheduler, and compiler reflection.
-- [**Ring 0 Native Embeddings Engine Manifesto**](docs/ring0_embeddings_engine_manifesto.md): Pure C/NEON deterministic vector engine running inside the kernel without external Python/LLM dependencies. Provides SIMD cosine similarity, HNSW indexing, and zero-hallucination semantic command dispatch directly in Ring 0.
-- [**Walkthrough & Empirical Verification Gallery**](docs/walkthrough.md): The official 16-phase comparison matrix, live host execution proofs, and gallery of all subsystems in action.
+- [**Ring 0 Native Embeddings Engine Manifesto**](docs/ring0_embeddings_engine_manifesto.md): Conceptual design manifesto proposing a pure C/NEON deterministic vector engine and HNSW semantic dispatch directly in Ring 0.
+- [**Walkthrough & Empirical Verification Gallery**](docs/walkthrough.md): The comparison matrix, live host execution proofs, and gallery of subsystems in action.
 
 ## Features
 
@@ -246,59 +245,70 @@ python3 -c "from PIL import Image; Image.open('/tmp/output.ppm').save('/tmp/outp
 
 ### QEMU flags
 
-```
+```bash
 qemu-system-aarch64 \
-  -machine virt,gic-version=3 \
+  -M virt,gic-version=2 \
+  -accel tcg,thread=single,tb-size=512 \
   -cpu cortex-a72 \
   -smp 4 \
-  -m 512M \
+  -m 1024 \
   -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-  -drive file=build/disk.img,format=raw,if=virtio \
+  -device ramfb \
+  -device virtio-gpu-device,xres=1024,yres=768 \
+  -device virtio-keyboard-device \
+  -device virtio-tablet-device \
+  -device usb-ehci \
+  -device usb-kbd \
+  -device usb-tablet \
+  -net none \
+  -drive file=build/disk.img,format=raw,id=bootdisk,if=none \
+  -device virtio-blk-pci,drive=bootdisk,bootindex=0 \
+  -drive file=build/redsea.img,format=raw,id=redsea,if=none \
+  -device virtio-blk-device,drive=redsea \
   -display gtk \
-  -serial stdio \
-  -monitor unix:/tmp/qemu-mon.sock,server,nowait
+  -serial stdio
 ```
 
 ---
 
 ## Shell Commands Reference
 
-### 3D Graphics
+### 3D Graphics & HolyGL
 
 | Command | Description |
 |---------|-------------|
-| `bench3d` | Launch dual-viewport rotating 3D cube benchmark |
-| `gears` | Launch GLXGears-style 3-gear animation |
-| `bench3d stop` | Stop the 3D benchmark |
+| `holygl` | Run sovereign pure HolyC 3D matrix stack & rotating cube benchmark (`apps/HolyGL.HC`) |
+| `gears` | Launch 3D GLXGears involute gear demo (`apps/Gears.HC`) |
+| `physics` | Launch 3D Newtonian multi-body rigid dynamics (`apps/Physics3D.HC`) |
+| `explode` | Trigger dynamic explosion impulse on polyhedra |
+| `impulse` | Apply dynamic directional collision impulse to bodies |
+| `stopbench` | Stop active 3D viewport rendering |
+| `bench3d` | Dual-viewport rotating 3D cube demo |
 
-### JIT Compiler
-
-| Command | Description |
-|---------|-------------|
-| `jittest` | Run 7 HolyC JIT self-tests on live AArch64 machine code |
-| `jit <expr>` | Evaluate a HolyC expression and print the result |
-| `run <script>` | Load and JIT-compile a `.HC` script file |
-
-### Memory / Rendering
+### JIT Compiler & Applications
 
 | Command | Description |
 |---------|-------------|
-| `zeroram on` | Switch to Zero-RAM direct-VRAM mode (default at boot) |
-| `zeroram off` | Restore dedicated RAM backbuffer |
-| `zeroram status` | Report current mode, RAM savings, VRAM base address |
+| `run <script>` | Compile and run a HolyC script from RedSea disk (e.g. `run HolyGL.HC`, `run SmpDemo.HC`) |
+| `jittest` | Run HolyC JIT self-tests on live AArch64 machine code |
+| `smp` | Launch 4-core parallel task dispatch benchmark (`apps/SmpDemo.HC`) |
+| `filer` | Open interactive RedSea directory file manager (`apps/Filer.HC`) |
+| `edit <file>` | Open syntax-highlighted code editor (`apps/Editor.HC`) |
+| `save <file>` | Save edited text buffer back to RedSea disk |
 
-### System
+### System & Memory
 
 | Command | Description |
 |---------|-------------|
-| `top` | Live CPU/memory/process monitor |
-| `bench` | Full system benchmark suite |
-| `ls` | List filesystem contents |
-| `edit <file>` | Open text editor |
-| `filer` | Open file browser |
-| `help` | Full command reference with interactive DolDoc buttons |
-| `clear` | Clear DolDoc terminal |
-| `reboot` | Reboot via UEFI ResetSystem |
+| `top` / `tasks` | Live CPU, memory, and task monitor |
+| `bench` | Full automated system benchmark suite |
+| `ls` / `dir` | List files on RedSea filesystem |
+| `zeroram <on\|off\|status>` | Switch between direct-VRAM zero-copy mode and dedicated backbuffer |
+| `vsync <on\|off>` | Toggle VSYNC synchronization |
+| `perf` | Toggle RivaTuner-style performance HUD overlay |
+| `help` | Interactive DolDoc command catalog with clickable buttons |
+| `clear` / `cls` | Clear DolDoc terminal surface |
+| `reboot` | Reset system via UEFI ResetSystem |
 
 ---
 
@@ -449,19 +459,34 @@ neo-os/
 │   ├── physics/            # (WIP) physics subsystem
 │   └── symbols/            # Runtime symbol table for JIT
 ├── drivers/
-│   ├── input/              # Keyboard/mouse via UEFI Simple Input Protocol
-│   ├── block/              # Block device (virtio-blk)
-│   └── gpu/                # GOP wrapper
-├── fs/                     # Simple flat filesystem
-├── apps/
-│   ├── Bench3D.HC          # 3D cube benchmark (HolyC)
-│   ├── Gears.HC            # GLXGears-style demo (HolyC)
-│   ├── BenchSuite.HC       # Full benchmark suite (HolyC)
-│   ├── Filer.HC            # File browser (HolyC)
-│   ├── Editor.HC           # Text editor (HolyC)
-│   └── Top.HC              # System monitor (HolyC)
-├── scripts/                # Helper scripts (QEMU launch, screendump)
-├── screenshots/            # Real QEMU framebuffer captures
+│   ├── input/              # VirtIO Input (keyboard/tablet) & UEFI input fallback
+│   ├── block/              # VirtIO Block MMIO driver (virtio_blk.c/h)
+│   └── gpu/                # VirtIO GPU MMIO 2D driver (virtio_gpu.c/h) & GOP fallback
+├── fs/
+│   └── redsea.c/h          # RedSea 64-bit contiguous block filesystem
+├── apps/                   # 100% Pure Sovereign HolyC Application Suite
+│   ├── HolyGL.HC           # Sovereign 3D graphics pipeline & matrix stack
+│   ├── WM.HC               # Sovereign Window Manager & desktop event loop
+│   ├── Compositor.HC       # Scene-graph compositor & damage blitter
+│   ├── Shell.HC            # Interactive DolDoc 2.0 shell & autocomplete
+│   ├── DolDoc.HC           # DolDoc 2.0 text-as-geometry engine
+│   ├── RasterTile.HC       # Juan Pineda L1-cache tiled SIMD rasterizer
+│   ├── Gears.HC            # 3D GLXGears involute gear engine
+│   ├── Physics3D.HC        # 3D Newtonian multi-body rigid dynamics
+│   ├── SmpDemo.HC          # 4-core parallel task dispatch benchmark
+│   ├── Filer.HC            # RedSea directory navigator & launcher
+│   ├── Editor.HC           # Full-screen code editor with disk writeback
+│   ├── GrMath.HC           # 4x4 transformation matrices & 3D vector math
+│   ├── Compiler.HC         # Stage-1 self-hosting HolyC compiler prototype
+│   ├── WasmJit.HC          # WebAssembly AArch64 JIT compiler prototype
+│   ├── StdLib.HC           # CArray dynamic arrays & CDict hash maps
+│   ├── Top.HC              # Live CPU topology & system monitor
+│   ├── GpuConfig.HC        # VirtIO-GPU resolution & scanout configurator
+│   ├── HolyBenchmark.HC    # Unified benchmark suite launcher
+│   ├── FontVector.HC       # Quadratic Bézier vector font math evaluator
+│   └── ShaderEditor.HC     # Real-time procedural acrylic glass shader
+├── scripts/                # Verification harnesses (test_p8_holygl.py, etc.)
+├── screenshots/            # Verified QEMU screendumps
 └── Makefile
 ```
 
@@ -501,13 +526,23 @@ Running `jittest` on boot (verified on QEMU Cortex-A72 SMP):
 
 ---
 
-## Roadmap
+## Engineering Roadmap & Status
 
-- `mario64-recomp` integration — N64 decomp port running natively on NeoOS
-- Physics engine — rigid body simulation (`kernel/physics/`)
-- Extended HolyC 2.0 JIT — pointers, structs, arrays, function pointers
-- Virtio GPU acceleration — replace software rasterizer with GPU commands
-- Network stack — virtio-net + minimal TCP/IP
+### Completed Milestones (Verified in Code & QEMU)
+- [x] **Phase 0–1**: AArch64 JIT Hardening & Sovereign Window Manager (`WM.HC`)
+- [x] **Phase 2**: Sovereign Interactive Shell with Autocomplete & History (`Shell.HC`)
+- [x] **Phase 3**: DolDoc 2.0 Text-as-Geometry Continuum (`DolDoc.HC`)
+- [x] **Phase 4**: Sovereign Scene-Graph Compositor & Acrylic Blitter (`Compositor.HC`)
+- [x] **Phase 5–6**: RedSea Storage Suite, Bidirectional Writeback & Editor (`Editor.HC`, `Filer.HC`)
+- [x] **Phase 7**: 4-Core SMP Multiprocessing Parallel Worker Dispatch (`SmpDemo.HC`)
+- [x] **Phase 8**: HolyGL 3D Hardware Continuum, Matrix Stack, 4D Clipping & Gears (`HolyGL.HC`)
+
+### Next Milestones
+- [ ] **Phase 9**: Self-Hosting HolyC Compiler (`apps/Compiler.HC`) — Stage-1 HolyC compiler written in HolyC, emitting AArch64 machine instructions into executable RAM pages.
+- [ ] **Preemptive Task Scheduler Migration**: True timer-interrupt preemptive timeslicing in `sched_tick()`.
+- [ ] **Physical Board Bring-up (FDT)**: Flattened Device Tree parser for Raspberry Pi 4/5 and Rockchip RK3326.
+- [ ] **VirtIO-Net Stack**: Minimal TCP/IP network driver in Ring 0 for remote shell and HTTP file transfer.
+- [ ] **VirtIO-Sound / Audio Subsystem**: Bare-metal audio driver and HolyC sound synthesizer.
 
 ---
 
