@@ -291,6 +291,10 @@ int main(int argc, char **argv)
     symbols_register("kheap_dump_doldoc", (void*)kheap_dump_doldoc, SYM_FUNC);
     symbols_register("hal_reset_system", (void*)hal_reset_system, SYM_FUNC);
     symbols_register("shell_register_holyc", (void*)shell_register_holyc, SYM_FUNC);
+    symbols_register("doldoc_register_holyc", (void*)doldoc_register_holyc, SYM_FUNC);
+    extern void uart_putc(char c);
+    symbols_register("uart_putc", (void*)uart_putc, SYM_FUNC);
+    symbols_register("memmove", (void*)memmove, SYM_FUNC);
     symbols_register("strstr", (void*)strstr, SYM_FUNC);
     symbols_register("menu_toggle", (void*)menu_toggle, SYM_FUNC);
 
@@ -416,7 +420,20 @@ int main(int argc, char **argv)
 
     enable_interrupts();
 
-    // 10A. Sovereign Handover: Compile Pure HolyC Shell.HC
+    // 10A. Sovereign Handover: Compile Pure HolyC DolDoc.HC
+    printf("[BOOT] Sovereign Handover: Loading Pure HolyC DolDoc.HC...\r\n");
+    static char doldoc_src[32768];
+    size_t doldoc_src_len = 0;
+    if (redsea_read_file("DolDoc.HC", doldoc_src, sizeof(doldoc_src) - 1, &doldoc_src_len) == 0) {
+        doldoc_src[doldoc_src_len] = '\0';
+        printf("[BOOT] Compiling DolDoc.HC (%llu bytes)...\r\n", (unsigned long long)doldoc_src_len);
+        int64_t dres = jit_compile_and_run(doldoc_src);
+        printf("[BOOT] DolDoc.HC compiled, res = %lld\r\n", (long long)dres);
+    } else {
+        printf("[BOOT WARN] Could not read DolDoc.HC from RedSea disk!\r\n");
+    }
+
+    // 10B. Sovereign Handover: Compile Pure HolyC Shell.HC
     printf("[BOOT] Sovereign Handover: Loading Pure HolyC Shell.HC...\r\n");
     static char shell_src[32768];
     size_t shell_src_len = 0;
@@ -429,7 +446,7 @@ int main(int argc, char **argv)
         printf("[BOOT WARN] Could not read Shell.HC from RedSea disk!\r\n");
     }
 
-    // 10B. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
+    // 10C. Sovereign Handover: Transfer Primary Execution to Pure HolyC WM.HC
     printf("[BOOT] Sovereign Handover: Transferring primary execution to Pure HolyC WM.HC...\r\n");
     static char wm_src[32768];
     size_t wm_src_len = 0;

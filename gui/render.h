@@ -81,6 +81,25 @@ uint64_t gfx_get_last_swap_us(void);
 // Draw cursor directly onto the frontbuffer (after blit) — no backbuffer pollution
 void     gfx_draw_cursor_to_front(int x, int y, const uint8_t bitmap[16][16]);
 
+// DolDoc 2.0 Sovereign HolyC Delegation Interface
+typedef struct {
+    void (*putc)(char c);
+    void (*print)(const char *str);
+    void (*clear)(void);
+    void (*redraw)(void);
+    int  (*click)(int mx, int my);
+    void (*move)(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void (*scroll_up)(int lines);
+    void (*scroll_down)(int lines);
+    void (*backspace)(void);
+    void (*draw_cursor)(int visible);
+    void (*set_bg_color)(uint32_t bg);
+    uint32_t (*get_bg_color)(void);
+    void (*mark_all_dirty)(void);
+} holyc_doldoc_ops_t;
+
+void     doldoc_register_holyc(holyc_doldoc_ops_t *ops);
+
 // DolDoc 2.0 Console Stream & Interactive APIs
 void     doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 void     doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h);

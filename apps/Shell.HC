@@ -269,6 +269,21 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         return;
     } else if (strcmp(cmd, "top") == 0 || strcmp(cmd, "tasks") == 0) {
         top_print_doldoc();
+    } else if (strcmp(cmd, "doldoc") == 0) {
+        doldoc_print("$FG,CYAN$==============================================================$FG$\n");
+        doldoc_print("$FG,WHITE$       ✦ NeoOS Sovereign Pure HolyC DolDoc 2.0 Continuum ✦       $FG$\n");
+        doldoc_print("$FG,CYAN$==============================================================$FG$\n");
+        doldoc_print(" Architecture: 100% Pure HolyC Ring 0 Geometry & Quad Substrate\n");
+        doldoc_print(" Palette     : Modern Catppuccin Mocha Styling & Micro-Shadows\n");
+        doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");
+        doldoc_print(" Interactive Widgets & Reactive Elements:\n");
+        doldoc_print("  Buttons    : $BT,\"✦ NeoMenu\",LM=\"menu\"$  $BT,\"Scorecard\",LM=\"bench\"$  $BT,\"Gears 3D\",LM=\"gears\"$\n");
+        doldoc_print("  Hyperlinks : $LK,\"Disk Files\",A=\"ls\"$  $LK,\"Memory Stats\",A=\"mem\"$  $LK,\"Task Top\",A=\"top\"$\n");
+        doldoc_print("  Progress   : $PB,VAL=75,MAX=100$\n");
+        doldoc_print("  Checkboxes : $CB,\"Aero Glass Blur\",1$   $CB,\"Dirty Rect Blit\",1$   $CB,\"V-Sync 60Hz\",1$\n");
+        doldoc_print("  Trees      : $TR,\"Kernel System Subsystems\"$\n");
+        doldoc_print("  Divider    : $HR$\n");
+        doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
     } else if (strcmp(cmd, "perf") == 0) {
         doldoc_print("$FG,CYAN$=======================================================$FG$\n");
         doldoc_print("$FG,WHITE$ NeoOS RivaTuner (RTSS) Empirical Hardware Telemetry $FG$\n");

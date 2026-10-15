@@ -506,9 +506,9 @@ typedef struct {
     int size;
 } struct_member_t;
 
-#define MAX_STRUCT_DEFS 64
-#define MAX_STRUCT_MEMBERS 32
-#define MAX_VAR_TYPES 128
+#define MAX_STRUCT_DEFS 256
+#define MAX_STRUCT_MEMBERS 64
+#define MAX_VAR_TYPES 4096
 
 typedef struct {
     char name[32];
@@ -562,6 +562,8 @@ static void register_var_type(const char *name, int scale, int is_ptr, int is_fl
         if (st_name) strncpy(var_types[var_type_count].struct_type, st_name, 31);
         else var_types[var_type_count].struct_type[0] = '\0';
         var_type_count++;
+    } else {
+        printf("[JIT] Warning: MAX_VAR_TYPES (%d) exceeded! Cannot register '%s'\n", MAX_VAR_TYPES, name);
     }
 }
 
@@ -983,35 +985,47 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                     lexer_next(l);
 
                     var_type_t *vt = lookup_var_type(ident_name);
+                    struct_def_t *st = NULL;
                     if (vt && vt->struct_type[0] != '\0') {
-                        struct_def_t *st = find_struct_def(vt->struct_type);
-                        if (st) {
-                            int found = 0;
-                            int offset = 0;
-                            int fsize = 8;
-                            for (int m = 0; m < st->member_count; m++) {
-                                if (strcmp(st->members[m].name, field) == 0) {
-                                    offset = st->members[m].offset;
-                                    fsize = st->members[m].size;
-                                    found = 1;
+                        st = find_struct_def(vt->struct_type);
+                    }
+                    if (!st) {
+                        for (int s = 0; s < struct_def_count; s++) {
+                            for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                if (strcmp(struct_defs[s].members[m].name, field) == 0) {
+                                    st = &struct_defs[s];
                                     break;
                                 }
                             }
-                            if (!found) {
-                                cb->has_error = 1;
-                                snprintf(cb->error_msg, sizeof(cb->error_msg),
-                                         "Type error: struct '%s' has no member '%s'", vt->struct_type, field);
-                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
-                                return;
-                            }
-                            emit_mov_imm64(cb, 1, (uint64_t)offset);
-                            emit_add(cb, 0, 0, 1); // X0 = base + offset
-                            if (fsize == 1) emit_ldrb(cb, 0, 0);
-                            else if (fsize == 2) emit_ldrh(cb, 0, 0);
-                            else if (fsize == 4) emit_ldr32(cb, 0, 0);
-                            else emit_ldr64(cb, 0, 0);
-                            continue;
+                            if (st) break;
                         }
+                    }
+                    if (st) {
+                        int found = 0;
+                        int offset = 0;
+                        int fsize = 8;
+                        for (int m = 0; m < st->member_count; m++) {
+                            if (strcmp(st->members[m].name, field) == 0) {
+                                offset = st->members[m].offset;
+                                fsize = st->members[m].size;
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: struct '%s' has no member '%s'", st->name, field);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                            return;
+                        }
+                        emit_mov_imm64(cb, 1, (uint64_t)offset);
+                        emit_add(cb, 0, 0, 1); // X0 = base + offset
+                        if (fsize == 1) emit_ldrb(cb, 0, 0);
+                        else if (fsize == 2) emit_ldrh(cb, 0, 0);
+                        else if (fsize == 4) emit_ldr32(cb, 0, 0);
+                        else emit_ldr64(cb, 0, 0);
+                        continue;
                     }
 
                     // Dynamic table get: table_get(tbl, field)
@@ -1182,6 +1196,25 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                         else if (t_type.type == TOK_TYPE_U16) deref_scale = 2;
                         else if (t_type.type == TOK_TYPE_U32) deref_scale = 4;
                         else deref_scale = 8;
+                    }
+                }
+            }
+        }
+        if (deref_scale == 8) {
+            token_t next_tok = lexer_peek(l);
+            if (next_tok.type == TOK_IDENT) {
+                var_type_t *vt = lookup_var_type(next_tok.str_value);
+                if (vt && vt->is_ptr && vt->scale > 0) {
+                    deref_scale = vt->scale;
+                }
+            } else if (next_tok.type == TOK_LPAREN) {
+                lexer_t l_chk = *l;
+                lexer_next(&l_chk); // eat '('
+                token_t inner_tok = lexer_peek(&l_chk);
+                if (inner_tok.type == TOK_IDENT) {
+                    var_type_t *vt = lookup_var_type(inner_tok.str_value);
+                    if (vt && vt->is_ptr && vt->scale > 0) {
+                        deref_scale = vt->scale;
                     }
                 }
             }
@@ -2344,9 +2377,15 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             if (known_st && !is_ptr) {
                 alloc_sz = known_st->total_size > 8 ? known_st->total_size : 8;
             }
-            int64_t *storage = (int64_t*)kmalloc(alloc_sz);
-            memset(storage, 0, alloc_sz);
-            symbols_register(name, storage, SYM_VAR);
+            symbol_t *existing_sym = symbols_lookup_entry(name);
+            int64_t *storage = NULL;
+            if (existing_sym && existing_sym->type == SYM_VAR && existing_sym->address) {
+                storage = (int64_t*)existing_sym->address;
+            } else {
+                storage = (int64_t*)kmalloc(alloc_sz);
+                memset(storage, 0, alloc_sz);
+                symbols_register(name, storage, SYM_VAR);
+            }
             register_var_type(name, scale, is_ptr, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
 
             if (lexer_peek(l).type == TOK_EQUAL) {
@@ -2393,6 +2432,13 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             strncpy(ptr_name, id_tok.str_value, 63);
             ptr_name[63] = '\0';
             lexer_next(l); // eat ident
+
+            if (store_scale == 8) {
+                var_type_t *vt = lookup_var_type(ptr_name);
+                if (vt && vt->is_ptr && vt->scale > 0) {
+                    store_scale = vt->scale;
+                }
+            }
 
             if (lexer_peek(l).type == TOK_EQUAL) {
                 lexer_next(l); // eat '='
@@ -2621,56 +2667,68 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     int64_t *storage = sym ? (int64_t*)sym->address : NULL;
 
                     var_type_t *vt = lookup_var_type(var_name);
+                    struct_def_t *st = NULL;
                     if (vt && vt->struct_type[0] != '\0') {
-                        struct_def_t *st = find_struct_def(vt->struct_type);
-                        if (st) {
-                            int found = 0;
-                            int offset = 0;
-                            int fsize = 8;
-                            for (int m = 0; m < st->member_count; m++) {
-                                if (strcmp(st->members[m].name, field_name) == 0) {
-                                    offset = st->members[m].offset;
-                                    fsize = st->members[m].size;
-                                    found = 1;
+                        st = find_struct_def(vt->struct_type);
+                    }
+                    if (!st) {
+                        for (int s = 0; s < struct_def_count; s++) {
+                            for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                if (strcmp(struct_defs[s].members[m].name, field_name) == 0) {
+                                    st = &struct_defs[s];
                                     break;
                                 }
                             }
-                            if (!found) {
-                                cb->has_error = 1;
-                                snprintf(cb->error_msg, sizeof(cb->error_msg),
-                                         "Type error: struct '%s' has no member '%s'", vt->struct_type, field_name);
-                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
-                                return;
+                            if (st) break;
+                        }
+                    }
+                    if (st) {
+                        int found = 0;
+                        int offset = 0;
+                        int fsize = 8;
+                        for (int m = 0; m < st->member_count; m++) {
+                            if (strcmp(st->members[m].name, field_name) == 0) {
+                                offset = st->members[m].offset;
+                                fsize = st->members[m].size;
+                                found = 1;
+                                break;
                             }
-                            if (vt->is_ptr) {
-                                emit_mov_imm64(cb, 16, (uint64_t)storage);
-                                emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer)
-                            } else {
-                                emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
-                            }
-                            emit_mov_imm64(cb, 2, (uint64_t)offset);
-                            emit_add(cb, 1, 1, 2);   // X1 = base + offset
-
-                            if (is_compound_assign_tok(op_type)) {
-                                emit_mov_reg(cb, 2, 1); // X2 = target address
-                                if (fsize == 1) emit_ldrb(cb, 1, 2);
-                                else if (fsize == 2) emit_ldrh(cb, 1, 2);
-                                else if (fsize == 4) emit_ldr32(cb, 1, 2);
-                                else emit_ldr64(cb, 1, 2); // X1 = old val
-                                emit_pop_x(cb, 0); // X0 = RHS
-                                emit_compound_op(cb, op_type); // X0 = X1 (op) X0
-                                emit_mov_reg(cb, 1, 2); // X1 = target address
-                            } else {
-                                emit_pop_x(cb, 0); // X0 = RHS
-                            }
-                            if (fsize == 1) emit_strb(cb, 0, 1);
-                            else if (fsize == 2) emit_strh(cb, 0, 1);
-                            else if (fsize == 4) emit_str32(cb, 0, 1);
-                            else emit_str64(cb, 0, 1);
-
-                            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                        }
+                        if (!found) {
+                            cb->has_error = 1;
+                            snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                     "Type error: struct '%s' has no member '%s'", st->name, field_name);
+                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
                             return;
                         }
+                        if (vt && vt->is_ptr) {
+                            emit_mov_imm64(cb, 16, (uint64_t)storage);
+                            emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer)
+                        } else {
+                            emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                        }
+                        emit_mov_imm64(cb, 2, (uint64_t)offset);
+                        emit_add(cb, 1, 1, 2);   // X1 = base + offset
+
+                        if (is_compound_assign_tok(op_type)) {
+                            emit_mov_reg(cb, 2, 1); // X2 = target address
+                            if (fsize == 1) emit_ldrb(cb, 1, 2);
+                            else if (fsize == 2) emit_ldrh(cb, 1, 2);
+                            else if (fsize == 4) emit_ldr32(cb, 1, 2);
+                            else emit_ldr64(cb, 1, 2); // X1 = old val
+                            emit_pop_x(cb, 0); // X0 = RHS
+                            emit_compound_op(cb, op_type); // X0 = X1 (op) X0
+                            emit_mov_reg(cb, 1, 2); // X1 = target address
+                        } else {
+                            emit_pop_x(cb, 0); // X0 = RHS
+                        }
+                        if (fsize == 1) emit_strb(cb, 0, 1);
+                        else if (fsize == 2) emit_strh(cb, 0, 1);
+                        else if (fsize == 4) emit_str32(cb, 0, 1);
+                        else emit_str64(cb, 0, 1);
+
+                        if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                        return;
                     }
 
                 // Dynamic Table set: table_set(tbl, field, val)

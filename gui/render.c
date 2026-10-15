@@ -863,30 +863,21 @@ int gfx_is_zero_ram_mode(void) {
 }
 
 
-// DolDoc 2.0 Terminal Viewport & Grid Buffer
-#define DOLDOC_GRID_COLS 96
-#define DOLDOC_GRID_ROWS 32
+// ==============================================================================
+// DolDoc 2.0 Minimal Bootstrap Bridge (Pure HolyC Delegate)
+// All parser logic, cell buffers, geometry, and widgets live in apps/DolDoc.HC
+// ==============================================================================
 
-typedef struct {
-    char     c;
-    uint32_t fg;
-    uint32_t bg;
-    char     link_cmd[32];
-} doldoc_cell_t;
+static holyc_doldoc_ops_t s_holyc_doldoc = {0};
+static int s_holyc_doldoc_active = 0;
 
-static doldoc_cell_t doc_grid[DOLDOC_GRID_ROWS][DOLDOC_GRID_COLS];
-static int doc_grid_cols = 88;
-static int doc_grid_rows = 24;
-static int doc_cur_col = 0;
-static int doc_cur_row = 0;
-static char doc_active_link[32] = {0};
-
-#define DOLDOC_HISTORY_LINES 1024
-static doldoc_cell_t doc_history[DOLDOC_HISTORY_LINES][DOLDOC_GRID_COLS];
-static int doc_history_count = 0;
-static int doc_scroll_offset = 0;
-
-extern void shell_run_command(const char *raw_cmd);
+void doldoc_register_holyc(holyc_doldoc_ops_t *ops) {
+    if (ops) {
+        s_holyc_doldoc = *ops;
+        s_holyc_doldoc_active = 1;
+        printf("[DOLDOC] Sovereign Pure HolyC DolDoc Engine registered & activated!\r\n");
+    }
+}
 
 void doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doc_term.x = x;
@@ -896,126 +887,10 @@ void doldoc_init(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doc_term.cursor_x = x + 8;
     doc_term.cursor_y = y + 8;
     doc_term.text_color = COLOR_GREEN_TERMINAL;
-    doc_term.bg_color = 0xFF1B1E20;
-
-    doc_grid_cols = (w > 16) ? (w - 16) / 8 : 80;
-    doc_grid_rows = (h > 16) ? (h - 16) / 18 : 24;
-    if (doc_grid_cols > DOLDOC_GRID_COLS) doc_grid_cols = DOLDOC_GRID_COLS;
-    if (doc_grid_rows > DOLDOC_GRID_ROWS) doc_grid_rows = DOLDOC_GRID_ROWS;
-
-    doldoc_clear();
-}
-
-void doldoc_set_bg_color(uint32_t bg) {
-    doc_term.bg_color = bg;
-    doldoc_mark_all_dirty();
-}
-
-uint32_t doldoc_get_bg_color(void) {
-    return doc_term.bg_color ? doc_term.bg_color : 0xFF1B1E20;
-}
-
-static uint64_t s_doc_dirty_mask = 0xFFFFFFFFFFFFFFFFULL;
-
-void doldoc_mark_all_dirty(void) {
-    s_doc_dirty_mask = 0xFFFFFFFFFFFFFFFFULL;
-}
-
-void doldoc_mark_row_dirty(int r) {
-    if (r >= 0 && r < 64) s_doc_dirty_mask |= (1ULL << r);
-}
-
-void doldoc_clear(void) {
-    memset(doc_grid, 0, sizeof(doc_grid));
-    doc_cur_col = 0;
-    doc_cur_row = 0;
-    doc_scroll_offset = 0;
-    doc_term.cursor_x = doc_term.x + 8;
-    doc_term.cursor_y = doc_term.y + 8;
-    doldoc_mark_all_dirty();
-    uint32_t bg = doldoc_get_bg_color();
-    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, bg);
-    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
-}
-
-void doldoc_redraw(void) {
-    if (s_doc_dirty_mask == 0) return; // 0.0 ms if nothing changed!
-
-    uint32_t bg = doldoc_get_bg_color();
-    if (s_doc_dirty_mask == 0xFFFFFFFFFFFFFFFFULL) {
-        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, bg);
-        gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, 1, COLOR_BORDER_DARK);
+    doc_term.bg_color = 0xFF181825;
+    if (s_holyc_doldoc_active && s_holyc_doldoc.move) {
+        s_holyc_doldoc.move(x, y, w, h);
     }
-
-    if (doc_scroll_offset == 0) {
-        for (int r = 0; r < doc_grid_rows; r++) {
-            if (r < 64 && !(s_doc_dirty_mask & (1ULL << r))) continue;
-            gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, bg);
-            for (int c = 0; c < doc_grid_cols; c++) {
-                doldoc_cell_t *cell = &doc_grid[r][c];
-                if (cell->c >= 32 && cell->c <= 126) {
-                    gfx_draw_char(doc_term.x + 8 + c * 8, doc_term.y + 8 + r * 18,
-                                  cell->c, cell->fg, cell->bg ? cell->bg : bg);
-                }
-            }
-        }
-    } else {
-        for (int r = 0; r < doc_grid_rows; r++) {
-            int hist_idx = doc_history_count - doc_scroll_offset + r;
-            doldoc_cell_t *row_cells = NULL;
-            if (hist_idx >= 0 && hist_idx < doc_history_count) {
-                row_cells = doc_history[hist_idx];
-            } else if (hist_idx >= doc_history_count) {
-                int grid_r = hist_idx - doc_history_count;
-                if (grid_r < doc_grid_rows) row_cells = doc_grid[grid_r];
-            }
-            if (row_cells) {
-                gfx_draw_rect(doc_term.x + 8, doc_term.y + 8 + r * 18, doc_term.w - 16, 18, bg);
-                for (int c = 0; c < doc_grid_cols; c++) {
-                    doldoc_cell_t *cell = &row_cells[c];
-                    if (cell->c >= 32 && cell->c <= 126) {
-                        gfx_draw_char(doc_term.x + 8 + c * 8, doc_term.y + 8 + r * 18,
-                                      cell->c, cell->fg, cell->bg ? cell->bg : bg);
-                    }
-                }
-            }
-        }
-    }
-
-    // Scrollbar Track & Thumb
-    uint32_t bar_x = doc_term.x + doc_term.w - 8;
-    uint32_t bar_y = doc_term.y + 4;
-    uint32_t bar_h = doc_term.h - 8;
-    gfx_draw_rect(bar_x, bar_y, 4, bar_h, 0xFF14171A);
-
-    int total_lines = doc_history_count + doc_grid_rows;
-    if (total_lines > doc_grid_rows && doc_history_count > 0) {
-        int thumb_h = (bar_h * doc_grid_rows) / total_lines;
-        if (thumb_h < 14) thumb_h = 14;
-        int scroll_pos = doc_history_count - doc_scroll_offset;
-        if (scroll_pos < 0) scroll_pos = 0;
-        int thumb_y = bar_y + ((bar_h - thumb_h) * scroll_pos) / doc_history_count;
-        gfx_draw_rounded_rect(bar_x - 1, thumb_y, 6, thumb_h, 2, COLOR_ACCENT_CYAN);
-    }
-    s_doc_dirty_mask = 0;
-}
-
-void doldoc_scroll_up(int lines) {
-    doc_scroll_offset += lines;
-    if (doc_scroll_offset > doc_history_count) doc_scroll_offset = doc_history_count;
-    doldoc_mark_all_dirty();
-    doldoc_redraw();
-}
-
-void doldoc_scroll_down(int lines) {
-    doc_scroll_offset -= lines;
-    if (doc_scroll_offset < 0) doc_scroll_offset = 0;
-    doldoc_mark_all_dirty();
-    doldoc_redraw();
-}
-
-int doldoc_get_scroll_offset(void) {
-    return doc_scroll_offset;
 }
 
 void doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -1023,49 +898,80 @@ void doldoc_move(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     doc_term.y = y;
     doc_term.w = w;
     doc_term.h = h;
-    doc_grid_cols = (w > 16) ? (w - 16) / 8 : 80;
-    doc_grid_rows = (h > 16) ? (h - 16) / 18 : 25;
-    if (doc_grid_cols > DOLDOC_GRID_COLS) doc_grid_cols = DOLDOC_GRID_COLS;
-    if (doc_grid_rows > DOLDOC_GRID_ROWS) doc_grid_rows = DOLDOC_GRID_ROWS;
-    if (doc_cur_row >= doc_grid_rows) doc_cur_row = doc_grid_rows - 1;
-    if (doc_cur_col >= doc_grid_cols) doc_cur_col = doc_grid_cols - 1;
-    doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
-    doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
-    doldoc_mark_all_dirty();
-    doldoc_redraw();
+    if (s_holyc_doldoc_active && s_holyc_doldoc.move) {
+        s_holyc_doldoc.move(x, y, w, h);
+    }
 }
 
-static void doldoc_scroll(void) {
-    if (doc_grid_rows > 1) {
-        if (doc_history_count < DOLDOC_HISTORY_LINES) {
-            memcpy(&doc_history[doc_history_count++], &doc_grid[0], sizeof(doc_grid[0]));
-        } else {
-            memmove(&doc_history[0], &doc_history[1], sizeof(doc_grid[0]) * (DOLDOC_HISTORY_LINES - 1));
-            memcpy(&doc_history[DOLDOC_HISTORY_LINES - 1], &doc_grid[0], sizeof(doc_grid[0]));
-        }
-        memmove(&doc_grid[0], &doc_grid[1], sizeof(doc_grid[0]) * (doc_grid_rows - 1));
-        memset(&doc_grid[doc_grid_rows - 1], 0, sizeof(doc_grid[0]));
+void doldoc_set_bg_color(uint32_t bg) {
+    doc_term.bg_color = bg;
+    if (s_holyc_doldoc_active && s_holyc_doldoc.set_bg_color) {
+        s_holyc_doldoc.set_bg_color(bg);
     }
-    doc_cur_row = doc_grid_rows - 1;
-    doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
-    doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
-    doldoc_mark_all_dirty();
-    doldoc_redraw();
+}
+
+uint32_t doldoc_get_bg_color(void) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.get_bg_color) {
+        return s_holyc_doldoc.get_bg_color();
+    }
+    return doc_term.bg_color ? doc_term.bg_color : 0xFF181825;
+}
+
+void doldoc_mark_all_dirty(void) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.mark_all_dirty) {
+        s_holyc_doldoc.mark_all_dirty();
+    }
+}
+
+void doldoc_mark_row_dirty(int r) {
+    (void)r;
+    if (s_holyc_doldoc_active && s_holyc_doldoc.mark_all_dirty) {
+        s_holyc_doldoc.mark_all_dirty();
+    }
+}
+
+void doldoc_clear(void) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.clear) {
+        s_holyc_doldoc.clear();
+        return;
+    }
+    gfx_draw_rect(doc_term.x, doc_term.y, doc_term.w, doc_term.h, doldoc_get_bg_color());
+}
+
+void doldoc_redraw(void) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.redraw) {
+        s_holyc_doldoc.redraw();
+    }
+}
+
+void doldoc_scroll_up(int lines) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.scroll_up) {
+        s_holyc_doldoc.scroll_up(lines);
+    }
+}
+
+void doldoc_scroll_down(int lines) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.scroll_down) {
+        s_holyc_doldoc.scroll_down(lines);
+    }
+}
+
+int doldoc_get_scroll_offset(void) {
+    return 0;
 }
 
 void doldoc_backspace(void) {
-    if (doc_cur_col > 0) {
-        doc_cur_col--;
-        doc_grid[doc_cur_row][doc_cur_col].c = ' ';
-        doc_grid[doc_cur_row][doc_cur_col].link_cmd[0] = '\0';
-        doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
-        doldoc_mark_row_dirty(doc_cur_row);
-        gfx_draw_rect(doc_term.cursor_x, doc_term.cursor_y, 8, 16, 0xFF1B1E20);
+    if (s_holyc_doldoc_active && s_holyc_doldoc.backspace) {
+        s_holyc_doldoc.backspace();
     }
 }
 
 void doldoc_draw_cursor(int visible) {
-    uint32_t color = visible ? COLOR_ACCENT_CYAN : 0xFF1B1E20;
+    if (s_holyc_doldoc_active && s_holyc_doldoc.draw_cursor) {
+        s_holyc_doldoc.draw_cursor(visible);
+        return;
+    }
+    uint32_t color = visible ? COLOR_ACCENT_CYAN : doldoc_get_bg_color();
     gfx_draw_rect(doc_term.cursor_x, doc_term.cursor_y, 8, 16, color);
 }
 
@@ -1080,250 +986,43 @@ void doldoc_swap_term(void) {
 extern void uart_putc(char c);
 
 void doldoc_putc(char c) {
+    if (s_holyc_doldoc_active && s_holyc_doldoc.putc) {
+        s_holyc_doldoc.putc(c);
+        return;
+    }
     if (c == '\n') {
         uart_putc('\r');
         uart_putc('\n');
-        doc_cur_col = 0;
-        doc_cur_row++;
-        if (doc_cur_row >= doc_grid_rows) {
-            doldoc_scroll();
-        } else {
-            doc_term.cursor_x = doc_term.x + 8;
-            doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
-            doldoc_mark_row_dirty(doc_cur_row);
-        }
-    } else if (c == '\r') {
-        uart_putc('\r');
-        doc_cur_col = 0;
-        doc_term.cursor_x = doc_term.x + 8;
-    } else if (c == '\b') {
-        uart_putc('\b');
-        uart_putc(' ');
-        uart_putc('\b');
-        doldoc_backspace();
-    } else if (c == '\t') {
-        for (int i = 0; i < 4; i++) doldoc_putc(' ');
     } else {
         uart_putc(c);
-        if (doc_cur_row < doc_grid_rows && doc_cur_col < doc_grid_cols) {
-            doc_grid[doc_cur_row][doc_cur_col].c = c;
-            doc_grid[doc_cur_row][doc_cur_col].fg = doc_term.text_color;
-            doc_grid[doc_cur_row][doc_cur_col].bg = doc_term.bg_color;
-            strncpy(doc_grid[doc_cur_row][doc_cur_col].link_cmd, doc_active_link, sizeof(doc_grid[0][0].link_cmd) - 1);
-
-            doldoc_mark_row_dirty(doc_cur_row);
-            gfx_draw_char(doc_term.x + 8 + doc_cur_col * 8, doc_term.y + 8 + doc_cur_row * 18,
-                          c, doc_term.text_color, doc_term.bg_color);
-            doc_cur_col++;
-            if (doc_cur_col >= doc_grid_cols) {
-                doc_cur_col = 0;
-                doc_cur_row++;
-                if (doc_cur_row >= doc_grid_rows) {
-                    doldoc_scroll();
-                }
-            }
-            doc_term.cursor_x = doc_term.x + 8 + doc_cur_col * 8;
-            doc_term.cursor_y = doc_term.y + 8 + doc_cur_row * 18;
-        }
     }
-}
-
-// Parses string between quotes: "..."
-static const char* parse_quoted_string(const char *p, char *out, size_t max_out) {
-    while (*p && *p != '\"') p++;
-    if (!*p) return p;
-    p++; // eat opening quote
-    size_t idx = 0;
-    while (*p && *p != '\"' && idx < max_out - 1) {
-        out[idx++] = *p++;
-    }
-    out[idx] = '\0';
-    if (*p == '\"') p++; // eat closing quote
-    return p;
 }
 
 void doldoc_print(const char *str) {
     if (!str) return;
-
+    if (s_holyc_doldoc_active && s_holyc_doldoc.print) {
+        s_holyc_doldoc.print(str);
+        return;
+    }
+    // Early boot UART fallback: strip tags and output
     while (*str) {
         if (*str == '$') {
             str++;
             if (*str == '$') {
-                doldoc_putc('$');
+                uart_putc('$');
                 str++;
                 continue;
             }
-
-            // Parse DolDoc tag: $TAG...$
-            char tag[256];
-            size_t tlen = 0;
-            while (*str && *str != '$' && tlen < sizeof(tag) - 1) {
-                tag[tlen++] = *str++;
-            }
-            tag[tlen] = '\0';
-            if (*str == '$') str++; // skip closing $
-
-            // Tag 1: Color tags: $FG,RED$, $FG,GREEN$, $FG$, $BG,DARK$, etc.
-            if (strcmp(tag, "FG,RED") == 0) {
-                doc_term.text_color = COLOR_BTN_CLOSE;
-            } else if (strcmp(tag, "FG,GREEN") == 0) {
-                doc_term.text_color = COLOR_GREEN_TERMINAL;
-            } else if (strcmp(tag, "FG,BLUE") == 0) {
-                doc_term.text_color = COLOR_ACCENT_BLUE;
-            } else if (strcmp(tag, "FG,CYAN") == 0) {
-                doc_term.text_color = COLOR_ACCENT_CYAN;
-            } else if (strcmp(tag, "FG,YELLOW") == 0) {
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-            } else if (strcmp(tag, "FG,WHITE") == 0) {
-                doc_term.text_color = COLOR_TEXT_WHITE;
-            } else if (strcmp(tag, "FG,MUTED") == 0) {
-                doc_term.text_color = COLOR_TEXT_MUTED;
-            } else if (strcmp(tag, "FG,DEFAULT") == 0 || strcmp(tag, "FG") == 0) {
-                doc_term.text_color = COLOR_GREEN_TERMINAL;
-            } else if (strcmp(tag, "BG,BLACK") == 0) {
-                doldoc_set_bg_color(0xFF14171A);
-            } else if (strcmp(tag, "BG,DARK") == 0) {
-                doldoc_set_bg_color(0xFF1B1E20);
-            } else if (strcmp(tag, "BG,WINDOW") == 0) {
-                doldoc_set_bg_color(COLOR_WINDOW_BODY);
-            } else if (strcmp(tag, "BG,BLUE") == 0) {
-                doldoc_set_bg_color(0xFF1B3A57);
-            } else if (strcmp(tag, "BG,DEFAULT") == 0 || strcmp(tag, "BG") == 0) {
-                doldoc_set_bg_color(0xFF1B1E20);
-            }
-            // Tag 2: Hyperlinks: $LK,"Label",A="command"$
-            else if (strncmp(tag, "LK,", 3) == 0) {
-                char label[96] = {0};
-                char cmd[64] = {0};
-                const char *tp = tag + 3;
-                tp = parse_quoted_string(tp, label, sizeof(label));
-                const char *ap = strstr(tp, "A=");
-                if (ap) {
-                    parse_quoted_string(ap + 2, cmd, sizeof(cmd));
-                }
-
-                int link_len = (int)strlen(label) + 2;
-                if (doc_cur_col > 0 && (doc_cur_col + link_len >= doc_grid_cols)) {
-                    doldoc_putc('\n');
-                }
-
-                uint32_t old_fg = doc_term.text_color;
-                doc_term.text_color = COLOR_ACCENT_CYAN;
-                strncpy(doc_active_link, cmd, sizeof(doc_active_link) - 1);
-
-                doldoc_putc('[');
-                for (size_t i = 0; label[i]; i++) doldoc_putc(label[i]);
-                doldoc_putc(']');
-
-                doc_active_link[0] = '\0';
-                doc_term.text_color = old_fg;
-            }
-            // Tag 3: Interactive Buttons: $BT,"Button",LM="command"$
-            else if (strncmp(tag, "BT,", 3) == 0) {
-                char label[48] = {0};
-                char cmd[32] = {0};
-                const char *tp = tag + 3;
-                tp = parse_quoted_string(tp, label, sizeof(label));
-                const char *lmp = strstr(tp, "LM=");
-                if (lmp) {
-                    parse_quoted_string(lmp + 3, cmd, sizeof(cmd));
-                }
-
-                int btn_len = (int)strlen(label) + 4;
-                if (doc_cur_col > 0 && (doc_cur_col + btn_len >= doc_grid_cols)) {
-                    doldoc_putc('\n');
-                }
-
-                uint32_t old_fg = doc_term.text_color;
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-                strncpy(doc_active_link, cmd, sizeof(doc_active_link) - 1);
-
-                doldoc_putc('<');
-                doldoc_putc(' ');
-                doc_term.text_color = COLOR_TEXT_WHITE;
-                for (size_t i = 0; label[i]; i++) doldoc_putc(label[i]);
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-                doldoc_putc(' ');
-                doldoc_putc('>');
-
-                doc_active_link[0] = '\0';
-                doc_term.text_color = old_fg;
-            }
-            // Tag 4: Progress Bar: $PB,VAL=x,MAX=y$
-            else if (strncmp(tag, "PB,", 3) == 0) {
-                int val = 0;
-                int max_val = 100;
-                const char *vp = strstr(tag, "VAL=");
-                if (vp) val = atoi(vp + 4);
-                const char *mp = strstr(tag, "MAX=");
-                if (mp) max_val = atoi(mp + 4);
-                if (max_val <= 0) max_val = 100;
-                if (val < 0) val = 0;
-                if (val > max_val) val = max_val;
-
-                int bar_width = 20;
-                int filled = (val * bar_width) / max_val;
-                int pb_len = bar_width + 8;
-                if (doc_cur_col > 0 && (doc_cur_col + pb_len >= doc_grid_cols)) {
-                    doldoc_putc('\n');
-                }
-
-                uint32_t old_fg = doc_term.text_color;
-                doc_term.text_color = COLOR_TEXT_MUTED;
-                doldoc_putc('[');
-                doc_term.text_color = COLOR_ACCENT_CYAN;
-                for (int i = 0; i < filled; i++) doldoc_putc('=');
-                if (filled < bar_width) {
-                    doldoc_putc('>');
-                    doc_term.text_color = COLOR_TEXT_MUTED;
-                    for (int i = filled + 1; i < bar_width; i++) doldoc_putc('-');
-                }
-                doc_term.text_color = COLOR_TEXT_MUTED;
-                doldoc_putc(']');
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-                char pbuf[16];
-                snprintf(pbuf, sizeof(pbuf), " %d%%", (val * 100) / max_val);
-                for (size_t i = 0; pbuf[i]; i++) doldoc_putc(pbuf[i]);
-                doc_term.text_color = old_fg;
-            }
-            // Tag 5: Collapsible Tree Tag: $TR,"Title"$
-            else if (strncmp(tag, "TR,", 3) == 0) {
-                char title[64] = {0};
-                parse_quoted_string(tag + 3, title, sizeof(title));
-                int tr_len = (int)strlen(title) + 4;
-                if (doc_cur_col > 0 && (doc_cur_col + tr_len >= doc_grid_cols)) {
-                    doldoc_putc('\n');
-                }
-
-                uint32_t old_fg = doc_term.text_color;
-                doc_term.text_color = COLOR_ACCENT_CYAN;
-                doldoc_putc('[');
-                doc_term.text_color = COLOR_GOLD_ACCENT;
-                doldoc_putc('+');
-                doc_term.text_color = COLOR_ACCENT_CYAN;
-                doldoc_putc(']');
-                doldoc_putc(' ');
-                doc_term.text_color = COLOR_TEXT_WHITE;
-                for (size_t i = 0; title[i]; i++) doldoc_putc(title[i]);
-                doc_term.text_color = old_fg;
-            }
+            while (*str && *str != '$') str++;
+            if (*str == '$') str++;
             continue;
         }
-
-        // Word-level flow wrapping: prevent splitting words across row boundaries
-        if (*str != ' ' && *str != '\n' && *str != '\t' && *str != '\r') {
-            const char *wp = str;
-            int wlen = 0;
-            while (*wp && *wp != ' ' && *wp != '\n' && *wp != '\t' && *wp != '\r' && *wp != '$') {
-                wlen++;
-                wp++;
-            }
-            if (wlen > 0 && wlen < doc_grid_cols && doc_cur_col > 0 && (doc_cur_col + wlen >= doc_grid_cols)) {
-                doldoc_putc('\n');
-            }
+        if (*str == '\n') {
+            uart_putc('\r');
+            uart_putc('\n');
+        } else {
+            uart_putc(*str);
         }
-
-        doldoc_putc(*str);
         str++;
     }
 }
@@ -1338,19 +1037,8 @@ void doldoc_printf(const char *fmt, ...) {
 }
 
 int doldoc_handle_click(int mouse_x, int mouse_y) {
-    if (mouse_x < (int)doc_term.x + 8 || mouse_y < (int)doc_term.y + 8) return 0;
-    int col = (mouse_x - ((int)doc_term.x + 8)) / 8;
-    int row = (mouse_y - ((int)doc_term.y + 8)) / 18;
-
-    if (row >= 0 && row < doc_grid_rows && col >= 0 && col < doc_grid_cols) {
-        if (doc_grid[row][col].link_cmd[0] != '\0') {
-            char cmd_copy[32];
-            strncpy(cmd_copy, doc_grid[row][col].link_cmd, sizeof(cmd_copy) - 1);
-            cmd_copy[sizeof(cmd_copy) - 1] = '\0';
-            doldoc_printf("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$%s$FG$\n", cmd_copy);
-            shell_run_command(cmd_copy);
-            return 1;
-        }
+    if (s_holyc_doldoc_active && s_holyc_doldoc.click) {
+        return s_holyc_doldoc.click(mouse_x, mouse_y);
     }
     return 0;
 }
