@@ -360,6 +360,34 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         } else {
             doldoc_printf("$FG,RED$Could not delete: %s$FG$\n", fname);
         }
+    } else if (strcmp(cmd, "filer") == 0) {
+        ShellRunCommand("run Filer.HC");
+        return;
+    } else if (strcmp(cmd, "edit") == 0) {
+        ShellRunCommand("run Editor.HC");
+        return;
+    } else if (strncmp(cmd, "save ", 5) == 0) {
+        U8 *arg = cmd + 5;
+        while (*arg == ' ') arg++;
+        U8 s_name[48];
+        I64 s_idx = 0;
+        while (*arg && *arg != ' ' && s_idx < 47) {
+            s_name[s_idx] = *arg;
+            s_idx++;
+            arg++;
+        }
+        s_name[s_idx] = 0;
+        while (*arg == ' ') arg++;
+        I64 s_len = strlen(arg);
+        if (s_name[0] && s_len > 0) {
+            if (redsea_write_file(s_name, arg, s_len) == 0) {
+                doldoc_printf("$FG,GREEN$[SAVE]$FG$ Successfully persisted '%s' (%lld bytes) to RedSea disk!\n", s_name, s_len);
+            } else {
+                doldoc_printf("$FG,RED$[SAVE ERR]$FG$ Failed writing '%s' to disk!\n", s_name);
+            }
+        } else {
+            doldoc_print("Usage: save <filename> <text content>\n");
+        }
     } else if (strncmp(cmd, "run ", 4) == 0) {
         U8 *fname = cmd + 4;
         while (*fname == ' ') fname++;

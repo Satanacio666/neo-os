@@ -368,8 +368,8 @@ U0 DolDocPrint(U8 *str) {
                 U32 old_fg = g_doc_cur_fg;
                 g_doc_cur_fg = COLOR_SKY;
                 DolDocPutc('[');
-                for (I64 i = 0; g_tag_label[i]; i++) {
-                    DolDocPutc(g_tag_label[i]);
+                for (I64 doc_i = 0; g_tag_label[doc_i]; doc_i++) {
+                    DolDocPutc(g_tag_label[doc_i]);
                     I64 c_idx = g_doc_cur_row * DOLDOC_MAX_COLS + (g_doc_cur_col - 1);
                     if (c_idx >= 0 && c_idx < DOLDOC_CELLS) g_doc_link_idx[c_idx] = wid;
                 }
@@ -407,8 +407,8 @@ U0 DolDocPrint(U8 *str) {
                 DolDocPutc('<');
                 DolDocPutc(' ');
                 g_doc_cur_fg = COLOR_TEXT;
-                for (I64 i = 0; g_tag_label[i]; i++) {
-                    DolDocPutc(g_tag_label[i]);
+                for (I64 doc_i = 0; g_tag_label[doc_i]; doc_i++) {
+                    DolDocPutc(g_tag_label[doc_i]);
                     I64 c_idx = g_doc_cur_row * DOLDOC_MAX_COLS + (g_doc_cur_col - 1);
                     if (c_idx >= 0 && c_idx < DOLDOC_CELLS) g_doc_link_idx[c_idx] = wid;
                 }
@@ -440,11 +440,11 @@ U0 DolDocPrint(U8 *str) {
                 g_doc_cur_fg = COLOR_OVERLAY0;
                 DolDocPutc('[');
                 g_doc_cur_fg = COLOR_SKY;
-                for (I64 i = 0; i < filled; i++) DolDocPutc('=');
+                for (I64 doc_i = 0; doc_i < filled; doc_i++) DolDocPutc('=');
                 if (filled < bar_width) {
                     DolDocPutc('>');
                     g_doc_cur_fg = COLOR_OVERLAY0;
-                    for (I64 i = filled + 1; i < bar_width; i++) DolDocPutc('-');
+                    for (I64 doc_i = filled + 1; doc_i < bar_width; doc_i++) DolDocPutc('-');
                 }
                 g_doc_cur_fg = COLOR_OVERLAY0;
                 DolDocPutc(']');
@@ -495,8 +495,8 @@ U0 DolDocPrint(U8 *str) {
                 DolDocPutc(']');
                 DolDocPutc(' ');
                 g_doc_cur_fg = COLOR_TEXT;
-                for (I64 i = 0; g_tag_label[i]; i++) {
-                    DolDocPutc(g_tag_label[i]);
+                for (I64 doc_i = 0; g_tag_label[doc_i]; doc_i++) {
+                    DolDocPutc(g_tag_label[doc_i]);
                     I64 c_idx = g_doc_cur_row * DOLDOC_MAX_COLS + (g_doc_cur_col - 1);
                     if (c_idx >= 0 && c_idx < DOLDOC_CELLS) g_doc_link_idx[c_idx] = wid;
                 }
@@ -533,8 +533,8 @@ U0 DolDocPrint(U8 *str) {
                 DolDocPutc(']');
                 DolDocPutc(' ');
                 g_doc_cur_fg = COLOR_TEXT;
-                for (I64 i = 0; g_tag_title[i]; i++) {
-                    DolDocPutc(g_tag_title[i]);
+                for (I64 doc_i = 0; g_tag_title[doc_i]; doc_i++) {
+                    DolDocPutc(g_tag_title[doc_i]);
                     I64 c_idx = g_doc_cur_row * DOLDOC_MAX_COLS + (g_doc_cur_col - 1);
                     if (c_idx >= 0 && c_idx < DOLDOC_CELLS) g_doc_link_idx[c_idx] = wid;
                 }
@@ -545,7 +545,7 @@ U0 DolDocPrint(U8 *str) {
                 if (g_doc_cur_col > 0) DolDocPutc(10);
                 U32 old_fg = g_doc_cur_fg;
                 g_doc_cur_fg = COLOR_SURFACE1;
-                for (I64 i = 0; i < g_doc_cols - 2; i++) DolDocPutc('-');
+                for (I64 doc_i = 0; doc_i < g_doc_cols - 2; doc_i++) DolDocPutc('-');
                 DolDocPutc(10);
                 g_doc_cur_fg = old_fg;
             }
