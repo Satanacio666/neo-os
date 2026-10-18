@@ -31,6 +31,10 @@ class WasmJitContext {
     I64  mem_pages;
 };
 
+class CWasmRunner {
+    I64 (*fn)();
+};
+
 WasmJitContext g_wasmjit;
 
 U0 WasmEmitA64(WasmJitContext *ctx, U32 insn) {
@@ -178,9 +182,13 @@ I64 WasmJitRunBytes(U8 *bytes, I64 len) {
     doldoc_printf("$FG,GREEN$[WASM-JIT] JIT Compilation complete: %lld ARM64 instructions emitted at %p$FG$\n",
                   g_wasmjit.code_idx, g_wasmjit.code_buf);
 
-    // Call compiled AArch64 machine code directly as a Ring 0 function pointer!
-    I64 (*fn)() = g_wasmjit.code_buf;
-    I64 ret_val = (*fn)();
+    // Invalidate I-cache and clean D-cache across emitted machine code
+    HalFlushCache((U64)g_wasmjit.code_buf, g_wasmjit.code_idx * 4);
+
+    // Call compiled AArch64 machine code directly as a Ring 0 function pointer via struct method dispatch!
+    CWasmRunner runner;
+    runner.fn = g_wasmjit.code_buf;
+    I64 ret_val = runner.fn();
 
     doldoc_printf("$FG,YELLOW$[WASM-JIT] Execution result: %lld$FG$\n", ret_val);
     return ret_val;

@@ -68,4 +68,7 @@ static inline uint32_t hal_get_virtio_slots(void) {
     return g_hal_virtio_slots;
 }
 
+// Memory & instruction cache coherency flush for JIT emission
+void hal_flush_cache(void *addr, size_t size);
+
 #endif // NEO_HAL_PLATFORM_H

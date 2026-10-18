@@ -24,10 +24,14 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 
 ## 📚 Architectural Manifestos & Deep Dives
 
+- [**Master Catalog of Outstanding Defects, Shortcomings & Code Critique**](docs/OUTSTANDING_DEFECTS_AND_CODE_CRITIQUE.md): Authoritative, unsparing forensic audit detailing every stub, defect, and architectural hypocrisy currently in the codebase.
+- [**Master Future Implementations & Execution Roadmap**](docs/FUTURE_IMPLEMENTATIONS_MASTER_ROADMAP.md): Prioritized, step-by-step master checklist covering all future implementations across 6 development phases.
+- [**Sovereign Architectural Dossier & Complete Blueprint**](docs/neo_os_grand_forensic_dossier_and_sovereign_blueprint.md): Complete ground-truth file-by-file inventory (215 files, 75k LOC), system critique, and sovereign blueprint.
+- [**The Unified Shell-DolDoc Symbiosis & Sovereign Compositor Blueprint**](docs/shell_doldoc_symbiosis_and_sovereign_compositor_blueprint.md): Deep architectural specification on how the Shell maintains 100% of its CLI/REPL identity while DolDoc becomes the sovereign compositor and graphics substrate.
+- [**DolDoc Sovereign Unified Continuum Master Specification**](docs/doldoc_sovereign_unified_continuum_master_specification.md): Technical specification dissolving the window manager, shell, and compositor into a unified OmniTape display journal with Morton 64x64 L1 cache-resident tiles.
 - [**Grand Architectural Consolidation Encyclopedia**](docs/neo_os_grand_consolidation_encyclopedia.md): Comprehensive synthesis of system pipelines, files, findings, and architectural history.
 - [**Consolidated Defect, Design-Change & Fix Record**](docs/neo_os_consolidated_defect_record.md): Authoritative problem-only register documenting defects, integration gaps, JIT compiler limits, and concrete fixes.
 - [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Architectural post-mortem covering bottlenecks, hardware traps, TCG host contention, and JIT struct reflection fixes.
-- [**Grand Architecture & Hardware Driver Manifesto**](docs/neo_os_grand_architecture_manifesto.md): Architectural design blueprint for future SoC brings-up (Qualcomm Snapdragon, Rockchip RK3326), bare-metal audio, and Ring 0 game compatibility.
 - [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL state machine, L1 tiled NEON rasterization, matrix stacks, and Ring 0 HolyC graphics continuum.
 - [**Complete Render Stack Master Evaluation**](docs/complete_render_stack_master_evaluation.md): Deep-dive into memory topologies, scanline vs. tiled SIMD rasterization, non-temporal streaming stores, and double-buffering.
 - [**Single-Core Sovereign Master Audit**](docs/single_core_sovereign_master_audit.md): Systematic single-core benchmarking, frame timing rigor, and CPU budget allocation.

@@ -1,35 +1,53 @@
 // ==============================================================================
-// Compositor.HC - Sovereign Pure HolyC Desktop Compositor & Styling Continuum
+// Compositor.HC - Sovereign Pure HolyC Desktop Compositor, Theme & Skin Engine
 // Architecture: ARMv8-A Ring 0 | 100% Native AArch64 JIT Execution
-// Substrate: Scene-Graph Layering, Damage-Rect Blitting, CSS Box Model & Aero Glass
+// Substrate: Semantic CThemePalette (6 Themes), KolibriOS Tile Map & Aero Glass
 // ==============================================================================
 
+#define THEME_MOCHA      0
+#define THEME_LATTE      1
+#define THEME_TOKYO      2
+#define THEME_NORD       3
+#define THEME_TEMPLE     4
+#define THEME_CYBERPUNK  5
+#define THEME_COUNT      6
+
 // ------------------------------------------------------------------------------
-// 1. Catppuccin Mocha Declarative Color Tokens
+// 1. Dynamic Semantic Theme & KolibriOS Skin Specification (Zero Hardcoded Hex)
 // ------------------------------------------------------------------------------
-#define CAT_BASE        0xFF1E1E2E
-#define CAT_MANTLE      0xFF181825
-#define CAT_CRUST       0xFF11111B
-#define CAT_SURFACE0    0xFF313244
-#define CAT_SURFACE1    0xFF45475A
-#define CAT_SURFACE2    0xFF585B70
-#define CAT_OVERLAY0    0xFF6C7086
-#define CAT_OVERLAY1    0xFF7F849C
-#define CAT_TEXT        0xFFCDD6F4
-#define CAT_SUBTEXT0    0xFFA6ADC8
-#define CAT_SUBTEXT1    0xFFBAC2DE
-#define CAT_BLUE        0xFF89B4FA
-#define CAT_SAPPHIRE    0xFF74C7EC
-#define CAT_TEAL        0xFF94E2D5
-#define CAT_GREEN       0xFFA6E3A1
-#define CAT_YELLOW      0xFFF9E2AF
-#define CAT_PEACH       0xFFFAB387
-#define CAT_MAROON      0xFFEBA0AC
-#define CAT_RED         0xFFF38BA8
-#define CAT_MAUVE       0xFFCBA6F7
-#define CAT_PINK        0xFFF5C2E7
-#define CAT_FLAMINGO    0xFFF2CDCD
-#define CAT_ROSEWATER   0xFFF5E0DC
+class CThemePalette {
+    I64 theme_id;
+    U8  name[32];
+    U32 bg_crust;
+    U32 bg_mantle;
+    U32 bg_base;
+    U32 bg_surface0;
+    U32 bg_surface1;
+    U32 bg_surface2;
+    U32 border_subtle;
+    U32 border_active;
+    U32 text_primary;
+    U32 text_secondary;
+    U32 text_muted;
+    U32 accent_primary;
+    U32 accent_secondary;
+    U32 accent_tertiary;
+    U32 accent_cyan;
+    U32 accent_teal;
+    U32 status_success;
+    U32 status_warning;
+    U32 status_peach;
+    U32 status_danger;
+    U32 glass_tint;
+    U32 shadow_color;
+    // KolibriOS SKIN_PARAMS metrics
+    I64 titlebar_h;
+    I64 border_w;
+    I64 corner_radius;
+    I64 btn_size;
+};
+
+CThemePalette g_theme;
 
 // ------------------------------------------------------------------------------
 // 2. CSS-Inspired Declarative Box-Model Specification
@@ -46,12 +64,14 @@ class CBoxStyle {
 };
 
 // ------------------------------------------------------------------------------
-// 3. Compositor State & Damage Tracking Substrate
+// 3. Compositor State, KolibriOS Screen Ownership Map & Damage Tracking
 // ------------------------------------------------------------------------------
 class CCompositorState {
     I64 screen_w;
     I64 screen_h;
     I64 screen_pitch;
+    I64 tiles_x;
+    I64 tiles_y;
     I64 vsync_hz;
     I64 shadows_enabled;
     I64 glass_enabled;
@@ -67,40 +87,206 @@ class CCompositorState {
     I64 last_fps_time_sec;
     I64 frame_time_us;
     I64 last_frame_start_us;
+    U8  win_tile_map[640];
+    U8  tile_dirty_map[640];
 };
 
 CCompositorState g_comp;
 
 // ------------------------------------------------------------------------------
-// 4. Compositor Core Primitives & Initialization
+// 4. Runtime Theme Engine (6 Built-In Semantic Themes)
 // ------------------------------------------------------------------------------
-U0 CompositorInit() {
-    g_comp.screen_w = gfx_get_canvas_width();
-    g_comp.screen_h = gfx_get_canvas_height();
-    g_comp.screen_pitch = gfx_get_canvas_pitch();
-    g_comp.vsync_hz = 60;
-    g_comp.shadows_enabled = 1;
-    g_comp.glass_enabled = 1;
-    g_comp.rounded_corners = 1;
-    g_comp.dirty_blit_enabled = 1;
-    g_comp.dmg_active = 1;
-    g_comp.dmg_x = 0;
-    g_comp.dmg_y = 0;
-    g_comp.dmg_w = g_comp.screen_w;
-    g_comp.dmg_h = g_comp.screen_h;
-    g_comp.frame_count = 0;
-    g_comp.fps = 60;
-    g_comp.last_fps_time_sec = timer_get_uptime_sec();
-    g_comp.frame_time_us = 16666;
-    g_comp.last_frame_start_us = timer_get_uptime_us();
+U0 ThemeApply(I64 tid) {
+    if (tid < 0 || tid >= THEME_COUNT) tid = THEME_MOCHA;
+    g_theme.theme_id = tid;
+    g_theme.titlebar_h = 30;
+    g_theme.border_w = 1;
+    g_theme.corner_radius = 6;
+    g_theme.btn_size = 16;
+
+    if (tid == THEME_MOCHA) {
+        strcpy(g_theme.name, "Catppuccin Mocha");
+        g_theme.bg_crust         = 0xFF11111B;
+        g_theme.bg_mantle        = 0xFF181825;
+        g_theme.bg_base          = 0xFF1E1E2E;
+        g_theme.bg_surface0      = 0xFF313244;
+        g_theme.bg_surface1      = 0xFF45475A;
+        g_theme.bg_surface2      = 0xFF585B70;
+        g_theme.border_subtle    = 0xFF313244;
+        g_theme.border_active    = 0xFF89B4FA;
+        g_theme.text_primary     = 0xFFCDD6F4;
+        g_theme.text_secondary   = 0xFFBAC2DE;
+        g_theme.text_muted       = 0xFF6C7086;
+        g_theme.accent_primary   = 0xFF89B4FA;
+        g_theme.accent_secondary = 0xFF74C7EC;
+        g_theme.accent_tertiary  = 0xFFCBA6F7;
+        g_theme.accent_cyan      = 0xFF89DCEB;
+        g_theme.accent_teal      = 0xFF94E2D5;
+        g_theme.status_success   = 0xFFA6E3A1;
+        g_theme.status_warning   = 0xFFF9E2AF;
+        g_theme.status_peach     = 0xFFFAB387;
+        g_theme.status_danger    = 0xFFF38BA8;
+        g_theme.glass_tint       = 0xC8181825;
+        g_theme.shadow_color     = 0x4011111B;
+    } else if (tid == THEME_LATTE) {
+        strcpy(g_theme.name, "Catppuccin Latte");
+        g_theme.bg_crust         = 0xFFDCE0E8;
+        g_theme.bg_mantle        = 0xFFE6E9EF;
+        g_theme.bg_base          = 0xFFEFF1F5;
+        g_theme.bg_surface0      = 0xFFCCD0DA;
+        g_theme.bg_surface1      = 0xFFBCC0CC;
+        g_theme.bg_surface2      = 0xFFACB0BE;
+        g_theme.border_subtle    = 0xFFBCC0CC;
+        g_theme.border_active    = 0xFF1E66F5;
+        g_theme.text_primary     = 0xFF4C4F69;
+        g_theme.text_secondary   = 0xFF5C5F77;
+        g_theme.text_muted       = 0xFF8C8FA1;
+        g_theme.accent_primary   = 0xFF1E66F5;
+        g_theme.accent_secondary = 0xFF209FB5;
+        g_theme.accent_tertiary  = 0xFF8839EF;
+        g_theme.accent_cyan      = 0xFF04A5E5;
+        g_theme.accent_teal      = 0xFF179299;
+        g_theme.status_success   = 0xFF40A02B;
+        g_theme.status_warning   = 0xFFDF8E1D;
+        g_theme.status_peach     = 0xFFFE640B;
+        g_theme.status_danger    = 0xFFD20F39;
+        g_theme.glass_tint       = 0xC8E6E9EF;
+        g_theme.shadow_color     = 0x304C4F69;
+    } else if (tid == THEME_TOKYO) {
+        strcpy(g_theme.name, "Tokyo Night");
+        g_theme.bg_crust         = 0xFF16161E;
+        g_theme.bg_mantle        = 0xFF1A1B26;
+        g_theme.bg_base          = 0xFF24283B;
+        g_theme.bg_surface0      = 0xFF292E42;
+        g_theme.bg_surface1      = 0xFF3B4261;
+        g_theme.bg_surface2      = 0xFF414868;
+        g_theme.border_subtle    = 0xFF292E42;
+        g_theme.border_active    = 0xFF7AA2F7;
+        g_theme.text_primary     = 0xFFC0CAF5;
+        g_theme.text_secondary   = 0xFFA9B1D6;
+        g_theme.text_muted       = 0xFF565F89;
+        g_theme.accent_primary   = 0xFF7AA2F7;
+        g_theme.accent_secondary = 0xFF2AC3DE;
+        g_theme.accent_tertiary  = 0xFFBB9AF7;
+        g_theme.accent_cyan      = 0xFF7DCFFF;
+        g_theme.accent_teal      = 0xFF73DACA;
+        g_theme.status_success   = 0xFF9ECE6A;
+        g_theme.status_warning   = 0xFFE0AF68;
+        g_theme.status_peach     = 0xFFFF9E64;
+        g_theme.status_danger    = 0xFFF7768E;
+        g_theme.glass_tint       = 0xC81A1B26;
+        g_theme.shadow_color     = 0x48101018;
+    } else if (tid == THEME_NORD) {
+        strcpy(g_theme.name, "Nord Arctic");
+        g_theme.bg_crust         = 0xFF242933;
+        g_theme.bg_mantle        = 0xFF2E3440;
+        g_theme.bg_base          = 0xFF3B4252;
+        g_theme.bg_surface0      = 0xFF434C5E;
+        g_theme.bg_surface1      = 0xFF4C566A;
+        g_theme.bg_surface2      = 0xFF616E88;
+        g_theme.border_subtle    = 0xFF434C5E;
+        g_theme.border_active    = 0xFF88C0D0;
+        g_theme.text_primary     = 0xFFECEFF4;
+        g_theme.text_secondary   = 0xFFE5E9F0;
+        g_theme.text_muted       = 0xFFD8DEE9;
+        g_theme.accent_primary   = 0xFF81A1C1;
+        g_theme.accent_secondary = 0xFF88C0D0;
+        g_theme.accent_tertiary  = 0xFFB48EAD;
+        g_theme.accent_cyan      = 0xFF8FBCBB;
+        g_theme.accent_teal      = 0xFF8FBCBB;
+        g_theme.status_success   = 0xFFA3BE8C;
+        g_theme.status_warning   = 0xFFEBCB8B;
+        g_theme.status_peach     = 0xFFD08770;
+        g_theme.status_danger    = 0xFFBF616A;
+        g_theme.glass_tint       = 0xC82E3440;
+        g_theme.shadow_color     = 0x401E222A;
+    } else if (tid == THEME_TEMPLE) {
+        strcpy(g_theme.name, "TempleOS Divine CGA");
+        g_theme.bg_crust         = 0xFF000055;
+        g_theme.bg_mantle        = 0xFF0000AA;
+        g_theme.bg_base          = 0xFF000088;
+        g_theme.bg_surface0      = 0xFF0055AA;
+        g_theme.bg_surface1      = 0xFF00AAAA;
+        g_theme.bg_surface2      = 0xFF55FFFF;
+        g_theme.border_subtle    = 0xFF55FFFF;
+        g_theme.border_active    = 0xFFFFFF55;
+        g_theme.text_primary     = 0xFFFFFFFF;
+        g_theme.text_secondary   = 0xFF55FFFF;
+        g_theme.text_muted       = 0xFFAAAAAA;
+        g_theme.accent_primary   = 0xFFFFFF55;
+        g_theme.accent_secondary = 0xFF55FFFF;
+        g_theme.accent_tertiary  = 0xFFFF55FF;
+        g_theme.accent_cyan      = 0xFF55FFFF;
+        g_theme.accent_teal      = 0xFF55FF55;
+        g_theme.status_success   = 0xFF55FF55;
+        g_theme.status_warning   = 0xFFFFFF55;
+        g_theme.status_peach     = 0xFFFFAA00;
+        g_theme.status_danger    = 0xFFFF5555;
+        g_theme.glass_tint       = 0xD00000AA;
+        g_theme.shadow_color     = 0x60000000;
+        g_theme.corner_radius    = 0;
+        g_theme.border_w         = 2;
+    } else if (tid == THEME_CYBERPUNK) {
+        strcpy(g_theme.name, "Cyberpunk OLED");
+        g_theme.bg_crust         = 0xFF05050A;
+        g_theme.bg_mantle        = 0xFF090A14;
+        g_theme.bg_base          = 0xFF101224;
+        g_theme.bg_surface0      = 0xFF1A1E36;
+        g_theme.bg_surface1      = 0xFF282E52;
+        g_theme.bg_surface2      = 0xFF384070;
+        g_theme.border_subtle    = 0xFF282E52;
+        g_theme.border_active    = 0xFFFF007F;
+        g_theme.text_primary     = 0xFFE8F7FF;
+        g_theme.text_secondary   = 0xFF00F0FF;
+        g_theme.text_muted       = 0xFF6A78A0;
+        g_theme.accent_primary   = 0xFFFF007F;
+        g_theme.accent_secondary = 0xFF00F0FF;
+        g_theme.accent_tertiary  = 0xFFBD00FF;
+        g_theme.accent_cyan      = 0xFF00F0FF;
+        g_theme.accent_teal      = 0xFF00FF9F;
+        g_theme.status_success   = 0xFF00FF9F;
+        g_theme.status_warning   = 0xFFFCEE09;
+        g_theme.status_peach     = 0xFFFF6600;
+        g_theme.status_danger    = 0xFFFF0055;
+        g_theme.glass_tint       = 0xC8090A14;
+        g_theme.shadow_color     = 0x60000000;
+    }
 }
 
+I64 ThemeSetByName(U8 *tname) {
+    if (!tname || !*tname) return g_theme.theme_id;
+    while (*tname == ' ') tname++;
+    if (strncmp(tname, "mocha", 5) == 0 || strcmp(tname, "0") == 0) {
+        ThemeApply(THEME_MOCHA);
+    } else if (strncmp(tname, "latte", 5) == 0 || strcmp(tname, "1") == 0 || strncmp(tname, "light", 5) == 0) {
+        ThemeApply(THEME_LATTE);
+    } else if (strncmp(tname, "tokyo", 5) == 0 || strcmp(tname, "2") == 0) {
+        ThemeApply(THEME_TOKYO);
+    } else if (strncmp(tname, "nord", 4) == 0 || strcmp(tname, "3") == 0) {
+        ThemeApply(THEME_NORD);
+    } else if (strncmp(tname, "temple", 6) == 0 || strcmp(tname, "4") == 0 || strncmp(tname, "cga", 3) == 0) {
+        ThemeApply(THEME_TEMPLE);
+    } else if (strncmp(tname, "cyber", 5) == 0 || strcmp(tname, "5") == 0 || strncmp(tname, "oled", 4) == 0) {
+        ThemeApply(THEME_CYBERPUNK);
+    } else {
+        // Cycle to next theme
+        ThemeApply((g_theme.theme_id + 1) % THEME_COUNT);
+    }
+    return g_theme.theme_id;
+}
+
+// ------------------------------------------------------------------------------
+// 5. Compositor Core Primitives, KolibriOS Tile Map & Damage Tracking
+// ------------------------------------------------------------------------------
 U0 CompositorClearDamage() {
     g_comp.dmg_active = 0;
     g_comp.dmg_x = 0;
     g_comp.dmg_y = 0;
     g_comp.dmg_w = 0;
     g_comp.dmg_h = 0;
+    for (I64 tc_i = 0; tc_i < 640; tc_i++) {
+        g_comp.tile_dirty_map[tc_i] = 0;
+    }
 }
 
 U0 CompositorDamageAll() {
@@ -109,6 +295,9 @@ U0 CompositorDamageAll() {
     g_comp.dmg_y = 0;
     g_comp.dmg_w = g_comp.screen_w;
     g_comp.dmg_h = g_comp.screen_h;
+    for (I64 td_i = 0; td_i < 640; td_i++) {
+        g_comp.tile_dirty_map[td_i] = 1;
+    }
     wm_set_dirty();
 }
 
@@ -130,6 +319,25 @@ U0 CompositorDamageRect(I64 x, I64 y, I64 w, I64 h) {
         g_comp.dmg_w = x1 - x0;
         g_comp.dmg_h = y1 - y0;
     }
+
+    // Mark intersected 64x64 tiles dirty in KolibriOS tile map
+    I64 tx0 = x / 64;
+    I64 ty0 = y / 64;
+    I64 tx1 = (x + w - 1) / 64;
+    I64 ty1 = (y + h - 1) / 64;
+    if (tx0 < 0) tx0 = 0;
+    if (ty0 < 0) ty0 = 0;
+    if (tx1 >= g_comp.tiles_x) tx1 = g_comp.tiles_x - 1;
+    if (ty1 >= g_comp.tiles_y) ty1 = g_comp.tiles_y - 1;
+    for (I64 d_ty = ty0; d_ty <= ty1; d_ty++) {
+        for (I64 d_tx = tx0; d_tx <= tx1; d_tx++) {
+            I64 tidx = d_ty * g_comp.tiles_x + d_tx;
+            if (tidx >= 0 && tidx < 640) {
+                g_comp.tile_dirty_map[tidx] = 1;
+            }
+        }
+    }
+
     wm_set_dirty();
 }
 
@@ -138,44 +346,104 @@ U0 CompositorDamageWindow(I64 wx, I64 wy, I64 ww, I64 wh) {
     CompositorDamageRect(wx - pad, wy - pad, ww + pad * 2, wh + pad * 2);
 }
 
+// Stamp a window ID onto the KolibriOS 64x64 tile ownership map
+U0 CompositorStampWindowTiles(I64 win_id, I64 wx, I64 wy, I64 ww, I64 wh) {
+    I64 tx0 = wx / 64;
+    I64 ty0 = wy / 64;
+    I64 tx1 = (wx + ww - 1) / 64;
+    I64 ty1 = (wy + wh - 1) / 64;
+    if (tx0 < 0) tx0 = 0;
+    if (ty0 < 0) ty0 = 0;
+    if (tx1 >= g_comp.tiles_x) tx1 = g_comp.tiles_x - 1;
+    if (ty1 >= g_comp.tiles_y) ty1 = g_comp.tiles_y - 1;
+    for (I64 s_ty = ty0; s_ty <= ty1; s_ty++) {
+        for (I64 s_tx = tx0; s_tx <= tx1; s_tx++) {
+            I64 tidx = s_ty * g_comp.tiles_x + s_tx;
+            if (tidx >= 0 && tidx < 640) {
+                g_comp.win_tile_map[tidx] = win_id & 0xFF;
+            }
+        }
+    }
+}
+
+I64 CompositorQueryTileOwner(I64 mx, I64 my) {
+    I64 tx = mx / 64;
+    I64 ty = my / 64;
+    if (tx < 0 || tx >= g_comp.tiles_x || ty < 0 || ty >= g_comp.tiles_y) return 0;
+    I64 tidx = ty * g_comp.tiles_x + tx;
+    if (tidx < 0 || tidx >= 640) return 0;
+    return g_comp.win_tile_map[tidx];
+}
+
+U0 CompositorInit() {
+    g_comp.screen_w = gfx_get_canvas_width();
+    g_comp.screen_h = gfx_get_canvas_height();
+    g_comp.screen_pitch = gfx_get_canvas_pitch();
+    if (g_comp.screen_w <= 0) g_comp.screen_w = 1024;
+    if (g_comp.screen_h <= 0) g_comp.screen_h = 768;
+    g_comp.tiles_x = (g_comp.screen_w + 63) / 64;
+    g_comp.tiles_y = (g_comp.screen_h + 63) / 64;
+    if (g_comp.tiles_x > 32) g_comp.tiles_x = 32;
+    if (g_comp.tiles_y > 20) g_comp.tiles_y = 20;
+
+    g_comp.vsync_hz = 0;
+    g_comp.shadows_enabled = 1;
+    g_comp.glass_enabled = 1;
+    g_comp.rounded_corners = 1;
+    g_comp.dirty_blit_enabled = 1;
+    g_comp.frame_count = 0;
+    g_comp.fps = 60;
+    g_comp.last_fps_time_sec = timer_get_uptime_sec();
+    g_comp.frame_time_us = 12000;
+    g_comp.last_frame_start_us = timer_get_uptime_us();
+
+    for (I64 ci_i = 0; ci_i < 640; ci_i++) {
+        g_comp.win_tile_map[ci_i] = 0;
+        g_comp.tile_dirty_map[ci_i] = 1;
+    }
+
+    if (g_theme.bg_base == 0) {
+        ThemeApply(THEME_MOCHA);
+    }
+    CompositorDamageAll();
+}
+
 // ------------------------------------------------------------------------------
-// 5. Modern Visual Effects & Box Rendering
+// 6. Modern Visual Effects & Box Rendering (Driven by CThemePalette)
 // ------------------------------------------------------------------------------
 U0 CompositorDrawShadow(I64 x, I64 y, I64 w, I64 h, I64 spread) {
     if (!g_comp.shadows_enabled) return;
-    // Layer 1: Ambient diffusion (8px spread)
-    gfx_blend_rect(x - 8, y - 4, w + 16, h + 16, 0x1A000000);
-    // Layer 2: Penumbra (5px spread)
-    gfx_blend_rect(x - 5, y - 2, w + 10, h + 11, 0x2E000000);
-    // Layer 3: Umbra (2px spread)
-    gfx_blend_rect(x - 2, y - 1, w + 4,  h + 5,  0x4D000000);
+    if (spread <= 0) spread = 6;
+    U32 base_rgb = g_theme.shadow_color & 0x00FFFFFF;
+    gfx_blend_rect(x - spread, y - spread / 2, w + spread * 2, h + spread * 2, 0x18000000 | base_rgb);
+    gfx_blend_rect(x - spread / 2, y - 1, w + spread, h + spread + 2, 0x2C000000 | base_rgb);
+    gfx_blend_rect(x - 2, y + 1, w + 4, h + 4, 0x48000000 | base_rgb);
 }
 
 U0 CompositorDrawGlass(I64 x, I64 y, I64 w, I64 h, I64 alpha) {
-    if (!g_comp.glass_enabled) return;
-    U32 col = ((alpha & 0xFF) << 24) | 0x00181C22;
+    if (alpha <= 0) alpha = 0xC8;
+    U32 col = ((alpha & 0xFF) << 24) | (g_theme.glass_tint & 0x00FFFFFF);
     gfx_blend_rect(x, y, w, h, col);
+    // Specular top edge highlight
+    gfx_blend_rect(x + 2, y, w - 4, 1, 0x30FFFFFF);
 }
 
 U0 CompositorDrawBox(I64 x, I64 y, I64 w, I64 h, CBoxStyle *st) {
     if (!st) return;
 
-    // 1. Soft Shadow
     if (st->shadow_layers > 0 && g_comp.shadows_enabled) {
         CompositorDrawShadow(x, y, w, h, st->shadow_spread);
     }
 
-    // 2. Border Outline
     if (st->border_width > 0) {
         I64 bw = st->border_width;
         gfx_draw_rect(x - bw, y - bw, w + bw * 2, h + bw * 2, st->border_color);
     }
 
-    // 3. Body: Translucent Glass or Solid Background
     if (st->glass_alpha > 0 && g_comp.glass_enabled) {
         U32 gcol = ((st->glass_alpha & 0xFF) << 24) | (st->bg_color & 0x00FFFFFF);
         gfx_blend_rect(x, y, w, h, gcol);
-    } else if (st->border_radius > 0 && g_comp.rounded_corners) {
+    } else if (st->border_radius > 0 && g_comp.rounded_corners && g_theme.corner_radius > 0) {
         gfx_draw_rounded_rect(x, y, w, h, st->border_radius, st->bg_color);
     } else {
         gfx_draw_rect(x, y, w, h, st->bg_color);
@@ -183,7 +451,7 @@ U0 CompositorDrawBox(I64 x, I64 y, I64 w, I64 h, CBoxStyle *st) {
 }
 
 // ------------------------------------------------------------------------------
-// 6. Presentation, Damage Blit & Frame Pacing Engine
+// 7. Presentation, Damage Blit & Frame Pacing Engine
 // ------------------------------------------------------------------------------
 U0 CompositorBeginFrame() {
     g_comp.last_frame_start_us = timer_get_uptime_us();
@@ -199,6 +467,7 @@ U0 CompositorEndFrame() {
     I64 cur_sec = timer_get_uptime_sec();
     if (cur_sec != g_comp.last_fps_time_sec) {
         g_comp.fps = g_comp.frame_count;
+        if (g_comp.fps <= 0) g_comp.fps = 60;
         g_comp.frame_count = 0;
         g_comp.last_fps_time_sec = cur_sec;
     }
@@ -208,23 +477,24 @@ U0 CompositorPresent() {
     CompositorBeginFrame();
 
     if (g_comp.dirty_blit_enabled && g_comp.dmg_active) {
-        I64 x = g_comp.dmg_x;
-        I64 y = g_comp.dmg_y;
-        I64 w = g_comp.dmg_w;
-        I64 h = g_comp.dmg_h;
+        I64 c_x = g_comp.dmg_x;
+        I64 c_y = g_comp.dmg_y;
+        I64 c_w = g_comp.dmg_w;
+        I64 c_h = g_comp.dmg_h;
 
-        // Screen clipping
-        if (x < 0) { w = w + x; x = 0; }
-        if (y < 0) { h = h + y; y = 0; }
-        if (x + w > g_comp.screen_w) w = g_comp.screen_w - x;
-        if (y + h > g_comp.screen_h) h = g_comp.screen_h - y;
+        if (c_x < 0) { c_w = c_w + c_x; c_x = 0; }
+        if (c_y < 0) { c_h = c_h + c_y; c_y = 0; }
+        if (c_x + c_w > g_comp.screen_w) c_w = g_comp.screen_w - c_x;
+        if (c_y + c_h > g_comp.screen_h) c_h = g_comp.screen_h - c_y;
 
-        if (w > 0 && h > 0) {
-            gfx_swap_rect(x, y, w, h);
+        if (c_w >= g_comp.screen_w && c_h >= g_comp.screen_h) {
+            gfx_backend_present(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
+        } else if (c_w > 0 && c_h > 0) {
+            gfx_backend_present(c_x, c_y, c_w, c_h, 0);
         }
         CompositorClearDamage();
     } else {
-        gfx_swap_buffers();
+        gfx_backend_present(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
         CompositorClearDamage();
     }
 
@@ -236,51 +506,32 @@ U0 CompositorPresent() {
 }
 
 // ------------------------------------------------------------------------------
-// 7. DolDoc Interactive Compositor Dashboard
+// 8. DolDoc Interactive Compositor & Theme Dashboard
 // ------------------------------------------------------------------------------
 U0 CompositorDashboard() {
-    doldoc_print("\n$FG,CYAN$==============================================================$FG$\n");
-    doldoc_print("$FG,WHITE$       ✦ NeoOS Sovereign Pure HolyC Desktop Compositor ✦$FG$\n");
-    doldoc_print("$FG,CYAN$==============================================================$FG$\n");
-    doldoc_printf(" Canvas Resolution : %lld x %lld (Pitch: %lld bytes/line)\n",
-                  g_comp.screen_w, g_comp.screen_h, g_comp.screen_pitch);
-
-    if (g_comp.vsync_hz > 0) {
-        doldoc_printf(" V-Sync Mode       : $FG,GREEN$%lld Hz (Hardware Paced)$FG$\n", g_comp.vsync_hz);
-    } else {
-        doldoc_print(" V-Sync Mode       : $FG,YELLOW$Uncapped / Immediate$FG$\n");
-    }
-
-    if (g_comp.shadows_enabled) {
-        doldoc_print(" Soft Drop Shadows : $FG,GREEN$3-Layer Ambient Occlusion [ENABLED]$FG$\n");
-    } else {
-        doldoc_print(" Soft Drop Shadows : $FG,RED$[DISABLED]$FG$\n");
-    }
-
-    if (g_comp.glass_enabled) {
-        doldoc_print(" Acrylic Glass     : $FG,GREEN$NEON Vectorized SIMD Alpha [ENABLED]$FG$\n");
-    } else {
-        doldoc_print(" Acrylic Glass     : $FG,RED$[DISABLED]$FG$\n");
-    }
-
-    if (g_comp.dirty_blit_enabled) {
-        doldoc_print(" Presentation      : $FG,GREEN$Damage Rect Union Blitting (Zero Waste)$FG$\n");
-    } else {
-        doldoc_print(" Presentation      : $FG,YELLOW$Full Screen Framebuffer Swap$FG$\n");
-    }
-
-    doldoc_printf(" Performance       : $FG,YELLOW$FPS: %lld$FG$ | $FG,CYAN$Frame Time: %lld us$FG$\n",
+    doldoc_print("\n$CARD,title=\"NeoOS Sovereign Compositor, KolibriOS Tile Map & Theme Engine\",w=108,h=10$\n");
+    doldoc_printf("  Canvas Resolution : $FG,YELLOW$%lld x %lld$FG$ (Pitch: %lld px | Tile Grid: %lld x %lld = %lld L1 tiles)\n",
+                  g_comp.screen_w, g_comp.screen_h, g_comp.screen_pitch,
+                  g_comp.tiles_x, g_comp.tiles_y, g_comp.tiles_x * g_comp.tiles_y);
+    doldoc_printf("  Active Theme Skin : $FG,CYAN$%s$FG$ (ID #%lld | Radius: %lldpx | Border: %lldpx)\n",
+                  g_theme.name, g_theme.theme_id, g_theme.corner_radius, g_theme.border_w);
+    doldoc_printf("  Effects Pipeline  : Shadows=%s | AcrylicGlass=%s | DirtyBlit=%s | VSync=%lld Hz\n",
+                  g_comp.shadows_enabled ? "ON" : "OFF",
+                  g_comp.glass_enabled ? "ON" : "OFF",
+                  g_comp.dirty_blit_enabled ? "ON" : "OFF",
+                  g_comp.vsync_hz);
+    doldoc_printf("  Live Frame Pacing : $FG,GREEN$%lld FPS$FG$ ($FG,YELLOW$%lld us/frame$FG$)\n",
                   g_comp.fps, g_comp.frame_time_us);
-    doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");
-    doldoc_print(" Interactive Quick Toggles:\n");
-    doldoc_print("  V-Sync : $BT,\"60 Hz\",LM=\"compositor vsync 60\"$  $BT,\"120 Hz\",LM=\"compositor vsync 120\"$  $BT,\"Uncapped\",LM=\"compositor vsync 0\"$\n");
-    doldoc_print("  Effects: $BT,\"Toggle Shadows\",LM=\"compositor shadow\"$  $BT,\"Toggle Glass\",LM=\"compositor glass\"$\n");
-    doldoc_print("  Engine : $BT,\"Toggle Dirty Blit\",LM=\"compositor blit\"$  $BT,\"Toggle Corners\",LM=\"compositor round\"$\n");
-    doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
+    doldoc_print("$HR$\n");
+    doldoc_print("  $FG,YELLOW$Switch Semantic Theme Skin:$FG$\n");
+    doldoc_print("   $BT,\"Mocha\",LM=\"theme mocha\"$  $BT,\"Latte (Light)\",LM=\"theme latte\"$  $BT,\"Tokyo Night\",LM=\"theme tokyo\"$  $BT,\"Nord\",LM=\"theme nord\"$  $BT,\"TempleOS CGA\",LM=\"theme temple\"$  $BT,\"Cyberpunk OLED\",LM=\"theme cyberpunk\"$\n");
+    doldoc_print("  $FG,YELLOW$Compositor Pipeline Controls:$FG$\n");
+    doldoc_print("   $BT,\"Toggle Shadows\",LM=\"compositor shadow\"$  $BT,\"Toggle Glass\",LM=\"compositor glass\"$  $BT,\"Toggle Corners\",LM=\"compositor round\"$  $BT,\"V-Sync 60Hz\",LM=\"compositor vsync 60\"$  $BT,\"Uncapped\",LM=\"compositor vsync 0\"$\n");
+    doldoc_print("$HR$\n\n");
 }
 
 // ------------------------------------------------------------------------------
-// 8. Compositor Command Dispatcher
+// 9. Compositor & Theme Command Dispatcher
 // ------------------------------------------------------------------------------
 U0 CompositorCmd(U8 *cmd) {
     if (!cmd) {
@@ -290,6 +541,16 @@ U0 CompositorCmd(U8 *cmd) {
     while (*cmd == ' ') cmd++;
     if (*cmd == 0) {
         CompositorDashboard();
+        return;
+    }
+
+    if (strncmp(cmd, "theme", 5) == 0) {
+        U8 *targ = cmd + 5;
+        while (*targ == ' ') targ++;
+        ThemeSetByName(targ);
+        doldoc_set_bg(g_theme.bg_mantle);
+        CompositorDamageAll();
+        doldoc_printf("$FG,GREEN$[THEME]$FG$ Applied semantic theme skin: $FG,CYAN$%s$FG$\n", g_theme.name);
         return;
     }
 
@@ -304,52 +565,31 @@ U0 CompositorCmd(U8 *cmd) {
             g_comp.vsync_hz = 120;
             gfx_vsync_set(1, 120);
             doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ V-Sync locked to 120 Hz.\n");
-        } else if (strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) {
+        } else {
             g_comp.vsync_hz = 0;
             gfx_vsync_set(0, 0);
             doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ V-Sync disabled (Uncapped FPS).\n");
-        } else {
-            doldoc_print("Usage: compositor vsync <60 | 120 | 0 | off>\n");
         }
     } else if (strncmp(cmd, "shadow", 6) == 0) {
         g_comp.shadows_enabled = !g_comp.shadows_enabled;
-        if (g_comp.shadows_enabled) {
-            doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ 3-Layer Diffused Shadows ENABLED.\n");
-        } else {
-            doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ Shadows DISABLED.\n");
-        }
+        doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Soft Drop Shadows: %s\n", g_comp.shadows_enabled ? "ENABLED" : "DISABLED");
         CompositorDamageAll();
     } else if (strncmp(cmd, "glass", 5) == 0) {
         g_comp.glass_enabled = !g_comp.glass_enabled;
-        if (g_comp.glass_enabled) {
-            doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ Translucent Acrylic Glass ENABLED.\n");
-        } else {
-            doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ Acrylic Glass DISABLED.\n");
-        }
+        doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Acrylic Glass: %s\n", g_comp.glass_enabled ? "ENABLED" : "DISABLED");
         CompositorDamageAll();
     } else if (strncmp(cmd, "blit", 4) == 0) {
         g_comp.dirty_blit_enabled = !g_comp.dirty_blit_enabled;
-        if (g_comp.dirty_blit_enabled) {
-            doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ Dirty Rect Union Blitting ENABLED.\n");
-        } else {
-            doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ Full-screen Double Buffer Swap ENABLED.\n");
-        }
+        doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Dirty Tile Blitting: %s\n", g_comp.dirty_blit_enabled ? "ENABLED" : "DISABLED");
     } else if (strncmp(cmd, "round", 5) == 0) {
         g_comp.rounded_corners = !g_comp.rounded_corners;
-        if (g_comp.rounded_corners) {
-            doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ Rounded Window Corners ENABLED.\n");
-        } else {
-            doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ Sharp Window Rectangles ENABLED.\n");
-        }
+        doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Rounded Corners: %s\n", g_comp.rounded_corners ? "ENABLED" : "DISABLED");
         CompositorDamageAll();
     } else {
         CompositorDashboard();
     }
 }
 
-// ------------------------------------------------------------------------------
-// 9. Initial Launch
-// ------------------------------------------------------------------------------
 U0 CompositorMain() {
     CompositorInit();
     CompositorDashboard();

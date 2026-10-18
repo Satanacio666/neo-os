@@ -15,7 +15,9 @@ static volatile int buf_tail = 0;
 #define PL011_FR_TXFF   (1U << 5) // Transmit FIFO Full
 
 void uart_putc(char c) {
-    while (*PL011_UARTFR & PL011_FR_TXFF) {
+    int timeout = 10000;
+    while ((*PL011_UARTFR & PL011_FR_TXFF) && timeout > 0) {
+        timeout--;
         asm volatile("nop");
     }
     *PL011_UARTDR = (uint32_t)c;

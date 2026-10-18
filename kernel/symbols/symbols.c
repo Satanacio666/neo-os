@@ -1,6 +1,7 @@
 #include "symbols.h"
 #include "../mem/kheap.h"
-#include "../../gui/render.h"
+extern void doldoc_print(const char *str);
+extern void doldoc_printf(const char *fmt, ...);
 #include <uefi.h>
 
 static symbol_t *buckets[SYMBOL_HASH_BUCKETS] = {NULL};
@@ -24,23 +25,28 @@ void symbols_init(void) {
     printf("[SYMBOLS] Global Hash Table initialized (%d buckets)\n", SYMBOL_HASH_BUCKETS);
 }
 
+int64_t symbols_unresolved_trap(void) {
+    return 0;
+}
+
 int symbols_register(const char *name, void *address, symbol_type_t type) {
     if (!name || !address) return 0;
 
     uint32_t bucket = hash_string(name);
 
-    // Check if symbol already exists; if so, update address
+    // Check if symbol already exists (or was pre-reserved as a SIC cell); update address atomically
     symbol_t *curr = buckets[bucket];
     while (curr) {
         if (strcmp(curr->name, name) == 0) {
             curr->address = address;
             curr->type = type;
-            return 1; // Updated
+            __asm__ volatile("dmb ish" ::: "memory");
+            return 1; // Updated in-place SIC cell
         }
         curr = curr->next;
     }
 
-    // Allocate new symbol record in kernel heap
+    // Allocate new persistent symbol record (SIC cell) in kernel heap
     symbol_t *sym = (symbol_t*)kmalloc(sizeof(symbol_t));
     if (!sym) {
         printf("[SYMBOLS] Failed to allocate symbol: %s\n", name);
@@ -55,6 +61,7 @@ int symbols_register(const char *name, void *address, symbol_type_t type) {
     sym->next = buckets[bucket];
     buckets[bucket] = sym;
     total_symbols++;
+    __asm__ volatile("dmb ish" ::: "memory");
 
     return 1;
 }
@@ -78,6 +85,16 @@ symbol_t* symbols_lookup_entry(const char *name) {
     }
 
     return NULL;
+}
+
+symbol_t* symbols_lookup_or_reserve(const char *name, symbol_type_t default_type) {
+    if (!name) return NULL;
+    symbol_t *existing = symbols_lookup_entry(name);
+    if (existing) return existing;
+
+    // Reserve a Late-Bound Symbol Indirect Cell (SIC) pointing to symbols_unresolved_trap
+    symbols_register(name, (void*)symbols_unresolved_trap, default_type);
+    return symbols_lookup_entry(name);
 }
 
 uint64_t symbols_count(void) {

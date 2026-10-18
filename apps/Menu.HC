@@ -1,28 +1,27 @@
-// Menu.HC - Pure HolyC Application Drawer & Launcher
-// NeoOS AArch64 Ring 0 SASOS Native JIT Execution
+// ==============================================================================
+// Menu.HC - Sovereign Pure HolyC Application, Shadertoy & Theme Drawer
+// Architecture: ARMv8-A Ring 0 SASOS | 100% Native AArch64 JIT Execution
+// ==============================================================================
 
 U0 MenuMain() {
-    doldoc_print("\n$FG,CYAN$==============================================================$FG$\n");
-    doldoc_print("$FG,WHITE$             ✦ NeoOS Sovereign HolyC App Drawer (Menu.HC) ✦$FG$\n");
-    doldoc_print("$FG,CYAN$==============================================================$FG$\n");
-    doldoc_print(" Select any category or application to launch in Ring 0:\n\n");
+    doldoc_print("\n$CARD,title=\"NeoOS 3.0 Sovereign Application, Shadertoy & Theme Drawer (Menu.HC)\",w=110,h=11$\n");
+    doldoc_print("  $FONT,text=\"NEO-OS APPLICATION CONTINUUM\",scale=140,color=\"CYAN\"$\n");
+    doldoc_printf("  Active Theme Skin: $FG,YELLOW$%s$FG$ | Select any application, shader, or theme below:\n", g_theme.name);
+    doldoc_print("$HR$\n");
 
-    doldoc_print(" $FG,YELLOW$🚀 System Compute & Telemetry:$FG$\n");
-    doldoc_print("   $BT,\"HolyBenchmark Full\",LM=\"run HolyBenchmark.HC\"$  $BT,\"CPU Benchmarks\",LM=\"run BenchCpu.HC\"$  $BT,\"Bench Report\",LM=\"run BenchReport.HC\"$  $BT,\"Top Monitor\",LM=\"run Top.HC\"$\n\n");
+    doldoc_print("  $FG,YELLOW$1. Flagship Continuum, Shaders & 3D Graphics:$FG$\n");
+    doldoc_print("    $BT,\"Master Showcase\",LM=\"showcase\"$  $BT,\"Shadertoy IDE\",LM=\"shader\"$  $BT,\"Desktop WM\",LM=\"wm\"$  $BT,\"GLXGears 3D\",LM=\"gears\"$  $BT,\"Physics 3D\",LM=\"physics\"$  $BT,\"HolyGL\",LM=\"holygl\"$\n");
 
-    doldoc_print(" $FG,YELLOW$🎮 3D Graphics, Physics & Vector Fonts:$FG$\n");
-    doldoc_print("   $BT,\"GLXGears 3D\",LM=\"run Gears.HC\"$  $BT,\"Physics Dynamics\",LM=\"run Physics3D.HC\"$  $BT,\"L1 Rasterizer\",LM=\"run RasterTile.HC\"$  $BT,\"Vector Font\",LM=\"run FontVector.HC\"$\n");
-    doldoc_print("   $BT,\"Compositor Aero\",LM=\"run Compositor.HC\"$  $BT,\"GPU Profile\",LM=\"run GpuConfig.HC\"$\n\n");
+    doldoc_print("  $FG,YELLOW$2. Runtime Semantic Themes (CThemePalette):$FG$\n");
+    doldoc_print("    $BT,\"Catppuccin Mocha\",LM=\"theme mocha\"$  $BT,\"Latte (Light)\",LM=\"theme latte\"$  $BT,\"Tokyo Night\",LM=\"theme tokyo\"$  $BT,\"Nord Arctic\",LM=\"theme nord\"$  $BT,\"TempleOS CGA\",LM=\"theme temple\"$  $BT,\"Cyberpunk OLED\",LM=\"theme cyberpunk\"$\n");
 
-    doldoc_print(" $FG,YELLOW$📁 Storage & Filesystem:$FG$\n");
-    doldoc_print("   $BT,\"RedSea Filer\",LM=\"run Filer.HC\"$  $BT,\"Directory Listing\",LM=\"ls\"$\n\n");
+    doldoc_print("  $FG,YELLOW$3. Compiler, Benchmarks & Telemetry:$FG$\n");
+    doldoc_print("    $BT,\"Stage-2 Compiler\",LM=\"run Compiler.HC\"$  $BT,\"JIT Suite (P0)\",LM=\"run TestJitP0.HC\"$  $BT,\"HolyBenchmark\",LM=\"bench\"$  $BT,\"Task Top\",LM=\"top\"$  $BT,\"Heap Memory\",LM=\"mem\"$\n");
 
-    doldoc_print(" $FG,YELLOW$💻 Development & HolyC Utilities:$FG$\n");
-    doldoc_print("   $BT,\"Editor\",LM=\"run Editor.HC\"$  $BT,\"StdLib Structures\",LM=\"run StdLib.HC\"$  $BT,\"JIT Self-Test\",LM=\"jittest\"$\n\n");
-
-    doldoc_print(" $FG,YELLOW$⚡ System Controls:$FG$\n");
-    doldoc_print("   $BT,\"Clear Console\",LM=\"clear\"$  $BT,\"Shell Help\",LM=\"help\"$  $BT,\"Refresh Menu\",LM=\"run Menu.HC\"$\n");
-    doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
+    doldoc_print("  $FG,YELLOW$4. Storage, Code Inspection & Utilities:$FG$\n");
+    doldoc_print("    $BT,\"RedSea Filer\",LM=\"filer\"$  $BT,\"Code Editor\",LM=\"edit\"$  $BT,\"Calculator\",LM=\"run calc.HC\"$  $BT,\"Factorials\",LM=\"run fact.HC\"$  $BT,\"Morphic Halos\",LM=\"inspect\"$\n");
+    doldoc_print("$HR$\n\n");
 }
 
 MenuMain();
+0;

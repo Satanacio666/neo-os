@@ -6,6 +6,7 @@
 typedef int64_t (*jit_func_t)(void);
 
 void    jit_init(void);
+void    jit_init_code_pool(void *pool_start, size_t pool_size);
 int64_t jit_eval(const char *expr_source);
 int64_t jit_execute_statement(const char *code);
 int64_t jit_compile_and_run(const char *source);

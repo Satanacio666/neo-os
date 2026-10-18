@@ -726,17 +726,18 @@ int snprintf(char_t *dst, size_t maxlen, const char_t* fmt, ...)
 
 extern int gfx_is_active(void) __attribute__((weak));
 
+static char_t s_vprintf_tmp[1024];
+static wchar_t s_vprintf_dst[1024];
+
 int vprintf(const char_t* fmt, __builtin_va_list args)
 {
     int ret;
-    wchar_t dst[BUFSIZ];
 #ifndef UEFI_NO_UTF8
-    char_t tmp[BUFSIZ];
-    ret = vsnprintf(tmp, BUFSIZ, fmt, args);
+    ret = vsnprintf(s_vprintf_tmp, sizeof(s_vprintf_tmp), fmt, args);
 
     // Mirror to PL011 UART so debug logs appear cleanly in serial output
     volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
-    const char *p = tmp;
+    const char *p = s_vprintf_tmp;
     while (*p) {
         if (*p == '\n') *uartdr = '\r';
         *uartdr = (uint32_t)(*p++);
@@ -744,13 +745,13 @@ int vprintf(const char_t* fmt, __builtin_va_list args)
 
     // Only draw via UEFI ConOut if GUI framebuffer is not yet active
     if (!gfx_is_active || !gfx_is_active()) {
-        mbstowcs(dst, tmp, BUFSIZ - 1);
-        ST->ConOut->OutputString(ST->ConOut, (wchar_t *)&dst);
+        mbstowcs(s_vprintf_dst, s_vprintf_tmp, (sizeof(s_vprintf_dst) / sizeof(wchar_t)) - 1);
+        ST->ConOut->OutputString(ST->ConOut, s_vprintf_dst);
     }
 #else
-    ret = vsnprintf(dst, BUFSIZ, fmt, args);
+    ret = vsnprintf(s_vprintf_dst, sizeof(s_vprintf_dst) / sizeof(wchar_t), fmt, args);
     if (!gfx_is_active || !gfx_is_active()) {
-        ST->ConOut->OutputString(ST->ConOut, (wchar_t *)&dst);
+        ST->ConOut->OutputString(ST->ConOut, s_vprintf_dst);
     }
 #endif
     return ret;
@@ -766,16 +767,17 @@ int printf(const char_t* fmt, ...)
     return ret;
 }
 
+static wchar_t s_vfprintf_dst[1024];
+static char_t s_vfprintf_tmp[1024];
+
 int vfprintf (FILE *__stream, const char_t *__format, __builtin_va_list args)
 {
-    wchar_t dst[BUFSIZ];
-    char_t tmp[BUFSIZ];
     uintn_t ret, i;
 #ifndef UEFI_NO_UTF8
-    ret = (uintn_t)vsnprintf(tmp, BUFSIZ, __format, args);
-    ret = mbstowcs(dst, tmp, BUFSIZ - 1);
+    ret = (uintn_t)vsnprintf(s_vfprintf_tmp, sizeof(s_vfprintf_tmp), __format, args);
+    ret = mbstowcs(s_vfprintf_dst, s_vfprintf_tmp, (sizeof(s_vfprintf_dst) / sizeof(wchar_t)) - 1);
 #else
-    ret = vsnprintf(dst, BUFSIZ, __format, args);
+    ret = vsnprintf(s_vfprintf_dst, sizeof(s_vfprintf_dst) / sizeof(wchar_t), __format, args);
 #endif
     if(ret < 1 || !__stream || __stream == stdin) return 0;
     for(i = 0; i < __blk_ndevs; i++)
@@ -784,19 +786,19 @@ int vfprintf (FILE *__stream, const char_t *__format, __builtin_va_list args)
             return -1;
         }
     if(__stream == stdout)
-        ST->ConOut->OutputString(ST->ConOut, (wchar_t*)&dst);
+        ST->ConOut->OutputString(ST->ConOut, s_vfprintf_dst);
     else if(__stream == stderr)
-        ST->StdErr->OutputString(ST->StdErr, (wchar_t*)&dst);
+        ST->StdErr->OutputString(ST->StdErr, s_vfprintf_dst);
     else if(__ser && __stream == (FILE*)__ser) {
 #ifdef UEFI_NO_UTF8
-        wcstombs((char*)&tmp, dst, BUFSIZ - 1);
+        wcstombs((char*)s_vfprintf_tmp, s_vfprintf_dst, sizeof(s_vfprintf_tmp) - 1);
 #endif
-        __ser->Write(__ser, &ret, (void*)&tmp);
+        __ser->Write(__ser, &ret, (void*)s_vfprintf_tmp);
     } else
 #ifndef UEFI_NO_UTF8
-        __stream->Write(__stream, &ret, (void*)&tmp);
+        __stream->Write(__stream, &ret, (void*)s_vfprintf_tmp);
 #else
-        __stream->Write(__stream, &ret, (void*)&dst);
+        __stream->Write(__stream, &ret, (void*)s_vfprintf_dst);
 #endif
     return (int)ret;
 }
@@ -827,9 +829,15 @@ int getchar (void)
 
 int putchar (int __c)
 {
-    wchar_t tmp[2];
-    tmp[0] = (wchar_t)__c;
-    tmp[1] = 0;
-    ST->ConOut->OutputString(ST->ConOut, (__c == L'\n' ? (wchar_t*)L"\r\n" : (wchar_t*)&tmp));
-    return (int)tmp[0];
+    volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
+    if (__c == '\n') *uartdr = '\r';
+    *uartdr = (uint32_t)(uint8_t)__c;
+
+    if (!gfx_is_active || !gfx_is_active()) {
+        wchar_t tmp[2];
+        tmp[0] = (wchar_t)__c;
+        tmp[1] = 0;
+        ST->ConOut->OutputString(ST->ConOut, (__c == L'\n' ? (wchar_t*)L"\r\n" : (wchar_t*)&tmp));
+    }
+    return __c;
 }

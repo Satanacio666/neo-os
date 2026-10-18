@@ -522,6 +522,14 @@ The complete automated benchmark suite (`kernel/bench/bench_unified.c`) evaluate
 
 While NeoOS has achieved a working sovereign kernel, graphics pipeline, JIT compiler, and benchmark suite, several frontiers remain open for future development:
 
+### 10.0 Pure HolyC System Migration (Elimination of all C outside UEFI Bootstrap)
+- [ ] **Port Compiler Substrate (3 files)**: `compiler/jit_arm64.c`, `compiler/lexer.c`, `compiler/table.c` -> complete transition to self-hosting `apps/Compiler.HC`.
+- [ ] **Port Graphics & Window Management (5 files)**: `gui/render.c`, `gui/wm.c`, `gui/shell.c`, `gui/font_ttf.c`, `gui/font_ubuntu_mono.c` -> `.HC`.
+- [ ] **Port 3D Engine & Math (4 files)**: `kernel/math/holygl.c`, `kernel/math/math3d.c`, `kernel/math/raster_tile.c`, `kernel/math/gears3d.c` -> `.HC`.
+- [ ] **Port Hardware Drivers (6 files)**: `drivers/gpu/virtio_gpu.c`, `drivers/gpu/gfx_backend.c`, `drivers/block/virtio_blk.c`, `drivers/input/virtio_input.c`, `drivers/input/keyboard.c`, `drivers/input/mouse.c` -> `.HC`.
+- [ ] **Port Storage & Kernel Infrastructure (13 files)**: `fs/redsea.c`, `kernel/mem/kheap.c`, `kernel/symbols/symbols.c`, `kernel/sched/sched.c`, `kernel/arch/aarch64/smp.c`, `kernel/arch/aarch64/gic.c`, `kernel/arch/aarch64/timer.c`, `kernel/arch/aarch64/exceptions.c`, `kernel/arch/aarch64/hal_platform.c`, `kernel/bench/bench_unified.c`, `kernel/bench/perf_overlay.c`, `kernel/bench/profiler.c`, `kernel/physics/physics3d.c` -> `.HC`.
+- [ ] **Confine C strictly to Tier-0 UEFI bootstrap**: Only `boot/main.c` and `boot/uefi/*` remain in C.
+
 ### 10.1 Kernel & Low-Level Architecture
 - [ ] **Hardware Preemptive Scheduler**: Currently, task switching is cooperative via `yield()` and window manager message pumping. Implementing true preemptive multitasking requires saving all 31 registers + SIMD state in the timer interrupt handler (`vectors.S`).
 - [ ] **Virtual Memory Protection (Optional Memory Domains)**: Currently, the entire 4GB space is flat identity-mapped. Implementing AArch64 Domain Access Control or Memory Tagging (MTE) would provide safety guarantees against memory corruption while preserving SASOS zero-copy performance.

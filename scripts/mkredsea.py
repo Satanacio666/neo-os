@@ -23,6 +23,11 @@ def build_redsea_image(output_img_path, source_dir):
     print(f"[mkredsea] Creating {DISK_SIZE // (1024*1024)}MB RedSea image at: {output_img_path}")
     image = bytearray(DISK_SIZE)
     
+    # Format LBA 0 with RedSea header and standard boot record signature (0x55, 0xAA)
+    image[0:8] = b"RedSeaFS"
+    image[510] = 0x55
+    image[511] = 0xAA
+    
     # Root directory entries start at PARTITION_LBA (sector 1)
     root_dir_offset = PARTITION_LBA * SECTOR_SIZE
     current_data_cluster = PARTITION_LBA + ROOT_SECTORS  # sector 17

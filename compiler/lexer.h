@@ -86,7 +86,7 @@ typedef struct {
     token_type_t type;
     int64_t      int_value;
     double       float_value;
-    char         str_value[64];
+    char         str_value[2048];
     int          line;
     int          col;
 } token_t;

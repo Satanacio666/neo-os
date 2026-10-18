@@ -1,7 +1,6 @@
 .global vector_table_el1
 .global install_vector_table
-.extern gic_dispatch
-.extern arm64_sync_exception
+.global g_arch_vectors
 
 // Macro to save complete CPU state (trap frame)
 // Macro to save complete CPU state (trap frame: GPRs + SP + NEON Q0-Q31)
@@ -165,44 +164,94 @@ lower_el_a32_fiq:
 lower_el_a32_serror:
     b handle_unhandled_exception
 
-// Out-of-line exception and interrupt dispatchers
+// Out-of-line exception and interrupt dispatchers via g_arch_vectors[8]
+// g_arch_vectors[0] = el1_sync_handler (ExceptionsHandleSync in Exceptions.HC)
+// g_arch_vectors[1] = el1_irq_handler  (GicHardwareIrqHandler in Gic.HC)
+// g_arch_vectors[2] = el1_fiq_handler
+// g_arch_vectors[3] = el1_serror_handler
+// g_arch_vectors[4] = smp_secondary_entry (SmpSecondaryWorker in Smp.HC)
 .balign 4
 handle_curr_el_sp0_sync:
     SAVE_ALL
-    mov x0, sp // Pass pointer to trap frame in x0
-    bl arm64_sync_exception
-    RESTORE_ALL
+    mov  x0, sp
+    mrs  x1, esr_el1
+    mrs  x2, far_el1
+    mov  x3, #1
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #0]
+    cbz  x16, 1f
+    blr  x16
+1:  RESTORE_ALL
     eret
 
 .balign 4
 handle_curr_el_sp0_irq:
     SAVE_ALL
-    bl gic_dispatch
-    RESTORE_ALL
+    mov  x0, sp
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #8]
+    cbz  x16, 1f
+    blr  x16
+1:  RESTORE_ALL
     eret
 
 .balign 4
 handle_curr_el_spx_sync:
     SAVE_ALL
-    mov x0, sp // Pass pointer to trap frame in x0
-    bl arm64_sync_exception
-    RESTORE_ALL
+    mov  x0, sp
+    mrs  x1, esr_el1
+    mrs  x2, far_el1
+    mov  x3, #1
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #0]
+    cbz  x16, 1f
+    blr  x16
+1:  RESTORE_ALL
     eret
 
 .balign 4
 handle_curr_el_spx_irq:
     SAVE_ALL
-    bl gic_dispatch
-    RESTORE_ALL
+    mov  x0, sp
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #8]
+    cbz  x16, 1f
+    blr  x16
+1:  RESTORE_ALL
     eret
 
 .balign 4
 handle_unhandled_exception:
     SAVE_ALL
-    mov x0, sp
-    bl arm64_unhandled_abort
-    b . // Halt if unhandled
+    mov  x0, sp
+    mrs  x1, esr_el1
+    mrs  x2, far_el1
+    mov  x3, #0
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #24]
+    cbz  x16, 1f
+    blr  x16
+1:  b . // Halt if unhandled
 
+.section .data
+.balign 64
+.global g_arch_vectors
+g_arch_vectors:
+    .quad 0 // [0] el1_sync_handler
+    .quad 0 // [1] el1_irq_handler
+    .quad 0 // [2] el1_fiq_handler
+    .quad 0 // [3] el1_serror_handler
+    .quad 0 // [4] smp_secondary_entry
+    .quad 0 // [5] reserved
+    .quad 0 // [6] reserved
+    .quad 0 // [7] reserved
+
+.section .text.vectors
 // Function to install VBAR_EL1
 .global install_vector_table
 .type install_vector_table, %function

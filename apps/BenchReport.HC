@@ -23,9 +23,17 @@ U0 BenchReportMain() {
     }
 
     sz = 0;
+    if (redsea_read_file("BENCH_CPU.LOG", buf, 32767, &sz) == 0) {
+        buf[sz] = 0;
+        doldoc_print("$FG,GREEN$--- [2/4] RedSea Disk: /BENCH_CPU.LOG ---$FG$\n");
+        doldoc_print(buf);
+        doldoc_print("\n");
+    }
+
+    sz = 0;
     if (redsea_read_file("BENCH_PROFILER.LOG", buf, 32767, &sz) == 0) {
         buf[sz] = 0;
-        doldoc_print("$FG,GREEN$--- [2/3] RedSea Disk: /BENCH_PROFILER.LOG ---$FG$\n");
+        doldoc_print("$FG,GREEN$--- [3/4] RedSea Disk: /BENCH_PROFILER.LOG ---$FG$\n");
         doldoc_print(buf);
         doldoc_print("\n");
     }
@@ -33,7 +41,7 @@ U0 BenchReportMain() {
     sz = 0;
     if (redsea_read_file("BENCH_SPIKES.LOG", buf, 32767, &sz) == 0) {
         buf[sz] = 0;
-        doldoc_print("$FG,GREEN$--- [3/3] RedSea Disk: /BENCH_SPIKES.LOG ---$FG$\n");
+        doldoc_print("$FG,GREEN$--- [4/4] RedSea Disk: /BENCH_SPIKES.LOG ---$FG$\n");
         doldoc_print(buf);
         doldoc_print("\n");
     }
@@ -44,4 +52,6 @@ U0 BenchReportMain() {
     doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
 }
 
-BenchReportMain();
+if (!g_kernel_booting) {
+    BenchReportMain();
+}

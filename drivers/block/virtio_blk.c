@@ -1,5 +1,6 @@
 #include "virtio_blk.h"
 #include "../../kernel/symbols/symbols.h"
+#include "../../kernel/arch/aarch64/hal_platform.h"
 #include <uefi.h>
 
 static uintptr_t mmio_base = 0;
@@ -32,7 +33,7 @@ static inline void flush_cache_range(uintptr_t vaddr, size_t size) {
     asm volatile("dsb sy\nisb" ::: "memory");
 }
 
-#include "../../kernel/arch/aarch64/hal_platform.h"
+
 
 int virtio_blk_init(void) {
     mmio_base = 0;

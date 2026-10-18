@@ -1,6 +1,7 @@
 #include "redsea.h"
 #include "../drivers/block/virtio_blk.h"
-#include "../gui/render.h"
+extern void doldoc_print(const char *str);
+extern void doldoc_printf(const char *fmt, ...);
 #include "../kernel/mem/kheap.h"
 #include "../kernel/symbols/symbols.h"
 #include <uefi.h>

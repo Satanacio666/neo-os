@@ -20,6 +20,7 @@ I64 ItemMultiply(CItem *item, I64 multiplier) {
 }
 
 U0 TestJitP0Main() {
+    doldoc_clear();
     doldoc_print("\n$FG,CYAN$==============================================================$FG$\n");
     doldoc_print("$FG,WHITE$  [TEST JIT P0] Empirical Verification: AArch64 Compiler Engine$FG$\n");
     doldoc_print("$FG,CYAN$==============================================================$FG$\n");
@@ -114,6 +115,94 @@ U0 TestJitP0Main() {
         passed++;
     } else {
         doldoc_printf(" [FAIL] Test 5: Expected (22, 77, 100), got (%lld, %lld, %lld)\n", m01, m12, m13);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 6: For Loops with Break & Continue
+    // -------------------------------------------------------------------------
+    total++;
+    I64 loop_sum = 0;
+    for (I64 l_i = 0; l_i < 20; l_i++) {
+        if (l_i == 5) continue;
+        if (l_i == 15) break;
+        loop_sum += l_i;
+    }
+    // Sum 0..14 excluding 5: (0+1+2+3+4+6+7+8+9+10+11+12+13+14) = 105 - 5 = 100
+    if (loop_sum == 100) {
+        doldoc_print(" [PASS] Test 6: For Loop Control Flow with Break & Continue\n");
+        passed++;
+    } else {
+        doldoc_printf(" [FAIL] Test 6: Expected 100, got %lld\n", loop_sum);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 7: Switch / Case / Default Statement Dispatch
+    // -------------------------------------------------------------------------
+    total++;
+    I64 sw_val = 3;
+    I64 sw_res = 0;
+    switch (sw_val) {
+        case 1:  sw_res = 10; break;
+        case 2:  sw_res = 20; break;
+        case 3:  sw_res = 30; break;
+        default: sw_res = 99; break;
+    }
+    if (sw_res == 30) {
+        doldoc_print(" [PASS] Test 7: Switch/Case/Default Statement Dispatch (case 3 -> 30)\n");
+        passed++;
+    } else {
+        doldoc_printf(" [FAIL] Test 7: Expected 30, got %lld\n", sw_res);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 8: Short-Circuit Logic Evaluation (|| and && with CBNZ check)
+    // -------------------------------------------------------------------------
+    total++;
+    I64 cond1 = (1 || 0);
+    I64 cond2 = (0 && 1);
+    I64 cond3 = (1 && 1);
+    I64 cond4 = (0 || 0);
+    if (cond1 == 1 && cond2 == 0 && cond3 == 1 && cond4 == 0) {
+        doldoc_print(" [PASS] Test 8: Short-Circuit Logic (|| and && logic verified)\n");
+        passed++;
+    } else {
+        doldoc_printf(" [FAIL] Test 8: Short-circuit failed (cond1=%lld cond2=%lld cond3=%lld cond4=%lld)\n",
+                      cond1, cond2, cond3, cond4);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 9: Sizeof Operator on Types and Structs
+    // -------------------------------------------------------------------------
+    total++;
+    I64 sz_i64 = sizeof(I64);
+    I64 sz_item = sizeof(CItem);
+    if (sz_i64 == 8 && sz_item >= 24) {
+        doldoc_printf(" [PASS] Test 9: Sizeof Operator Evaluated Correctly (I64=%lld CItem=%lld)\n",
+                      sz_i64, sz_item);
+        passed++;
+    } else {
+        doldoc_printf(" [FAIL] Test 9: Expected sizeof(I64)==8, sizeof(CItem)>=24, got %lld, %lld\n",
+                      sz_i64, sz_item);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 10: Nested Struct Member Layout & Pointer Chaining
+    // -------------------------------------------------------------------------
+    total++;
+    CItem item_a;
+    CItem item_b;
+    item_a.id = 101;
+    item_a.value = 500;
+    item_b.id = 102;
+    item_b.value = 1000;
+    item_b.calc = &ItemMultiply;
+
+    I64 chain_res = item_b.calc(&item_a, 2); // 500 * 2 = 1000
+    if (chain_res == 1000) {
+        doldoc_print(" [PASS] Test 10: Nested Struct Layout & Cross-Object Method Dispatch\n");
+        passed++;
+    } else {
+        doldoc_printf(" [FAIL] Test 10: Expected 1000, got %lld\n", chain_res);
     }
 
     doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");

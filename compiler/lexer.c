@@ -35,6 +35,104 @@ token_t lexer_peek(lexer_t *l) {
     return l->current;
 }
 
+static int64_t parse_define_expr(lexer_t *l);
+
+static int64_t parse_define_factor(lexer_t *l) {
+    while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') { l->pos++; l->col++; }
+    int neg = 0;
+    if (l->src[l->pos] == '-') {
+        neg = 1;
+        l->pos++; l->col++;
+        while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') { l->pos++; l->col++; }
+    }
+    int64_t val = 0;
+    if (l->src[l->pos] == '(') {
+        l->pos++; l->col++;
+        val = parse_define_expr(l);
+        while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') { l->pos++; l->col++; }
+        if (l->src[l->pos] == ')') { l->pos++; l->col++; }
+    } else if (l->src[l->pos] == '\'') {
+        l->pos++; l->col++;
+        char ch = 0;
+        if (l->src[l->pos] == '\\' && l->src[l->pos + 1]) {
+            l->pos++; l->col++;
+            char esc = l->src[l->pos++]; l->col++;
+            if (esc == 'n') ch = '\n';
+            else if (esc == 'r') ch = '\r';
+            else if (esc == 't') ch = '\t';
+            else if (esc == '0') ch = '\0';
+            else ch = esc;
+        } else if (l->src[l->pos] && l->src[l->pos] != '\'') {
+            ch = l->src[l->pos++]; l->col++;
+        }
+        if (l->src[l->pos] == '\'') { l->pos++; l->col++; }
+        val = (int64_t)ch;
+    } else if (is_digit(l->src[l->pos])) {
+        if (l->src[l->pos] == '0' && (l->src[l->pos + 1] == 'x' || l->src[l->pos + 1] == 'X')) {
+            l->pos += 2; l->col += 2;
+            val = 0;
+            while (is_hex_digit(l->src[l->pos])) {
+                val = (val << 4) | hex_val(l->src[l->pos]);
+                l->pos++; l->col++;
+            }
+        } else {
+            val = 0;
+            while (is_digit(l->src[l->pos])) {
+                val = val * 10 + (l->src[l->pos] - '0');
+                l->pos++; l->col++;
+            }
+        }
+    } else if (is_alpha(l->src[l->pos])) {
+        char id[64];
+        size_t id_len = 0;
+        while (is_alpha(l->src[l->pos]) || is_digit(l->src[l->pos])) {
+            if (id_len < sizeof(id) - 1) id[id_len++] = l->src[l->pos];
+            l->pos++; l->col++;
+        }
+        id[id_len] = '\0';
+        symbol_t *sym = symbols_lookup_entry(id);
+        if (sym && sym->type == SYM_VAR && sym->address) {
+            val = *(int64_t*)sym->address;
+        }
+    }
+    return neg ? -val : val;
+}
+
+static int64_t parse_define_term(lexer_t *l) {
+    int64_t val = parse_define_factor(l);
+    while (1) {
+        while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') { l->pos++; l->col++; }
+        if (l->src[l->pos] == '*') {
+            l->pos++; l->col++;
+            val *= parse_define_factor(l);
+        } else if (l->src[l->pos] == '/' && l->src[l->pos + 1] != '/' && l->src[l->pos + 1] != '*') {
+            l->pos++; l->col++;
+            int64_t denom = parse_define_factor(l);
+            val = (denom != 0) ? (val / denom) : 0;
+        } else {
+            break;
+        }
+    }
+    return val;
+}
+
+static int64_t parse_define_expr(lexer_t *l) {
+    int64_t val = parse_define_term(l);
+    while (1) {
+        while (l->src[l->pos] == ' ' || l->src[l->pos] == '\t') { l->pos++; l->col++; }
+        if (l->src[l->pos] == '+') {
+            l->pos++; l->col++;
+            val += parse_define_term(l);
+        } else if (l->src[l->pos] == '-') {
+            l->pos++; l->col++;
+            val -= parse_define_term(l);
+        } else {
+            break;
+        }
+    }
+    return val;
+}
+
 token_t lexer_next(lexer_t *l) {
     token_t tok = {0};
 
@@ -98,56 +196,7 @@ token_t lexer_next(lexer_t *l) {
                 l->pos++;
                 l->col++;
             }
-            int64_t def_val = 1;
-            int is_neg = 0;
-            if (l->src[l->pos] == '-') {
-                is_neg = 1;
-                l->pos++;
-                l->col++;
-            }
-            if (l->src[l->pos] == '\'') {
-                l->pos++;
-                l->col++;
-                char ch = 0;
-                if (l->src[l->pos] == '\\' && l->src[l->pos + 1]) {
-                    l->pos++;
-                    l->col++;
-                    char esc = l->src[l->pos++];
-                    l->col++;
-                    if (esc == 'n') ch = '\n';
-                    else if (esc == 'r') ch = '\r';
-                    else if (esc == 't') ch = '\t';
-                    else if (esc == '0') ch = '\0';
-                    else ch = esc;
-                } else if (l->src[l->pos] && l->src[l->pos] != '\'') {
-                    ch = l->src[l->pos++];
-                    l->col++;
-                }
-                if (l->src[l->pos] == '\'') {
-                    l->pos++;
-                    l->col++;
-                }
-                def_val = (int64_t)ch;
-            } else if (is_digit(l->src[l->pos])) {
-                if (l->src[l->pos] == '0' && (l->src[l->pos + 1] == 'x' || l->src[l->pos + 1] == 'X')) {
-                    l->pos += 2;
-                    l->col += 2;
-                    def_val = 0;
-                    while (is_hex_digit(l->src[l->pos])) {
-                        def_val = (def_val << 4) | hex_val(l->src[l->pos]);
-                        l->pos++;
-                        l->col++;
-                    }
-                } else {
-                    def_val = 0;
-                    while (is_digit(l->src[l->pos])) {
-                        def_val = def_val * 10 + (l->src[l->pos] - '0');
-                        l->pos++;
-                        l->col++;
-                    }
-                }
-                if (is_neg) def_val = -def_val;
-            }
+            int64_t def_val = parse_define_expr(l);
             if (def_name[0]) {
                 int64_t *storage = (int64_t*)kmalloc(sizeof(int64_t));
                 if (storage) {

@@ -122,9 +122,24 @@ smp_entry:
     msr sctlr_el1, x2
     isb
 
-    // Call C secondary worker
-    mov x0, x19
-    bl smp_secondary_core_worker
+    // Call HolyC secondary worker via g_arch_vectors[4]
+    mov  x0, x19
+    adrp x16, g_arch_vectors
+    add  x16, x16, :lo12:g_arch_vectors
+    ldr  x16, [x16, #32]
+    cbz  x16, 1f
+    blr  x16
 
 1:  wfe
     b 1b
+
+.section .data
+.balign 64
+.global g_mmu_config
+g_mmu_config:
+    .quad 0 // [0] sctlr
+    .quad 0 // [1] tcr
+    .quad 0 // [2] mair
+    .quad 0 // [3] ttbr0
+    .quad 0 // [4] vbar
+

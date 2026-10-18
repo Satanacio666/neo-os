@@ -3,7 +3,8 @@
 #include "table.h"
 #include "../kernel/mem/kheap.h"
 #include "../kernel/symbols/symbols.h"
-#include "../gui/render.h"
+extern void doldoc_print(const char *str);
+extern void doldoc_printf(const char *fmt, ...);
 #include <uefi.h>
 
 typedef struct {
@@ -94,10 +95,15 @@ static void cb_init_scratch(code_buffer_t *cb, size_t max_instructions) {
         cb->capacity = JIT_SCRATCH_INSTRS;
     } else {
         size_t bytes = max_instructions * sizeof(uint32_t);
-        cb->code = (uint32_t*)kmalloc(bytes);
-        if (!cb->code) {
-            cb->has_error = 1;
-            snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating scratch buffer");
+        if (s_jit_pool_start && (s_jit_pool_offset + bytes <= s_jit_pool_size)) {
+            cb->code = (uint32_t*)(s_jit_pool_start + s_jit_pool_offset);
+            s_jit_pool_offset += (bytes + 63) & ~63ULL;
+        } else {
+            cb->code = (uint32_t*)kmalloc(bytes);
+            if (!cb->code) {
+                cb->has_error = 1;
+                snprintf(cb->error_msg, sizeof(cb->error_msg), "Out of memory allocating scratch buffer");
+            }
         }
     }
 }
@@ -286,8 +292,8 @@ static void emit_strh(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
 }
 
 static void emit_ldr32(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
-    // LDRSW Xd, [Xn]
-    emit_u32(cb, 0xB9800000 | (rn << 5) | rd);
+    // LDR Wd, [Xn] (zero-extending 32-bit load into Xd)
+    emit_u32(cb, 0xB9400000 | (rn << 5) | rd);
 }
 
 static void emit_str32(code_buffer_t *cb, uint32_t rd, uint32_t rn) {
@@ -316,6 +322,10 @@ static void emit_lsr(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x9AC02400 | (rm << 16) | (rn << 5) | rd);
 }
 
+static void emit_asr(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
+    emit_u32(cb, 0x9AC02800 | (rm << 16) | (rn << 5) | rd);
+}
+
 static void emit_neg(code_buffer_t *cb, uint32_t rd, uint32_t rm) {
     // SUB Xd, XZR, Xm
     emit_u32(cb, 0xCB0003E0 | (rm << 16) | rd);
@@ -342,7 +352,7 @@ static void emit_compound_op(code_buffer_t *cb, token_type_t op_type) {
     else if (op_type == TOK_PIPEEQ)    emit_orr(cb, 0, 1, 0);
     else if (op_type == TOK_CARETEQ)   emit_eor(cb, 0, 1, 0);
     else if (op_type == TOK_SHLEQ)     emit_lsl(cb, 0, 1, 0);
-    else if (op_type == TOK_SHREQ)     emit_lsr(cb, 0, 1, 0);
+    else if (op_type == TOK_SHREQ)     emit_asr(cb, 0, 1, 0);
 }
 
 // Float NEON / VFP (Double Precision D0-D31)
@@ -412,11 +422,25 @@ static void emit_ret(code_buffer_t *cb) {
 static void emit_push_lr(code_buffer_t *cb) {
     // STP X29, X30, [SP, #-16]!
     emit_u32(cb, 0xA9BF7BFD);
+    // MOV X29, SP  (establish frame pointer: locals live at [X29 - off])
+    emit_u32(cb, 0x910003FD);
 }
 
 static void emit_pop_lr(code_buffer_t *cb) {
+    // MOV SP, X29  (discard locals and any pending temporaries)
+    emit_u32(cb, 0x910003BF);
     // LDP X29, X30, [SP], #16
     emit_u32(cb, 0xA8C17BFD);
+}
+
+// X(reg) = X29 - off   (address of a stack-frame local)
+static void emit_frame_addr(code_buffer_t *cb, uint32_t reg, uint32_t off) {
+    if (off < 4096) {
+        emit_u32(cb, 0xD1000000 | (off << 10) | (29u << 5) | reg); // SUB Xreg, X29, #off
+    } else {
+        emit_mov_imm64(cb, 17, off);
+        emit_sub(cb, reg, 29, 17);                                  // SUB Xreg, X29, X17
+    }
 }
 
 // Conditional & Unconditional Branch Placeholders
@@ -490,6 +514,7 @@ typedef struct {
 } switch_case_entry_t;
 
 typedef struct {
+    uint64_t val_ref;   // variable reference (frame slot or global cell)
     int64_t *val_storage;
     switch_case_entry_t cases[MAX_CASES];
     int case_count;
@@ -505,9 +530,12 @@ typedef struct {
     int offset;
     int size;
     int is_array;
+    int is_ptr;
+    int is_float;
     int elem_size;
     char type_name[32];
 } struct_member_t;
+
 
 #define MAX_STRUCT_DEFS 256
 #define MAX_STRUCT_MEMBERS 64
@@ -543,9 +571,78 @@ static var_type_t var_types[MAX_VAR_TYPES];
 static int var_type_count = 0;
 static int s_expr_is_float = 0;
 
+// ─── Per-Function Stack Frames (re-entrant, SMP-safe locals) ────────────────
+// Inside a function body every parameter and local lives in the hardware stack
+// frame at [X29 - off]. A variable reference (var ref) is either an absolute
+// global cell address or JIT_LOCAL_TAG | off. Kernel addresses are identity
+// mapped below 4 GB, so the tag can never collide with a real address.
+#define JIT_LOCAL_TAG   0xF0CA000000000000ULL
+#define JIT_LOCAL_MASK  0xFFFF000000000000ULL
+#define MAX_FN_LOCALS   512
+
+typedef struct {
+    char       name[64];
+    uint32_t   off;      // slot address = X29 - off
+    uint32_t   size;     // slot size in bytes (16-byte aligned)
+    var_type_t vt;
+} local_var_t;
+
+typedef struct {
+    local_var_t vars[MAX_FN_LOCALS];
+    int         count;
+    uint32_t    frame_size;
+} fn_frame_t;
+
+static fn_frame_t *s_frame = NULL;   // NULL at top level (globals)
+
+static inline int ref_is_local(uint64_t ref) { return (ref & JIT_LOCAL_MASK) == JIT_LOCAL_TAG; }
+
+static local_var_t *frame_find(const char *name) {
+    if (!s_frame) return NULL;
+    for (int i = s_frame->count - 1; i >= 0; i--) {
+        if (strcmp(s_frame->vars[i].name, name) == 0) return &s_frame->vars[i];
+    }
+    return NULL;
+}
+
+// Allocates (or reuses, if big enough) a frame slot. Returns NULL when not in a function.
+static local_var_t *frame_alloc(const char *name, uint32_t bytes) {
+    if (!s_frame) return NULL;
+    uint32_t sz = (bytes + 15u) & ~15u;
+    if (sz < 16) sz = 16;
+    if (name && name[0]) {
+        local_var_t *ex = frame_find(name);
+        if (ex && ex->size >= sz) return ex;
+    }
+    if (s_frame->count >= MAX_FN_LOCALS) {
+        printf("[JIT] Error: too many locals in function (max %d)\n", MAX_FN_LOCALS);
+        return NULL;
+    }
+    s_frame->frame_size += sz;
+    local_var_t *lv = &s_frame->vars[s_frame->count++];
+    memset(lv, 0, sizeof(*lv));
+    if (name) strncpy(lv->name, name, sizeof(lv->name) - 1);
+    strncpy(lv->vt.name, lv->name, sizeof(lv->vt.name) - 1);
+    lv->vt.scale = 8;
+    lv->off = s_frame->frame_size;
+    lv->size = sz;
+    return lv;
+}
+
+static inline uint64_t local_ref(local_var_t *lv) { return JIT_LOCAL_TAG | lv->off; }
+
 static void register_var_type(const char *name, int scale, int is_ptr, int is_float, const char *st_name) {
     if (scale != 1 && scale != 2 && scale != 4 && scale != 8) {
         scale = 8; // Enforce natural alignment scale
+    }
+    local_var_t *lv = frame_find(name);
+    if (lv) {
+        lv->vt.scale = scale;
+        lv->vt.is_ptr = is_ptr;
+        lv->vt.is_float = is_float;
+        if (st_name) strncpy(lv->vt.struct_type, st_name, 31);
+        else lv->vt.struct_type[0] = '\0';
+        return;
     }
     for (int i = 0; i < var_type_count; i++) {
         if (strcmp(var_types[i].name, name) == 0) {
@@ -571,10 +668,41 @@ static void register_var_type(const char *name, int scale, int is_ptr, int is_fl
 }
 
 static var_type_t* lookup_var_type(const char *name) {
+    local_var_t *lv = frame_find(name);
+    if (lv) return &lv->vt;
     for (int i = 0; i < var_type_count; i++) {
         if (strcmp(var_types[i].name, name) == 0) return &var_types[i];
     }
     return NULL;
+}
+
+// Resolves a variable name: frame local first, then global SYM_VAR cell. 0 = not a variable.
+static uint64_t lookup_var_ref(const char *name) {
+    local_var_t *lv = frame_find(name);
+    if (lv) return local_ref(lv);
+    symbol_t *sym = symbols_lookup_entry(name);
+    if (sym && sym->type == SYM_VAR && sym->address) return (uint64_t)sym->address;
+    return 0;
+}
+
+// X(reg) = address of the variable's storage
+static void emit_ref_addr(code_buffer_t *cb, uint32_t reg, uint64_t ref) {
+    if (ref_is_local(ref)) emit_frame_addr(cb, reg, (uint32_t)(ref & 0xFFFFFFFFu));
+    else emit_mov_imm64(cb, reg, ref);
+}
+
+// Zero `bytes` (multiple of 16) of a frame slot at runtime. Clobbers X16, X17.
+static void emit_zero_slot(code_buffer_t *cb, local_var_t *lv) {
+    emit_frame_addr(cb, 16, lv->off);
+    if (lv->size == 16) {
+        emit_u32(cb, 0xA9007E1F);                        // STP XZR, XZR, [X16]
+        return;
+    }
+    emit_mov_imm64(cb, 17, lv->size / 16);
+    size_t loop = cb->count;
+    emit_u32(cb, 0xA8817E1F);                            // STP XZR, XZR, [X16], #16
+    emit_u32(cb, 0xF1000631);                            // SUBS X17, X17, #1
+    emit_b_cond(cb, 1, loop);                            // B.NE loop
 }
 
 // ─── AArch64 JIT Self-Optimization (Peephole Pass) ───────────────────────────
@@ -824,23 +952,8 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l);
 
         if (lexer_peek(l).type == TOK_LPAREN) {
-            // Function Call: ident(arg0, arg1, ...)
+            // Function Call or Hardware Intrinsic: ident(arg0, arg1, ...)
             lexer_next(l); // eat '('
-
-            symbol_t *sym = symbols_lookup_entry(ident_name);
-            if (!sym || !sym->address) {
-                printf("[JIT] Error: Undefined symbol '%s'\n", ident_name);
-                cb->has_error = 1;
-                snprintf(cb->error_msg, sizeof(cb->error_msg), "Undefined symbol '%s'", ident_name);
-                // Synchronize past arguments to keep lexer state clean
-                int paren_depth = 1;
-                while (paren_depth > 0 && lexer_peek(l).type != TOK_EOF) {
-                    token_t t = lexer_next(l);
-                    if (t.type == TOK_LPAREN) paren_depth++;
-                    else if (t.type == TOK_RPAREN) paren_depth--;
-                }
-                return;
-            }
 
             int arg_count = 0;
             if (lexer_peek(l).type != TOK_RPAREN) {
@@ -872,6 +985,60 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 emit_pop_x(cb, i); // Pop into Xi
             }
 
+            // 1. Check Native AArch64 Hardware & System Register Intrinsics (Zero Call Overhead)
+            if (strcmp(ident_name, "__wfe") == 0) {
+                emit_u32(cb, 0xD503205F); // WFE
+                return;
+            } else if (strcmp(ident_name, "__sev") == 0) {
+                emit_u32(cb, 0xD503209F); // SEV
+                return;
+            } else if (strcmp(ident_name, "__dmb_ish") == 0) {
+                emit_u32(cb, 0xD5033BBF); // DMB ISH
+                return;
+            } else if (strcmp(ident_name, "__dsb_sy") == 0) {
+                emit_u32(cb, 0xD5033F9F); // DSB SY
+                return;
+            } else if (strcmp(ident_name, "__isb") == 0) {
+                emit_u32(cb, 0xD5033FDF); // ISB
+                return;
+            } else if (strcmp(ident_name, "__mrs_cntvct") == 0) {
+                emit_u32(cb, 0xD53BE040); // MRS X0, CNTVCT_EL0
+                return;
+            } else if (strcmp(ident_name, "__mrs_cntfrq") == 0) {
+                emit_u32(cb, 0xD53BE000); // MRS X0, CNTFRQ_EL0
+                return;
+            } else if (strcmp(ident_name, "__mrs_mpidr") == 0) {
+                emit_u32(cb, 0xD53800A0); // MRS X0, MPIDR_EL1
+                emit_u32(cb, 0x92400400); // AND X0, X0, #3
+                return;
+            } else if (strcmp(ident_name, "__mrs_esr") == 0) {
+                emit_u32(cb, 0xD5385200); // MRS X0, ESR_EL1
+                return;
+            } else if (strcmp(ident_name, "__mrs_far") == 0) {
+                emit_u32(cb, 0xD5386000); // MRS X0, FAR_EL1
+                return;
+            } else if (strcmp(ident_name, "__dc_civac") == 0) {
+                emit_u32(cb, 0xD50B7E20); // DC CIVAC, X0
+                return;
+            } else if (strcmp(ident_name, "__ic_ivau") == 0) {
+                emit_u32(cb, 0xD50B7520); // IC IVAU, X0
+                return;
+            } else if (strcmp(ident_name, "__mmio_r32") == 0) {
+                emit_u32(cb, 0xB9400000); // LDR W0, [X0]
+                return;
+            } else if (strcmp(ident_name, "__mmio_w32") == 0) {
+                emit_u32(cb, 0xB9000001); // STR W1, [X0]
+                return;
+            }
+
+            // 2. Late-Bound Symbol Indirect Cell (SIC) Resolution (Zero Forward Declarations!)
+            local_var_t *call_lv = frame_find(ident_name);
+            symbol_t *sym = call_lv ? NULL : symbols_lookup_or_reserve(ident_name, SYM_FUNC);
+            if (!call_lv && !sym) {
+                cb->has_error = 1;
+                return;
+            }
+
             // AAPCS compliance: Mirror arguments into float registers D0-D7 / S0-S7
             // HolyGL functions take IEEE-754 32-bit single-precision float parameters in S0-S7,
             // while math and HolyC functions take 64-bit doubles in D0-D7.
@@ -896,21 +1063,28 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 }
             }
 
-            // Call function via X16
-            if (sym->type == SYM_VAR) {
+            // Call function via Symbol Indirect Cell (SIC) or Function Pointer Variable
+            if (call_lv) {
+                emit_frame_addr(cb, 16, call_lv->off);
+                emit_ldr_ptr(cb, 16, 16); // Load function pointer from frame slot
+            } else if (sym->type == SYM_VAR) {
                 emit_mov_imm64(cb, 16, (uint64_t)sym->address);
-                emit_ldr_ptr(cb, 16, 16); // Dereference *(&sym->address) at runtime
+                emit_ldr_ptr(cb, 16, 16); // Dereference variable storage
             } else {
-                emit_mov_imm64(cb, 16, (uint64_t)sym->address);
+                emit_mov_imm64(cb, 16, (uint64_t)&sym->address);
+                emit_ldr_ptr(cb, 16, 16); // Dereference SIC cell (&sym->address) dynamically!
             }
             emit_blr(cb, 16);
         } else if (lexer_peek(l).type == TOK_LBRACKET) {
             // Array Indexing: ident[index]
             lexer_next(l); // eat '['
-            symbol_t *sym = symbols_lookup_entry(ident_name);
-            int64_t base_addr = sym ? (int64_t)sym->address : 0;
-            emit_mov_imm64(cb, 16, (uint64_t)base_addr);
-            emit_ldr_ptr(cb, 1, 16); // X1 = base address
+            uint64_t arr_ref = lookup_var_ref(ident_name);
+            if (arr_ref) {
+                emit_ref_addr(cb, 16, arr_ref);
+                emit_ldr_ptr(cb, 1, 16); // X1 = base address
+            } else {
+                emit_mov_imm64(cb, 1, 0);
+            }
             emit_push_x(cb, 1);      // Save base
 
             parse_expr(l, cb);       // X0 = index
@@ -958,22 +1132,25 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 }
             }
         } else {
-            // Variable Read: lookup in Global Symbol Table
-            symbol_t *sym = symbols_lookup_entry(ident_name);
+            // Variable Read: frame local first, then Global Symbol Table
+            uint64_t var_ref = lookup_var_ref(ident_name);
+            symbol_t *sym = var_ref ? NULL : symbols_lookup_entry(ident_name);
             var_type_t *vt = lookup_var_type(ident_name);
             if (vt && vt->is_float && !vt->is_ptr) {
                 s_expr_is_float = 1;
             }
-            if (sym && sym->type == SYM_VAR) {
+            if (var_ref) {
                 if (vt && vt->struct_type[0] != '\0' && !vt->is_ptr) {
-                    emit_mov_imm64(cb, 0, (uint64_t)sym->address);
+                    emit_ref_addr(cb, 0, var_ref);      // struct value: X0 = &struct
                 } else {
-                    emit_mov_imm64(cb, 16, (uint64_t)sym->address);
+                    emit_ref_addr(cb, 16, var_ref);
                     emit_ldr_ptr(cb, 0, 16); // X0 = *address
                 }
             } else if (sym && sym->type == SYM_FUNC) {
-                emit_mov_imm64(cb, 0, (uint64_t)sym->address);
+                emit_mov_imm64(cb, 16, (uint64_t)&sym->address);
+                emit_ldr_ptr(cb, 0, 16); // X0 = live function pointer from SIC cell
             } else {
+                printf("[JIT] Warning: line %d: undefined identifier '%s'\n", l->line, ident_name);
                 emit_mov_imm64(cb, 0, 0);
             }
 
@@ -981,149 +1158,169 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             if (vt && vt->struct_type[0] != '\0') {
                 strncpy(cur_st_name, vt->struct_type, 31);
             }
+            int last_member_elem_sz = (vt && vt->scale > 0) ? vt->scale : 8;
+            int last_member_is_float = 0;
 
-            // Member access: ident.field or ident->field
-            while (lexer_peek(l).type == TOK_DOT || lexer_peek(l).type == TOK_ARROW) {
-                lexer_next(l); // eat '.' or '->'
-                token_t f_tok = lexer_peek(l);
-                if (f_tok.type == TOK_IDENT) {
-                    char field[32];
-                    strncpy(field, f_tok.str_value, 31);
-                    field[31] = '\0';
-                    lexer_next(l);
+            // Unified Postfix Expression Pipeline: arbitrary chained ident.f, ident->f, ident[i], ident(args)
+            size_t pf_start_pos = l->pos;
+            while (1) {
+                token_type_t ptt = lexer_peek(l).type;
+                if (ptt == TOK_DOT || ptt == TOK_ARROW) {
+                    lexer_next(l); // eat '.' or '->'
+                    token_t f_tok = lexer_peek(l);
+                    if (f_tok.type == TOK_IDENT) {
+                        char field[32];
+                        strncpy(field, f_tok.str_value, 31);
+                        field[31] = '\0';
+                        lexer_next(l);
 
-                    struct_def_t *st = NULL;
-                    if (cur_st_name[0] != '\0') {
-                        st = find_struct_def(cur_st_name);
-                    }
-                    if (!st) {
-                        for (int s = 0; s < struct_def_count; s++) {
-                            for (int m = 0; m < struct_defs[s].member_count; m++) {
-                                if (strcmp(struct_defs[s].members[m].name, field) == 0) {
-                                    st = &struct_defs[s];
+                        struct_def_t *st = NULL;
+                        if (cur_st_name[0] != '\0') {
+                            st = find_struct_def(cur_st_name);
+                        }
+                        if (!st) {
+                            for (int s = 0; s < struct_def_count; s++) {
+                                for (int m = 0; m < struct_defs[s].member_count; m++) {
+                                    if (strcmp(struct_defs[s].members[m].name, field) == 0) {
+                                        st = &struct_defs[s];
+                                        break;
+                                    }
+                                }
+                                if (st) break;
+                            }
+                        }
+                        if (st) {
+                            int found = 0;
+                            int offset = 0;
+                            int fsize = 8;
+                            int is_arr = 0;
+                            int is_nst = 0;
+                            int is_flt = 0;
+                            char sub_st[32] = {0};
+                            for (int m = 0; m < st->member_count; m++) {
+                                if (strcmp(st->members[m].name, field) == 0) {
+                                    offset = st->members[m].offset;
+                                    fsize = st->members[m].size;
+                                    is_arr = st->members[m].is_array;
+                                    is_flt = st->members[m].is_float;
+                                    last_member_elem_sz = st->members[m].elem_size > 0 ? st->members[m].elem_size : 8;
+                                    if (st->members[m].type_name[0]) {
+                                        strncpy(sub_st, st->members[m].type_name, 31);
+                                        if (find_struct_def(sub_st) && !st->members[m].is_ptr) is_nst = 1;
+                                    }
+
+                                    found = 1;
                                     break;
                                 }
                             }
-                            if (st) break;
-                        }
-                    }
-                    if (st) {
-                        int found = 0;
-                        int offset = 0;
-                        int fsize = 8;
-                        int is_arr = 0;
-                        int is_nst = 0;
-                        char sub_st[32] = {0};
-                        for (int m = 0; m < st->member_count; m++) {
-                            if (strcmp(st->members[m].name, field) == 0) {
-                                offset = st->members[m].offset;
-                                fsize = st->members[m].size;
-                                is_arr = st->members[m].is_array;
-                                if (st->members[m].type_name[0]) {
-                                    strncpy(sub_st, st->members[m].type_name, 31);
-                                    if (find_struct_def(sub_st)) is_nst = 1;
-                                }
-                                found = 1;
-                                break;
+                            if (!found) {
+                                cb->has_error = 1;
+                                snprintf(cb->error_msg, sizeof(cb->error_msg),
+                                         "Type error: struct '%s' has no member '%s'", st->name, field);
+                                printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
+                                return;
                             }
-                        }
-                        if (!found) {
-                            cb->has_error = 1;
-                            snprintf(cb->error_msg, sizeof(cb->error_msg),
-                                     "Type error: struct '%s' has no member '%s'", st->name, field);
-                            printf("[JIT TYPE-CHECK] %s\n", cb->error_msg);
-                            return;
-                        }
-                        emit_mov_imm64(cb, 1, (uint64_t)offset);
-                        emit_add(cb, 0, 0, 1); // X0 = base + offset
-                        if (is_arr || is_nst) {
+                            emit_mov_imm64(cb, 1, (uint64_t)offset);
+                            emit_add(cb, 0, 0, 1); // X0 = base + offset
+                            if (is_arr || is_nst) {
+                                if (sub_st[0]) strncpy(cur_st_name, sub_st, 31);
+                                s_expr_is_float = 0;
+                                last_member_is_float = is_flt;
+                                continue;
+                            }
+                            if (fsize == 1) emit_ldrb(cb, 0, 0);
+                            else if (fsize == 2) emit_ldrh(cb, 0, 0);
+                            else if (fsize == 4) emit_ldr32(cb, 0, 0);
+                            else emit_ldr64(cb, 0, 0);
                             if (sub_st[0]) strncpy(cur_st_name, sub_st, 31);
+                            s_expr_is_float = is_flt;
+                            last_member_is_float = is_flt;
                             continue;
                         }
-                        if (fsize == 1) emit_ldrb(cb, 0, 0);
-                        else if (fsize == 2) emit_ldrh(cb, 0, 0);
-                        else if (fsize == 4) emit_ldr32(cb, 0, 0);
-                        else emit_ldr64(cb, 0, 0);
-                        if (sub_st[0]) strncpy(cur_st_name, sub_st, 31);
+
+                        // Dynamic table get: table_get(tbl, field)
+                        char *f_copy = (char*)kmalloc(strlen(field) + 1);
+                        if (f_copy) strcpy(f_copy, field);
+                        emit_mov_imm64(cb, 1, (uint64_t)f_copy); // X1 = key
+                        emit_mov_imm64(cb, 16, (uint64_t)table_get);
+                        emit_blr(cb, 16); // X0 = value
+                        continue;
+                    }
+                } else if (ptt == TOK_LBRACKET) {
+                    lexer_next(l); // eat '['
+                    emit_push_x(cb, 0); // push array base
+                    parse_expr(l, cb);  // index in X0
+                    emit_pop_x(cb, 1);  // base in X1
+                    int esz = last_member_elem_sz > 0 ? last_member_elem_sz : 8;
+                    emit_mov_imm64(cb, 2, (uint64_t)esz);
+                    emit_mul(cb, 0, 0, 2);
+                    emit_add(cb, 0, 1, 0); // X0 = elem_addr
+
+                    if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                    token_type_t next_t = lexer_peek(l).type;
+                    if (cur_st_name[0] && find_struct_def(cur_st_name) && (next_t == TOK_DOT || next_t == TOK_ARROW)) {
+                        // Struct element in array, leave X0 as address for subsequent member lookup
                         continue;
                     }
 
-                    // Dynamic table get: table_get(tbl, field)
-                    char *f_copy = (char*)kmalloc(strlen(field) + 1);
-                    if (f_copy) strcpy(f_copy, field);
-                    emit_mov_imm64(cb, 1, (uint64_t)f_copy); // X1 = key
-                    emit_mov_imm64(cb, 16, (uint64_t)table_get);
-                    emit_blr(cb, 16); // X0 = value
-                }
-            }
+                    if (esz == 1) emit_ldrb(cb, 0, 0);
+                    else if (esz == 2) emit_ldrh(cb, 0, 0);
+                    else if (esz == 4) emit_ldr32(cb, 0, 0);
+                    else emit_ldr64(cb, 0, 0);
+                    if (last_member_is_float) {
+                        s_expr_is_float = 1;
+                    }
+                    continue;
+                } else if (ptt == TOK_LPAREN) {
+                    lexer_next(l); // eat '('
+                    emit_push_x(cb, 0); // Save function pointer on stack
 
-            // Indirect Function Call: ident->field(arg0, arg1, ...)
-            if (lexer_peek(l).type == TOK_LPAREN) {
-                lexer_next(l); // eat '('
-                emit_push_x(cb, 0); // Save function pointer on stack
+                    int arg_count = 0;
+                    if (lexer_peek(l).type != TOK_RPAREN) {
+                        while (1) {
+                            parse_expr(l, cb); // Arg result in X0
+                            emit_push_x(cb, 0); // Push arg to stack
+                            arg_count++;
 
-                int arg_count = 0;
-                if (lexer_peek(l).type != TOK_RPAREN) {
-                    while (1) {
-                        parse_expr(l, cb); // Arg result in X0
-                        emit_push_x(cb, 0); // Push arg to stack
-                        arg_count++;
-
-                        if (lexer_peek(l).type == TOK_COMMA) {
-                            lexer_next(l);
-                        } else {
-                            break;
+                            if (lexer_peek(l).type == TOK_COMMA) {
+                                lexer_next(l);
+                            } else {
+                                break;
+                            }
                         }
                     }
+
+                    if (lexer_peek(l).type == TOK_RPAREN) {
+                        lexer_next(l); // eat ')'
+                    }
+
+                    // Restore arguments into registers X0-X(arg_count-1)
+                    for (int i = arg_count - 1; i >= 0; i--) {
+                        emit_pop_x(cb, i);
+                    }
+
+                    // Pop the saved function pointer into X16
+                    emit_pop_x(cb, 16);
+
+                    // Call function via X16
+                    emit_blr(cb, 16);
+                    continue;
+                } else {
+                    break;
                 }
-
-                if (lexer_peek(l).type == TOK_RPAREN) {
-                    lexer_next(l); // eat ')'
-                }
-
-                // Restore arguments into registers X0-X(arg_count-1)
-                for (int i = arg_count - 1; i >= 0; i--) {
-                    emit_pop_x(cb, i);
-                }
-
-                // Pop the saved function pointer into X16
-                emit_pop_x(cb, 16);
-
-                // Call function via X16
-                emit_blr(cb, 16);
             }
 
-            // Support chained array indexing after member: ident->field[idx1][idx2]
-            while (lexer_peek(l).type == TOK_LBRACKET) {
-                lexer_next(l); // eat '['
-                emit_push_x(cb, 0); // push array base
-                parse_expr(l, cb);  // index in X0
-                emit_pop_x(cb, 1);  // base in X1
-                emit_mov_imm64(cb, 2, 8); // 8-byte elements
-                emit_mul(cb, 0, 0, 2);
-                emit_add(cb, 0, 1, 0);
-                emit_ldr64(cb, 0, 0); // X0 = base[index]
-                if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l);
-            }
 
             // Post-increment / Post-decrement: ident++ / ident--
-            if (lexer_peek(l).type == TOK_PLUSPLUS) {
+            if (lexer_peek(l).type == TOK_PLUSPLUS || lexer_peek(l).type == TOK_MINUSMINUS) {
+                int is_inc = (lexer_peek(l).type == TOK_PLUSPLUS);
                 lexer_next(l);
-                if (sym && sym->type == SYM_VAR) {
+                if (l->pos != pf_start_pos + 2 && lexer_peek(l).type != TOK_EOF && 0) {}
+                if (var_ref) {
                     emit_mov_reg(cb, 2, 0); // X2 = old value
                     emit_mov_imm64(cb, 3, 1);
-                    emit_add(cb, 1, 0, 3); // X1 = X0 + 1
-                    emit_mov_imm64(cb, 16, (uint64_t)sym->address);
-                    emit_str_ptr(cb, 1, 16); // *address = X1
-                    emit_mov_reg(cb, 0, 2); // Return old value
-                }
-            } else if (lexer_peek(l).type == TOK_MINUSMINUS) {
-                lexer_next(l);
-                if (sym && sym->type == SYM_VAR) {
-                    emit_mov_reg(cb, 2, 0); // X2 = old value
-                    emit_mov_imm64(cb, 3, 1);
-                    emit_sub(cb, 1, 0, 3); // X1 = X0 - 1
-                    emit_mov_imm64(cb, 16, (uint64_t)sym->address);
+                    if (is_inc) emit_add(cb, 1, 0, 3); else emit_sub(cb, 1, 0, 3);
+                    emit_ref_addr(cb, 16, var_ref);
                     emit_str_ptr(cb, 1, 16); // *address = X1
                     emit_mov_reg(cb, 0, 2); // Return old value
                 }
@@ -1145,18 +1342,35 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             }
             s_expr_is_float = 1;
             return;
-        } else if (next_tok.type == TOK_TYPE_I64 || next_tok.type == TOK_TYPE_U32 || next_tok.type == TOK_TYPE_U8) {
-            *l = l_save;
-            lexer_next(l); // eat type
-            if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
-            s_expr_is_float = 0;
-            parse_unary(l, cb);
-            if (s_expr_is_float) {
-                emit_fmov_d_x(cb, 0, 0); // X0 -> D0
-                emit_fcvtzs(cb, 0, 0);  // D0 double -> X0 int
+        } else if (next_tok.type == TOK_TYPE_I64 || next_tok.type == TOK_TYPE_U32 || next_tok.type == TOK_TYPE_U8 || next_tok.type == TOK_IDENT) {
+            lexer_t l_chk = l_save;
+            lexer_next(&l_chk); // eat type/ident
+            int has_star = 0;
+            while (lexer_peek(&l_chk).type == TOK_STAR) {
+                has_star = 1;
+                lexer_next(&l_chk);
             }
-            s_expr_is_float = 0;
-            return;
+            if (has_star && lexer_peek(&l_chk).type == TOK_RPAREN) {
+                // Pointer cast: (Type*) or (Ident*)
+                *l = l_chk;
+                lexer_next(l); // eat ')'
+                s_expr_is_float = 0;
+                parse_unary(l, cb);
+                s_expr_is_float = 0;
+                return;
+            } else if (next_tok.type == TOK_TYPE_I64 || next_tok.type == TOK_TYPE_U32 || next_tok.type == TOK_TYPE_U8) {
+                *l = l_save;
+                lexer_next(l); // eat type
+                if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
+                s_expr_is_float = 0;
+                parse_unary(l, cb);
+                if (s_expr_is_float) {
+                    emit_fmov_d_x(cb, 0, 0); // X0 -> D0
+                    emit_fcvtzs(cb, 0, 0);  // D0 double -> X0 int
+                }
+                s_expr_is_float = 0;
+                return;
+            }
         }
 
         lexer_next(l); // eat '('
@@ -1183,7 +1397,9 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
         lexer_next(l);
         parse_unary(l, cb);
         if (s_expr_is_float) {
+            emit_fmov_d_x(cb, 0, 0);
             emit_fneg(cb, 0, 0);
+            emit_fmov_x_d(cb, 0, 0);
         } else {
             emit_neg(cb, 0, 0);
         }
@@ -1471,7 +1687,7 @@ static void parse_shift(lexer_t *l, code_buffer_t *cb) {
         if (op == TOK_SHL) {
             emit_lsl(cb, 0, 1, 0); // X0 = X1 << X0
         } else {
-            emit_lsr(cb, 0, 1, 0); // X0 = X1 >> X0
+            emit_asr(cb, 0, 1, 0); // X0 = X1 >> X0 (Arithmetic Shift for signed integers)
         }
     }
 }
@@ -1657,9 +1873,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
     // Format String Statement: "Format %d\n", arg1, ...;
     if (tok.type == TOK_STRING) {
-        char fmt[128];
-        strncpy(fmt, tok.str_value, 127);
-        fmt[127] = '\0';
+        char fmt[2048];
+        strncpy(fmt, tok.str_value, 2047);
+        fmt[2047] = '\0';
         lexer_next(l);
 
         int arg_count = 0;
@@ -1734,6 +1950,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 int cur_offset = 0;
                 while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
                     token_type_t m_type = lexer_peek(l).type;
+                    int is_mem_float = (m_type == TOK_TYPE_F64);
                     char m_type_str[32] = {0};
                     if (m_type == TOK_IDENT) {
                         strncpy(m_type_str, lexer_peek(l).str_value, 31);
@@ -1764,6 +1981,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                                 mem->offset = cur_offset;
                                 mem->size = 8; // 64-bit function pointer
                                 mem->elem_size = 8;
+                                mem->is_ptr = 1;
                                 cur_offset += 8;
                             }
                             lexer_next(l); // eat ident
@@ -1780,7 +1998,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                             }
                         }
                     } else {
+                        int orig_elem_sz = m_size;
+                        int is_mem_ptr = 0;
                         if (lexer_peek(l).type == TOK_STAR) {
+                            is_mem_ptr = 1;
                             m_size = 8;
                             lexer_next(l);
                         }
@@ -1798,8 +2019,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                             mem->name[31] = '\0';
                             mem->offset = cur_offset;
                             mem->size = m_size;
-                            mem->elem_size = m_size;
+                            mem->elem_size = is_mem_ptr ? orig_elem_sz : m_size;
                             mem->is_array = 0;
+                            mem->is_ptr = is_mem_ptr;
+                            mem->is_float = is_mem_ptr ? 0 : is_mem_float;
                             if (m_type_str[0]) strncpy(mem->type_name, m_type_str, 31);
                             cur_offset += m_size;
                             lexer_next(l);
@@ -1852,7 +2075,6 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             if (lexer_peek(l).type == TOK_LPAREN) lexer_next(l);
             parse_expr(l, cb); // Condition in X0
             if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l);
-
             size_t cbz_idx = emit_cbz_placeholder(cb, 0); // Jump to next branch if false
             parse_block(l, cb);
 
@@ -2265,7 +2487,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 lexer_next(l); // eat '('
 
                 code_buffer_t fn_cb;
-                cb_init_persistent(&fn_cb, 4096);
+                cb_init_persistent(&fn_cb, 8192);
 
                 symbols_register(name, (void*)fn_cb.code, SYM_FUNC);
 
@@ -2318,7 +2540,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                             symbols_register(p_tok.str_value, storage, SYM_VAR);
                         }
 
-                        register_var_type(p_tok.str_value, p_scale, is_param_ptr, 0, param_st_name[0] ? param_st_name : NULL);
+                        register_var_type(p_tok.str_value, p_scale, is_param_ptr, (type_tok.type == TOK_TYPE_F64 && !is_param_ptr) ? 1 : 0, param_st_name[0] ? param_st_name : NULL);
 
                         if (current_fn_param_count < 8) {
                             current_fn_param_storages[current_fn_param_count++] = storage;
@@ -2432,7 +2654,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             }
             symbol_t *existing_sym = symbols_lookup_entry(name);
             int64_t *storage = NULL;
-            if (existing_sym && existing_sym->type == SYM_VAR && existing_sym->address) {
+            if (existing_sym && existing_sym->type == SYM_VAR && existing_sym->address && alloc_sz <= sizeof(int64_t)) {
                 storage = (int64_t*)existing_sym->address;
             } else {
                 storage = (int64_t*)kmalloc(alloc_sz);
@@ -2468,7 +2690,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     }
                     symbol_t *ex_sym = symbols_lookup_entry(next_name);
                     int64_t *next_storage = NULL;
-                    if (ex_sym && ex_sym->type == SYM_VAR && ex_sym->address) {
+                    if (ex_sym && ex_sym->type == SYM_VAR && ex_sym->address && next_alloc_sz <= sizeof(int64_t)) {
                         next_storage = (int64_t*)ex_sym->address;
                     } else {
                         next_storage = (int64_t*)kmalloc(next_alloc_sz);
@@ -2788,11 +3010,13 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         int found = 0;
                         int offset = 0;
                         int is_arr = 0;
+                        int is_ptr = 0;
                         char sub_st[32] = {0};
                         for (int m = 0; m < st->member_count; m++) {
                             if (strcmp(st->members[m].name, field_chain[k]) == 0) {
                                 offset = st->members[m].offset;
                                 is_arr = st->members[m].is_array;
+                                is_ptr = st->members[m].is_ptr;
                                 if (st->members[m].elem_size > 0) elem_sz = st->members[m].elem_size;
                                 if (st->members[m].type_name[0]) {
                                     strncpy(sub_st, st->members[m].type_name, 31);
@@ -2815,6 +3039,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         if (k < chain_len - 1) {
                             if (sub_st[0]) {
                                 strncpy(cur_st_name, sub_st, 31);
+                            }
+                            if (is_ptr) {
+                                emit_ldr64(cb, 1, 1);
                             }
                         } else {
                             if (!is_arr) {
@@ -2917,11 +3144,13 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                     int found = 0;
                     int offset = 0;
+                    int is_ptr = 0;
                     char sub_st[32] = {0};
                     for (int m = 0; m < st->member_count; m++) {
                         if (strcmp(st->members[m].name, field_chain[k]) == 0) {
                             offset = st->members[m].offset;
                             fsize = st->members[m].size;
+                            is_ptr = st->members[m].is_ptr;
                             if (st->members[m].type_name[0]) {
                                 strncpy(sub_st, st->members[m].type_name, 31);
                             }
@@ -2943,6 +3172,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     if (k < chain_len - 1) {
                         if (sub_st[0]) {
                             strncpy(cur_st_name, sub_st, 31);
+                        }
+                        if (is_ptr) {
+                            emit_ldr64(cb, 1, 1);
                         }
                     }
                 }
@@ -3068,11 +3300,13 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                         int found = 0;
                         int offset = 0;
+                        int is_ptr = 0;
                         char sub_st[32] = {0};
                         for (int m = 0; m < st->member_count; m++) {
                             if (strcmp(st->members[m].name, field_chain[k]) == 0) {
                                 offset = st->members[m].offset;
                                 fsize = st->members[m].size;
+                                is_ptr = st->members[m].is_ptr;
                                 if (st->members[m].type_name[0]) {
                                     strncpy(sub_st, st->members[m].type_name, 31);
                                 }
@@ -3094,6 +3328,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         if (k < chain_len - 1) {
                             if (sub_st[0]) {
                                 strncpy(cur_st_name, sub_st, 31);
+                            }
+                            if (is_ptr) {
+                                emit_ldr64(cb, 1, 1);
                             }
                         }
                     }
@@ -3276,11 +3513,15 @@ int64_t jit_compile_and_run(const char *source) {
         return -1;
     }
 
+    printf("[DEBUG-JIT] cb.count = %u instrs before peephole\n", (unsigned int)cb.count);
     jit_optimize_peephole(&cb);
+    printf("[DEBUG-JIT] cb.count = %u instrs after peephole\n", (unsigned int)cb.count);
     arm64_flush_cache(cb.code, cb.count * sizeof(uint32_t));
+    printf("[DEBUG-JIT] Calling fn() at %p...\n", cb.code);
 
     jit_func_t fn = (jit_func_t)cb.code;
     int64_t result = fn();
+    printf("[DEBUG-JIT] fn() returned %lld\n", (long long)result);
 
     cb_release(&cb);
     return result;

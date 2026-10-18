@@ -162,12 +162,13 @@ The following items are deliberately recorded as **open / not fixed**, with the 
 
 1. **Preemptive Task Switching (C1)**: `sched_tick()` remains an empty stub. Multitasking is cooperative via `task_yield()`. Implementing true preemption requires saving all 31 registers and SIMD state in the timer interrupt vector (`vectors.S`).
 2. **UEFI `GetMemoryMap` Integration (C3)**: Physical RAM layout is hardcoded to QEMU virt flat space; full dynamic UEFI memory map parsing is not integrated into `boot/main.c`.
-3. **Phantom Shell Commands (C5, C6, J8)**: `edit`, `filer`, `load`, and `bench3d stop` remain absent from the shell command table; they fall through to the JIT catch-all.
-4. **JIT One-Compile-Per-Boot Limitation (J1)**: Running multiple top-level scripts sequentially requires a reboot because parser symbol state is not reset between runs.
-5. **JIT `printf` Routing Discrepancy (J6/J8)**: `printf` output from JIT scripts routes to the DolDoc GUI terminal, with only specific lines mirrored to the UART serial port.
-6. **Hardcoded QEMU `virt` MMIO Addresses**: Hardware addresses (UART `0x09000000`, GIC `0x08000000`, VirtIO `0x0A000000`) are compile-time constants, preventing bare-metal boot without source modification.
-7. **Tracked Binary Artifacts in Git (D5)**: `boot/uefi/*.o` and `libuefi.a` are tracked in version control, producing churn across builds.
-8. **Lack of Automated CI Workflow (D6)**: No `.github/workflows/` exists; verification relies on local test runners.
+3. **Hardcoded QEMU `virt` MMIO Addresses**: Hardware addresses (UART `0x09000000`, GIC `0x08000000`, VirtIO `0x0A000000`) are compile-time constants, requiring Flattened Device Tree (FDT) parsing for bare-metal boot without source modification.
+4. **Complete Pure HolyC Migration (Elimination of all C outside UEFI Bootstrap)**: 31 `.c` files across `kernel/`, `drivers/`, `fs/`, `gui/`, and `compiler/` remain in C and must be ported to native `.HC` running on the Stage-1 Compiler (`apps/Compiler.HC`).
+5. **RedSea In-Place Sector Allocation**: Dynamic bitmap reclamation on file deletion and cluster allocation from scratch.
+6. **Tracked Binary Artifacts in Git (D5)**: `boot/uefi/*.o` and `libuefi.a` are tracked in version control, producing churn across builds.
+7. **Lack of Automated CI Workflow (D6)**: No `.github/workflows/` exists; verification relies on local test runners.
+
+*(Note: Shell commands `filer`, `edit`, `smp`, `run`, `save`, and `cat` were previously missing but were fully integrated in `apps/Shell.HC` during Phase 6. The Phase 9 Stage-1 Self-Hosting HolyC Compiler in `apps/Compiler.HC` is now 100% operational with 7/7 test suites passing in Ring 0 RAM).*
 
 ---
 

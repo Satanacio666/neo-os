@@ -1044,7 +1044,7 @@ void doldoc_print(const char *str) {
 }
 
 void doldoc_printf(const char *fmt, ...) {
-    char buf[512];
+    char buf[2048];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);

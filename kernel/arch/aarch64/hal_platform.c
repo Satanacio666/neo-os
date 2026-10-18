@@ -102,3 +102,15 @@ int hal_platform_select(hal_platform_id_t id) {
     }
 }
 
+void hal_flush_cache(void *addr, size_t size) {
+    uintptr_t start = (uintptr_t)addr;
+    uintptr_t end = start + size;
+    for (uintptr_t p = start & ~63ULL; p < end; p += 64) {
+        asm volatile("dc cvau, %0" :: "r"(p) : "memory");
+    }
+    asm volatile("dsb ish" ::: "memory");
+    for (uintptr_t p = start & ~63ULL; p < end; p += 64) {
+        asm volatile("ic ivau, %0" :: "r"(p) : "memory");
+    }
+    asm volatile("dsb ish; isb" ::: "memory");
+}

@@ -18,37 +18,14 @@ REDSEA_IMG = $(BUILD_DIR)/redsea.img
 UEFI_DIR = boot/uefi
 
 SRCS_C = boot/main.c \
-         kernel/mem/kheap.c \
-         kernel/symbols/symbols.c \
-         kernel/sched/sched.c \
-         kernel/arch/aarch64/hal_platform.c \
-         kernel/arch/aarch64/gic.c \
-         kernel/arch/aarch64/timer.c \
-         kernel/arch/aarch64/exceptions.c \
          compiler/lexer.c \
          compiler/table.c \
          compiler/jit_arm64.c \
-         gui/render.c \
-         gui/wm.c \
-         gui/shell.c \
-         drivers/input/keyboard.c \
-         drivers/input/mouse.c \
-         drivers/input/virtio_input.c \
          drivers/block/virtio_blk.c \
          fs/redsea.c \
-         kernel/arch/aarch64/smp.c \
-         gui/font_ubuntu_mono.c \
-         gui/font_ttf.c \
-         kernel/math/math3d.c \
-         kernel/math/raster_tile.c \
-         kernel/physics/physics3d.c \
-         drivers/gpu/gfx_backend.c \
-         drivers/gpu/virtio_gpu.c \
-         kernel/math/gears3d.c \
-         kernel/math/holygl.c \
-         kernel/bench/bench_unified.c \
-         kernel/bench/perf_overlay.c \
-         kernel/bench/profiler.c
+         kernel/mem/kheap.c \
+         kernel/symbols/symbols.c \
+         kernel/arch/aarch64/hal_platform.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \
