@@ -223,6 +223,7 @@ int main(int argc, char **argv)
     symbols_register("strncpy", (void*)strncpy, SYM_FUNC);
     symbols_register("memset", (void*)memset, SYM_FUNC);
     symbols_register("memcpy", (void*)memcpy, SYM_FUNC);
+    symbols_register("strcat", (void*)strcat, SYM_FUNC);
     symbols_register("memcmp", (void*)memcmp, SYM_FUNC);
     symbols_register("memmove", (void*)memmove, SYM_FUNC);
     symbols_register("strstr", (void*)strstr, SYM_FUNC);
@@ -252,6 +253,7 @@ int main(int argc, char **argv)
     symbols_register("redsea_read_file", (void*)redsea_read_file, SYM_FUNC);
     symbols_register("redsea_write_file", (void*)redsea_write_file, SYM_FUNC);
     symbols_register("redsea_list_dir", (void*)redsea_list_dir, SYM_FUNC);
+    symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
 
     // 6. Sovereign Handover: Read and Execute apps/KernelInit.HC
     printf("[BOOT] Sovereign Handover: Loading apps/KernelInit.HC from RedSea disk...\r\n");

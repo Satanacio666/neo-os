@@ -2335,6 +2335,8 @@ U0 DolDocAnimateTick() {
     if (g_doc_inspected_wid >= 0 && g_doc_inspected_wid < g_widget_count) {
         DolDocDrawMorphicHalo(g_doc_inspected_wid);
     }
+}
+
 // ============================================================================
 // LIVING COMPUTATIONAL CELL (LCM) DIRECT JIT INSTRUCTION & MEMORY PATCHER
 // ============================================================================
@@ -2850,6 +2852,12 @@ I64 doldoc_find_widget(U8 *name) {
 U8 *doldoc_get_widget_label(I64 wid) {
     if (wid < 0 || wid >= g_widget_count) return "";
     return g_widget_label + wid * 64;
+}
+
+U0 doldoc_register_holyc(CDolDocOps *ops) {
+    // Publish the DolDoc operation table into the JIT symbol space so that
+    // other HolyC modules and the shell can dispatch through it by name.
+    if (ops) symbols_register("g_doldoc_ops", ops, 2);
 }
 
 U0 DolDocInit() {

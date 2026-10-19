@@ -87,10 +87,12 @@ U0 KernelInitMain() {
     KInitLoad("BenchReport.HC");
     KInitLoad("Compositor.HC");
     KInitLoad("DolDoc.HC");
+    // WM.HC defines g_wm/StudioWin* which Shell.HC references. Load WM first;
+    // WM's own dependency on Shell (shell_run_command) late-binds via SIC.
+    KInitLoad("WM.HC");
     KInitLoad("Shell.HC");
     KInitLoad("ShaderEditor.HC");
     KInitLoad("HolyBenchmark.HC");
-    KInitLoad("WM.HC");
 
     KInitLog("======================================================");
     KInitLog("✦ ALL 32 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
@@ -98,6 +100,7 @@ U0 KernelInitMain() {
 
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum
     g_kernel_booting = 0;
+    symbols_report_unresolved();
     KInitLog("Entering Sovereign HolyC DolDocShellEventLoop()...");
     jit_compile_and_run("DolDocShellEventLoop();");
 }

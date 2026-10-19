@@ -564,6 +564,7 @@ typedef struct {
     int scale;            // 1 (U8), 2 (U16), 4 (U32), 8 (I64 / pointer / default)
     int is_ptr;           // 1 if pointer, 0 if direct struct/value
     int is_float;         // 1 if floating point (F64, double, float)
+    int is_array;         // 1 if an array (its name evaluates to its base address)
     char struct_type[32]; // Bound struct type if applicable
 } var_type_t;
 
@@ -1079,9 +1080,14 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             // Array Indexing: ident[index]
             lexer_next(l); // eat '['
             uint64_t arr_ref = lookup_var_ref(ident_name);
+            var_type_t *vt = lookup_var_type(ident_name);
             if (arr_ref) {
-                emit_ref_addr(cb, 16, arr_ref);
-                emit_ldr_ptr(cb, 1, 16); // X1 = base address
+                if (vt && !vt->is_ptr) {
+                    emit_ref_addr(cb, 1, arr_ref); // frame-resident array: address IS base
+                } else {
+                    emit_ref_addr(cb, 16, arr_ref);
+                    emit_ldr_ptr(cb, 1, 16); // X1 = base address
+                }
             } else {
                 emit_mov_imm64(cb, 1, 0);
             }
@@ -1090,7 +1096,6 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             parse_expr(l, cb);       // X0 = index
             emit_pop_x(cb, 1);       // X1 = base
 
-            var_type_t *vt = lookup_var_type(ident_name);
             int scale = vt ? vt->scale : 1;
 
             if (scale == 8) {
@@ -1132,16 +1137,28 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                 }
             }
         } else {
-            // Variable Read: frame local first, then Global Symbol Table
+            // Variable Read: frame local first, then Global Symbol Table (late-bound)
             uint64_t var_ref = lookup_var_ref(ident_name);
             symbol_t *sym = var_ref ? NULL : symbols_lookup_entry(ident_name);
+            if (!var_ref && !sym) {
+                // Forward reference: reserve a SIC cell so a later definition resolves
+                // this read instead of silently baking in a constant 0.
+                sym = symbols_lookup_or_reserve(ident_name, SYM_VAR);
+                if (sym) {
+                    printf("[JIT] line %d: forward reference '%s' late-bound via SIC\n",
+                           l->line, ident_name);
+                }
+            }
+            if (!var_ref && sym && sym->type == SYM_VAR && sym->address) {
+                var_ref = (uint64_t)sym->address;
+            }
             var_type_t *vt = lookup_var_type(ident_name);
             if (vt && vt->is_float && !vt->is_ptr) {
                 s_expr_is_float = 1;
             }
             if (var_ref) {
-                if (vt && vt->struct_type[0] != '\0' && !vt->is_ptr) {
-                    emit_ref_addr(cb, 0, var_ref);      // struct value: X0 = &struct
+                if (vt && (vt->is_array || (vt->struct_type[0] != '\0' && !vt->is_ptr))) {
+                    emit_ref_addr(cb, 0, var_ref);      // array/struct value: X0 = base address
                 } else {
                     emit_ref_addr(cb, 16, var_ref);
                     emit_ldr_ptr(cb, 0, 16); // X0 = *address
@@ -1474,17 +1491,26 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
             base_name[63] = '\0';
             lexer_next(l); // eat ident
 
-            symbol_t *sym = symbols_lookup_entry(base_name);
+            uint64_t amp_ref = lookup_var_ref(base_name);
             var_type_t *vt = lookup_var_type(base_name);
-            if (sym) {
+            if (amp_ref) {
                 if (vt && vt->is_ptr) {
-                    emit_mov_imm64(cb, 16, (uint64_t)sym->address);
+                    emit_ref_addr(cb, 16, amp_ref);
                     emit_ldr_ptr(cb, 0, 16); // X0 = pointer value
                 } else {
-                    emit_mov_imm64(cb, 0, (uint64_t)sym->address); // X0 = &variable
+                    emit_ref_addr(cb, 0, amp_ref); // X0 = &variable
                 }
             } else {
-                emit_mov_imm64(cb, 0, 0);
+                // &function: resolve the live entry through the SIC cell so forward
+                // definitions (and later redefinitions) are observed at call time.
+                symbol_t *fsym = symbols_lookup_or_reserve(base_name, SYM_FUNC);
+                if (fsym) {
+                    emit_mov_imm64(cb, 16, (uint64_t)&fsym->address);
+                    emit_ldr_ptr(cb, 0, 16); // X0 = function entry
+                } else {
+                    printf("[JIT] line %d: address-of undefined symbol '%s'\n", l->line, base_name);
+                    emit_mov_imm64(cb, 0, 0);
+                }
             }
 
             char cur_st[32] = {0};
@@ -1867,6 +1893,149 @@ static void parse_block(lexer_t *l, code_buffer_t *cb) {
 }
 
 // Statements (Function Decls, Variable Decls, Assignments, If, While, For, Expressions, Classes, Format Strings)
+// Class / Struct Definition (also reused by the type pre-pass)
+static void parse_struct_def(lexer_t *l, code_buffer_t *cb) {
+    lexer_next(l); // eat class / struct
+    token_t st_id = lexer_peek(l);
+    if (st_id.type == TOK_IDENT) {
+        char st_name[32];
+        strncpy(st_name, st_id.str_value, 31);
+        st_name[31] = '\0';
+        lexer_next(l); // eat ident
+
+        struct_def_t *st = find_struct_def(st_name);
+        if (!st) {
+            if (struct_def_count >= MAX_STRUCT_DEFS) {
+                printf("[JIT] Error: Maximum struct definitions (%d) exceeded\n", MAX_STRUCT_DEFS);
+                cb->has_error = 1;
+                return;
+            }
+            st = &struct_defs[struct_def_count++];
+        }
+
+        memset(st, 0, sizeof(struct_def_t));
+        strncpy(st->name, st_name, 31);
+
+        if (lexer_peek(l).type == TOK_LBRACE) {
+            lexer_next(l); // eat '{'
+            int cur_offset = 0;
+            while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+                token_type_t m_type = lexer_peek(l).type;
+                int is_mem_float = (m_type == TOK_TYPE_F64);
+                char m_type_str[32] = {0};
+                if (m_type == TOK_IDENT) {
+                    strncpy(m_type_str, lexer_peek(l).str_value, 31);
+                }
+                int m_size = 8;
+                if (m_type == TOK_TYPE_U8) m_size = 1;
+                else if (m_type == TOK_TYPE_U16) m_size = 2;
+                else if (m_type == TOK_TYPE_U32) m_size = 4;
+                else if (m_type == TOK_IDENT) {
+                    struct_def_t *nested_st = find_struct_def(lexer_peek(l).str_value);
+                    if (nested_st && nested_st->total_size > 0) m_size = nested_st->total_size;
+                    else m_size = 8;
+                }
+                else m_size = 8;
+                lexer_next(l); // eat type
+
+                if (lexer_peek(l).type == TOK_LPAREN) {
+                    // Function pointer member: ReturnType (*fn_name)(params...);
+                    lexer_next(l); // eat '('
+                    if (lexer_peek(l).type == TOK_STAR) lexer_next(l); // eat '*'
+                    token_t fn_id = lexer_peek(l);
+                    if (fn_id.type == TOK_IDENT) {
+                        if (st->member_count < MAX_STRUCT_MEMBERS) {
+                            struct_member_t *mem = &st->members[st->member_count++];
+                            memset(mem, 0, sizeof(struct_member_t));
+                            strncpy(mem->name, fn_id.str_value, 31);
+                            mem->name[31] = '\0';
+                            mem->offset = cur_offset;
+                            mem->size = 8; // 64-bit function pointer
+                            mem->elem_size = 8;
+                            mem->is_ptr = 1;
+                            cur_offset += 8;
+                        }
+                        lexer_next(l); // eat ident
+                    }
+                    if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
+                    // Skip argument list: (params...)
+                    if (lexer_peek(l).type == TOK_LPAREN) {
+                        int p_depth = 1;
+                        lexer_next(l);
+                        while (p_depth > 0 && lexer_peek(l).type != TOK_EOF && lexer_peek(l).type != TOK_SEMICOLON) {
+                            token_t pt = lexer_next(l);
+                            if (pt.type == TOK_LPAREN) p_depth++;
+                            else if (pt.type == TOK_RPAREN) p_depth--;
+                        }
+                    }
+                } else {
+                    int orig_elem_sz = m_size;
+                    int is_mem_ptr = 0;
+                    if (lexer_peek(l).type == TOK_STAR) {
+                        is_mem_ptr = 1;
+                        m_size = 8;
+                        lexer_next(l);
+                    }
+
+                    token_t m_id = lexer_peek(l);
+                    if (m_id.type == TOK_IDENT) {
+                        if (st->member_count >= MAX_STRUCT_MEMBERS) {
+                            printf("[JIT] Error: Struct '%s' exceeded max members (%d)\n", st_name, MAX_STRUCT_MEMBERS);
+                            cb->has_error = 1;
+                            return;
+                        }
+                        struct_member_t *mem = &st->members[st->member_count++];
+                        memset(mem, 0, sizeof(struct_member_t));
+                        strncpy(mem->name, m_id.str_value, 31);
+                        mem->name[31] = '\0';
+                        mem->offset = cur_offset;
+                        mem->size = m_size;
+                        mem->elem_size = is_mem_ptr ? orig_elem_sz : m_size;
+                        mem->is_array = 0;
+                        mem->is_ptr = is_mem_ptr;
+                        mem->is_float = is_mem_ptr ? 0 : is_mem_float;
+                        if (m_type_str[0]) strncpy(mem->type_name, m_type_str, 31);
+                        cur_offset += m_size;
+                        lexer_next(l);
+
+                        // Check for array member: ident[size]
+                        if (lexer_peek(l).type == TOK_LBRACKET) {
+                            lexer_next(l); // eat '['
+                            int arr_count = 1;
+                            token_t num_tok = lexer_peek(l);
+                            if (num_tok.type == TOK_NUMBER) {
+                                arr_count = (int)num_tok.int_value;
+                                lexer_next(l);
+                            } else if (num_tok.type == TOK_IDENT) {
+                                symbol_t *c_sym = symbols_lookup_entry(num_tok.str_value);
+                                if (c_sym && c_sym->type == SYM_VAR && c_sym->address) {
+                                    arr_count = *(int*)c_sym->address;
+                                } else if (strcmp(num_tok.str_value, "MAX_WINDOWS") == 0) {
+                                    arr_count = 16;
+                                }
+                                lexer_next(l);
+                            }
+                            if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                            if (arr_count > 1) {
+                                cur_offset -= m_size;
+                                mem->size = m_size * arr_count;
+                                mem->elem_size = m_size;
+                                mem->is_array = 1;
+                                cur_offset += mem->size;
+                            }
+                        }
+                    }
+                }
+                if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+            }
+            st->total_size = cur_offset;
+            if (lexer_peek(l).type == TOK_RBRACE) lexer_next(l);
+            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+        }
+        return;
+    }
+}
+
 static void parse_statement(lexer_t *l, code_buffer_t *cb) {
     s_expr_is_float = 0;
     token_t tok = lexer_peek(l);
@@ -1924,145 +2093,8 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
     // Class / Struct Definition: class Name { ... };
     if (tok.type == TOK_CLASS || tok.type == TOK_STRUCT) {
-        lexer_next(l); // eat class / struct
-        token_t st_id = lexer_peek(l);
-        if (st_id.type == TOK_IDENT) {
-            char st_name[32];
-            strncpy(st_name, st_id.str_value, 31);
-            st_name[31] = '\0';
-            lexer_next(l); // eat ident
-
-            struct_def_t *st = find_struct_def(st_name);
-            if (!st) {
-                if (struct_def_count >= MAX_STRUCT_DEFS) {
-                    printf("[JIT] Error: Maximum struct definitions (%d) exceeded\n", MAX_STRUCT_DEFS);
-                    cb->has_error = 1;
-                    return;
-                }
-                st = &struct_defs[struct_def_count++];
-            }
-
-            memset(st, 0, sizeof(struct_def_t));
-            strncpy(st->name, st_name, 31);
-
-            if (lexer_peek(l).type == TOK_LBRACE) {
-                lexer_next(l); // eat '{'
-                int cur_offset = 0;
-                while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
-                    token_type_t m_type = lexer_peek(l).type;
-                    int is_mem_float = (m_type == TOK_TYPE_F64);
-                    char m_type_str[32] = {0};
-                    if (m_type == TOK_IDENT) {
-                        strncpy(m_type_str, lexer_peek(l).str_value, 31);
-                    }
-                    int m_size = 8;
-                    if (m_type == TOK_TYPE_U8) m_size = 1;
-                    else if (m_type == TOK_TYPE_U16) m_size = 2;
-                    else if (m_type == TOK_TYPE_U32) m_size = 4;
-                    else if (m_type == TOK_IDENT) {
-                        struct_def_t *nested_st = find_struct_def(lexer_peek(l).str_value);
-                        if (nested_st && nested_st->total_size > 0) m_size = nested_st->total_size;
-                        else m_size = 8;
-                    }
-                    else m_size = 8;
-                    lexer_next(l); // eat type
-
-                    if (lexer_peek(l).type == TOK_LPAREN) {
-                        // Function pointer member: ReturnType (*fn_name)(params...);
-                        lexer_next(l); // eat '('
-                        if (lexer_peek(l).type == TOK_STAR) lexer_next(l); // eat '*'
-                        token_t fn_id = lexer_peek(l);
-                        if (fn_id.type == TOK_IDENT) {
-                            if (st->member_count < MAX_STRUCT_MEMBERS) {
-                                struct_member_t *mem = &st->members[st->member_count++];
-                                memset(mem, 0, sizeof(struct_member_t));
-                                strncpy(mem->name, fn_id.str_value, 31);
-                                mem->name[31] = '\0';
-                                mem->offset = cur_offset;
-                                mem->size = 8; // 64-bit function pointer
-                                mem->elem_size = 8;
-                                mem->is_ptr = 1;
-                                cur_offset += 8;
-                            }
-                            lexer_next(l); // eat ident
-                        }
-                        if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
-                        // Skip argument list: (params...)
-                        if (lexer_peek(l).type == TOK_LPAREN) {
-                            int p_depth = 1;
-                            lexer_next(l);
-                            while (p_depth > 0 && lexer_peek(l).type != TOK_EOF && lexer_peek(l).type != TOK_SEMICOLON) {
-                                token_t pt = lexer_next(l);
-                                if (pt.type == TOK_LPAREN) p_depth++;
-                                else if (pt.type == TOK_RPAREN) p_depth--;
-                            }
-                        }
-                    } else {
-                        int orig_elem_sz = m_size;
-                        int is_mem_ptr = 0;
-                        if (lexer_peek(l).type == TOK_STAR) {
-                            is_mem_ptr = 1;
-                            m_size = 8;
-                            lexer_next(l);
-                        }
-
-                        token_t m_id = lexer_peek(l);
-                        if (m_id.type == TOK_IDENT) {
-                            if (st->member_count >= MAX_STRUCT_MEMBERS) {
-                                printf("[JIT] Error: Struct '%s' exceeded max members (%d)\n", st_name, MAX_STRUCT_MEMBERS);
-                                cb->has_error = 1;
-                                return;
-                            }
-                            struct_member_t *mem = &st->members[st->member_count++];
-                            memset(mem, 0, sizeof(struct_member_t));
-                            strncpy(mem->name, m_id.str_value, 31);
-                            mem->name[31] = '\0';
-                            mem->offset = cur_offset;
-                            mem->size = m_size;
-                            mem->elem_size = is_mem_ptr ? orig_elem_sz : m_size;
-                            mem->is_array = 0;
-                            mem->is_ptr = is_mem_ptr;
-                            mem->is_float = is_mem_ptr ? 0 : is_mem_float;
-                            if (m_type_str[0]) strncpy(mem->type_name, m_type_str, 31);
-                            cur_offset += m_size;
-                            lexer_next(l);
-
-                            // Check for array member: ident[size]
-                            if (lexer_peek(l).type == TOK_LBRACKET) {
-                                lexer_next(l); // eat '['
-                                int arr_count = 1;
-                                token_t num_tok = lexer_peek(l);
-                                if (num_tok.type == TOK_NUMBER) {
-                                    arr_count = (int)num_tok.int_value;
-                                    lexer_next(l);
-                                } else if (num_tok.type == TOK_IDENT) {
-                                    symbol_t *c_sym = symbols_lookup_entry(num_tok.str_value);
-                                    if (c_sym && c_sym->type == SYM_VAR && c_sym->address) {
-                                        arr_count = *(int*)c_sym->address;
-                                    } else if (strcmp(num_tok.str_value, "MAX_WINDOWS") == 0) {
-                                        arr_count = 16;
-                                    }
-                                    lexer_next(l);
-                                }
-                                if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
-                                if (arr_count > 1) {
-                                    cur_offset -= m_size;
-                                    mem->size = m_size * arr_count;
-                                    mem->elem_size = m_size;
-                                    mem->is_array = 1;
-                                    cur_offset += mem->size;
-                                }
-                            }
-                        }
-                    }
-                    if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
-                }
-                st->total_size = cur_offset;
-                if (lexer_peek(l).type == TOK_RBRACE) lexer_next(l);
-                if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
-            }
-            return;
-        }
+        parse_struct_def(l, cb);
+        return;
     }
 
     // If Statement: if (cond) block [else if (cond) block]* [else block]
@@ -2551,7 +2583,18 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 }
                 if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'
 
+                fn_frame_t fn_frame;
+                memset(&fn_frame, 0, sizeof(fn_frame));
+                fn_frame_t *parent_frame = s_frame;
+                s_frame = &fn_frame;
+
                 emit_push_lr(&fn_cb);
+
+                // Reserve the function's local-variable stack frame. Its size is only
+                // known once the body has been parsed, so patch the MOVZ immediate below.
+                size_t frame_sub_patch = fn_cb.count;
+                emit_u32(&fn_cb, 0xD2800010); // MOVZ X16, #0
+                emit_u32(&fn_cb, 0xCB3063FF); // SUB SP, SP, X16 (extended register)
 
                 // Preserve previous parameter values on stack and assign argument registers
                 for (int i = 0; i < current_fn_param_count; i++) {
@@ -2563,6 +2606,17 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                 parse_block(l, &fn_cb);
 
+                // Finalize the local frame: patch MOVZ X16 with the 16-byte aligned size.
+                uint32_t frame_bytes = (fn_frame.frame_size + 15u) & ~15u;
+                if (frame_bytes > 0xFFFFu) {
+                    printf("[JIT] Error: function stack frame too large (%u bytes)\n",
+                           (unsigned int)frame_bytes);
+                    cb->has_error = 1;
+                    fn_cb.has_error = 1;
+                } else {
+                    fn_cb.code[frame_sub_patch] = 0xD2800000u | ((frame_bytes & 0xFFFFu) << 5) | 16u;
+                }
+
                 // Epilogue: restore previous parameter values from stack
                 for (int i = current_fn_param_count - 1; i >= 0; i--) {
                     emit_pop_x(&fn_cb, 17);
@@ -2573,6 +2627,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 emit_pop_lr(&fn_cb);
                 emit_ret(&fn_cb);
 
+                s_frame = parent_frame;
                 current_fn_param_count = parent_param_count;
                 for (int i = 0; i < 8; i++) {
                     current_fn_param_storages[i] = parent_param_storages[i];
@@ -2635,6 +2690,20 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             if (arr_decl_count > 0) {
                 int elem_sz = is_ptr ? 8 : ((known_st && known_st->total_size > 0) ? known_st->total_size : (scale > 0 ? scale : 8));
                 size_t total_buf_sz = (size_t)arr_decl_count * elem_sz;
+
+                if (s_frame) {
+                    // Function-local array: live in the stack frame so recursion and
+                    // re-entrancy are safe (is_ptr = 0 => address IS the base).
+                    local_var_t *alv = frame_alloc(name, (uint32_t)total_buf_sz);
+                    if (alv) {
+                        register_var_type(name, elem_sz, 0, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
+                        alv->vt.is_array = 1;
+                        emit_zero_slot(cb, alv);
+                        if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+                        return;
+                    }
+                }
+
                 void *arr_buf = kmalloc(total_buf_sz);
                 if (arr_buf) memset(arr_buf, 0, total_buf_sz);
 
@@ -2652,6 +2721,17 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             if (known_st && !is_ptr) {
                 alloc_sz = known_st->total_size > 8 ? known_st->total_size : 8;
             }
+            local_var_t *frame_lv = s_frame ? frame_alloc(name, (uint32_t)alloc_sz) : NULL;
+            if (frame_lv) {
+                register_var_type(name, scale, is_ptr, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
+                emit_zero_slot(cb, frame_lv);
+                if (lexer_peek(l).type == TOK_EQUAL) {
+                    lexer_next(l); // eat '='
+                    parse_expr(l, cb); // Result in X0
+                    emit_ref_addr(cb, 16, local_ref(frame_lv));
+                    emit_str_ptr(cb, 0, 16); // local = X0
+                }
+            } else {
             symbol_t *existing_sym = symbols_lookup_entry(name);
             int64_t *storage = NULL;
             if (existing_sym && existing_sym->type == SYM_VAR && existing_sym->address && alloc_sz <= sizeof(int64_t)) {
@@ -2668,6 +2748,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 parse_expr(l, cb); // Result in X0
                 emit_mov_imm64(cb, 16, (uint64_t)storage);
                 emit_str_ptr(cb, 0, 16); // *storage = X0
+            }
             }
 
             while (lexer_peek(l).type == TOK_COMMA) {
@@ -2688,6 +2769,17 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     if (known_st && !next_is_ptr) {
                         next_alloc_sz = known_st->total_size > 8 ? known_st->total_size : 8;
                     }
+                    local_var_t *next_lv = s_frame ? frame_alloc(next_name, (uint32_t)next_alloc_sz) : NULL;
+                    if (next_lv) {
+                        register_var_type(next_name, scale, next_is_ptr, (base_type == TOK_TYPE_F64 && !next_is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
+                        emit_zero_slot(cb, next_lv);
+                        if (lexer_peek(l).type == TOK_EQUAL) {
+                            lexer_next(l); // eat '='
+                            parse_expr(l, cb);
+                            emit_ref_addr(cb, 16, local_ref(next_lv));
+                            emit_str_ptr(cb, 0, 16);
+                        }
+                    } else {
                     symbol_t *ex_sym = symbols_lookup_entry(next_name);
                     int64_t *next_storage = NULL;
                     if (ex_sym && ex_sym->type == SYM_VAR && ex_sym->address && next_alloc_sz <= sizeof(int64_t)) {
@@ -2705,6 +2797,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         emit_mov_imm64(cb, 16, (uint64_t)next_storage);
                         emit_str_ptr(cb, 0, 16);
                     }
+                    }
                 }
             }
 
@@ -2715,6 +2808,23 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
     // Dereference Assignment: *ptr = expr; or *(U32*)addr = expr;
     if (tok.type == TOK_STAR) {
+        // If there is no top-level '=' before the ';', this is a dereference *read*
+        // (e.g. "*q;" or "*q + 1;") and must be evaluated as an expression.
+        lexer_t star_la = *l;
+        int sdepth = 0, star_is_assign = 0;
+        while (star_la.current.type != TOK_EOF && star_la.current.type != TOK_SEMICOLON) {
+            token_type_t tt = star_la.current.type;
+            if (tt == TOK_LPAREN || tt == TOK_LBRACKET) sdepth++;
+            else if (tt == TOK_RPAREN || tt == TOK_RBRACKET) { if (sdepth > 0) sdepth--; }
+            else if (sdepth == 0 && (tt == TOK_EQUAL || is_compound_assign_tok(tt))) { star_is_assign = 1; break; }
+            lexer_next(&star_la);
+        }
+        if (!star_is_assign) {
+            parse_expr(l, cb);
+            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+            return;
+        }
+
         lexer_next(l); // eat '*'
         int store_scale = 8;
         if (lexer_peek(l).type == TOK_LPAREN) {
@@ -2758,9 +2868,8 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 parse_expr(l, cb); // RHS in X0
                 emit_push_x(cb, 0); // Save RHS
 
-                symbol_t *sym = symbols_lookup_entry(ptr_name);
-                int64_t *storage = sym ? (int64_t*)sym->address : NULL;
-                emit_mov_imm64(cb, 16, (uint64_t)storage);
+                uint64_t ptr_ref = lookup_var_ref(ptr_name);
+                emit_ref_addr(cb, 16, ptr_ref);
                 emit_ldr_ptr(cb, 1, 16); // X1 = target address stored in ptr
                 emit_pop_x(cb, 0);       // X0 = RHS value
                 if (store_scale == 1) {
@@ -2818,13 +2927,16 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             parse_expr(l, cb); // index in X0
             if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
 
-            symbol_t *sym = symbols_lookup_entry(arr_name);
-            int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+            uint64_t arr_ref = lookup_var_ref(arr_name);
             var_type_t *vt = lookup_var_type(arr_name);
             int scale = vt ? vt->scale : 1;
 
-            emit_mov_imm64(cb, 16, (uint64_t)storage);
-            emit_ldr_ptr(cb, 2, 16); // X2 = base address
+            if (vt && !vt->is_ptr) {
+                emit_ref_addr(cb, 2, arr_ref); // X2 = base (frame-resident array)
+            } else {
+                emit_ref_addr(cb, 16, arr_ref);
+                emit_ldr_ptr(cb, 2, 16); // X2 = base pointer
+            }
 
             emit_mov_imm64(cb, 3, (uint64_t)(scale > 0 ? scale : 1));
             emit_mul(cb, 0, 0, 3);
@@ -2966,8 +3078,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     parse_expr(l, cb); // RHS in X0
                     emit_push_x(cb, 0); // save RHS
 
-                    symbol_t *sym = symbols_lookup_entry(var_name);
-                    int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+                    uint64_t var_ref = lookup_var_ref(var_name);
 
                     var_type_t *vt = lookup_var_type(var_name);
                     char cur_st_name[32] = {0};
@@ -2976,10 +3087,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     }
 
                     if (vt && vt->is_ptr) {
-                        emit_mov_imm64(cb, 16, (uint64_t)storage);
+                        emit_ref_addr(cb, 16, var_ref);
                         emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
                     } else {
-                        emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                        emit_ref_addr(cb, 1, var_ref); // X1 = storage (direct base)
                     }
 
                     int elem_sz = 8;
@@ -3101,8 +3212,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 token_type_t inc_type = lexer_peek(l).type;
                 lexer_next(l); // eat '++' or '--'
 
-                symbol_t *sym = symbols_lookup_entry(var_name);
-                int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+                uint64_t var_ref = lookup_var_ref(var_name);
 
                 var_type_t *vt = lookup_var_type(var_name);
                 char cur_st_name[32] = {0};
@@ -3111,10 +3221,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 }
 
                 if (vt && vt->is_ptr) {
-                    emit_mov_imm64(cb, 16, (uint64_t)storage);
+                    emit_ref_addr(cb, 16, var_ref);
                     emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
                 } else {
-                    emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                    emit_ref_addr(cb, 1, var_ref); // X1 = storage (direct base)
                 }
 
                 int fsize = 8;
@@ -3228,8 +3338,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     parse_expr(l, cb); // RHS in X0
                     emit_push_x(cb, 0); // save RHS
 
-                    symbol_t *sym = symbols_lookup_entry(var_name);
-                    int64_t *storage = sym ? (int64_t*)sym->address : NULL;
+                    uint64_t var_ref = lookup_var_ref(var_name);
 
                     var_type_t *vt = lookup_var_type(var_name);
                     char cur_st_name[32] = {0};
@@ -3251,7 +3360,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                         if (!is_st) {
                             // Dynamic Table set: table_set(tbl, field, val)
                             emit_pop_x(cb, 2); // RHS in X2
-                            emit_mov_imm64(cb, 16, (uint64_t)storage);
+                            emit_ref_addr(cb, 16, var_ref);
                             emit_ldr_ptr(cb, 0, 16); // X0 = tbl
 
                             char *f_copy = (char*)kmalloc(strlen(field_chain[0]) + 1);
@@ -3267,10 +3376,10 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     }
 
                     if (vt && vt->is_ptr) {
-                        emit_mov_imm64(cb, 16, (uint64_t)storage);
+                        emit_ref_addr(cb, 16, var_ref);
                         emit_ldr_ptr(cb, 1, 16); // X1 = *storage (pointer to struct)
                     } else {
-                        emit_mov_imm64(cb, 1, (uint64_t)storage); // X1 = storage (direct base)
+                        emit_ref_addr(cb, 1, var_ref); // X1 = storage (direct base)
                     }
 
                     int fsize = 8;
@@ -3365,10 +3474,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             token_type_t inc_type = lexer_peek(l).type;
             lexer_next(l); // eat '++' or '--'
 
-            symbol_t *sym = symbols_lookup_entry(var_name);
-            int64_t *storage = sym ? (int64_t*)sym->address : NULL;
-            if (storage) {
-                emit_mov_imm64(cb, 16, (uint64_t)storage);
+            uint64_t var_ref = lookup_var_ref(var_name);
+            if (var_ref) {
+                emit_ref_addr(cb, 16, var_ref);
                 emit_ldr_ptr(cb, 0, 16); // X0 = old val
                 emit_mov_imm64(cb, 1, 1);
                 if (inc_type == TOK_PLUSPLUS) {
@@ -3391,10 +3499,9 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             lexer_next(l); // eat 'op='
 
             parse_expr(l, cb); // RHS in X0
-            symbol_t *sym = symbols_lookup_entry(var_name);
-            int64_t *storage = sym ? (int64_t*)sym->address : NULL;
-            if (storage) {
-                emit_mov_imm64(cb, 16, (uint64_t)storage);
+            uint64_t var_ref = lookup_var_ref(var_name);
+            if (var_ref) {
+                emit_ref_addr(cb, 16, var_ref);
                 emit_ldr_ptr(cb, 1, 16); // X1 = old val
                 emit_compound_op(cb, op_type); // X0 = X1 (op) X0
                 emit_str_ptr(cb, 0, 16);
@@ -3409,18 +3516,16 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             lexer_next(l); // eat ident
             lexer_next(l); // eat '='
 
-            symbol_t *sym = symbols_lookup_entry(var_name);
-            int64_t *storage = NULL;
-            if (!sym || sym->type != SYM_VAR) {
-                storage = (int64_t*)kmalloc(sizeof(int64_t));
+            uint64_t var_ref = lookup_var_ref(var_name);
+            if (!var_ref) {
+                int64_t *storage = (int64_t*)kmalloc(sizeof(int64_t));
                 *storage = 0;
                 symbols_register(var_name, storage, SYM_VAR);
-            } else {
-                storage = (int64_t*)sym->address;
+                var_ref = (uint64_t)storage;
             }
 
             parse_expr(l, cb); // Result in X0
-            emit_mov_imm64(cb, 16, (uint64_t)storage);
+            emit_ref_addr(cb, 16, var_ref);
             emit_str_ptr(cb, 0, 16); // *storage = X0
 
             if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
@@ -3482,6 +3587,27 @@ int64_t jit_execute_statement(const char *code) {
     return jit_compile_and_run(code);
 }
 
+// Type pre-pass: parse every struct/class definition first so that forward
+// references (pointers to types defined later in the same unit, member access)
+// resolve correctly during the real compile pass. Definitions are re-parsed in
+// the main pass (idempotent: the entry is memset and refilled).
+static void prescan_struct_defs(const char *source) {
+    lexer_t scan;
+    lexer_init(&scan, source);
+    code_buffer_t dummy;
+    cb_init_scratch(&dummy, 16);
+    while (1) {
+        token_t t = lexer_peek(&scan);
+        if (t.type == TOK_EOF) break;
+        if (t.type == TOK_STRUCT || t.type == TOK_CLASS) {
+            parse_struct_def(&scan, &dummy);
+        } else {
+            lexer_next(&scan);
+        }
+    }
+    cb_release(&dummy);
+}
+
 int64_t jit_compile_and_run(const char *source) {
     if (!source || !*source) return 0;
 
@@ -3490,6 +3616,7 @@ int64_t jit_compile_and_run(const char *source) {
     cb_init_scratch(&cb, 8192);
 
     lexer_init(&l, source);
+    prescan_struct_defs(source);
     emit_push_lr(&cb);
 
     while (lexer_peek(&l).type != TOK_EOF) {

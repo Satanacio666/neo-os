@@ -44,6 +44,10 @@ U64 timer_get_uptime_sec() {
   return TimerGetUsec() / 1000000;
 }
 
+U64 timer_get_uptime_ms() {
+  return TimerGetUsec() / 1000;
+}
+
 U0 TimerInit(U32 p_freq_hz) {
   if (p_freq_hz == 0) p_freq_hz = 100;
   U64 hw_frq = TimerQueryHwFreq();

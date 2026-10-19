@@ -9,6 +9,12 @@ LD = aarch64-linux-gnu-ld
 OBJCOPY = aarch64-linux-gnu-objcopy
 AR = aarch64-linux-gnu-ar
 
+# Locate a FAT image tool across distros (dosfstools ships mkfs.vfat or mkfs.fat).
+MKFS_VFAT := $(shell command -v mkfs.vfat 2>/dev/null || command -v mkfs.fat 2>/dev/null \
+	|| { [ -x /usr/sbin/mkfs.vfat ] && echo /usr/sbin/mkfs.vfat; } \
+	|| { [ -x /sbin/mkfs.vfat ] && echo /sbin/mkfs.vfat; } \
+	|| echo mkfs.vfat)
+
 BUILD_DIR = build
 TARGET_EFI = $(BUILD_DIR)/BOOTAA64.EFI
 TARGET_SO = $(BUILD_DIR)/boot.so
@@ -68,9 +74,20 @@ QEMU_FLAGS = -M virt,gic-version=2 \
              -display gtk \
              -serial stdio
 
-.PHONY: all clean run run-headless disk libuefi
+.PHONY: all clean run run-headless disk libuefi check-tools
 
-all: $(TARGET_EFI) disk
+check-tools:
+	@missing=""; \
+	for t in $(CC) $(LD) $(OBJCOPY) $(AR) $(AS) dd mmd mcopy $(MKFS_VFAT); do \
+	  if [ -x "$$t" ] || command -v "$$t" >/dev/null 2>&1; then :; else missing="$$missing $$t"; fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "ERROR: missing build dependencies:$$missing"; \
+	  echo "  Debian/Ubuntu: sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu dosfstools mtools"; \
+	  exit 1; \
+	fi
+
+all: check-tools $(TARGET_EFI) disk
 
 libuefi: $(UEFI_DIR)/reloc.o
 	$(MAKE) -C $(UEFI_DIR) ARCH=aarch64 USE_GCC=1
@@ -101,7 +118,7 @@ $(TARGET_EFI): $(TARGET_SO)
 disk: $(TARGET_EFI)
 	@echo "Creating FAT32 UEFI bootable disk image..."
 	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=64 status=none
-	/usr/sbin/mkfs.vfat -F 32 $(DISK_IMG) >/dev/null
+	$(MKFS_VFAT) -F 32 $(DISK_IMG) >/dev/null
 	mmd -i $(DISK_IMG) ::/EFI
 	mmd -i $(DISK_IMG) ::/EFI/BOOT
 	mcopy -i $(DISK_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI

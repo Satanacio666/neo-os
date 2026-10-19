@@ -29,6 +29,23 @@ int64_t symbols_unresolved_trap(void) {
     return 0;
 }
 
+// Report every symbol still pointing at the unresolved trap after all modules
+// have loaded. Any entry listed here would fault (or return 0) if invoked.
+void symbols_report_unresolved(void) {
+    int n = 0;
+    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
+        for (symbol_t *c = buckets[i]; c; c = c->next) {
+            if (c->address == (void*)symbols_unresolved_trap) {
+                if (n == 0) printf("\n[SYMBOLS] UNRESOLVED FORWARD REFERENCES:\n");
+                printf("  - %s\n", c->name);
+                n++;
+            }
+        }
+    }
+    if (n == 0) printf("[SYMBOLS] No unresolved forward references.\n");
+    else printf("[SYMBOLS] %d unresolved reference(s) — invoking them would trap.\n", n);
+}
+
 int symbols_register(const char *name, void *address, symbol_type_t type) {
     if (!name || !address) return 0;
 
@@ -92,8 +109,17 @@ symbol_t* symbols_lookup_or_reserve(const char *name, symbol_type_t default_type
     symbol_t *existing = symbols_lookup_entry(name);
     if (existing) return existing;
 
-    // Reserve a Late-Bound Symbol Indirect Cell (SIC) pointing to symbols_unresolved_trap
-    symbols_register(name, (void*)symbols_unresolved_trap, default_type);
+    if (default_type == SYM_VAR) {
+        // Forward global variable: reserve a real, zeroed storage cell. A later
+        // declaration reuses this same cell (symbols_register updates in place),
+        // so reads compiled before the definition observe the defined value.
+        int64_t *cell = (int64_t*)kmalloc(sizeof(int64_t));
+        if (cell) *cell = 0;
+        symbols_register(name, (void*)cell, SYM_VAR);
+    } else {
+        // Forward function: SIC cell points at the unresolved trap until defined.
+        symbols_register(name, (void*)symbols_unresolved_trap, default_type);
+    }
     return symbols_lookup_entry(name);
 }
 
