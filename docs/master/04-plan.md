@@ -12,9 +12,13 @@ Built by **dependency: the thing everything else stands on goes first.** Every s
 
 ---
 
-## P0 — Observability & Debug Harness ✅
-Rebuilt and verified: `run-viewer-vm.sh` (VNC + monitor socket + bidirectional UART), `uart-bridge.mjs`, `uart-repl.py`, `run-jit-golden.py`, `golden-boot.sh`, `audit-symbols.sh`, `tests/jit_golden/cases.json`.
-**Still to add:** a crash-decoder helper (monitor `info registers` + `xp` disasm around `ELR`), a screenshot-diff step, an optional gdbstub run target.
+## P0 — Observability & Debug Harness ✅ COMPLETE
+- `run-viewer-vm.sh` (VNC + monitor socket + bidirectional UART; `NEO_DEBUG=1` → gdbstub `-s -S`), `uart-bridge.mjs`, `uart-repl.py`.
+- `run-jit-golden.py` + `tests/jit_golden/cases.json` (50 cases).
+- `golden-boot.sh` (boot asserts + battery + screenshot).
+- `audit-symbols.sh` (zero-emission + undefined/late-bound audit).
+- **`crash-decode.py`** — reads ELR/FAR/ESR, maps ELR to the compiled `.HC` function, disassembles around the faulting PC via the QEMU monitor. *Verified with an induced null-write.*
+- **`screenshot-diff.py`** — baseline save + % pixels changed. *Verified (0.00% drift between frames).*
 
 ## P1 — Compiler correctness & capability (in progress)
 **Done (re-applied & verified):**

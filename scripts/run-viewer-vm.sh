@@ -40,6 +40,9 @@ QEMU_ARGS=(
   -serial chardev:uart0
 )
 
+# Optional gdbstub: NEO_DEBUG=1 starts QEMU halted with a gdb server on tcp::1234.
+if [ "${NEO_DEBUG:-0}" = "1" ]; then QEMU_ARGS+=( -s -S ); fi
+
 is_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 
 case "${1:-start}" in
