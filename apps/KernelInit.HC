@@ -47,7 +47,7 @@ U0 KernelInitMain() {
     KInitLoad("Symbols.HC");
     KInitLoad("StdLib.HC");
     KInitLoad("Table.HC");
-    KInitLoad("Lexer.HC");
+    // Lexer.HC removed: orphan third tokenizer (Compiler.HC uses its own HcLexNext).
     KInitLoad("Compiler.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography

@@ -3608,6 +3608,56 @@ static void prescan_struct_defs(const char *source) {
     cb_release(&dummy);
 }
 
+// RedSea file reader (registered as a JIT symbol; declared here for the preprocessor).
+extern int redsea_read_file(const char *filename, void *buffer, size_t max_bytes, size_t *out_size);
+
+#define INCLUDE_MAX_DEPTH 8
+#define INCLUDE_BUF_SIZE  (256 * 1024)
+
+// Expand `#include "file"` directives recursively by splicing file contents
+// (read from RedSea). Returns the number of bytes written to `out`.
+static size_t expand_includes(const char *src, char *out, size_t cap, int depth) {
+    if (depth > INCLUDE_MAX_DEPTH) return 0;
+    size_t o = 0;
+    const char *p = src;
+    while (*p) {
+        if ((p == src || p[-1] == '\n') && p[0] == '#') {
+            const char *q = p + 1;
+            while (*q == ' ' || *q == '\t') q++;
+            if (strncmp(q, "include", 7) == 0) {
+                q += 7;
+                while (*q == ' ' || *q == '\t') q++;
+                if (*q == '"') {
+                    q++;
+                    char name[64];
+                    int n = 0;
+                    while (*q && *q != '"' && *q != '\n' && n < 63) name[n++] = *q++;
+                    name[n] = '\0';
+                    if (*q == '"') q++;
+                    char *fb = (char*)kmalloc(INCLUDE_BUF_SIZE);
+                    if (fb) {
+                        size_t len = 0;
+                        if (redsea_read_file(name, fb, INCLUDE_BUF_SIZE - 1, &len) == 0) {
+                            fb[len] = '\0';
+                            o += expand_includes(fb, out + o, cap - o, depth + 1);
+                        } else {
+                            printf("[JIT] #include: cannot read '%s'\n", name);
+                        }
+                        kfree(fb);
+                    }
+                    while (*q && *q != '\n') q++;
+                    p = q;
+                    continue;
+                }
+            }
+        }
+        if (o + 1 < cap) out[o++] = *p;
+        p++;
+    }
+    if (o < cap) out[o] = '\0';
+    return o;
+}
+
 int64_t jit_compile_and_run(const char *source) {
     if (!source || !*source) return 0;
 
@@ -3615,8 +3665,19 @@ int64_t jit_compile_and_run(const char *source) {
     code_buffer_t cb;
     cb_init_scratch(&cb, 8192);
 
-    lexer_init(&l, source);
-    prescan_struct_defs(source);
+    // Expand #include directives (only if present) before parsing.
+    char *expanded = NULL;
+    const char *src = source;
+    if (strstr(source, "#include")) {
+        expanded = (char*)kmalloc(INCLUDE_BUF_SIZE);
+        if (expanded) {
+            expand_includes(source, expanded, INCLUDE_BUF_SIZE, 0);
+            src = expanded;
+        }
+    }
+
+    lexer_init(&l, src);
+    prescan_struct_defs(src);
     emit_push_lr(&cb);
 
     while (lexer_peek(&l).type != TOK_EOF) {
@@ -3631,6 +3692,7 @@ int64_t jit_compile_and_run(const char *source) {
         }
     }
 
+    if (expanded) kfree(expanded);
     emit_pop_lr(&cb);
     emit_ret(&cb);
 
