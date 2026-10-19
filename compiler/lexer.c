@@ -169,6 +169,19 @@ token_t lexer_next(lexer_t *l) {
         return lexer_next(l);
     }
 
+    // Skip block comments /* ... */
+    if (c == '/' && l->src[l->pos + 1] == '*') {
+        l->pos += 2;
+        l->col += 2;
+        while (l->src[l->pos] && !(l->src[l->pos] == '*' && l->src[l->pos + 1] == '/')) {
+            if (l->src[l->pos] == '\n') { l->line++; l->col = 0; }
+            else l->col++;
+            l->pos++;
+        }
+        if (l->src[l->pos] == '*') { l->pos += 2; l->col += 2; }
+        return lexer_next(l);
+    }
+
     // Preprocessor directives (#define, #include, etc.)
     if (c == '#') {
         l->pos++;

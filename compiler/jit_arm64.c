@@ -2040,6 +2040,32 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
     s_expr_is_float = 0;
     token_t tok = lexer_peek(l);
 
+    // Inline assembly: asm { 0xWORD, 0xWORD, ... }  (raw AArch64 instruction words)
+    if (tok.type == TOK_IDENT && strcmp(tok.str_value, "asm") == 0) {
+        lexer_t la = *l;
+        lexer_next(&la); // past 'asm'
+        if (lexer_peek(&la).type == TOK_LBRACE) {
+            lexer_next(l); // eat 'asm'
+            lexer_next(l); // eat '{'
+            while (lexer_peek(l).type != TOK_RBRACE && lexer_peek(l).type != TOK_EOF) {
+                token_t t = lexer_peek(l);
+                if (t.type == TOK_NUMBER) {
+                    emit_u32(cb, (uint32_t)t.int_value);
+                    lexer_next(l);
+                } else if (t.type == TOK_COMMA || t.type == TOK_SEMICOLON) {
+                    lexer_next(l);
+                } else {
+                    printf("[JIT] asm: unexpected token (only raw 32-bit words supported)\n");
+                    cb->has_error = 1;
+                    return;
+                }
+            }
+            if (lexer_peek(l).type == TOK_RBRACE) lexer_next(l);
+            if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
+            return;
+        }
+    }
+
     // Format String Statement: "Format %d\n", arg1, ...;
     if (tok.type == TOK_STRING) {
         char fmt[2048];
