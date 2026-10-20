@@ -24,6 +24,9 @@ check "undefined identifiers" 0 "$(count 'undefined identifier')"
 echo "== golden JIT battery =="
 python3 "$ROOT/scripts/run-jit-golden.py" 2>&1 | tail -1 || fail=1
 
+echo "== compiler self-host =="
+"$ROOT/scripts/self-host-test.sh" || fail=1
+
 echo "== screenshot =="
 curl -sN --max-time 12 http://localhost:4000/api/neo-os/stream 2>/dev/null | python3 -c "
 import sys,json,base64

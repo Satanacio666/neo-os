@@ -133,6 +133,15 @@ symbol_t* symbols_lookup_or_reserve(const char *name, symbol_type_t default_type
     return symbols_lookup_entry(name);
 }
 
+// 1 if the symbol exists with a real (non-trap) address. Used by the HolyC
+// compiler's HcAddFunc so that compiling a module which redefines a function the
+// RUNNING compiler already provides (i.e. Compiler.HC compiling itself) does not
+// clobber the compiler's own symbols and make it jump into not-yet-emitted code.
+int symbols_is_defined(const char *name) {
+    symbol_t *s = symbols_lookup_entry(name);
+    return (s && s->address && s->address != (void*)symbols_unresolved_trap);
+}
+
 uint64_t symbols_count(void) {
     return total_symbols;
 }

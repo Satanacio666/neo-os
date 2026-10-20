@@ -491,12 +491,24 @@ U64 HcFindFunc(U8 *name) {
     return symbols_lookup(name);
 }
 
+// Publish a compiled function into the global symbol table, but NEVER clobber a
+// symbol that already has a real address. When Compiler.HC compiles a module that
+// redefines a function the running compiler itself provides (i.e. compiling
+// itself), overwriting that symbol would redirect the compiler's own late-bound
+// calls into not-yet-emitted code. Forward references (still pointing at the
+// unresolved trap) are resolved normally.
+U0 HcPublishFunc(U8 *name, U64 addr) {
+    if (!symbols_is_defined(name)) {
+        symbols_register(name, addr, 1);
+    }
+}
+
 U0 HcAddFunc(U8 *name, U64 addr) {
     I64 af_i = 0;
     for (af_i = 0; af_i < g_hc_func_count; af_i++) {
         if (strcmp(&g_hc_func_names[af_i * 32], name) == 0) {
             g_hc_func_addrs[af_i] = addr;
-            symbols_register(name, addr, 1);
+            HcPublishFunc(name, addr);
             return;
         }
     }
@@ -508,7 +520,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
     } else {
         g_hc_error = 1;
     }
-    symbols_register(name, addr, 1);
+    HcPublishFunc(name, addr);
 }
 
 I64 HcFuncIsFloat(U8 *name) {
