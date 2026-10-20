@@ -73,6 +73,12 @@
   modules, all key globals agree, 0 undefined/unresolved); self-test **7/7**; battery **65/65**; the C
   seed compiler relocated to **`boot/seed/`** (Option A — no blob); `TOK_*` unified to one source of truth
   (`boot/seed/tok.h`) enforced by `scripts/check-token-parity.py`. Golden gate PASS with the flip ON.
+- **COMPILER PERFECT — self-hosting** (commit after `1a6386e`): **`hcrun Compiler.HC -> 0`** — Compiler.HC
+  compiles **itself**. Three real bugs were fixed to get there: (1) define table 64→256; (2) array
+  dimensions now accept `N`, `N*M`, `N+M`; (3) `HcPublishFunc` never clobbers an already-defined symbol
+  (the self-compile was re-registering the running compiler's own functions to not-yet-emitted code).
+  Added `symbols_is_defined()` and `scripts/self-host-test.sh`, **wired into `golden-boot.sh`** — every
+  gate now requires SELF-HOST PASS.
 - **Persisted:** `neo-os.bundle`, `neo-os-src.tar.gz`, `neo-os-docs/`, `public/neo-os.zip` (OS only),
   `public/neo-os-full.zip` (OS + viewer + docs).
 
@@ -120,7 +126,7 @@ where it lives and how small it is — never a binary blob.
 `tests/jit_golden/cases.json` (**67 cases**), `golden-boot.sh`, `audit-symbols.sh`, `crash-decode.py`,
 `screenshot-diff.py`, plus `p1-flip-test.sh` (hang detector) and `p1-parity.sh` (both-engine diff).
 
-### P1 — Compiler (self-hosting) — IN PROGRESS
+### P1 — Compiler (self-hosting) — ✅ COMPLETE (Compiler.HC compiles itself; self-host test in the gate)
 
 **P1.0 Housekeeping (do first):**
 - [ ] Discard the blob WIP: `git checkout compiler/jit_arm64.c`, delete `compiler/seed_blob.h`; confirm
@@ -173,7 +179,10 @@ shell, apps) is **already `.HC`**.
 **Work — retire the C runtime by making the `.HC` twins live, least-circular first:**
 - [x] `GetMemoryMap`-derived heap/JIT pool (`7199c3e`).
 - [x] C physically confined to `boot/seed` + `boot/runtime` (`708c92a`, `P2b.1`).
-- [ ] `HalPlatform.HC` live (data already `.HC`; move `hal_platform_init`/`hal_flush_cache`).
+- [ ] `HalPlatform.HC` live — **finding:** the C `g_hal_*` + platform table are unused by C code
+      (`virtio_blk.c` does not read them), so the only load-bearing C HAL function is `hal_flush_cache`
+      (called by `HalPlatform.HC`, `Symbols.HC`, `VirtioBlk.HC`, `VirtioGpu.HC`, `VirtioInput.HC`).
+      The C HAL therefore reduces to a cache-flush helper; the `.HC` HAL already owns the platform data.
 - [ ] `VirtioBlk.HC` live (own the virtqueue; stop delegating to C).
 - [ ] `RedSea.HC` live (own the FS; retire `redsea.c`).
 - [ ] `Symbols.HC` live (retire `symbols.c`).
