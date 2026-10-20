@@ -152,8 +152,9 @@ I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
-U8    g_hc_def_names[4096];     // 64 * 64
-I64   g_hc_def_vals[64];
+#define HC_MAX_DEFINES 256
+U8    g_hc_def_names[HC_MAX_DEFINES * 64];
+I64   g_hc_def_vals[HC_MAX_DEFINES];
 I64   g_hc_def_count;
 
 // Struct / Class Registry (up to 128 structs, 64 members each = 8192 member slots)
@@ -335,7 +336,7 @@ U0 HcAddDefine(U8 *name, I64 val) {
             return;
         }
     }
-    if (g_hc_def_count < 64) {
+    if (g_hc_def_count < HC_MAX_DEFINES) {
         HcSafeCopy(&g_hc_def_names[g_hc_def_count * 64], name, 64);
         g_hc_def_vals[g_hc_def_count] = val;
         g_hc_def_count++;
@@ -2647,11 +2648,22 @@ U0 HcParseProgram() {
                     g_hc_fn_ret_float = 0;
                     continue;
                 }
-                // Top-level array dimensions: Type g_arr[N][M]...
+                // Top-level array dimensions: Type g_arr[N][M]...  A dimension may be
+                // a constant expression of the form N, N*M or N+M (macros are already
+                // substituted by the lexer), e.g. `[HC_MAX_GLOBALS * 32]`.
                 I64 g_count = 1;
                 while (g_hc_tok == TOK_LBRACKET) {
                     HcLexNext();
-                    if (g_hc_tok == TOK_NUMBER) { g_count *= g_hc_tok_val; HcLexNext(); }
+                    I64 dim = 1;
+                    if (g_hc_tok == TOK_NUMBER) { dim = g_hc_tok_val; HcLexNext(); }
+                    while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
+                        I64 dim_op = g_hc_tok;
+                        HcLexNext();
+                        I64 dim_f = 1;
+                        if (g_hc_tok == TOK_NUMBER) { dim_f = g_hc_tok_val; HcLexNext(); }
+                        if (dim_op == TOK_STAR) dim = dim * dim_f; else dim = dim + dim_f;
+                    }
+                    g_count *= dim;
                     if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                 }
                 // Top-level global variable declaration: Type g_var [= val];
@@ -2769,7 +2781,9 @@ I64 CompilerCompileAndRun(U8 *src) {
     HcParseProgram();
 
     if (g_hc_error) {
-        doldoc_printf("$FG,RED$[COMPILER.HC] internal error during compilation (op-stack/cap/overflow)$FG$\n");
+        doldoc_printf("$FG,RED$[COMPILER.HC] internal error (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld defs=%lld code=%lld)$FG$\n",
+                      g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
+                      g_hc_global_count, g_hc_def_count, g_hc_code_len);
         g_hc_pool_offset = start_idx;
         return -1;
     }
