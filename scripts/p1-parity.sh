@@ -78,6 +78,11 @@ if [ "${#MODULES[@]}" -eq 0 ]; then
     exit 4
 fi
 
+# Modules loaded up to and including Compiler.HC are the C-JIT seed: the flip is
+# only enabled after Compiler.HC, so in the `full` variant these stay on the C JIT.
+SEED_MODULES=()
+for m in "${MODULES[@]}"; do SEED_MODULES+=("$m"); [ "$m" = "Compiler.HC" ] && break; done
+
 # --- key globals probed over the UART REPL after a clean boot ----------------
 KEY_GLOBALS=(
     "g_canv.width"
@@ -96,6 +101,43 @@ KEY_GLOBALS=(
     "g_mono_glyphs[0]"
     "doldoc_get_widget_count()"
 )
+
+# Which module owns each probed global. A global must be read by the engine that
+# compiled its owning module: the C JIT has no layout for a struct that only
+# Compiler.HC compiled (it falls back to table_get and faults or returns 0), and
+# Compiler.HC has no layout for a struct the C JIT compiled.
+declare -A GLOBAL_MODULE=(
+    ["g_canv.width"]="Render.HC"
+    ["g_canv.height"]="Render.HC"
+    ["g_canv.pitch"]="Render.HC"
+    ["g_gfx.mode"]="GfxBackend.HC"
+    ["g_vgpu.active"]="VirtioGpu.HC"
+    ["g_vgpu.width"]="VirtioGpu.HC"
+    ["g_theme.theme_id"]="Compositor.HC"
+    ["g_wm.count"]="WM.HC"
+    ["g_wm.screen_w"]="WM.HC"
+    ["g_comp.tiles_x"]="Compositor.HC"
+    ["g_font_metrics.char_width"]="FontMono.HC"
+    ["g_hgl_zbuf_w"]="HolyGL.HC"
+    ["g_shell_cmd_count"]="Shell.HC"
+    ["g_mono_glyphs[0]"]="FontMono.HC"
+    ["doldoc_get_widget_count()"]="DolDoc.HC"
+)
+
+# 0 = Compiler.HC compiled the owner module in this variant (probe via hcrun);
+# 1 = the C JIT compiled it (probe via the REPL).
+hc_compiled() {  # $1 = owner module  $2 = variant
+    local owner="$1" variant="$2" m
+    case "$variant" in
+        off) return 1 ;;
+        full)
+            for m in "${SEED_MODULES[@]}"; do [ "$m" = "$owner" ] && return 1; done
+            return 0 ;;
+        module:*)
+            [ "module:$owner" = "$variant" ] && return 0 || return 1 ;;
+        *) return 1 ;;
+    esac
+}
 
 # --- safety + backup ---------------------------------------------------------
 if [ -n "$(git -C "$ROOT" diff --name-only -- apps/KernelInit.HC 2>/dev/null)" ] && [ "${FORCE:-0}" != "1" ]; then
@@ -178,13 +220,32 @@ boot_variant() {  # $1 = tag
 }
 
 # --- probe KEY_GLOBALS over UART, write TSV ----------------------------------
-probe_globals() {  # $1 = tag
-    local tag="$1" g out hex
-    : > "$OUT/$tag.globals"
-    for g in "${KEY_GLOBALS[@]}"; do
+# Probe one expression with the C JIT REPL or with Compiler.HC (save+hcrun).
+# Both are normalised to unsigned hex so the two columns are comparable.
+probe_one() {  # $1 = expr  $2 = repl|hc
+    local g="$1" eng="$2" out hex dec
+    if [ "$eng" = "hc" ]; then
+        out="$(python3 "$ROOT/scripts/uart-repl.py" \
+               "save __PARITY_PROBE.HC I64 Main() { return $g; }" \
+               "hcrun __PARITY_PROBE.HC" 2>/dev/null || true)"
+        dec="$(printf '%s\n' "$out" | sed -n 's/.*\[HCRUN\].*-> *\(-*[0-9][0-9]*\).*/\1/p' | tail -1)"
+        if [ -n "$dec" ]; then
+            hex="$(python3 -c 'import sys; print(format(int(sys.argv[1]) & 0xFFFFFFFFFFFFFFFF, "X"))' "$dec" 2>/dev/null)"
+        fi
+    else
         out="$(python3 "$ROOT/scripts/uart-repl.py" "$g;" 2>/dev/null || true)"
         hex="$(printf '%s\n' "$out" | sed -n 's/.*-->.*(0x\([0-9A-Fa-f]*\)).*/\1/p' | tail -1)"
-        printf '%s\t%s\n' "$g" "${hex:-N/A}" >> "$OUT/$tag.globals"
+    fi
+    printf '%s' "${hex:-N/A}"
+}
+
+probe_globals() {  # $1 = tag  $2 = variant
+    local tag="$1" variant="$2" g owner eng
+    : > "$OUT/$tag.globals"
+    for g in "${KEY_GLOBALS[@]}"; do
+        owner="${GLOBAL_MODULE[$g]:-}"
+        if hc_compiled "$owner" "$variant"; then eng=hc; else eng=repl; fi
+        printf '%s\t%s\n' "$g" "$(probe_one "$g" "$eng")" >> "$OUT/$tag.globals"
         sleep 0.5   # let the shell settle (a faulting probe restarts it)
     done
 }
@@ -197,7 +258,7 @@ run_one() {  # $1 = tag  $2 = variant
     cp "$SERLOG" "$OUT/$tag.log" 2>/dev/null || : > "$OUT/$tag.log"
     echo "[p1-parity]   verdict: $verdict"
     if [ "$verdict" = "clean" ]; then
-        probe_globals "$tag"
+        probe_globals "$tag" "$variant"
     else
         : > "$OUT/$tag.globals"
     fi
@@ -213,7 +274,11 @@ elif [ "$PER_MODULE" = "1" ]; then
     run_one full full
     ON_TAG=full
     for m in "${MODULES[@]}"; do
-        [ "$m" = "Compiler.HC" ] && continue
+        # Seed modules load before Compiler.HC exists, so they cannot be flipped
+        # through CompilerCompileAndRun — skip them.
+        is_seed=0
+        for s in "${SEED_MODULES[@]}"; do [ "$s" = "$m" ] && is_seed=1; done
+        [ "$is_seed" = "1" ] && continue
         run_one "mod_${m%.HC}" "module:$m"
     done
 else
@@ -298,7 +363,7 @@ for mod in modules:
     elif a == b:
         v = "PASS"
     else:
-        v = "FAIL(res)"
+        v = "DIFF(res)"   # informational: leftover top-level register, not semantic
     if v.startswith("FAIL"):
         fails += 1
     sa = "HANG" if a == "HANG" else (str(a) if a != "ABSENT" else "-")

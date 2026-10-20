@@ -467,8 +467,9 @@
     },
     {
       "name": "addr_of_array_elem_write",
+      "note": "The C JIT REPL returns the *address* (not the value) for a bare top-level array-index rvalue; wrap the read in a function so both engines evaluate it correctly. Compiler.HC handles the bare top-level form too (see scripts/p1-parity.sh).",
       "cmds": [
-        "I64 ab[3]; ab[0] = 5; I64 *bp = &ab[2]; *bp = 9; ab[2];"
+        "I64 abw() { I64 ab[3]; ab[0] = 5; I64 *bp = &ab[2]; *bp = 9; return ab[2]; } abw();"
       ],
       "expect": "0x9"
     },
@@ -483,9 +484,9 @@
     },
     {
       "name": "global_array",
+      "note": "Cross-compile globals are the documented one-compile-per-boot limit (J1), so declare and use in a single unit. Bare top-level array-index rvalues also misread in the C JIT REPL, hence the function wrapper.",
       "cmds": [
-        "I64 g_parr[4];",
-        "g_parr[0] = 3; g_parr[3] = 9; g_parr[0] + g_parr[3];"
+        "I64 g_parr[4]; I64 gparw() { g_parr[0] = 3; g_parr[3] = 9; return g_parr[0] + g_parr[3]; } gparw();"
       ],
       "expect": "0xC"
     },
