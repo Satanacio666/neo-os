@@ -148,6 +148,7 @@ U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
 I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
 I64   g_hc_global_is_float[HC_MAX_GLOBALS];
+I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
@@ -1122,6 +1123,29 @@ I64 HcGlobalIsFloat(U8 *name) {
     return 0;
 }
 
+// Register the element byte width used to index a global array. Registered for
+// every parsed global array regardless of whether its storage was allocated here
+// or by the C JIT (which sizes arrays at their true element width).
+U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
+    if (scale <= 0) return;
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_elem_scale[i] = scale; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_elem_scale[g_hc_global_count] = scale;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalScale(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_elem_scale[i];
+    }
+    return 0;
+}
+
 I64 HcGlobalStructIdx(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
@@ -1172,6 +1196,8 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             HcEmitImm64(0, gaddr);
             cur_st_idx = HcGlobalStructIdx(ident_name);
             cur_is_float = HcGlobalIsFloat(ident_name);
+            I64 gscale = HcGlobalScale(ident_name);
+            if (gscale > 0) cur_scale = gscale;
             if ((g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) && !HcGlobalIsArray(ident_name)) {
                 HcEmit(0xF9400000); // ldr x0, [x0] (deref pointer before indexing)
             }
@@ -2585,6 +2611,7 @@ U0 HcParseProgram() {
             } else {
                 g_bytes = HcTypeTokenScale(save_t);
             }
+            I64 g_elem_bytes = g_bytes; // true element width, for array indexing
             if (g_bytes < 8) g_bytes = 8;
 
             HcLexNext(); // eat Type
@@ -2620,6 +2647,11 @@ U0 HcParseProgram() {
                     if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
                     if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
                 }
+                // Register the array element width for indexing even when the storage
+                // was already allocated by the C JIT (symbols_lookup found it): the
+                // JIT sizes global arrays at their true element width, so indexing
+                // them at the default 8-byte scale would run out of bounds.
+                if (g_count > 1 && !g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
                     I64 g_neg = 0;
