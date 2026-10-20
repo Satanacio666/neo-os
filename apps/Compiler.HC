@@ -1402,13 +1402,6 @@ U0 HcParseUnary() {
             U8 amp_name[64];
             HcSafeCopy(amp_name, g_hc_tok_str, 64);
             HcLexNext();
-            if (HcFindLocalIdx(amp_name) < 0) {
-                U64 fn_a = HcFindFunc(amp_name);
-                if (fn_a) {
-                    HcEmitImm64(0, fn_a);
-                    return;
-                }
-            }
             I64 amp_scale = 8;
             I64 amp_ao = 0;
             HcResolveLValue(amp_name, &amp_scale, &amp_ao);
