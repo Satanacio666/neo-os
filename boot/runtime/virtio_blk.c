@@ -1,6 +1,6 @@
 #include "virtio_blk.h"
-#include "../../kernel/symbols/symbols.h"
-#include "../../kernel/arch/aarch64/hal_platform.h"
+#include "symbols.h"
+#include "hal_platform.h"
 #include <uefi.h>
 
 static uintptr_t mmio_base = 0;

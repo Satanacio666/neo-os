@@ -27,11 +27,11 @@ SRCS_C = boot/main.c \
          boot/seed/lexer.c \
          boot/seed/table.c \
          boot/seed/jit_arm64.c \
-         drivers/block/virtio_blk.c \
-         fs/redsea.c \
-         kernel/mem/kheap.c \
-         kernel/symbols/symbols.c \
-         kernel/arch/aarch64/hal_platform.c
+         boot/runtime/virtio_blk.c \
+         boot/runtime/redsea.c \
+         boot/runtime/kheap.c \
+         boot/runtime/symbols.c \
+         boot/runtime/hal_platform.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \

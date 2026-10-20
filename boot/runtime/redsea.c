@@ -1,9 +1,9 @@
 #include "redsea.h"
-#include "../drivers/block/virtio_blk.h"
+#include "virtio_blk.h"
 extern void doldoc_print(const char *str);
 extern void doldoc_printf(const char *fmt, ...);
-#include "../kernel/mem/kheap.h"
-#include "../kernel/symbols/symbols.h"
+#include "kheap.h"
+#include "symbols.h"
 #include <uefi.h>
 
 static redsea_fs_t g_redsea = {0};

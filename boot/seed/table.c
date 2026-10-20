@@ -1,5 +1,5 @@
 #include "table.h"
-#include "../../kernel/mem/kheap.h"
+#include "../runtime/kheap.h"
 
 static uint32_t hash_key(const char *s) {
     uint32_t h = 5381;

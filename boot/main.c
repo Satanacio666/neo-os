@@ -1,10 +1,10 @@
 #include <uefi.h>
-#include "../kernel/mem/kheap.h"
-#include "../kernel/symbols/symbols.h"
+#include "runtime/kheap.h"
+#include "runtime/symbols.h"
 #include "seed/jit_arm64.h"
-#include "../kernel/arch/aarch64/hal_platform.h"
-#include "../drivers/block/virtio_blk.h"
-#include "../fs/redsea.h"
+#include "runtime/hal_platform.h"
+#include "runtime/virtio_blk.h"
+#include "runtime/redsea.h"
 #include <stdarg.h>
 
 #define KERNEL_HEAP_DEFAULT (32 * 1024 * 1024)

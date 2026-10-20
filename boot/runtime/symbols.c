@@ -1,5 +1,5 @@
 #include "symbols.h"
-#include "../mem/kheap.h"
+#include "kheap.h"
 extern void doldoc_print(const char *str);
 extern void doldoc_printf(const char *fmt, ...);
 #include <uefi.h>
