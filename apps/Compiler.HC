@@ -142,6 +142,12 @@ I64   g_hc_func_ret_float[128];  // 1 if the function returns F64 (result in D0)
 I64   g_hc_fn_ret_float;         // transient: current function return type is F64
 I64   g_hc_arg_float[32];        // transient: which call args are F64
 
+// Global variable struct-type registry (scoped member lookup for globals).
+#define HC_MAX_GLOBALS 512
+U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
+I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
+I64   g_hc_global_count;
+
 // Preprocessor #define Table in Compiler.HC
 U8    g_hc_def_names[4096];     // 64 * 64
 I64   g_hc_def_vals[64];
@@ -1062,6 +1068,24 @@ U0 HcNextToken() {
 // Emits address of lvalue into X0; writes element byte width (1/2/4/8) to *out_scale
 // and sets *out_addr_only = 1 if expression is an unindexed array/struct base
 // ------------------------------------------------------------------------------
+U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_st_idx[i] = st_idx; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = st_idx;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalStructIdx(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
+    }
+    return -1;
+}
+
 U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
     *out_scale = 8;
     *out_addr_only = 0;
@@ -1100,6 +1124,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
         U64 gaddr = symbols_lookup(ident_name);
         if (gaddr) {
             HcEmitImm64(0, gaddr);
+            cur_st_idx = HcGlobalStructIdx(ident_name);
             if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
                 HcEmit(0xF9400000); // ldr x0, [x0]
             }
@@ -2474,8 +2499,20 @@ U0 HcParseProgram() {
             U8  save_s[256];
             HcSafeCopy(save_s, g_hc_tok_str, 256);
 
+            // Size the global from its declared type (struct -> total_size).
+            I64 g_st_idx = -1;
+            I64 g_bytes = 8;
+            if (save_t == TOK_IDENT) {
+                g_st_idx = HcFindStruct(save_s);
+                if (g_st_idx >= 0) g_bytes = g_hc_struct_sizes[g_st_idx];
+            } else {
+                g_bytes = HcTypeTokenScale(save_t);
+            }
+            if (g_bytes < 8) g_bytes = 8;
+
             HcLexNext(); // eat Type
-            while (g_hc_tok == TOK_STAR) HcLexNext();
+            I64 g_is_ptr = 0;
+            while (g_hc_tok == TOK_STAR) { g_is_ptr = 1; HcLexNext(); }
             if (g_hc_tok == TOK_IDENT) {
                 U8 fname[64];
                 HcSafeCopy(fname, g_hc_tok_str, 64);
@@ -2487,12 +2524,22 @@ U0 HcParseProgram() {
                     g_hc_fn_ret_float = 0;
                     continue;
                 }
+                // Top-level array dimensions: Type g_arr[N][M]...
+                I64 g_count = 1;
+                while (g_hc_tok == TOK_LBRACKET) {
+                    HcLexNext();
+                    if (g_hc_tok == TOK_NUMBER) { g_count *= g_hc_tok_val; HcLexNext(); }
+                    if (g_hc_tok == TOK_RBRACKET) HcLexNext();
+                }
                 // Top-level global variable declaration: Type g_var [= val];
                 U64 g_slot = symbols_lookup(fname);
                 if (!g_slot) {
-                    g_slot = kmalloc(16);
-                    *(I64*)g_slot = 0;
+                    I64 g_alloc = g_is_ptr ? 8 : (g_bytes * g_count);
+                    g_alloc = (g_alloc + 15) & (~15);
+                    g_slot = kmalloc(g_alloc);
+                    memset((U8*)g_slot, 0, g_alloc);
                     symbols_register(fname, g_slot, 2);
+                    if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
                 }
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
