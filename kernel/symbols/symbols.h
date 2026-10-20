@@ -28,6 +28,7 @@ int64_t  symbols_unresolved_trap(void);
 int      symbols_iterate(int (*callback)(symbol_t *sym, void *user_data), void *user_data);
 void     symbols_report_unresolved(void);
 void*    symbols_sic_cell(const char *name);
+void*    symbols_var_cell(const char *name);
 void     symbols_dump(void);
 void     symbols_print_doldoc(void);
 uint64_t symbols_count(void);

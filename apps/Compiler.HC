@@ -1149,8 +1149,10 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
                 HcEmit(0xF9400000); // ldr x0, [x0] (deref pointer before indexing)
             }
         } else {
-            doldoc_printf("$FG,RED$[COMPILER.HC ERROR] Unknown symbol: %s$FG$\n", ident_name);
-            HcEmitImm64(0, 0);
+            // Forward reference: reserve a global cell so it resolves when defined.
+            U64 vcell = (U64)symbols_var_cell(ident_name);
+            HcEmitImm64(0, vcell);
+            cur_st_idx = HcGlobalStructIdx(ident_name);
         }
     }
 
