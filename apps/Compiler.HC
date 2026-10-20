@@ -1244,8 +1244,9 @@ U0 HcParsePrimary() {
 
         // Direct Function Call: ident(arg1, arg2, ...)
         if (g_hc_tok == TOK_LPAREN && HcFindLocalIdx(ident_name) < 0) {
-            U64 fn_target = HcFindFunc(ident_name);
-            if (!fn_target) {
+            I64 is_intr = HcIsIntrinsic(ident_name);
+            U64 fn_target = is_intr ? 0 : HcFindFunc(ident_name);
+            if (!fn_target && !is_intr) {
                 doldoc_printf("$FG,RED$[COMPILER.HC ERROR] Unknown function: %s$FG$\n", ident_name);
             }
             HcOpPush(fn_target);
@@ -1274,6 +1275,12 @@ U0 HcParsePrimary() {
                 if (g_hc_arg_float[a_reg]) {
                     HcEmit(0x9E670000 | (a_reg << 5) | a_reg); // fmov d{a_reg}, x{a_reg}
                 }
+            }
+
+            if (is_intr) {
+                HcOpPop(); // discard placeholder target
+                HcEmitIntrinsic(ident_name);
+                return;
             }
 
             U64 target = HcOpPop();
@@ -1674,6 +1681,31 @@ U0 HcParseLogOr() {
         HcEmit(0xD2800020); // movz x0, #1
         HcBackpatchB(p_b, g_hc_code_len);
     }
+}
+
+I64 HcIsIntrinsic(U8 *name) {
+    return (strcmp(name, "__wfe") == 0 || strcmp(name, "__sev") == 0 || strcmp(name, "__dmb_ish") == 0 ||
+            strcmp(name, "__dsb_sy") == 0 || strcmp(name, "__isb") == 0 || strcmp(name, "__mrs_cntvct") == 0 ||
+            strcmp(name, "__mrs_cntfrq") == 0 || strcmp(name, "__mrs_mpidr") == 0 || strcmp(name, "__mrs_esr") == 0 ||
+            strcmp(name, "__mrs_far") == 0 || strcmp(name, "__dc_civac") == 0 || strcmp(name, "__ic_ivau") == 0 ||
+            strcmp(name, "__mmio_r32") == 0 || strcmp(name, "__mmio_w32") == 0);
+}
+
+U0 HcEmitIntrinsic(U8 *name) {
+    if (strcmp(name, "__wfe") == 0) HcEmit(0xD503205F);
+    else if (strcmp(name, "__sev") == 0) HcEmit(0xD503209F);
+    else if (strcmp(name, "__dmb_ish") == 0) HcEmit(0xD5033BBF);
+    else if (strcmp(name, "__dsb_sy") == 0) HcEmit(0xD5033F9F);
+    else if (strcmp(name, "__isb") == 0) HcEmit(0xD5033FDF);
+    else if (strcmp(name, "__mrs_cntvct") == 0) HcEmit(0xD53BE040);
+    else if (strcmp(name, "__mrs_cntfrq") == 0) HcEmit(0xD53BE000);
+    else if (strcmp(name, "__mrs_mpidr") == 0) { HcEmit(0xD53800A0); HcEmit(0x92400400); }
+    else if (strcmp(name, "__mrs_esr") == 0) HcEmit(0xD5385200);
+    else if (strcmp(name, "__mrs_far") == 0) HcEmit(0xD5386000);
+    else if (strcmp(name, "__dc_civac") == 0) HcEmit(0xD50B7E20);
+    else if (strcmp(name, "__ic_ivau") == 0) HcEmit(0xD50B7520);
+    else if (strcmp(name, "__mmio_r32") == 0) HcEmit(0xB9400000);
+    else if (strcmp(name, "__mmio_w32") == 0) HcEmit(0xB9000001);
 }
 
 U0 HcParseExpr() {

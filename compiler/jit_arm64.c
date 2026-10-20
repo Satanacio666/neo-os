@@ -1514,7 +1514,9 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
             }
 
             char cur_st[32] = {0};
-            int cur_elem_sz = 8;
+            // Element size for &arr[i]: use the variable's own scale (e.g. 1 for U8[]),
+            // matching the array-read path. Defaulting to 8 mis-scales non-8-byte arrays.
+            int cur_elem_sz = (vt && vt->scale > 0) ? vt->scale : 8;
             if (vt && vt->struct_type[0]) {
                 strncpy(cur_st, vt->struct_type, 31);
             }
