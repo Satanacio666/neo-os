@@ -22,8 +22,7 @@ U0 KInitLoad(U8 *fname) {
     if (redsea_read_file(fname, kinit_load_buf, 131071, &fsize) == 0) {
         kinit_load_buf[fsize] = 0;
         doldoc_printf("[KERNEL-INIT] Compiling %s (%lld bytes)...\n", fname, fsize);
-        I64 res;
-        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }
+        I64 res = jit_compile_and_run(kinit_load_buf);
         doldoc_printf("[KERNEL-INIT] %s compiled, res = %lld\n", fname, res);
     } else {
         doldoc_printf("[KERNEL-INIT WARN] Could not read %s from RedSea disk!\n", fname);
@@ -49,7 +48,6 @@ U0 KernelInitMain() {
     KInitLoad("Symbols.HC");
     // Lexer.HC removed: orphan third tokenizer (Compiler.HC uses its own HcLexNext).
     KInitLoad("Compiler.HC");
-    g_hc_ready = 1;
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography
     KInitLog("Stage 2: 2D Graphics Canvas & Scalable Vector Typography...");
