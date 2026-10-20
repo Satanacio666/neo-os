@@ -2,84 +2,15 @@
 #define NEO_LEXER_H
 
 #include <uefi.h>
+#include "tok.h"
 
+// The token kinds are defined once in tok.h (NEO_TOKENS). This enum derives from
+// that single list; scripts/check-token-parity.py keeps apps/Compiler.HC's
+// matching #define block in sync.
 typedef enum {
-    TOK_EOF = 0,
-    TOK_NUMBER,
-    TOK_FLOAT,
-    TOK_IDENT,
-    TOK_STRING,
-    // Keywords
-    TOK_RETURN,
-    TOK_IF,
-    TOK_ELSE,
-    TOK_WHILE,
-    TOK_FOR,
-    TOK_BREAK,
-    TOK_CONTINUE,
-    TOK_SWITCH,
-    TOK_CASE,
-    TOK_DEFAULT,
-    TOK_DO,
-    TOK_TYPE_I64,
-    TOK_TYPE_U0,
-    TOK_TYPE_F64,
-    TOK_TYPE_U8,
-    TOK_TYPE_U16,
-    TOK_TYPE_U32,
-    // Arithmetic & Assignment
-    TOK_PLUS,
-    TOK_MINUS,
-    TOK_STAR,
-    TOK_SLASH,
-    TOK_PERCENT,
-    TOK_EQUAL,
-    // Bitwise & Logical
-    TOK_AMPERSAND,
-    TOK_ANDAND,
-    TOK_PIPE,
-    TOK_PIPEPIPE,
-    TOK_CARET,
-    TOK_TILDE,
-    TOK_EXCLAM,
-    // Comparisons
-    TOK_EQEQ,
-    TOK_NEQ,
-    TOK_LT,
-    TOK_LTE,
-    TOK_GT,
-    TOK_GTE,
-    // Delimiters & Punctuation
-    TOK_LPAREN,
-    TOK_RPAREN,
-    TOK_LBRACE,
-    TOK_RBRACE,
-    TOK_LBRACKET,
-    TOK_RBRACKET,
-    TOK_SEMICOLON,
-    TOK_COMMA,
-    TOK_DOT,
-    TOK_ARROW,
-    TOK_COLON,
-    TOK_QUESTION,
-    TOK_SHL,
-    TOK_SHR,
-    TOK_PLUSPLUS,
-    TOK_MINUSMINUS,
-    TOK_PLUSEQ,
-    TOK_MINUSEQ,
-    TOK_STAREQ,
-    TOK_SLASHEQ,
-    TOK_PERCENTEQ,
-    TOK_ANDEQ,
-    TOK_PIPEEQ,
-    TOK_CARETEQ,
-    TOK_SHLEQ,
-    TOK_SHREQ,
-    TOK_CLASS,
-    TOK_STRUCT,
-    TOK_AUTO,
-    TOK_SIZEOF
+#define NEO_TOK_ENUM(name, val) name = val,
+    NEO_TOKENS(NEO_TOK_ENUM)
+#undef NEO_TOK_ENUM
 } token_type_t;
 
 typedef struct {
