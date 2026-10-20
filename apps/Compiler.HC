@@ -1936,10 +1936,7 @@ U0 HcParseStructDef() {
                     is_a = 1;
                 }
 
-                if (elem_sz >= 8) cur_off = (cur_off + 7) & (~7);
-                else if (elem_sz == 4) cur_off = (cur_off + 3) & (~3);
-                else if (elem_sz == 2) cur_off = (cur_off + 1) & (~1);
-
+                // Packed layout (no inter-member padding), matching the C JIT exactly.
                 if (m_cnt < 64) {
                     I64 m_slot = st_idx * 64 + m_cnt;
                     HcSafeCopy(&g_hc_member_names[m_slot * 32], mem_n, 32);
@@ -1962,9 +1959,10 @@ U0 HcParseStructDef() {
     if (g_hc_tok == TOK_RBRACE) HcLexNext();
     if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
 
-    I64 aligned_tot = (cur_off + 7) & (~7);
-    if (aligned_tot <= 0) aligned_tot = 8;
-    g_hc_struct_sizes[st_idx] = aligned_tot;
+    // Packed total size (no trailing padding), matching the C JIT's total_size.
+    I64 struct_tot = cur_off;
+    if (struct_tot <= 0) struct_tot = 8;
+    g_hc_struct_sizes[st_idx] = struct_tot;
     g_hc_struct_mcount[st_idx] = m_cnt;
 }
 
