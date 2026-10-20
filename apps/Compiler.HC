@@ -146,6 +146,7 @@ I64   g_hc_arg_float[32];        // transient: which call args are F64
 #define HC_MAX_GLOBALS 512
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
+I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
@@ -1079,6 +1080,25 @@ U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
     }
 }
 
+U0 HcRegisterGlobalArray(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_arr[i] = 1; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_is_arr[g_hc_global_count] = 1;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalIsArray(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_arr[i];
+    }
+    return 0;
+}
+
 I64 HcGlobalStructIdx(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
@@ -1125,8 +1145,8 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
         if (gaddr) {
             HcEmitImm64(0, gaddr);
             cur_st_idx = HcGlobalStructIdx(ident_name);
-            if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
-                HcEmit(0xF9400000); // ldr x0, [x0]
+            if ((g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) && !HcGlobalIsArray(ident_name)) {
+                HcEmit(0xF9400000); // ldr x0, [x0] (deref pointer before indexing)
             }
         } else {
             doldoc_printf("$FG,RED$[COMPILER.HC ERROR] Unknown symbol: %s$FG$\n", ident_name);
@@ -1276,11 +1296,8 @@ U0 HcParsePrimary() {
         // Direct Function Call: ident(arg1, arg2, ...)
         if (g_hc_tok == TOK_LPAREN && HcFindLocalIdx(ident_name) < 0) {
             I64 is_intr = HcIsIntrinsic(ident_name);
-            U64 fn_target = is_intr ? 0 : HcFindFunc(ident_name);
-            if (!fn_target && !is_intr) {
-                doldoc_printf("$FG,RED$[COMPILER.HC ERROR] Unknown function: %s$FG$\n", ident_name);
-            }
-            HcOpPush(fn_target);
+            U64 sic = is_intr ? 0 : (U64)symbols_sic_cell(ident_name);
+            HcOpPush(sic);
 
             HcLexNext(); // eat '('
             I64 cur_argc = 0;
@@ -1316,6 +1333,7 @@ U0 HcParsePrimary() {
 
             U64 target = HcOpPop();
             HcEmitImm64(16, target);
+            HcEmitLoadSized(16, 16, 8); // ldr x16, [x16] : SIC cell -> live entry
             HcEmit(0xD63F0200); // blr x16
             g_hc_expr_float = HcFuncIsFloat(ident_name);
             return;
@@ -2532,6 +2550,7 @@ U0 HcParseProgram() {
                     g_slot = kmalloc(g_alloc);
                     memset((U8*)g_slot, 0, g_alloc);
                     symbols_register(fname, g_slot, 2);
+                    if (g_count > 1 || g_is_ptr) { if (g_count > 1) HcRegisterGlobalArray(fname); }
                     if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
                 }
                 if (g_hc_tok == TOK_EQUAL) {

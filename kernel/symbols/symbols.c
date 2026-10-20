@@ -31,6 +31,11 @@ int64_t symbols_unresolved_trap(void) {
 
 // Report every symbol still pointing at the unresolved trap after all modules
 // have loaded. Any entry listed here would fault (or return 0) if invoked.
+void* symbols_sic_cell(const char *name) {
+    symbol_t *sym = symbols_lookup_or_reserve(name, SYM_FUNC);
+    return sym ? (void*)&sym->address : NULL;
+}
+
 void symbols_report_unresolved(void) {
     int n = 0;
     for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
