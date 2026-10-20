@@ -1494,38 +1494,64 @@ U0 HcParseShift() {
 
 U0 HcParseRelational() {
     HcParseShift();
+    I64 lf = g_hc_expr_float;
     while (g_hc_tok == TOK_LT || g_hc_tok == TOK_LTE || g_hc_tok == TOK_GT || g_hc_tok == TOK_GTE) {
         HcOpPush(g_hc_tok);
         HcLexNext();
+        if (lf) HcEmit(0x9E660000); // fmov x0, d0
         HcEmitPush(0);
         HcParseShift();
-        HcEmit(0xAA0003E1); // mov x1, x0
-        HcEmitPop(0);
-
-        HcEmit(0xEB01001F); // cmp x0, x1
+        I64 rf = g_hc_expr_float;
+        I64 isf = (lf || rf);
+        if (isf) {
+            HcEmit(0x9E660001); // fmov x1, d0 (right)
+            HcEmitPop(0);
+            HcEmit(0x9E670000); // fmov d0, x0 (left)
+            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            HcEmit(0x1E612000); // fcmp d0, d1
+        } else {
+            HcEmit(0xAA0003E1); // mov x1, x0
+            HcEmitPop(0);
+            HcEmit(0xEB01001F); // cmp x0, x1
+        }
         I64 cur_rel_op = HcOpPop();
         if (cur_rel_op == TOK_LT) HcEmit(0x9A9FA7E0);       // cset x0, lt
         else if (cur_rel_op == TOK_LTE) HcEmit(0x9A9FC7E0); // cset x0, le
         else if (cur_rel_op == TOK_GT) HcEmit(0x9A9FD7E0);  // cset x0, gt
         else if (cur_rel_op == TOK_GTE) HcEmit(0x9A9FB7E0); // cset x0, ge
+        lf = 0;
     }
+    g_hc_expr_float = lf;
 }
 
 U0 HcParseEquality() {
     HcParseRelational();
+    I64 lf = g_hc_expr_float;
     while (g_hc_tok == TOK_EQEQ || g_hc_tok == TOK_NEQ) {
         HcOpPush(g_hc_tok);
         HcLexNext();
+        if (lf) HcEmit(0x9E660000); // fmov x0, d0
         HcEmitPush(0);
         HcParseRelational();
-        HcEmit(0xAA0003E1); // mov x1, x0
-        HcEmitPop(0);
-
-        HcEmit(0xEB01001F); // cmp x0, x1
+        I64 rf = g_hc_expr_float;
+        I64 isf = (lf || rf);
+        if (isf) {
+            HcEmit(0x9E660001); // fmov x1, d0
+            HcEmitPop(0);
+            HcEmit(0x9E670000); // fmov d0, x0
+            HcEmit(0x9E670021); // fmov d1, x1
+            HcEmit(0x1E612000); // fcmp d0, d1
+        } else {
+            HcEmit(0xAA0003E1); // mov x1, x0
+            HcEmitPop(0);
+            HcEmit(0xEB01001F); // cmp x0, x1
+        }
         I64 cur_eq_op = HcOpPop();
         if (cur_eq_op == TOK_EQEQ) HcEmit(0x9A9F17E0); // cset x0, eq
         else HcEmit(0x9A9F07E0);                       // cset x0, ne
+        lf = 0;
     }
+    g_hc_expr_float = lf;
 }
 
 U0 HcParseBitAnd() {
