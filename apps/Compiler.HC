@@ -138,6 +138,9 @@ I64   g_hc_frame_offset;
 U8    g_hc_func_names[4096];    // 128 * 32
 U64   g_hc_func_addrs[128];
 I64   g_hc_func_count;
+I64   g_hc_func_ret_float[128];  // 1 if the function returns F64 (result in D0)
+I64   g_hc_fn_ret_float;         // transient: current function return type is F64
+I64   g_hc_arg_float[8];         // transient: which call args are F64
 
 // Preprocessor #define Table in Compiler.HC
 U8    g_hc_def_names[4096];     // 64 * 64
@@ -462,9 +465,17 @@ U0 HcAddFunc(U8 *name, U64 addr) {
     if (g_hc_func_count < 128) {
         strcpy(&g_hc_func_names[g_hc_func_count * 32], name);
         g_hc_func_addrs[g_hc_func_count] = addr;
+        g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
         g_hc_func_count++;
     }
     symbols_register(name, addr, 1);
+}
+
+I64 HcFuncIsFloat(U8 *name) {
+    for (I64 i = 0; i < g_hc_func_count; i++) {
+        if (strcmp(&g_hc_func_names[i * 32], name) == 0) return g_hc_func_ret_float[i];
+    }
+    return 0;
 }
 
 // ------------------------------------------------------------------------------
@@ -1217,6 +1228,8 @@ U0 HcParsePrimary() {
                     HcOpPush(cur_argc);
                     HcCallParseExpr();
                     cur_argc = HcOpPop();
+                    g_hc_arg_float[cur_argc] = g_hc_expr_float;
+                    if (g_hc_expr_float) HcEmit(0x9E660000); // fmov x0, d0 (save bits)
                     HcEmitPush(0);
                     cur_argc++;
                     if (g_hc_tok == TOK_COMMA) HcLexNext();
@@ -1228,11 +1241,15 @@ U0 HcParsePrimary() {
             I64 a_reg = 0;
             for (a_reg = cur_argc - 1; a_reg >= 0; a_reg--) {
                 HcEmitPop(a_reg);
+                if (g_hc_arg_float[a_reg]) {
+                    HcEmit(0x9E670000 | (a_reg << 5) | a_reg); // fmov d{a_reg}, x{a_reg}
+                }
             }
 
             U64 target = HcOpPop();
             HcEmitImm64(16, target);
             HcEmit(0xD63F0200); // blr x16
+            g_hc_expr_float = HcFuncIsFloat(ident_name);
             return;
         }
 
@@ -2313,7 +2330,9 @@ U0 HcParseFunction(U8 *func_name) {
         while (1) {
             I64 p_scale = 8;
             I64 p_st_idx = -1;
+            I64 p_is_float = 0;
             if (HcIsTypeToken(g_hc_tok)) {
+                p_is_float = (g_hc_tok == TOK_TYPE_F64);
                 p_scale = HcTypeTokenScale(g_hc_tok);
                 HcLexNext();
             } else if (g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0) {
@@ -2332,8 +2351,14 @@ U0 HcParseFunction(U8 *func_name) {
                 HcLexNext();
 
                 I64 v_scale = p_is_ptr ? p_scale : 8;
+                g_hc_decl_float = (p_is_float && !p_is_ptr) ? 1 : 0;
                 I64 fn_arg_off = HcAddLocalTyped(pname, v_scale, p_is_ptr, p_st_idx, 1);
-                HcEmitStoreLocal(param_count, fn_arg_off);
+                g_hc_decl_float = 0;
+                if (p_is_float && !p_is_ptr) {
+                    HcEmit(0xFD0003A0 | ((fn_arg_off >> 3) << 10) | param_count); // str d{pc}, [x29,#off]
+                } else {
+                    HcEmitStoreLocal(param_count, fn_arg_off);
+                }
                 param_count++;
             }
             if (g_hc_tok == TOK_COMMA) HcLexNext();
@@ -2368,7 +2393,9 @@ U0 HcParseProgram() {
                 HcLexNext(); // eat ident
                 if (g_hc_tok == TOK_LPAREN) {
                     HcLexNext(); // eat '('
+                    g_hc_fn_ret_float = (save_t == TOK_TYPE_F64);
                     HcParseFunction(fname);
+                    g_hc_fn_ret_float = 0;
                     continue;
                 }
                 // Top-level global variable declaration: Type g_var [= val];
