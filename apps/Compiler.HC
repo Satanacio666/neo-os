@@ -289,6 +289,10 @@ U0 HcReset() {
     g_hc_epi_count = 0;
     g_hc_unit_main = 0;
     g_hc_error = 0;
+    // Reset per-module tables so counts don't accumulate across compilations.
+    g_hc_func_count = 0;
+    g_hc_struct_count = 0;
+    g_hc_def_count = 0;
 }
 
 U0 HcFlushCache(U64 addr, U64 size) {
