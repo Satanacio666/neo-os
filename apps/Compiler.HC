@@ -99,7 +99,7 @@
 #define TOK_GE           40
 #define TOK_SEMI         47
 
-#define HC_CODE_CAPACITY 65536
+#define HC_CODE_CAPACITY 1048576
 #define HC_MAX_LOCALS    64
 #define HC_MAX_FUNCS     128
 
@@ -265,7 +265,7 @@ U0 HcInit() {
 }
 
 U0 HcReset() {
-    if (g_hc_pool_offset > 60000) {
+    if (g_hc_pool_offset > 1000000) {
         g_hc_pool_offset = 0;
     }
     g_hc_code_len = g_hc_pool_offset;
@@ -482,6 +482,7 @@ I64 HcFuncIsFloat(U8 *name) {
 // AArch64 Machine Code Emitter
 // ------------------------------------------------------------------------------
 U0 HcEmit(U32 insn) {
+    if (g_hc_code_len >= HC_CODE_CAPACITY) return; // bounds guard: never overrun the pool
     g_hc_code[g_hc_code_len++] = insn;
 }
 
@@ -1850,6 +1851,27 @@ U0 HcFinishMemoryAssign(I64 mem_scale) {
 // Statement & Program Parser
 // ------------------------------------------------------------------------------
 U0 HcParseStatement() {
+    // Inline assembly: asm { 0xWORD, 0xWORD, ... }  (raw AArch64 instruction words)
+    if (g_hc_tok == TOK_IDENT && strcmp(g_hc_tok_str, "asm") == 0) {
+        HcLexNext(); // eat 'asm'
+        if (g_hc_tok == TOK_LBRACE) {
+            HcLexNext(); // eat '{'
+            while (g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF) {
+                if (g_hc_tok == TOK_NUMBER) {
+                    HcEmit((U32)g_hc_tok_val);
+                    HcLexNext();
+                } else if (g_hc_tok == TOK_COMMA || g_hc_tok == TOK_SEMICOLON) {
+                    HcLexNext();
+                } else {
+                    break;
+                }
+            }
+            if (g_hc_tok == TOK_RBRACE) HcLexNext();
+            if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
+            return;
+        }
+    }
+
     // Struct / Class Declaration
     if (g_hc_tok == TOK_CLASS || g_hc_tok == TOK_STRUCT) {
         HcParseStructDef();

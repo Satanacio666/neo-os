@@ -6,6 +6,7 @@
 // ==============================================================================
 
 I64 g_kernel_booting = 1;
+I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 
 U0 KInitLog(U8 *msg) {
     doldoc_printf("[KERNEL-INIT] %s\n", msg);
