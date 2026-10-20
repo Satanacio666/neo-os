@@ -45,8 +45,6 @@ U0 KernelInitMain() {
     KInitLoad("Exceptions.HC");
     KInitLoad("KHeap.HC");
     KInitLoad("Symbols.HC");
-    KInitLoad("StdLib.HC");
-    KInitLoad("Table.HC");
     // Lexer.HC removed: orphan third tokenizer (Compiler.HC uses its own HcLexNext).
     KInitLoad("Compiler.HC");
 

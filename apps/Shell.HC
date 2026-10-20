@@ -459,9 +459,9 @@ U0 ShellPrintBootBanner() {
     doldoc_print("  $FONT,text=\"NEO-OS 3.0 PURE HOLYC RING-0\",scale=130,color=\"CYAN\"$\n\n");
     doldoc_printf("  $FG,SAPPHIRE$Substrate:$FG$ 100%% Native AArch64 JIT | $FG,SAPPHIRE$Skin:$FG$ $FG,YELLOW$%s$FG$ | $FG,SAPPHIRE$Storage:$FG$ RedSea 64-bit FS\n", g_theme.name);
     doldoc_print("  $FG,SAPPHIRE$Continuum:$FG$ Unified Scene-Graph, OmniTape Stream, Morton 64x64 Tiles & Native Shadertoy ($$SHADER$$)\n\n");
-    doldoc_print("  $FG,YELLOW$Flagship & Desktop:$FG$ $BT,\"Master Showcase\",LM=\"showcase\"$  $BT,\"Shadertoy IDE\",LM=\"shader\"$  $BT,\"Desktop WM\",LM=\"wm\"$  $BT,\"GLXGears 3D\",LM=\"gears\"$  $BT,\"HolyBenchmark\",LM=\"bench\"$\n");
+    doldoc_print("  $FG,YELLOW$Flagship & Desktop:$FG$ $BT,\"Shadertoy IDE\",LM=\"shader\"$  $BT,\"Desktop WM\",LM=\"wm\"$  $BT,\"GLXGears 3D\",LM=\"gears\"$  $BT,\"HolyBenchmark\",LM=\"bench\"$\n");
     doldoc_print("  $FG,YELLOW$Semantic Themes   :$FG$ $BT,\"Mocha\",LM=\"theme mocha\"$  $BT,\"Latte\",LM=\"theme latte\"$  $BT,\"Tokyo\",LM=\"theme tokyo\"$  $BT,\"Nord\",LM=\"theme nord\"$  $BT,\"TempleOS\",LM=\"theme temple\"$  $BT,\"Cyberpunk\",LM=\"theme cyberpunk\"$\n");
-    doldoc_print("  $FG,YELLOW$Compiler & Tools  :$FG$ $BT,\"Disasm (uf)\",LM=\"uf DolDocRedraw\"$  $BT,\"Inspect Src\",LM=\"src Showcase.HC\"$  $BT,\"Compiler.HC\",LM=\"run Compiler.HC\"$  $BT,\"Files (ls)\",LM=\"ls\"$  $BT,\"Memory\",LM=\"mem\"$\n\n\n");
+    doldoc_print("  $FG,YELLOW$Compiler & Tools  :$FG$ $BT,\"Disasm (uf)\",LM=\"uf DolDocRedraw\"$  $BT,\"Inspect Src\",LM=\"src DolDoc.HC\"$  $BT,\"Compiler.HC\",LM=\"run Compiler.HC\"$  $BT,\"Files (ls)\",LM=\"ls\"$  $BT,\"Memory\",LM=\"mem\"$\n\n\n");
 }
 
 U0 ShellRunCommand(U8 *raw_cmd) {
@@ -476,11 +476,11 @@ U0 ShellRunCommand(U8 *raw_cmd) {
 
     if (strcmp(cmd, "help") == 0) {
         doldoc_print("\n$CARD,title=\"NeoOS Sovereign Pure HolyC Shell Console & Command Reference\",w=110,h=8$\n");
-        doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$showcase$FG$ (Master Doc), $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
+        doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
         doldoc_print("  $FG,YELLOW$Themes & Skins:$FG$ $FG,CYAN$theme <mocha|latte|tokyo|nord|temple|cyberpunk>$FG$, $FG,CYAN$compositor$FG$\n");
         doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$run TestJitP0.HC$FG$\n");
-        doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$smp$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$top$FG$, $FG,CYAN$mem$FG$\n");
-        doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$cd <dir>$FG$, $FG,CYAN$mkdir <dir>$FG$, $FG,CYAN$rm <file>$FG$, $FG,CYAN$cat <file>$FG$, $FG,CYAN$save <file> <text>$FG$, $FG,CYAN$filer$FG$, $FG,CYAN$edit$FG$\n");
+        doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
+        doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$cd <dir>$FG$, $FG,CYAN$mkdir <dir>$FG$, $FG,CYAN$rm <file>$FG$, $FG,CYAN$cat <file>$FG$, $FG,CYAN$save <file> <text>$FG$\n");
         doldoc_print("  $FG,YELLOW$Live HolyC JIT:$FG$ Type any HolyC expression or function directly at the prompt (e.g. $FG,GREEN$2 + 2 * 10;$FG$)\n\n\n");
     } else if (strcmp(cmd, "clear") == 0 || strcmp(cmd, "cls") == 0) {
         doldoc_clear();
@@ -551,8 +551,7 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         CompositorDamageAll();
         doldoc_mark_all_dirty();
         if (strstr(g_doc_chars, "Switch Live:") != 0 || strstr(g_doc_chars, "Catmull-Rom") != 0) {
-            ShellRunCommand("run Showcase.HC");
-            return;
+            doldoc_printf("$FG,GREEN$[THEME]$FG$ Active Semantic Theme Skin: $FG,YELLOW$%s$FG$\n", g_theme.name);
         } else if (strstr(g_doc_chars, "Continuum:") != 0 || strstr(g_doc_chars, "Flagship & Desktop") != 0) {
             doldoc_clear();
             ShellPrintBootBanner();
@@ -577,9 +576,6 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         kheap_dump_doldoc();
         U64 kh_fn = symbols_lookup("KHeapPrintStats");
         if (kh_fn != 0) KHeapPrintStats();
-    } else if (strcmp(cmd, "menu") == 0) {
-        ShellRunCommand("run Menu.HC");
-        return;
     } else if (strcmp(cmd, "reboot") == 0) {
         hal_reset_system();
     } else if (strncmp(cmd, "uf ", 3) == 0) {
@@ -593,10 +589,7 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         while (*arg == ' ') arg++;
         ShellInspectSource(arg);
     } else if (strcmp(cmd, "src") == 0) {
-        doldoc_print("Usage: src <file.HC> (e.g. src Showcase.HC, src DolDoc.HC, src Compiler.HC)\n");
-    } else if (strcmp(cmd, "showcase") == 0 || strcmp(cmd, "demo") == 0) {
-        ShellRunCommand("run Showcase.HC");
-        return;
+        doldoc_print("Usage: src <file.HC> (e.g. src DolDoc.HC, src DolDoc.HC, src Compiler.HC)\n");
     } else if (strcmp(cmd, "bench") == 0) {
         ShellRunCommand("run HolyBenchmark.HC");
         return;
@@ -618,18 +611,6 @@ U0 ShellRunCommand(U8 *raw_cmd) {
     } else if (strcmp(cmd, "impulse") == 0) {
         bench_unified_trigger_impulse();
         doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n");
-    } else if (strcmp(cmd, "top") == 0 || strcmp(cmd, "tasks") == 0) {
-        ShellRunCommand("run Top.HC");
-        return;
-    } else if (strcmp(cmd, "calc") == 0) {
-        ShellRunCommand("run calc.HC");
-        return;
-    } else if (strcmp(cmd, "fact") == 0) {
-        ShellRunCommand("run fact.HC");
-        return;
-    } else if (strcmp(cmd, "doldoc") == 0) {
-        ShellRunCommand("run Showcase.HC");
-        return;
     } else if (strcmp(cmd, "compositor") == 0 || strncmp(cmd, "compositor ", 11) == 0) {
         CompositorCmd(cmd + 10);
     } else if (strcmp(cmd, "perf") == 0) {
@@ -701,15 +682,6 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         } else {
             doldoc_printf("$FG,RED$Could not delete: %s$FG$\n", fname);
         }
-    } else if (strcmp(cmd, "filer") == 0) {
-        ShellRunCommand("run Filer.HC");
-        return;
-    } else if (strcmp(cmd, "edit") == 0) {
-        ShellRunCommand("run Editor.HC");
-        return;
-    } else if (strcmp(cmd, "smp") == 0) {
-        ShellRunCommand("run SmpDemo.HC");
-        return;
     } else if (strncmp(cmd, "save ", 5) == 0) {
         U8 *arg = cmd + 5;
         while (*arg == ' ') arg++;
