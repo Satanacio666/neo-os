@@ -359,7 +359,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (g_hc_struct_count >= 32) { g_hc_error = 1; return 0; }
+    if (g_hc_struct_count >= 32) { doldoc_printf("[HC] BAD struct count=%lld name=%s\n", g_hc_struct_count, name); g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
