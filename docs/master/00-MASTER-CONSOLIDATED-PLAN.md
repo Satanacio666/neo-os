@@ -150,14 +150,37 @@ where it lives and how small it is — never a binary blob.
 
 **P1 exit:** parity PASS on all 34 modules + the seed decision implemented + golden gate PASS with the flip ON.
 
-### P2 — Minimal bootstrap / fix the entire bootstrap
-- [ ] Resolve the seed compiler per §8 (no blob).
-- [ ] Retire the bootstrap C **in dependency order** once each `.HC`/unified version is load-bearing:
-      `kernel/mem/kheap.c` → `KHeap.HC`; `kernel/symbols/symbols.c` → `Symbols.HC`;
-      `kernel/hal/hal_platform.c` → `HalPlatform.HC`; `drivers/block/virtio_blk.c` → `VirtioBlk.HC`;
-      `fs/redsea.c` → `RedSea.HC`.
-- [ ] Replace hardcoded heap/JIT/stack sizes with **`GetMemoryMap`**-derived regions (never called today).
-- [ ] **Exit:** the only `.c` in the build are `boot/main.c` + `boot/uefi/*`.
+### P2 — Minimal bootstrap (make everything but the irreducible seed HolyC)
+
+**Truth (verified, not aspirational):** the bootstrap C is *physically confined* to `boot/` but
+*functionally live*. The build has **9 `.c`** — `boot/main.c`; `boot/seed/{lexer,table,jit_arm64}.c`
+(the compiler seed); `boot/runtime/{kheap,symbols,hal_platform,virtio_blk,redsea}.c` (the runtime) — plus
+**4 `.S`**. `boot/main.c` registers the C runtime as the live symbols (`kmalloc`, `kfree`, `symbols_*`,
+`redsea_read_file`, `hal_flush_cache`, …), so `.HC` modules call **C** for allocation, symbols, block I/O
+and the FS. The `.HC` twins (`KHeap.HC`, `Symbols.HC`, `HalPlatform.HC`, `VirtioBlk.HC`, `RedSea.HC`) are
+loaded but **mostly dead** (`KMalloc`/`KFree`/`SymRegister`/`VirtioBlk*`/`RedSea*` have ~0 callers;
+`SymLookup` is used once by `DolDoc.HC`; the `g_hal_*` data is live in `HalPlatform.HC`). **This is NOT yet
+"minimal C + everything else `.HC`."** It is "C confined to `boot/`, still live".
+
+**The irreducible C (the true minimal bootstrap):**
+1. UEFI entry + GOP + memory map — `boot/main.c` + `boot/uefi/*`.
+2. A compiler to turn `.HC` into code — the seed (circular: something must compile `Compiler.HC`, §8).
+3. An allocator + symbol table — the compiler needs them to allocate/register.
+4. A block driver + FS — to *read* the `.HC` files.
+Everything above that layer (sched, SMP, GIC, timer, exceptions, drivers beyond block, rendering, DolDoc,
+shell, apps) is **already `.HC`**.
+
+**Work — retire the C runtime by making the `.HC` twins live, least-circular first:**
+- [x] `GetMemoryMap`-derived heap/JIT pool (`7199c3e`).
+- [x] C physically confined to `boot/seed` + `boot/runtime` (`708c92a`, `P2b.1`).
+- [ ] `HalPlatform.HC` live (data already `.HC`; move `hal_platform_init`/`hal_flush_cache`).
+- [ ] `VirtioBlk.HC` live (own the virtqueue; stop delegating to C).
+- [ ] `RedSea.HC` live (own the FS; retire `redsea.c`).
+- [ ] `Symbols.HC` live (retire `symbols.c`).
+- [ ] `KHeap.HC` live (retire `kheap.c`) — last, most circular.
+- [ ] Delete each C file once its `.HC` replacement is load-bearing; keep only the irreducible seed.
+- [ ] **Exit:** C = `boot/main.c` + `boot/uefi/*` + the compiler seed (§8) + the minimal
+      allocator/symbols/loader substrate that cannot be `.HC`.
 
 ### P3 — Kernel correctness
 - **Allocator:** one allocator (C `kheap.c` is live; `KHeap.HC`'s `KMalloc/KFree` are dead) — dissolve the
