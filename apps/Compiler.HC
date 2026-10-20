@@ -1390,6 +1390,13 @@ U0 HcParsePrimary() {
             }
             if (g_hc_tok == TOK_RPAREN) HcLexNext(); // eat ')'
 
+            if (cur_argc > 8) {
+                // AArch64 passes the first 8 integer/FP arguments in X0-X7. More
+                // requires stack spilling, which is not implemented; hard-error
+                // instead of silently clobbering registers past X7 (matches the C JIT).
+                g_hc_error = 1;
+            }
+
             I64 a_reg = 0;
             for (a_reg = cur_argc - 1; a_reg >= 0; a_reg--) {
                 HcEmitPop(a_reg);
@@ -1456,6 +1463,7 @@ U0 HcParsePrimary() {
                 }
             }
             if (g_hc_tok == TOK_RPAREN) HcLexNext(); // eat ')'
+            if (ind_argc > 8) g_hc_error = 1; // >8 args needs stack spill (see direct-call note)
             I64 ia_reg = 0;
             for (ia_reg = ind_argc - 1; ia_reg >= 0; ia_reg--) {
                 HcEmitPop(ia_reg);
