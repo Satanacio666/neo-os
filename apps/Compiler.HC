@@ -124,12 +124,12 @@ I64   g_hc_epi_patches[64];
 I64   g_hc_epi_count;
 
 // Local Variables Table (per function)
-U8    g_hc_local_names[2048];   // 64 * 32
-I64   g_hc_local_offsets[64];
-I64   g_hc_local_scales[64];    // 1, 2, 4, 8, or struct size
-I64   g_hc_local_is_ptr[64];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
-I64   g_hc_local_is_float[64];  // 1 if this local is an F64
-I64   g_hc_local_st_idx[64];    // struct index or -1
+U8    g_hc_local_names[8192];   // 256 * 32
+I64   g_hc_local_offsets[256];
+I64   g_hc_local_scales[256];    // 1, 2, 4, 8, or struct size
+I64   g_hc_local_is_ptr[256];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
+I64   g_hc_local_is_float[256];  // 1 if this local is an F64
+I64   g_hc_local_st_idx[256];    // struct index or -1
 I64   g_hc_local_count;
 I64   g_hc_decl_float;          // transient: current declaration is F64
 I64   g_hc_frame_offset;
@@ -156,17 +156,19 @@ U8    g_hc_def_names[4096];     // 64 * 64
 I64   g_hc_def_vals[64];
 I64   g_hc_def_count;
 
-// Struct / Class Registry (up to 32 structs, 16 members each = 512 member slots)
-U8    g_hc_structs[1024];       // 32 * 32 struct names
-I64   g_hc_struct_sizes[32];
-I64   g_hc_struct_mcount[32];
-U8    g_hc_member_names[16384]; // 512 * 32 member names
-I64   g_hc_member_offsets[512];
-I64   g_hc_member_sizes[512];   // 1, 2, 4, 8 (element/field load width)
-I64   g_hc_member_is_arr[512];  // 1 if inline array member
-I64   g_hc_member_is_ptr[512];  // 1 if pointer member
-I64   g_hc_member_st_idx[512];  // nested struct index or -1
-I64   g_hc_member_is_float[512];// 1 if this member is an F64 scalar/element
+// Struct / Class Registry (up to 128 structs, 64 members each = 8192 member slots)
+// Persists across modules (matching the C JIT) so cross-module struct types
+// (e.g. Math3D's CMat4 used by HolyGL) resolve correctly.
+U8    g_hc_structs[4096];        // 128 * 32 struct names
+I64   g_hc_struct_sizes[128];
+I64   g_hc_struct_mcount[128];
+U8    g_hc_member_names[262144]; // 8192 * 32 member names
+I64   g_hc_member_offsets[8192];
+I64   g_hc_member_sizes[8192];   // 1, 2, 4, 8 (element/field load width)
+I64   g_hc_member_is_arr[8192];  // 1 if inline array member
+I64   g_hc_member_is_ptr[8192];  // 1 if pointer member
+I64   g_hc_member_st_idx[8192];  // nested struct index or -1
+I64   g_hc_member_is_float[8192];// 1 if this member is an F64 scalar/element
 I64   g_hc_struct_count;
 
 // Loop & Switch Break/Continue Patching Stacks (16 levels, 32 patches per level)
@@ -300,8 +302,10 @@ U0 HcReset() {
     g_hc_unit_main = 0;
     g_hc_error = 0;
     // Reset per-module tables so counts don't accumulate across compilations.
+    // NOTE: the struct table is intentionally NOT reset — struct definitions must
+    // persist across modules (matching the C JIT) so cross-module struct types
+    // used by later modules resolve correctly.
     g_hc_func_count = 0;
-    g_hc_struct_count = 0;
     g_hc_def_count = 0;
 }
 
@@ -369,7 +373,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (g_hc_struct_count >= 32) { g_hc_error = 1; return 0; }
+    if (g_hc_struct_count >= 128) { g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
@@ -390,7 +394,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
     for (s_i = s_start; s_i < s_end; s_i++) {
         I64 mcnt = g_hc_struct_mcount[s_i];
         for (m_i = 0; m_i < mcnt; m_i++) {
-            I64 slot = s_i * 16 + m_i;
+            I64 slot = s_i * 64 + m_i;
             if (strcmp(&g_hc_member_names[slot * 32], mname) == 0) {
                 *out_off = g_hc_member_offsets[slot];
                 *out_sz = g_hc_member_sizes[slot];
@@ -407,7 +411,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
         for (s_i = 0; s_i < g_hc_struct_count; s_i++) {
             I64 mcnt2 = g_hc_struct_mcount[s_i];
             for (m_i = 0; m_i < mcnt2; m_i++) {
-                I64 slot2 = s_i * 16 + m_i;
+                I64 slot2 = s_i * 64 + m_i;
                 if (strcmp(&g_hc_member_names[slot2 * 32], mname) == 0) {
                     *out_off = g_hc_member_offsets[slot2];
                     *out_sz = g_hc_member_sizes[slot2];
@@ -458,7 +462,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         if (alloc_bytes < 16) alloc_bytes = 16;
     }
     g_hc_frame_offset += alloc_bytes;
-    if (g_hc_local_count < 64) {
+    if (g_hc_local_count < 256) {
         HcSafeCopy(&g_hc_local_names[g_hc_local_count * 32], name, 32);
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
@@ -1890,8 +1894,8 @@ U0 HcParseStructDef() {
                 }
             }
             cur_off = (cur_off + 7) & (~7);
-            if (fp_name[0] && m_cnt < 16) {
-                I64 fp_slot = st_idx * 16 + m_cnt;
+            if (fp_name[0] && m_cnt < 64) {
+                I64 fp_slot = st_idx * 64 + m_cnt;
                 HcSafeCopy(&g_hc_member_names[fp_slot * 32], fp_name, 32);
                 g_hc_member_offsets[fp_slot] = cur_off;
                 g_hc_member_sizes[fp_slot] = 8;
@@ -1936,8 +1940,8 @@ U0 HcParseStructDef() {
                 else if (elem_sz == 4) cur_off = (cur_off + 3) & (~3);
                 else if (elem_sz == 2) cur_off = (cur_off + 1) & (~1);
 
-                if (m_cnt < 16) {
-                    I64 m_slot = st_idx * 16 + m_cnt;
+                if (m_cnt < 64) {
+                    I64 m_slot = st_idx * 64 + m_cnt;
                     HcSafeCopy(&g_hc_member_names[m_slot * 32], mem_n, 32);
                     g_hc_member_offsets[m_slot] = cur_off;
                     g_hc_member_sizes[m_slot] = (is_p || elem_sz > 8) ? 8 : elem_sz;
