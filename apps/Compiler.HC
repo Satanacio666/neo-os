@@ -128,8 +128,10 @@ U8    g_hc_local_names[2048];   // 64 * 32
 I64   g_hc_local_offsets[64];
 I64   g_hc_local_scales[64];    // 1, 2, 4, 8, or struct size
 I64   g_hc_local_is_ptr[64];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
+I64   g_hc_local_is_float[64];  // 1 if this local is an F64
 I64   g_hc_local_st_idx[64];    // struct index or -1
 I64   g_hc_local_count;
+I64   g_hc_decl_float;          // transient: current declaration is F64
 I64   g_hc_frame_offset;
 
 // Persistent Compiled Function Table
@@ -427,6 +429,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
         g_hc_local_is_ptr[g_hc_local_count] = is_ptr;
+        g_hc_local_is_float[g_hc_local_count] = g_hc_decl_float;
         g_hc_local_st_idx[g_hc_local_count] = st_idx;
         g_hc_local_count++;
     }
@@ -1251,7 +1254,13 @@ U0 HcParsePrimary() {
         }
 
         if (!lv_addr_only) {
-            HcEmitLoadSized(0, 0, lv_scale);
+            I64 ridx = HcFindLocalIdx(ident_name);
+            if (ridx >= 0 && g_hc_local_is_float[ridx]) {
+                HcEmit(0xFD400000); // ldr d0, [x0]  (F64 local)
+                g_hc_expr_float = 1;
+            } else {
+                HcEmitLoadSized(0, 0, lv_scale);
+            }
         }
 
         // Indirect Function Pointer or Struct Method Call: obj->fn(arg1, ...)
@@ -1808,6 +1817,7 @@ U0 HcParseStatement() {
     if (HcIsTypeToken(g_hc_tok) || (g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0)) {
         I64 base_scale = 8;
         I64 st_idx = -1;
+        I64 base_is_float = (g_hc_tok == TOK_TYPE_F64);
         if (HcIsTypeToken(g_hc_tok)) {
             base_scale = HcTypeTokenScale(g_hc_tok);
         } else {
@@ -1874,14 +1884,22 @@ U0 HcParseStatement() {
                 } else {
                     I64 var_scale = (is_p > 0) ? base_scale : 8;
                     I64 ptr_mode = (is_p > 0) ? 1 : 0;
+                    I64 decl_is_f = (is_p == 0 && base_is_float);
+                    g_hc_decl_float = decl_is_f;
                     I64 decl_off = HcAddLocalTyped(vname, var_scale, ptr_mode, st_idx, 1);
+                    g_hc_decl_float = 0;
                     if (g_hc_tok == TOK_EQUAL) {
                         HcLexNext(); // eat '='
-                        HcParseExpr(); // result in x0
+                        HcParseExpr(); // result in x0 (or d0 if float)
                     } else {
                         HcEmitImm64(0, 0);
                     }
-                    HcEmitStoreLocal(0, decl_off);
+                    if (decl_is_f) {
+                        HcEmit(0xFD0003A0 | ((decl_off >> 3) << 10)); // str d0, [x29, #off]
+                        g_hc_expr_float = 0;
+                    } else {
+                        HcEmitStoreLocal(0, decl_off);
+                    }
                 }
             }
             if (g_hc_tok == TOK_COMMA) HcLexNext();
