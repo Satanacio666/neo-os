@@ -24,9 +24,9 @@ REDSEA_IMG = $(BUILD_DIR)/redsea.img
 UEFI_DIR = boot/uefi
 
 SRCS_C = boot/main.c \
-         compiler/lexer.c \
-         compiler/table.c \
-         compiler/jit_arm64.c \
+         boot/seed/lexer.c \
+         boot/seed/table.c \
+         boot/seed/jit_arm64.c \
          drivers/block/virtio_blk.c \
          fs/redsea.c \
          kernel/mem/kheap.c \
@@ -43,7 +43,7 @@ OBJS_S = $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_S))
 ALL_OBJS = $(OBJS_C) $(OBJS_S)
 
 CFLAGS = -fshort-wchar -fno-strict-aliasing -ffreestanding -fno-stack-protector \
-         -fno-stack-check -I$(UEFI_DIR) -Ikernel -Icompiler -Igui -Idrivers -Ifs -D__aarch64__ \
+         -fno-stack-check -I$(UEFI_DIR) -Ikernel -Iboot/seed -Igui -Idrivers -Ifs -D__aarch64__ \
          -Wno-builtin-declaration-mismatch -fpic -fPIC -O2 -Wall -MMD -MP
 
 ASFLAGS = -Ikernel

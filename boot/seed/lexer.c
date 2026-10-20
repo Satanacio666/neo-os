@@ -1,6 +1,6 @@
 #include "lexer.h"
-#include "../kernel/symbols/symbols.h"
-#include "../kernel/mem/kheap.h"
+#include "../../kernel/symbols/symbols.h"
+#include "../../kernel/mem/kheap.h"
 
 static int is_digit(char c) {
     return c >= '0' && c <= '9';

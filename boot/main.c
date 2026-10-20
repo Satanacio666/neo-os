@@ -1,7 +1,7 @@
 #include <uefi.h>
 #include "../kernel/mem/kheap.h"
 #include "../kernel/symbols/symbols.h"
-#include "../compiler/jit_arm64.h"
+#include "seed/jit_arm64.h"
 #include "../kernel/arch/aarch64/hal_platform.h"
 #include "../drivers/block/virtio_blk.h"
 #include "../fs/redsea.h"

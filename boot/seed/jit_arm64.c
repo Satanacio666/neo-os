@@ -1,8 +1,8 @@
 #include "jit_arm64.h"
 #include "lexer.h"
 #include "table.h"
-#include "../kernel/mem/kheap.h"
-#include "../kernel/symbols/symbols.h"
+#include "../../kernel/mem/kheap.h"
+#include "../../kernel/symbols/symbols.h"
 extern void doldoc_print(const char *str);
 extern void doldoc_printf(const char *fmt, ...);
 #include <uefi.h>
