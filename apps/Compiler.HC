@@ -147,6 +147,7 @@ I64   g_hc_arg_float[32];        // transient: which call args are F64
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
 I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
+I64   g_hc_global_is_float[HC_MAX_GLOBALS];
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
@@ -164,6 +165,7 @@ I64   g_hc_member_sizes[512];   // 1, 2, 4, 8 (element/field load width)
 I64   g_hc_member_is_arr[512];  // 1 if inline array member
 I64   g_hc_member_is_ptr[512];  // 1 if pointer member
 I64   g_hc_member_st_idx[512];  // nested struct index or -1
+I64   g_hc_member_is_float[512];// 1 if this member is an F64 scalar/element
 I64   g_hc_struct_count;
 
 // Loop & Switch Break/Continue Patching Stacks (16 levels, 32 patches per level)
@@ -375,7 +377,7 @@ I64 HcAddStruct(U8 *name) {
     return ns_idx;
 }
 
-I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_arr, I64 *out_is_ptr, I64 *out_sub_st) {
+I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_arr, I64 *out_is_ptr, I64 *out_sub_st, I64 *out_is_float) {
     I64 s_start = 0;
     I64 s_end = g_hc_struct_count;
     if (st_idx >= 0 && st_idx < g_hc_struct_count) {
@@ -394,6 +396,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
                 *out_is_arr = g_hc_member_is_arr[slot];
                 *out_is_ptr = g_hc_member_is_ptr[slot];
                 *out_sub_st = g_hc_member_st_idx[slot];
+                *out_is_float = g_hc_member_is_float[slot];
                 return 1;
             }
         }
@@ -410,6 +413,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
                     *out_is_arr = g_hc_member_is_arr[slot2];
                     *out_is_ptr = g_hc_member_is_ptr[slot2];
                     *out_sub_st = g_hc_member_st_idx[slot2];
+                    *out_is_float = g_hc_member_is_float[slot2];
                     return 1;
                 }
             }
@@ -1099,6 +1103,25 @@ I64 HcGlobalIsArray(U8 *name) {
     return 0;
 }
 
+U0 HcRegisterGlobalFloat(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_float[i] = 1; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_is_float[g_hc_global_count] = 1;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalIsFloat(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_float[i];
+    }
+    return 0;
+}
+
 I64 HcGlobalStructIdx(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
@@ -1106,20 +1129,23 @@ I64 HcGlobalStructIdx(U8 *name) {
     return -1;
 }
 
-U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
+U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_is_float) {
     *out_scale = 8;
     *out_addr_only = 0;
+    *out_is_float = 0;
 
     I64 loc_idx = HcFindLocalIdx(ident_name);
     I64 cur_scale = 8;
     I64 cur_st_idx = -1;
     I64 cur_mode = 0; // 0=scalar, 1=ptr, 2=inline_arr, 3=inline_struct
+    I64 cur_is_float = 0;
 
     if (loc_idx >= 0) {
         I64 rlv_off = g_hc_local_offsets[loc_idx];
         cur_scale = g_hc_local_scales[loc_idx];
         cur_st_idx = g_hc_local_st_idx[loc_idx];
         cur_mode = g_hc_local_is_ptr[loc_idx];
+        cur_is_float = g_hc_local_is_float[loc_idx];
 
         if (cur_mode == 2 || cur_mode == 3) {
             HcEmitAddrLocal(0, rlv_off);
@@ -1145,6 +1171,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
         if (gaddr) {
             HcEmitImm64(0, gaddr);
             cur_st_idx = HcGlobalStructIdx(ident_name);
+            cur_is_float = HcGlobalIsFloat(ident_name);
             if ((g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) && !HcGlobalIsArray(ident_name)) {
                 HcEmit(0xF9400000); // ldr x0, [x0] (deref pointer before indexing)
             }
@@ -1158,6 +1185,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
 
     if (g_hc_tok != TOK_DOT && g_hc_tok != TOK_ARROW && g_hc_tok != TOK_LBRACKET) {
         *out_scale = cur_scale;
+        *out_is_float = cur_is_float;
         if (cur_mode == 2 || cur_mode == 3) {
             *out_addr_only = 1;
         } else {
@@ -1183,13 +1211,15 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
                 I64 m_arr = 0;
                 I64 m_ptr = 0;
                 I64 m_sub = -1;
-                if (HcFindMember(cur_st_idx, mname, &m_off, &m_sz, &m_arr, &m_ptr, &m_sub)) {
+                I64 m_flt = 0;
+                if (HcFindMember(cur_st_idx, mname, &m_off, &m_sz, &m_arr, &m_ptr, &m_sub, &m_flt)) {
                     if (m_off != 0) {
                         HcEmitImm64(1, m_off);
                         HcEmit(0x8B010000); // add x0, x0, x1
                     }
                     cur_scale = m_sz;
                     cur_st_idx = m_sub;
+                    cur_is_float = m_flt;
                     if (m_arr) cur_mode = 2;
                     else if (m_ptr) cur_mode = 1;
                     else if (m_sub >= 0) cur_mode = 3;
@@ -1226,6 +1256,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
                 // Chained multidimensional array indexing (e.g. matrix[i][j])
                 cur_mode = 1;
                 cur_scale = 8;
+                cur_is_float = 0;
             } else {
                 cur_mode = 0;
             }
@@ -1233,6 +1264,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
     }
 
     *out_scale = cur_scale;
+    *out_is_float = cur_is_float;
     if (cur_mode == 2 || cur_mode == 3) {
         *out_addr_only = 1;
     } else {
@@ -1274,7 +1306,7 @@ U0 HcParsePrimary() {
             I64 cast_is_ptr = 0;
             while (g_hc_tok == TOK_STAR) { cast_is_ptr = 1; HcLexNext(); }
             if (g_hc_tok == TOK_RPAREN) HcLexNext();
-            HcCallParseExpr();
+            HcParseUnary(); // cast binds tighter than binary ops: (F64)k * 6.0 == ((F64)k) * 6.0
             // Numeric conversions (skip pointer casts).
             if (!cast_is_ptr) {
                 if (cast_tok == TOK_TYPE_F64) {
@@ -1344,7 +1376,8 @@ U0 HcParsePrimary() {
         // LValue resolution for variables, arrays, and struct fields
         I64 lv_scale = 8;
         I64 lv_addr_only = 0;
-        HcResolveLValue(ident_name, &lv_scale, &lv_addr_only);
+        I64 lv_is_float = 0;
+        HcResolveLValue(ident_name, &lv_scale, &lv_addr_only, &lv_is_float);
 
         // Post-increment / Post-decrement inside expression: x++ or x--
         if (g_hc_tok == TOK_PLUSPLUS || g_hc_tok == TOK_MINUSMINUS) {
@@ -1359,9 +1392,8 @@ U0 HcParsePrimary() {
         }
 
         if (!lv_addr_only) {
-            I64 ridx = HcFindLocalIdx(ident_name);
-            if (ridx >= 0 && g_hc_local_is_float[ridx]) {
-                HcEmit(0xFD400000); // ldr d0, [x0]  (F64 local)
+            if (lv_is_float) {
+                HcEmit(0xFD400000); // ldr d0, [x0]  (F64 scalar/array element)
                 g_hc_expr_float = 1;
             } else {
                 HcEmitLoadSized(0, 0, lv_scale);
@@ -1400,13 +1432,19 @@ U0 HcParseUnary() {
     if (g_hc_tok == TOK_MINUS) {
         HcLexNext();
         HcParseUnary();
-        HcEmit(0xCB0003E0); // neg x0, x0
+        if (g_hc_expr_float) HcEmit(0x1E614000); // fneg d0, d0
+        else HcEmit(0xCB0003E0);                 // neg x0, x0
         return;
     }
     if (g_hc_tok == TOK_EXCLAM) {
         HcLexNext();
         HcParseUnary();
-        HcEmit(0xF100001F); // cmp x0, #0
+        if (g_hc_expr_float) {
+            HcEmit(0x1E602008); // fcmp d0, #0.0
+            g_hc_expr_float = 0;
+        } else {
+            HcEmit(0xF100001F); // cmp x0, #0
+        }
         HcEmit(0x9A9F17E0); // cset x0, eq
         return;
     }
@@ -1424,7 +1462,8 @@ U0 HcParseUnary() {
             HcLexNext();
             I64 amp_scale = 8;
             I64 amp_ao = 0;
-            HcResolveLValue(amp_name, &amp_scale, &amp_ao);
+            I64 amp_flt = 0;
+            HcResolveLValue(amp_name, &amp_scale, &amp_ao, &amp_flt);
             return;
         }
         HcParseUnary();
@@ -1790,7 +1829,9 @@ U0 HcParseStructDef() {
     while (g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF) {
         I64 base_sz = 8;
         I64 sub_st = -1;
+        I64 base_flt = 0;
         if (HcIsTypeToken(g_hc_tok)) {
+            base_flt = (g_hc_tok == TOK_TYPE_F64);
             base_sz = HcTypeTokenScale(g_hc_tok);
             HcLexNext();
         } else if (g_hc_tok == TOK_IDENT) {
@@ -1831,6 +1872,7 @@ U0 HcParseStructDef() {
                 g_hc_member_is_arr[fp_slot] = 0;
                 g_hc_member_is_ptr[fp_slot] = 1;
                 g_hc_member_st_idx[fp_slot] = -1;
+                g_hc_member_is_float[fp_slot] = 0;
                 m_cnt++;
             }
             cur_off += 8;
@@ -1876,6 +1918,7 @@ U0 HcParseStructDef() {
                     g_hc_member_is_arr[m_slot] = is_a;
                     g_hc_member_is_ptr[m_slot] = is_p;
                     g_hc_member_st_idx[m_slot] = sub_st;
+                    g_hc_member_is_float[m_slot] = (base_flt && !is_p && sub_st < 0) ? 1 : 0;
                     m_cnt++;
                 }
                 cur_off += field_bytes;
@@ -1906,13 +1949,25 @@ I64 HcIsAssignOp(I64 tok) {
     return 0;
 }
 
-U0 HcFinishMemoryAssign(I64 mem_scale) {
+U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
     if (g_hc_tok == TOK_EQUAL) {
         HcLexNext(); // eat '='
         HcEmitPush(0); // save target address
-        HcParseExpr(); // RHS in x0
+        HcParseExpr(); // RHS in x0 (or d0 if float)
+        if (is_float) {
+            if (!g_hc_expr_float) HcEmit(0x9E620000); // scvtf d0, x0
+            HcEmitPop(1);        // target address in x1
+            HcEmit(0xFD000020);  // str d0, [x1]
+            g_hc_expr_float = 0;
+            return;
+        }
         HcEmitPop(1);  // target address in x1
         HcEmitStoreSized(0, 1, mem_scale);
+        return;
+    }
+    if (is_float) {
+        // Float compound assignment / inc-dec is not supported: hard error, never miscompile.
+        g_hc_error = 1;
         return;
     }
     if (g_hc_tok == TOK_PLUSPLUS || g_hc_tok == TOK_MINUSMINUS) {
@@ -2343,7 +2398,15 @@ U0 HcParseStatement() {
     if (g_hc_tok == TOK_LBRACE) {
         HcLexNext();
         while (g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF) {
+            I64 blk_pp = g_hc_pos;
             HcCallParseStmt();
+            if (g_hc_pos <= blk_pp && g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF) {
+                // Invariant: a statement parser must consume >= 1 token. If it did
+                // not, raise a hard error and skip a token so the compiler can never
+                // hang on a non-advancing token.
+                g_hc_error = 1;
+                HcLexNext();
+            }
         }
         if (g_hc_tok == TOK_RBRACE) HcLexNext();
         return;
@@ -2386,7 +2449,7 @@ U0 HcParseStatement() {
         }
         if (st_sz < 0) st_sz = 8;
         HcParseUnary(); // target address in x0
-        HcFinishMemoryAssign(st_sz);
+        HcFinishMemoryAssign(st_sz, 0);
         if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
         return;
     }
@@ -2407,9 +2470,10 @@ U0 HcParseStatement() {
         if (g_hc_tok != TOK_LPAREN) {
             I64 lv_sz = 8;
             I64 lv_ao = 0;
-            HcResolveLValue(iname, &lv_sz, &lv_ao);
+            I64 lv_flt = 0;
+            HcResolveLValue(iname, &lv_sz, &lv_ao, &lv_flt);
             if (HcIsAssignOp(g_hc_tok)) {
-                HcFinishMemoryAssign(lv_sz);
+                HcFinishMemoryAssign(lv_sz, lv_flt);
                 if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
                 return;
             }
@@ -2554,6 +2618,7 @@ U0 HcParseProgram() {
                     symbols_register(fname, g_slot, 2);
                     if (g_count > 1 || g_is_ptr) { if (g_count > 1) HcRegisterGlobalArray(fname); }
                     if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
+                    if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
                 }
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
@@ -2562,11 +2627,25 @@ U0 HcParseProgram() {
                         g_neg = 1;
                         HcLexNext();
                     }
-                    if (g_hc_tok == TOK_NUMBER) {
+                    if (g_hc_tok == TOK_FLOAT) {
+                        // F64 global: store IEEE-754 bits (flip sign bit for a leading '-').
+                        I64 gbits = g_hc_tok_val;
+                        if (g_neg) gbits = gbits ^ (1 << 63);
+                        *(I64*)g_slot = gbits;
+                        HcLexNext();
+                    } else if (g_hc_tok == TOK_NUMBER) {
                         I64 gv = g_hc_tok_val;
                         if (g_neg) gv = -gv;
                         *(I64*)g_slot = gv;
                         HcLexNext();
+                    } else {
+                        // Non-literal initializer: consume the expression to keep the
+                        // parser in sync (value defaults to zeroed storage).
+                        I64 g_skip = 0;
+                        while (g_hc_tok != TOK_SEMICOLON && g_hc_tok != TOK_EOF && g_skip < 8192) {
+                            HcLexNext();
+                            g_skip++;
+                        }
                     }
                 }
                 if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
@@ -2588,7 +2667,14 @@ U0 HcParseProgram() {
         g_hc_epi_count = 0;
         HcEmitPrologue();
         while (g_hc_tok != TOK_EOF) {
+            I64 repl_pp = g_hc_pos;
             HcParseStatement();
+            if (g_hc_pos <= repl_pp && g_hc_tok != TOK_EOF) {
+                // Same non-advancing-token invariant as block statements: hard error,
+                // never an infinite loop.
+                g_hc_error = 1;
+                HcLexNext();
+            }
         }
         HcEmitEpilogue();
         HcFinalizeFrame();

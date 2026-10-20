@@ -704,6 +704,23 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         } else {
             doldoc_print("Usage: save <filename> <text content>\n");
         }
+    } else if (strncmp(cmd, "hcrun ", 6) == 0) {
+        U8 *fname = cmd + 6;
+        while (*fname == ' ') fname++;
+        U8 *fbuf = kmalloc(131072);
+        I64 fsize = 0;
+        if (redsea_read_file(fname, fbuf, 131071, &fsize) == 0) {
+            fbuf[fsize] = 0;
+            I64 hcrun_save_boot = g_kernel_booting;
+            g_kernel_booting = 1;
+            doldoc_printf("[HCRUN] Compiling %s (%lld bytes) with Compiler.HC...\n", fname, fsize);
+            I64 res = CompilerCompileAndRun(fbuf);
+            g_kernel_booting = hcrun_save_boot;
+            doldoc_printf("[HCRUN] %s -> %lld\n", fname, res);
+        } else {
+            doldoc_printf("[HCRUN ERR] file not found on RedSea: %s\n", fname);
+        }
+        kfree(fbuf);
     } else if (strncmp(cmd, "run ", 4) == 0) {
         U8 *fname = cmd + 4;
         while (*fname == ' ') fname++;
