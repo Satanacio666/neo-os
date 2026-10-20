@@ -173,9 +173,11 @@ U64   g_fn_parse_expr;
 U64   g_fn_parse_stmt;
 U64   g_hc_call_targets[32];
 I64   g_hc_call_depth;
-I64   g_hc_op_stack[256];
+#define HC_OP_STACK 4096
+I64   g_hc_op_stack[HC_OP_STACK];
 I64   g_hc_op_sp;
 I64   g_hc_expr_float;   // 1 if the current expression result is in D0 (F64)
+I64   g_hc_error;        // set on any compiler internal error (stack overflow, cap, etc.)
 
 U0 HcCallParseExpr() {
     g_fn_parse_expr();
@@ -186,13 +188,23 @@ U0 HcCallParseStmt() {
 }
 
 U0 HcOpPush(I64 val) {
+    if (g_hc_op_sp < 0 || g_hc_op_sp >= HC_OP_STACK) { g_hc_error = 1; return; }
     g_hc_op_stack[g_hc_op_sp] = val;
     g_hc_op_sp++;
 }
 
 I64 HcOpPop() {
+    if (g_hc_op_sp <= 0) { g_hc_error = 1; return 0; }
     g_hc_op_sp--;
     return g_hc_op_stack[g_hc_op_sp];
+}
+
+// Bounded string copy (never overruns dst; always NUL-terminates).
+U0 HcSafeCopy(U8 *dst, U8 *src, I64 cap) {
+    I64 i = 0;
+    if (cap <= 0) return;
+    while (i < cap - 1 && src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = 0;
 }
 
 U0 HcStrCat(U8 *dest, U8 *src) {
@@ -276,6 +288,7 @@ U0 HcReset() {
     g_hc_loop_depth = 0;
     g_hc_epi_count = 0;
     g_hc_unit_main = 0;
+    g_hc_error = 0;
 }
 
 U0 HcFlushCache(U64 addr, U64 size) {
@@ -308,6 +321,8 @@ U0 HcAddDefine(U8 *name, I64 val) {
         strcpy(&g_hc_def_names[g_hc_def_count * 64], name);
         g_hc_def_vals[g_hc_def_count] = val;
         g_hc_def_count++;
+    } else {
+        g_hc_error = 1;
     }
 }
 
@@ -340,7 +355,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (g_hc_struct_count >= 32) return 0;
+    if (g_hc_struct_count >= 32) { g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
     strcpy(&g_hc_structs[ns_idx * 32], name);
     g_hc_struct_sizes[ns_idx] = 0;
@@ -435,6 +450,8 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         g_hc_local_is_float[g_hc_local_count] = g_hc_decl_float;
         g_hc_local_st_idx[g_hc_local_count] = st_idx;
         g_hc_local_count++;
+    } else {
+        g_hc_error = 1;
     }
     return offset;
 }
@@ -467,6 +484,8 @@ U0 HcAddFunc(U8 *name, U64 addr) {
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
         g_hc_func_count++;
+    } else {
+        g_hc_error = 1;
     }
     symbols_register(name, addr, 1);
 }
@@ -482,7 +501,7 @@ I64 HcFuncIsFloat(U8 *name) {
 // AArch64 Machine Code Emitter
 // ------------------------------------------------------------------------------
 U0 HcEmit(U32 insn) {
-    if (g_hc_code_len >= HC_CODE_CAPACITY) return; // bounds guard: never overrun the pool
+    if (g_hc_code_len >= HC_CODE_CAPACITY) { g_hc_error = 1; return; } // bounds guard: never overrun
     g_hc_code[g_hc_code_len++] = insn;
 }
 
@@ -574,6 +593,8 @@ U0 HcEmitEpilogue() {
     if (g_hc_epi_count < 64) {
         g_hc_epi_patches[g_hc_epi_count] = g_hc_code_len;
         g_hc_epi_count++;
+    } else {
+        g_hc_error = 1;
     }
     HcEmit(0x910403FF); // default 256 until patched
     // ldp x29, x30, [sp], #16
@@ -585,7 +606,7 @@ U0 HcEmitEpilogue() {
 U0 HcFinalizeFrame() {
     I64 frame_sz = (g_hc_frame_offset + 15) & (~15);
     if (frame_sz < 64) frame_sz = 64;
-    if (frame_sz > 4080) frame_sz = 4080;
+    if (frame_sz > 4080) { frame_sz = 4080; g_hc_error = 1; }
     g_hc_code[g_hc_pro_sub_idx] = 0xD10003FF | ((frame_sz & 0xFFF) << 10);
     I64 ep_i = 0;
     for (ep_i = 0; ep_i < g_hc_epi_count; ep_i++) {
@@ -619,6 +640,9 @@ I64 HcPushLoopCtx(I64 is_switch) {
         g_hc_cont_count[lvl] = 0;
         g_hc_loop_is_switch[lvl] = is_switch;
         g_hc_loop_depth++;
+    } else {
+        g_hc_error = 1;
+        lvl = 15;   // clamp so callers never index out of bounds
     }
     return lvl;
 }
@@ -1094,7 +1118,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
             HcLexNext(); // eat '.' or '->'
             if (g_hc_tok == TOK_IDENT) {
                 U8 mname[64];
-                strcpy(mname, g_hc_tok_str);
+                HcSafeCopy(mname, g_hc_tok_str, 64);
                 HcLexNext();
 
                 I64 m_off = 0;
@@ -1211,7 +1235,7 @@ U0 HcParsePrimary() {
     }
     if (g_hc_tok == TOK_IDENT) {
         U8 ident_name[64];
-        strcpy(ident_name, g_hc_tok_str);
+        HcSafeCopy(ident_name, g_hc_tok_str, 64);
         HcLexNext();
 
         // Direct Function Call: ident(arg1, arg2, ...)
@@ -1333,7 +1357,7 @@ U0 HcParseUnary() {
         HcLexNext();
         if (g_hc_tok == TOK_IDENT) {
             U8 amp_name[64];
-            strcpy(amp_name, g_hc_tok_str);
+            HcSafeCopy(amp_name, g_hc_tok_str, 64);
             HcLexNext();
             if (HcFindLocalIdx(amp_name) < 0) {
                 U64 fn_a = HcFindFunc(amp_name);
@@ -1384,7 +1408,7 @@ U0 HcParseUnary() {
             I64 sv_t = g_hc_tok;
             I64 sv_v = g_hc_tok_val;
             U8  sv_s[256];
-            strcpy(sv_s, g_hc_tok_str);
+            HcSafeCopy(sv_s, g_hc_tok_str, 256);
             HcLexNext(); // eat '('
             if (HcIsTypeToken(g_hc_tok)) {
                 I64 c_sz = HcTypeTokenScale(g_hc_tok);
@@ -1401,7 +1425,7 @@ U0 HcParseUnary() {
                 g_hc_pos = sv_p;
                 g_hc_tok = sv_t;
                 g_hc_tok_val = sv_v;
-                strcpy(g_hc_tok_str, sv_s);
+                HcSafeCopy(g_hc_tok_str, sv_s, 256);
             }
         }
         if (deref_sz < 0 && g_hc_tok == TOK_IDENT) {
@@ -1672,7 +1696,7 @@ U0 HcParseStructDef() {
     HcLexNext(); // eat 'class' or 'struct'
     if (g_hc_tok != TOK_IDENT) return;
     U8 st_name[64];
-    strcpy(st_name, g_hc_tok_str);
+    HcSafeCopy(st_name, g_hc_tok_str, 64);
     HcLexNext();
 
     I64 st_idx = HcAddStruct(st_name);
@@ -1704,7 +1728,7 @@ U0 HcParseStructDef() {
             U8 fp_name[64];
             fp_name[0] = 0;
             if (g_hc_tok == TOK_IDENT) {
-                strcpy(fp_name, g_hc_tok_str);
+                HcSafeCopy(fp_name, g_hc_tok_str, 64);
                 HcLexNext();
             }
             if (g_hc_tok == TOK_RPAREN) HcLexNext();
@@ -1741,7 +1765,7 @@ U0 HcParseStructDef() {
             }
             if (g_hc_tok == TOK_IDENT) {
                 U8 mem_n[64];
-                strcpy(mem_n, g_hc_tok_str);
+                HcSafeCopy(mem_n, g_hc_tok_str, 64);
                 HcLexNext();
 
                 I64 elem_sz = is_p ? 8 : base_sz;
@@ -1898,7 +1922,7 @@ U0 HcParseStatement() {
             U8 fn_vname[64];
             fn_vname[0] = 0;
             if (g_hc_tok == TOK_IDENT) {
-                strcpy(fn_vname, g_hc_tok_str);
+                HcSafeCopy(fn_vname, g_hc_tok_str, 64);
                 HcLexNext();
             }
             if (g_hc_tok == TOK_RPAREN) HcLexNext();
@@ -1931,7 +1955,7 @@ U0 HcParseStatement() {
             }
             if (g_hc_tok == TOK_IDENT) {
                 U8 vname[64];
-                strcpy(vname, g_hc_tok_str);
+                HcSafeCopy(vname, g_hc_tok_str, 64);
                 HcLexNext();
 
                 if (g_hc_tok == TOK_LBRACKET) {
@@ -2253,7 +2277,7 @@ U0 HcParseStatement() {
             I64 sp_t = g_hc_tok;
             I64 sp_v = g_hc_tok_val;
             U8  sp_s[256];
-            strcpy(sp_s, g_hc_tok_str);
+            HcSafeCopy(sp_s, g_hc_tok_str, 256);
             HcLexNext();
             if (HcIsTypeToken(g_hc_tok)) {
                 I64 c_sz = HcTypeTokenScale(g_hc_tok);
@@ -2270,7 +2294,7 @@ U0 HcParseStatement() {
                 g_hc_pos = sp_p;
                 g_hc_tok = sp_t;
                 g_hc_tok_val = sp_v;
-                strcpy(g_hc_tok_str, sp_s);
+                HcSafeCopy(g_hc_tok_str, sp_s, 256);
             }
         }
         if (st_sz < 0 && g_hc_tok == TOK_IDENT) {
@@ -2293,10 +2317,10 @@ U0 HcParseStatement() {
         I64 save_v = g_hc_tok_val;
         I64 save_code = g_hc_code_len;
         U8  save_s[256];
-        strcpy(save_s, g_hc_tok_str);
+        HcSafeCopy(save_s, g_hc_tok_str, 256);
 
         U8 iname[64];
-        strcpy(iname, g_hc_tok_str);
+        HcSafeCopy(iname, g_hc_tok_str, 64);
         HcLexNext();
 
         if (g_hc_tok != TOK_LPAREN) {
@@ -2315,7 +2339,7 @@ U0 HcParseStatement() {
         g_hc_tok = save_t;
         g_hc_tok_val = save_v;
         g_hc_code_len = save_code;
-        strcpy(g_hc_tok_str, save_s);
+        HcSafeCopy(g_hc_tok_str, save_s, 256);
 
         HcParseExpr();
         if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
@@ -2369,7 +2393,7 @@ U0 HcParseFunction(U8 *func_name) {
             }
             if (g_hc_tok == TOK_IDENT) {
                 U8 pname[64];
-                strcpy(pname, g_hc_tok_str);
+                HcSafeCopy(pname, g_hc_tok_str, 64);
                 HcLexNext();
 
                 I64 v_scale = p_is_ptr ? p_scale : 8;
@@ -2405,13 +2429,13 @@ U0 HcParseProgram() {
             I64 save_t = g_hc_tok;
             I64 save_v = g_hc_tok_val;
             U8  save_s[256];
-            strcpy(save_s, g_hc_tok_str);
+            HcSafeCopy(save_s, g_hc_tok_str, 256);
 
             HcLexNext(); // eat Type
             while (g_hc_tok == TOK_STAR) HcLexNext();
             if (g_hc_tok == TOK_IDENT) {
                 U8 fname[64];
-                strcpy(fname, g_hc_tok_str);
+                HcSafeCopy(fname, g_hc_tok_str, 64);
                 HcLexNext(); // eat ident
                 if (g_hc_tok == TOK_LPAREN) {
                     HcLexNext(); // eat '('
@@ -2449,7 +2473,7 @@ U0 HcParseProgram() {
             g_hc_pos = save_p;
             g_hc_tok = save_t;
             g_hc_tok_val = save_v;
-            strcpy(g_hc_tok_str, save_s);
+            HcSafeCopy(g_hc_tok_str, save_s, 256);
         }
 
         // Top-level REPL statements outside a function
@@ -2485,6 +2509,12 @@ I64 CompilerCompileAndRun(U8 *src) {
     HcLexNext(); // Prime lexer
 
     HcParseProgram();
+
+    if (g_hc_error) {
+        doldoc_printf("$FG,RED$[COMPILER.HC] internal error during compilation (op-stack/cap/overflow)$FG$\n");
+        g_hc_pool_offset = start_idx;
+        return -1;
+    }
 
     I64 emitted_insns = g_hc_code_len - start_idx;
     g_hc_pool_offset = g_hc_code_len;
