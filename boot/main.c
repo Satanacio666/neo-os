@@ -7,8 +7,15 @@
 #include "../fs/redsea.h"
 #include <stdarg.h>
 
-#define KERNEL_HEAP_SIZE (32 * 1024 * 1024)
-#define JIT_CODE_POOL_SIZE (4 * 1024 * 1024)
+#define KERNEL_HEAP_DEFAULT (32 * 1024 * 1024)
+#define JIT_CODE_POOL_DEFAULT (4 * 1024 * 1024)
+
+// Sized from the UEFI memory map at boot (boot_probe_memory); the defaults above
+// are used only if the memory map cannot be read.
+uint64_t g_total_ram_bytes = 0;
+uint64_t g_free_ram_bytes = 0;
+static uint64_t s_kernel_heap_size = KERNEL_HEAP_DEFAULT;
+static uint64_t s_jit_code_pool_size = JIT_CODE_POOL_DEFAULT;
 
 extern void install_vector_table(void);
 extern void enable_interrupts(void);
@@ -104,6 +111,47 @@ uint64_t  g_uefi_pitch = 0;
 uint64_t  g_uefi_heap_base = 0;
 uint64_t  g_uefi_heap_size = 0;
 
+static uint8_t s_mmap_buf[256 * 1024];
+
+static uint64_t boot_clamp_u64(uint64_t v, uint64_t lo, uint64_t hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Read the UEFI memory map and size the kernel heap / JIT code pool from the
+// available RAM instead of hardcoded constants. Falls back to the defaults if the
+// map cannot be read.
+static void boot_probe_memory(void) {
+    uintn_t mmap_size = sizeof(s_mmap_buf);
+    uintn_t map_key = 0;
+    uintn_t desc_size = 0;
+    uint32_t desc_ver = 0;
+    efi_status_t st = BS->GetMemoryMap(&mmap_size, (efi_memory_descriptor_t*)s_mmap_buf,
+                                       &map_key, &desc_size, &desc_ver);
+    if (EFI_ERROR(st) || desc_size == 0) {
+        printf("[BOOT] GetMemoryMap failed (0x%llX); using default pool sizes\r\n",
+               (unsigned long long)st);
+        return;
+    }
+    uint64_t free_bytes = 0, total_bytes = 0;
+    for (uint8_t *p = s_mmap_buf; p < s_mmap_buf + mmap_size; p += desc_size) {
+        efi_memory_descriptor_t *d = (efi_memory_descriptor_t*)p;
+        uint64_t bytes = d->NumberOfPages * 4096ULL;
+        if (d->Type == EfiConventionalMemory) free_bytes += bytes;
+        if (d->Type != EfiReservedMemoryType && d->Type != EfiUnusableMemory) total_bytes += bytes;
+    }
+    g_total_ram_bytes = total_bytes;
+    g_free_ram_bytes = free_bytes;
+    s_kernel_heap_size = boot_clamp_u64(free_bytes / 4, 16ULL * 1024 * 1024, 64ULL * 1024 * 1024);
+    s_jit_code_pool_size = boot_clamp_u64(free_bytes / 128, 4ULL * 1024 * 1024, 16ULL * 1024 * 1024);
+    printf("[BOOT] Memory map: total %llu MB, free %llu MB -> heap %llu MB, JIT pool %llu MB\r\n",
+           (unsigned long long)(total_bytes / (1024 * 1024)),
+           (unsigned long long)(free_bytes / (1024 * 1024)),
+           (unsigned long long)(s_kernel_heap_size / (1024 * 1024)),
+           (unsigned long long)(s_jit_code_pool_size / (1024 * 1024)));
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -156,22 +204,25 @@ int main(int argc, char **argv)
            (unsigned long long)g_uefi_fb, (unsigned long long)g_uefi_width,
            (unsigned long long)g_uefi_height, (unsigned long long)g_uefi_pitch);
 
+    // Size the heap / JIT pool from the real UEFI memory map.
+    boot_probe_memory();
+
     // 2. Allocate Physical Memory Pools via UEFI Boot Services
     efi_physical_address_t heap_phys = 0;
-    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, KERNEL_HEAP_SIZE / 4096, &heap_phys);
+    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, s_kernel_heap_size / 4096, &heap_phys);
     if (EFI_ERROR(h_status) || !heap_phys) {
         printf("FATAL: Could not allocate kernel heap!\n");
         return 1;
     }
-    kheap_init((void*)heap_phys, KERNEL_HEAP_SIZE);
+    kheap_init((void*)heap_phys, s_kernel_heap_size);
     g_uefi_heap_base = (uint64_t)heap_phys;
-    g_uefi_heap_size = KERNEL_HEAP_SIZE;
+    g_uefi_heap_size = s_kernel_heap_size;
 
-    // 3. Allocate Dedicated JIT Executable Pool (EfiLoaderCode, 4 MB)
+    // 3. Allocate Dedicated JIT Executable Pool (EfiLoaderCode)
     efi_physical_address_t jit_code_phys = 0;
-    efi_status_t j_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderCode, JIT_CODE_POOL_SIZE / 4096, &jit_code_phys);
+    efi_status_t j_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderCode, s_jit_code_pool_size / 4096, &jit_code_phys);
     if (!EFI_ERROR(j_status) && jit_code_phys) {
-        jit_init_code_pool((void*)jit_code_phys, JIT_CODE_POOL_SIZE);
+        jit_init_code_pool((void*)jit_code_phys, s_jit_code_pool_size);
     }
 
     // 3b. Allocate Dedicated Kernel Execution Stack (EfiLoaderData, 4 MB)
@@ -196,6 +247,8 @@ int main(int argc, char **argv)
     symbols_register("g_uefi_pitch", (void*)&g_uefi_pitch, SYM_VAR);
     symbols_register("g_uefi_heap_base", (void*)&g_uefi_heap_base, SYM_VAR);
     symbols_register("g_uefi_heap_size", (void*)&g_uefi_heap_size, SYM_VAR);
+    symbols_register("g_total_ram_bytes", (void*)&g_total_ram_bytes, SYM_VAR);
+    symbols_register("g_free_ram_bytes", (void*)&g_free_ram_bytes, SYM_VAR);
     symbols_register("g_arch_vectors", (void*)g_arch_vectors, SYM_VAR);
     symbols_register("g_mmu_config", (void*)g_mmu_config, SYM_VAR);
     symbols_register("font_get_8x16_data", (void*)font_get_8x16_data, SYM_FUNC);
