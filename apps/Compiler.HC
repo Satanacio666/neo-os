@@ -322,7 +322,7 @@ U0 HcAddDefine(U8 *name, I64 val) {
         }
     }
     if (g_hc_def_count < 64) {
-        strcpy(&g_hc_def_names[g_hc_def_count * 64], name);
+        HcSafeCopy(&g_hc_def_names[g_hc_def_count * 64], name, 64);
         g_hc_def_vals[g_hc_def_count] = val;
         g_hc_def_count++;
     } else {
@@ -361,7 +361,7 @@ I64 HcAddStruct(U8 *name) {
     }
     if (g_hc_struct_count >= 32) { g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
-    strcpy(&g_hc_structs[ns_idx * 32], name);
+    HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
     g_hc_struct_mcount[ns_idx] = 0;
     g_hc_struct_count++;
@@ -447,7 +447,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
     }
     g_hc_frame_offset += alloc_bytes;
     if (g_hc_local_count < 64) {
-        strcpy(&g_hc_local_names[g_hc_local_count * 32], name);
+        HcSafeCopy(&g_hc_local_names[g_hc_local_count * 32], name, 32);
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
         g_hc_local_is_ptr[g_hc_local_count] = is_ptr;
@@ -484,7 +484,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
         }
     }
     if (g_hc_func_count < 128) {
-        strcpy(&g_hc_func_names[g_hc_func_count * 32], name);
+        HcSafeCopy(&g_hc_func_names[g_hc_func_count * 32], name, 32);
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
         g_hc_func_count++;
@@ -1748,7 +1748,7 @@ U0 HcParseStructDef() {
             cur_off = (cur_off + 7) & (~7);
             if (fp_name[0] && m_cnt < 16) {
                 I64 fp_slot = st_idx * 16 + m_cnt;
-                strcpy(&g_hc_member_names[fp_slot * 32], fp_name);
+                HcSafeCopy(&g_hc_member_names[fp_slot * 32], fp_name, 32);
                 g_hc_member_offsets[fp_slot] = cur_off;
                 g_hc_member_sizes[fp_slot] = 8;
                 g_hc_member_is_arr[fp_slot] = 0;
@@ -1793,7 +1793,7 @@ U0 HcParseStructDef() {
 
                 if (m_cnt < 16) {
                     I64 m_slot = st_idx * 16 + m_cnt;
-                    strcpy(&g_hc_member_names[m_slot * 32], mem_n);
+                    HcSafeCopy(&g_hc_member_names[m_slot * 32], mem_n, 32);
                     g_hc_member_offsets[m_slot] = cur_off;
                     g_hc_member_sizes[m_slot] = (is_p || elem_sz > 8) ? 8 : elem_sz;
                     g_hc_member_is_arr[m_slot] = is_a;
