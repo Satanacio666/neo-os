@@ -1202,7 +1202,16 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             cur_is_float = HcGlobalIsFloat(ident_name);
             I64 gscale = HcGlobalScale(ident_name);
             if (gscale > 0) cur_scale = gscale;
-            if ((g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) && !HcGlobalIsArray(ident_name)) {
+            // Global arrays are stored behind an 8-byte cell holding the base
+            // address (the C JIT allocates them that way, and HcParseProgram now
+            // matches). Dereference the cell so indexed *and* unindexed uses both
+            // see the true base address instead of the cell's low bytes.
+            if (HcGlobalIsArray(ident_name)) {
+                HcEmit(0xF9400000); // ldr x0, [x0] : array cell -> base address
+                cur_mode = 2;
+            } else if (cur_st_idx >= 0) {
+                cur_mode = 3; // global struct value: the symbol IS its storage
+            } else if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
                 HcEmit(0xF9400000); // ldr x0, [x0] (deref pointer before indexing)
             }
         } else {
@@ -2639,21 +2648,38 @@ U0 HcParseProgram() {
                 }
                 // Top-level global variable declaration: Type g_var [= val];
                 U64 g_slot = symbols_lookup(fname);
+                I64 g_is_arr = (g_count > 1) ? 1 : 0;
                 if (!g_slot) {
-                    I64 g_alloc = g_is_ptr ? 8 : (g_bytes * g_count);
+                    I64 g_elem_sz = g_is_ptr ? 8 : g_elem_bytes;
+                    I64 g_alloc = g_is_arr ? (g_count * g_elem_sz) : (g_is_ptr ? 8 : g_bytes);
                     g_alloc = (g_alloc + 15) & (~15);
-                    g_slot = kmalloc(g_alloc);
-                    memset((U8*)g_slot, 0, g_alloc);
+                    if (g_alloc < 16) g_alloc = 16;
+                    if (g_is_arr) {
+                        // Arrays live behind an 8-byte cell holding the base address,
+                        // exactly as the C JIT registers them.
+                        U64 g_arr_buf = kmalloc(g_alloc);
+                        memset((U8*)g_arr_buf, 0, g_alloc);
+                        U64 g_arr_cell = kmalloc(8);
+                        *(U64*)g_arr_cell = g_arr_buf;
+                        g_slot = g_arr_cell;
+                    } else {
+                        g_slot = kmalloc(g_alloc);
+                        memset((U8*)g_slot, 0, g_alloc);
+                    }
                     symbols_register(fname, g_slot, 2);
-                    if (g_count > 1 || g_is_ptr) { if (g_count > 1) HcRegisterGlobalArray(fname); }
-                    if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
-                    if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
                 }
+                // Record the array/struct/float nature of the global even when its
+                // storage already exists (allocated by the C JIT at boot): the JIT's
+                // global name table does not record array-ness, and without this the
+                // self-host compiler indexes and dereferences global arrays wrongly.
+                if (g_is_arr) HcRegisterGlobalArray(fname);
+                if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
+                if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
                 // Register the array element width for indexing even when the storage
                 // was already allocated by the C JIT (symbols_lookup found it): the
                 // JIT sizes global arrays at their true element width, so indexing
                 // them at the default 8-byte scale would run out of bounds.
-                if (g_count > 1 && !g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
+                if (g_is_arr && !g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
                     I64 g_neg = 0;
