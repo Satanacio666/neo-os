@@ -43,7 +43,7 @@
 
 ## 2. Invariants (never break)
 
-1. **C only for `boot/main.c` + `boot/uefi/*`.** No new C without retiring something.
+1. **C only in the bootstrap:** `boot/main.c` + `boot/uefi/*` + `boot/seed/*` (the compiler seed). No new C without retiring something.
 2. **Golden gate green after every change** — `scripts/golden-boot.sh` must print `GOLDEN BOOT: PASS`.
 3. **No unbounded compiler buffers** — every cap is a hard error (`g_hc_error`), never silent truncation.
 4. **No JIT miscompiles / no special-casing** — fix the general codegen/parser path, never a module name.
@@ -69,10 +69,10 @@
   per-module resets; Math3D F64-global hang fix (`6f15bee`); global-array element scale (`d33e0e6`);
   cross-module struct table + local cap 256 (`1ecd5ae`); packed struct layout (`0619cb1`);
   DolDoc global-array addressing (`9cef4de`); >8-arg calls → hard error (`0738474`).
-- **One RED WIP (uncommitted, must be removed):** a half-built **seed-blob generator** left by an
-  interrupted agent — `compiler/seed_blob.h` (new) + `compiler/jit_arm64.c` (+167 lines). It **breaks the
-  build** (`<stdint.h>` conflicts with `boot/uefi/uefi.h`'s `int8_t`). A copy is preserved at
-  `/home/user/project/p1-a5-wip-*`. **Action: discard it from the tree, restore green at `0b2db9d`.**
+- **P1 COMPLETE** (commits `b4242c8` → `f763612`): the blob WIP was discarded; **parity PASS** (34/34
+  modules, all key globals agree, 0 undefined/unresolved); self-test **7/7**; battery **65/65**; the C
+  seed compiler relocated to **`boot/seed/`** (Option A — no blob); `TOK_*` unified to one source of truth
+  (`boot/seed/tok.h`) enforced by `scripts/check-token-parity.py`. Golden gate PASS with the flip ON.
 - **Persisted:** `neo-os.bundle`, `neo-os-src.tar.gz`, `neo-os-docs/`, `public/neo-os.zip` (OS only),
   `public/neo-os-full.zip` (OS + viewer + docs).
 
@@ -100,8 +100,8 @@ where it lives and how small it is — never a binary blob.
 | Pri | System | Status | Gate to exit |
 |---|---|---|---|
 | **P0** | Observability & debug harness | ✅ DONE | — |
-| **P1** | Compiler (self-host) | 🟢 flip DONE; parity + tokenizer + seed decision remain | both engines agree on all 34 modules |
-| **P2** | Minimal bootstrap / fix the bootstrap | ⬜ | C = `boot/main.c` + `boot/uefi` only |
+| **P1** | Compiler (self-host) | ✅ DONE — flip + parity + tokenizer + seed (Option A) | both engines agree on all 34 modules |
+| **P2** | Minimal bootstrap / fix the bootstrap | ⬜ | C = `boot/main.c` + `boot/uefi` + `boot/seed` only |
 | **P3** | Kernel correctness | ⬜ | timer IRQ fires; real scheduler; one allocator/table/HAL |
 | **P4** | Rendering unification (merges) | ⬜ | one `GfxDevice` + one tiled rasterizer + one font |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
@@ -283,10 +283,14 @@ read everywhere), `g_prof`/`g_perf`, `g_canv`/`g_comp`, `g_hgl_zbuf`/`g_tile_zbu
 ## 8. The bootstrap fix (the seed-compiler question — NO blob)
 
 **The paradox:** `Compiler.HC` must be compiled before it can compile anything. Today the C JIT
-(`compiler/jit_arm64.c`) compiles `Compiler.HC` (and the 6 modules it needs). To remove the C JIT you need
+(`boot/seed/jit_arm64.c`) compiles `Compiler.HC` (and the 6 modules it needs). To remove the C JIT you need
 *something* to produce `Compiler.HC`'s machine code at boot.
 
-**The blob is rejected.** So the seed compiler is *necessary* C. The only real choices:
+**DECIDED — Option A (implemented, commit `708c92a`).** The blob is rejected, so the seed compiler is
+*necessary* C. It now lives in **`boot/seed/`** (`jit_arm64.{c,h}`, `lexer.{c,h}`, `table.{c,h}`), i.e.
+inside the bootstrap substrate, documented as the one necessary seed. Every `.c` in the build is under
+`boot/`. No binary artifact; the seed is readable C source. Later (P2/P8) it can be minimized or replaced
+by Option B/C.
 
 - **Option A — Keep the C seed compiler, confined to the bootstrap (recommended).** Move/keep it as
   bootstrap substrate (e.g. under `boot/`), documented as the one necessary seed. C stays confined to
@@ -297,8 +301,8 @@ read everywhere), `g_prof`/`g_perf`, `g_canv`/`g_comp`, `g_hgl_zbuf`/`g_tile_zbu
   running `Compiler.HC` then recompiles itself (self-verify). This is the ideal end state; A/B are its
   prerequisites.
 
-**Owner decision required** at the P1→P2 boundary (see §10). The plan's default is **Option A**, then
-minimize toward **C** over time. **No blob. No frozen binary.**
+Options B/C remain possible later (minimize the seed, or reach true self-host from source). **No blob. No
+frozen binary.**
 
 ---
 
@@ -322,7 +326,7 @@ Serialize VM/build/git with `flock -w 900 /tmp/neo-os-vm.lock` (start the VM wit
 
 ## 10. Open decisions (ask the owner at each stage boundary)
 
-1. **P1→P2 — Seed compiler:** Option A / B / C above (default A). *(Required before retiring `compiler/*.c`.)*
+1. ~~**P1→P2 — Seed compiler**~~ **RESOLVED: Option A** (seed relocated to `boot/seed/`, commit `708c92a`).
 2. **P5 — Per-char attributes vs per-run styling** (authentic-but-heavy vs cheap-and-simple).
 3. **P5 — `$MA` macros:** JIT'd HolyC vs an interpreted tag language.
 4. **P6 — Shell-as-document scope:** whole shell vs output pane only.
