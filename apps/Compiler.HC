@@ -110,6 +110,7 @@ I64   g_hc_len;
 
 I64   g_hc_tok;
 I64   g_hc_tok_val;
+I64   g_hc_tok_pos;   // source position where the current token starts
 U8    g_hc_tok_str[256];
 
 // Persistent Monotonic Executable Code Pool
@@ -152,10 +153,20 @@ I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
-#define HC_MAX_DEFINES 256
+#define HC_MAX_DEFINES 1024
 U8    g_hc_def_names[HC_MAX_DEFINES * 64];
 I64   g_hc_def_vals[HC_MAX_DEFINES];
 I64   g_hc_def_count;
+
+// Deferred top-level initializers. A global declared with a NON-literal initializer
+// (e.g. `I64 *p = &x;`, `I64 b = a + 4;`) gets its storage allocated statically but
+// its value is computed at runtime inside the top-level wrapper function, exactly as
+// the C JIT does. Each entry records the global's storage cell and the source
+// position of the initializer expression, re-lexed and emitted in the wrapper.
+#define HC_MAX_DEFERRED 64
+I64   g_hc_init_slot[HC_MAX_DEFERRED];
+I64   g_hc_init_pos[HC_MAX_DEFERRED];
+I64   g_hc_init_count;
 
 // Struct / Class Registry (up to 128 structs, 64 members each = 8192 member slots)
 // Persists across modules (matching the C JIT) so cross-module struct types
@@ -307,7 +318,11 @@ U0 HcReset() {
     // persist across modules (matching the C JIT) so cross-module struct types
     // used by later modules resolve correctly.
     g_hc_func_count = 0;
-    g_hc_def_count = 0;
+    // NOTE: the #define table (g_hc_def_count) is intentionally NOT reset: macros must
+    // persist across compilation units, exactly as the C JIT's #defines do (it
+    // registers them as SYM_VAR). This is what lets a macro defined in one REPL
+    // command be used by the next.
+    g_hc_init_count = 0;
 }
 
 U0 HcFlushCache(U64 addr, U64 size) {
@@ -821,6 +836,29 @@ U0 HcSkipWhitespaceAndComments() {
                     ref_n[rn_i] = 0;
                     HcFindDefine(ref_n, &d_val);
                 }
+                // Constant-expression continuation: `#define X 6 * 7`, `#define Y N + 1`.
+                // The C JIT evaluates these, so macros must too. (`/` is deliberately
+                // excluded so a trailing `// comment` is never parsed as division.)
+                while (g_hc_pos < g_hc_len) {
+                    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+                    U8 dop = g_hc_src[g_hc_pos];
+                    if (dop != '*' && dop != '+' && dop != '-') break;
+                    g_hc_pos++;
+                    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+                    I64 rhs = 0;
+                    if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+                        while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) { rhs = rhs * 10 + (g_hc_src[g_hc_pos] - '0'); g_hc_pos++; }
+                    } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
+                        U8 rn2[64];
+                        I64 r2 = 0;
+                        while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && r2 < 63) rn2[r2++] = g_hc_src[g_hc_pos++];
+                        rn2[r2] = 0;
+                        HcFindDefine(rn2, &rhs);
+                    }
+                    if (dop == '*') d_val = d_val * rhs;
+                    else if (dop == '+') d_val = d_val + rhs;
+                    else if (dop == '-') d_val = d_val - rhs;
+                }
                 if (d_neg) d_val = -d_val;
                 if (def_n[0]) {
                     HcAddDefine(def_n, d_val);
@@ -841,6 +879,7 @@ U0 HcLexNext() {
         g_hc_tok = TOK_EOF;
         return;
     }
+    g_hc_tok_pos = g_hc_pos;   // remember where this token begins (for re-lexing)
 
     U8 c = g_hc_src[g_hc_pos];
 
@@ -1168,6 +1207,22 @@ I64 HcGlobalStructIdx(U8 *name) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
     }
     return -1;
+}
+
+// Clear a global's recorded type so a RE-declaration (e.g. a stateful REPL where a
+// later unit declares `I64 x` after an earlier one declared `F64 x`) starts from a
+// clean slate. Without this the stale float/array/struct flags make the new
+// declaration compile with the old type.
+U0 HcResetGlobalType(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
+            g_hc_global_st_idx[i] = -1;
+            g_hc_global_is_arr[i] = 0;
+            g_hc_global_is_float[i] = 0;
+            g_hc_global_elem_scale[i] = 0;
+            return;
+        }
+    }
 }
 
 U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_is_float) {
@@ -2507,7 +2562,12 @@ U0 HcParseStatement() {
         }
         if (st_sz < 0) st_sz = 8;
         HcParseUnary(); // target address in x0
+        I64 mem_assigned = (g_hc_tok == TOK_EQUAL || g_hc_tok == TOK_PLUSPLUS ||
+                            g_hc_tok == TOK_MINUSMINUS || HcIsAssignOp(g_hc_tok));
         HcFinishMemoryAssign(st_sz, 0);
+        // A bare `*ptr;` is a dereference READ: load the pointed-to value so the
+        // statement's value is the contents, not the address (matches the C JIT).
+        if (!mem_assigned) HcEmitLoadSized(0, 0, st_sz);
         if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
         return;
     }
@@ -2621,6 +2681,36 @@ U0 HcParseFunction(U8 *func_name) {
     HcFinalizeFrame();
 }
 
+// Emit runtime initialization for top-level globals whose initializer was not a
+// literal (`I64 *p = &x;`, `I64 b = a + 4;`, ...). Each initializer is re-lexed from
+// its recorded source position, evaluated, and stored into the global's storage cell.
+// The lexer state is saved/restored so the caller's parse position is preserved.
+U0 HcEmitDeferredInits() {
+    if (g_hc_init_count <= 0) return;
+    I64 sp = g_hc_pos;
+    I64 st = g_hc_tok;
+    I64 sv = g_hc_tok_val;
+    I64 stp = g_hc_tok_pos;
+    U8  ss[256];
+    HcSafeCopy(ss, g_hc_tok_str, 256);
+
+    I64 di = 0;
+    for (di = 0; di < g_hc_init_count; di++) {
+        g_hc_pos = g_hc_init_pos[di];
+        HcLexNext();          // re-prime the lexer at the initializer expression
+        HcParseExpr();        // result in x0 (or d0 if float)
+        HcEmitImm64(16, g_hc_init_slot[di]);
+        if (g_hc_expr_float) HcEmit(0xFD000200); // str d0, [x16]
+        else                 HcEmit(0xF9000200); // str x0, [x16]
+    }
+
+    g_hc_pos = sp;
+    g_hc_tok = st;
+    g_hc_tok_val = sv;
+    g_hc_tok_pos = stp;
+    HcSafeCopy(g_hc_tok_str, ss, 256);
+}
+
 U0 HcParseProgram() {
     while (g_hc_tok != TOK_EOF) {
         if (g_hc_tok == TOK_CLASS || g_hc_tok == TOK_STRUCT) {
@@ -2704,6 +2794,7 @@ U0 HcParseProgram() {
                 // storage already exists (allocated by the C JIT at boot): the JIT's
                 // global name table does not record array-ness, and without this the
                 // self-host compiler indexes and dereferences global arrays wrongly.
+                HcResetGlobalType(fname);
                 if (g_is_arr) HcRegisterGlobalArray(fname);
                 if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
                 if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
@@ -2714,6 +2805,7 @@ U0 HcParseProgram() {
                 if (g_is_arr && !g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
+                    I64 g_init_pos = g_hc_tok_pos; // start of the initializer expression
                     I64 g_neg = 0;
                     if (g_hc_tok == TOK_MINUS) {
                         g_neg = 1;
@@ -2731,8 +2823,16 @@ U0 HcParseProgram() {
                         *(I64*)g_slot = gv;
                         HcLexNext();
                     } else {
-                        // Non-literal initializer: consume the expression to keep the
-                        // parser in sync (value defaults to zeroed storage).
+                        // Non-literal initializer: defer it to the top-level wrapper,
+                        // which evaluates it at runtime and stores into g_slot (matching
+                        // the C JIT). Consume the expression to keep the parser in sync.
+                        if (g_hc_init_count < HC_MAX_DEFERRED) {
+                            g_hc_init_slot[g_hc_init_count] = g_slot;
+                            g_hc_init_pos[g_hc_init_count] = g_init_pos;
+                            g_hc_init_count++;
+                        } else {
+                            g_hc_error = 1;
+                        }
                         I64 g_skip = 0;
                         while (g_hc_tok != TOK_SEMICOLON && g_hc_tok != TOK_EOF && g_skip < 8192) {
                             HcLexNext();
@@ -2758,6 +2858,7 @@ U0 HcParseProgram() {
         g_hc_frame_offset = 16;
         g_hc_epi_count = 0;
         HcEmitPrologue();
+        HcEmitDeferredInits();
         while (g_hc_tok != TOK_EOF) {
             I64 repl_pp = g_hc_pos;
             HcParseStatement();
@@ -2771,6 +2872,21 @@ U0 HcParseProgram() {
         // REPL result: the last top-level expression's value must be returned in X0.
         // An F64 result lives in D0, so move its bits across (matches the C JIT).
         if (g_hc_expr_float) HcEmit(0x9E660000); // fmov x0, d0
+        HcEmitEpilogue();
+        HcFinalizeFrame();
+    }
+
+    // If the unit was ONLY declarations with runtime (non-literal) initializers and no
+    // trailing statements, the wrapper above was never created. Emit one now so those
+    // deferred initializers actually run (matches the C JIT's one-shot unit model).
+    if (g_hc_init_count > 0 && g_hc_unit_main == 0) {
+        U64 dinit_entry = g_hc_code + g_hc_code_len * 4;
+        g_hc_unit_main = dinit_entry;
+        g_hc_local_count = 0;
+        g_hc_frame_offset = 16;
+        g_hc_epi_count = 0;
+        HcEmitPrologue();
+        HcEmitDeferredInits();
         HcEmitEpilogue();
         HcFinalizeFrame();
     }
