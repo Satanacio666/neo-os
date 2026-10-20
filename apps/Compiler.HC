@@ -140,7 +140,7 @@ U64   g_hc_func_addrs[128];
 I64   g_hc_func_count;
 I64   g_hc_func_ret_float[128];  // 1 if the function returns F64 (result in D0)
 I64   g_hc_fn_ret_float;         // transient: current function return type is F64
-I64   g_hc_arg_float[8];         // transient: which call args are F64
+I64   g_hc_arg_float[32];        // transient: which call args are F64
 
 // Preprocessor #define Table in Compiler.HC
 U8    g_hc_def_names[4096];     // 64 * 64
@@ -1257,7 +1257,8 @@ U0 HcParsePrimary() {
                     HcOpPush(cur_argc);
                     HcCallParseExpr();
                     cur_argc = HcOpPop();
-                    g_hc_arg_float[cur_argc] = g_hc_expr_float;
+                    if (cur_argc >= 0 && cur_argc < 32) g_hc_arg_float[cur_argc] = g_hc_expr_float;
+                    else g_hc_error = 1;
                     if (g_hc_expr_float) HcEmit(0x9E660000); // fmov x0, d0 (save bits)
                     HcEmitPush(0);
                     cur_argc++;
