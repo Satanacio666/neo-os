@@ -611,11 +611,15 @@ U0 HcFinalizeFrame() {
     I64 frame_sz = (g_hc_frame_offset + 15) & (~15);
     if (frame_sz < 64) frame_sz = 64;
     if (frame_sz > 4080) { frame_sz = 4080; g_hc_error = 1; }
-    g_hc_code[g_hc_pro_sub_idx] = 0xD10003FF | ((frame_sz & 0xFFF) << 10);
+    if (g_hc_pro_sub_idx >= 0 && g_hc_pro_sub_idx < HC_CODE_CAPACITY)
+        g_hc_code[g_hc_pro_sub_idx] = 0xD10003FF | ((frame_sz & 0xFFF) << 10);
+    else g_hc_error = 1;
     I64 ep_i = 0;
     for (ep_i = 0; ep_i < g_hc_epi_count; ep_i++) {
         I64 p_idx = g_hc_epi_patches[ep_i];
-        g_hc_code[p_idx] = 0x910003FF | ((frame_sz & 0xFFF) << 10);
+        if (p_idx >= 0 && p_idx < HC_CODE_CAPACITY)
+            g_hc_code[p_idx] = 0x910003FF | ((frame_sz & 0xFFF) << 10);
+        else g_hc_error = 1;
     }
 }
 
@@ -625,11 +629,13 @@ U0 HcBackpatchCbz(I64 patch_idx, I64 target_idx) {
 }
 
 U0 HcBackpatchCbnz(I64 patch_idx, I64 target_idx) {
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
     I64 rel = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0xB5000000 | ((rel & 0x7FFFF) << 5) | 0;
 }
 
 U0 HcBackpatchB(I64 patch_idx, I64 target_idx) {
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
     I64 diff = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0x14000000 | (diff & 0x03FFFFFF);
 }
