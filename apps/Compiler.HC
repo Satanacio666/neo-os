@@ -2768,6 +2768,9 @@ U0 HcParseProgram() {
                 HcLexNext();
             }
         }
+        // REPL result: the last top-level expression's value must be returned in X0.
+        // An F64 result lives in D0, so move its bits across (matches the C JIT).
+        if (g_hc_expr_float) HcEmit(0x9E660000); // fmov x0, d0
         HcEmitEpilogue();
         HcFinalizeFrame();
     }
