@@ -34,15 +34,14 @@
 #   FORCE          1 = allow running with a dirty apps/KernelInit.HC
 #
 # LOCKING
-#   Takes the shared singleton lock /tmp/neo-os-vm.lock for its whole lifetime
-#   (flock fd 9). The VM, build dir and git index are singletons — do not run
-#   concurrently with Agent A or golden-boot.sh.
+#   No flock. The long-running QEMU inherits an open fd on /tmp/neo-os-vm.lock,
+#   so any `flock` here deadlocks. Only one agent runs at a time; serialise the
+#   VM/build/git by hand instead.
 #
 # EXIT CODES
 #   0 both engines agree for every module and key global
 #   1 one or more module/global divergences (table printed)
 #   2 build failure
-#   3 could not acquire the shared lock
 #   4 refusing to run (KernelInit.HC dirty and FORCE != 1)
 # ==============================================================================
 set -u
@@ -70,12 +69,7 @@ done
 
 mkdir -p "$OUT"
 
-# --- shared singleton lock ---------------------------------------------------
-exec 9>"$LOCK"
-if ! flock -w 900 9; then
-    echo "p1-parity: could not acquire $LOCK (another agent holds the VM)" >&2
-    exit 3
-fi
+# --- no locking (see header): the running QEMU holds /tmp/neo-os-vm.lock ------
 
 # --- module compile order straight from the real boot script -----------------
 mapfile -t MODULES < <(sed -n 's/.*KInitLoad("\([^"]*\)").*/\1/p' "$KI")
@@ -122,26 +116,30 @@ trap restore EXIT INT TERM
 # --- flip patcher ------------------------------------------------------------
 apply_variant() {  # $1 = off | full | module:NAME
     cp "$BACKUP" "$KI"
-    [ "$1" = "off" ] && return 0
     python3 - "$KI" "$1" <<'PY'
 import sys
 p, variant = sys.argv[1], sys.argv[2]
 src = open(p).read()
 
-old = "        I64 res = jit_compile_and_run(kinit_load_buf);"
-new = ("        I64 res;\n"
-       "        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }")
-if old not in src:
-    sys.exit("parity: call site not found (already flipped?)")
-src = src.replace(old, new, 1)
+# The self-hosting flip is COMMITTED (0b2db9d): the call site is already the
+# g_hc_ready conditional and KernelInitMain() sets `g_hc_ready = 1;` right after
+# Compiler.HC loads. So "full" is the committed tree; "off" neutralises that one
+# assignment; "module:NAME" turns it off globally and re-enables it only around
+# the target module.
+FLIP_ON = "    g_hc_ready = 1;"
+COND = "if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }"
+if COND not in src:
+    sys.exit("parity: flipped call site not found (tree not at 0b2db9d?)")
+if FLIP_ON not in src:
+    sys.exit("parity: flip anchor %r not found" % FLIP_ON)
 
 if variant == "full":
-    anchor = '    KInitLoad("Compiler.HC");'
-    if anchor not in src:
-        sys.exit("parity: Compiler.HC anchor not found")
-    src = src.replace(anchor, anchor + "\n    g_hc_ready = 1;", 1)
+    pass  # committed state == full flip ON
+elif variant == "off":
+    src = src.replace(FLIP_ON, "    g_hc_ready = 0;", 1)
 elif variant.startswith("module:"):
     name = variant[len("module:"):]
+    src = src.replace(FLIP_ON, "    g_hc_ready = 0;", 1)
     anchor = '    KInitLoad("%s");' % name
     if anchor not in src:
         sys.exit("parity: module anchor not found: %s" % name)
@@ -187,6 +185,7 @@ probe_globals() {  # $1 = tag
         out="$(python3 "$ROOT/scripts/uart-repl.py" "$g;" 2>/dev/null || true)"
         hex="$(printf '%s\n' "$out" | sed -n 's/.*-->.*(0x\([0-9A-Fa-f]*\)).*/\1/p' | tail -1)"
         printf '%s\t%s\n' "$g" "${hex:-N/A}" >> "$OUT/$tag.globals"
+        sleep 0.5   # let the shell settle (a faulting probe restarts it)
     done
 }
 
@@ -278,6 +277,11 @@ print()
 print("==================== P1 ENGINE PARITY ====================")
 print(f"baseline (C JIT) : {out}/off.log  [{read(os.path.join(out,'off.verdict')).strip()}]")
 print(f"flip ON          : {out}/{on_tag}.log  [{read(os.path.join(out,on_tag+'.verdict')).strip()}]")
+print()
+print("NOTE: 'res' is the module top-level's return value. Modules that end in a")
+print("      void call (e.g. `if (g_kernel_booting) { XInit(); }`) leave a leftover")
+print("      register, so exact res differences are layout-dependent, not semantic;")
+print("      trust the key-globals table + undefined/late-bound reports instead.")
 print()
 print(f"{'MODULE':<24}{'C-JIT':<12}{'COMPILER.HC':<14}VERDICT")
 print("-" * 60)
