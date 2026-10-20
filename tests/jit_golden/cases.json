@@ -379,6 +379,123 @@
         "asm { 0xD2800540 };"
       ],
       "expect": "0x2A"
+    },
+    {
+      "name": "f64_struct_member",
+      "cmds": [
+        "struct FVec { F64 x; F64 y; }",
+        "FVec fv; fv.x = 1.5; fv.y = 2.5; fv.x + fv.y;"
+      ],
+      "expect": "0x4010000000000000"
+    },
+    {
+      "name": "f64_struct_ptr_arrow",
+      "cmds": [
+        "struct FBox { F64 w; F64 h; }",
+        "FBox fb; FBox *fpb = &fb; fpb->w = 2.5; fpb->h = 1.5; fpb->w * fpb->h;"
+      ],
+      "expect": "0x400E000000000000"
+    },
+    {
+      "name": "f64_array_member",
+      "cmds": [
+        "struct M16 { F64 m[16]; }",
+        "M16 mm; mm.m[0] = 1.0; mm.m[15] = 2.0; mm.m[0] + mm.m[15];"
+      ],
+      "expect": "0x4008000000000000"
+    },
+    {
+      "name": "f64_array_member_index",
+      "cmds": [
+        "struct M16 { F64 m[16]; }",
+        "M16 mm2; mm2.m[5] = 2.0; mm2.m[10] = 5.0; mm2.m[10] - mm2.m[5];"
+      ],
+      "expect": "0x4008000000000000"
+    },
+    {
+      "name": "f64_int_cast",
+      "cmds": [
+        "I64 k = 7; (F64)k + 0.5;"
+      ],
+      "expect": "0x401E000000000000"
+    },
+    {
+      "name": "f64_to_int_cast",
+      "cmds": [
+        "F64 fx = 3.9; I64 n = (I64)fx; n;"
+      ],
+      "expect": "0x3"
+    },
+    {
+      "name": "f64_cross_chain",
+      "cmds": [
+        "struct V3 { F64 x; F64 y; F64 z; }",
+        "V3 va; V3 vb; va.x=0.0; va.y=1.0; va.z=0.0; vb.x=0.0; vb.y=0.0; vb.z=1.0; va.y*vb.z - va.z*vb.y;"
+      ],
+      "expect": "0x3FF0000000000000"
+    },
+    {
+      "name": "f64_struct_param",
+      "cmds": [
+        "struct DV { F64 x; }",
+        "F64 getdv(DV *p) { return p->x; } DV dd; dd.x = 2.5; getdv(&dd);"
+      ],
+      "expect": "0x4004000000000000"
+    },
+    {
+      "name": "macro_define_add",
+      "cmds": [
+        "#define MAC21 21",
+        "MAC21 + MAC21;"
+      ],
+      "expect": "0x2A"
+    },
+    {
+      "name": "macro_define_expr",
+      "cmds": [
+        "#define MACEXPR 6 * 7",
+        "MACEXPR;"
+      ],
+      "expect": "0x2A"
+    },
+    {
+      "name": "addr_of_array_elem",
+      "cmds": [
+        "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;"
+      ],
+      "expect": "0x14"
+    },
+    {
+      "name": "addr_of_array_elem_write",
+      "cmds": [
+        "I64 ab[3]; ab[0] = 5; I64 *bp = &ab[2]; *bp = 9; ab[2];"
+      ],
+      "expect": "0x9"
+    },
+    {
+      "name": "forward_call",
+      "cmds": [
+        "I64 fcaller() { return fcallee(5); }",
+        "I64 fcallee(I64 x) { return x * 2; }",
+        "fcaller();"
+      ],
+      "expect": "0xA"
+    },
+    {
+      "name": "global_array",
+      "cmds": [
+        "I64 g_parr[4];",
+        "g_parr[0] = 3; g_parr[3] = 9; g_parr[0] + g_parr[3];"
+      ],
+      "expect": "0xC"
+    },
+    {
+      "name": "known_over8_args",
+      "known": true,
+      "cmds": [
+        "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);"
+      ],
+      "expect": "0xFFFFFFFFFFFFFFFF"
     }
   ]
 }
