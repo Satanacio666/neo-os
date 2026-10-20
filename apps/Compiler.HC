@@ -170,6 +170,7 @@ U64   g_hc_call_targets[32];
 I64   g_hc_call_depth;
 I64   g_hc_op_stack[256];
 I64   g_hc_op_sp;
+I64   g_hc_expr_float;   // 1 if the current expression result is in D0 (F64)
 
 U0 HcCallParseExpr() {
     g_fn_parse_expr();
@@ -795,6 +796,35 @@ U0 HcLexNext() {
                     break;
                 }
             }
+            // Float literal: digits '.' digits [ (e|E) [+|-] digits ]
+            if (g_hc_pos < g_hc_len &&
+                (g_hc_src[g_hc_pos] == '.' || g_hc_src[g_hc_pos] == 'e' || g_hc_src[g_hc_pos] == 'E')) {
+                F64 fv = (F64)val;
+                if (g_hc_src[g_hc_pos] == '.') {
+                    g_hc_pos++;
+                    F64 scale = 10.0;
+                    while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+                        fv = fv + (F64)(g_hc_src[g_hc_pos] - '0') / scale;
+                        scale = scale * 10.0;
+                        g_hc_pos++;
+                    }
+                }
+                if (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == 'e' || g_hc_src[g_hc_pos] == 'E')) {
+                    g_hc_pos++;
+                    I64 esign = 1;
+                    if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '+') g_hc_pos++;
+                    else if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '-') { esign = -1; g_hc_pos++; }
+                    I64 exp = 0;
+                    while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+                        exp = exp * 10 + (g_hc_src[g_hc_pos] - '0');
+                        g_hc_pos++;
+                    }
+                    for (I64 ei = 0; ei < exp; ei++) { if (esign > 0) fv = fv * 10.0; else fv = fv / 10.0; }
+                }
+                g_hc_tok_val = *(I64*)&fv;   // IEEE-754 bits
+                g_hc_tok = TOK_FLOAT;
+                return;
+            }
         }
         g_hc_tok_val = val;
         g_hc_tok = TOK_NUMBER;
@@ -1118,6 +1148,15 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only) {
 // Recursive-Descent Expression Parser
 // ------------------------------------------------------------------------------
 U0 HcParsePrimary() {
+    g_hc_expr_float = 0;
+    if (g_hc_tok == TOK_FLOAT) {
+        I64 bits = g_hc_tok_val;
+        HcLexNext();
+        HcEmitImm64(16, bits);   // x16 = IEEE-754 double bits
+        HcEmit(0x9E670200);      // fmov d0, x16
+        g_hc_expr_float = 1;
+        return;
+    }
     if (g_hc_tok == TOK_NUMBER) {
         I64 val = g_hc_tok_val;
         HcLexNext();
@@ -1134,10 +1173,21 @@ U0 HcParsePrimary() {
         HcLexNext();
         // Check for C-style typecast: (I64), (U8*), (U32*), etc.
         if (HcIsTypeToken(g_hc_tok) || (g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0)) {
+            I64 cast_tok = g_hc_tok;
             HcLexNext();
-            while (g_hc_tok == TOK_STAR) HcLexNext();
+            I64 cast_is_ptr = 0;
+            while (g_hc_tok == TOK_STAR) { cast_is_ptr = 1; HcLexNext(); }
             if (g_hc_tok == TOK_RPAREN) HcLexNext();
             HcCallParseExpr();
+            // Numeric conversions (skip pointer casts).
+            if (!cast_is_ptr) {
+                if (cast_tok == TOK_TYPE_F64) {
+                    if (!g_hc_expr_float) { HcEmit(0x9E620000); g_hc_expr_float = 1; } // scvtf d0, x0
+                } else if (cast_tok == TOK_TYPE_I64 || cast_tok == TOK_TYPE_U8 ||
+                           cast_tok == TOK_TYPE_U16 || cast_tok == TOK_TYPE_U32) {
+                    if (g_hc_expr_float) { HcEmit(0x9E780000); g_hc_expr_float = 0; } // fcvtzs x0, d0
+                }
+            }
             return;
         }
         HcCallParseExpr();
@@ -1345,43 +1395,73 @@ U0 HcParseUnary() {
 
 U0 HcParseMultiplicative() {
     HcParseUnary();
+    I64 lf = g_hc_expr_float;
     while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_SLASH || g_hc_tok == TOK_PERCENT) {
         HcOpPush(g_hc_tok);
         HcLexNext();
+        if (lf) HcEmit(0x9E660000); // fmov x0, d0 (save left bits)
         HcEmitPush(0);
         HcParseUnary();
-        HcEmit(0xAA0003E1); // mov x1, x0
-        HcEmitPop(0);
-
-        I64 cur_mul_op = HcOpPop();
-        if (cur_mul_op == TOK_STAR) {
-            HcEmit(0x9B017C00); // mul x0, x0, x1
-        } else if (cur_mul_op == TOK_SLASH) {
-            HcEmit(0x9AC10C00); // sdiv x0, x0, x1
-        } else if (cur_mul_op == TOK_PERCENT) {
-            HcEmit(0x9AC10C02); // sdiv x2, x0, x1
-            HcEmit(0x9B018040); // msub x0, x2, x1, x0
+        I64 rf = g_hc_expr_float;
+        I64 isf = (lf || rf);
+        if (isf) {
+            HcEmit(0x9E660001); // fmov x1, d0 (right)
+            HcEmitPop(0);
+            HcEmit(0x9E670000); // fmov d0, x0 (left)
+            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            I64 op = HcOpPop();
+            if (op == TOK_SLASH) HcEmit(0x1E611800); // fdiv d0,d0,d1
+            else HcEmit(0x1E610800);                 // fmul d0,d0,d1
+        } else {
+            HcEmit(0xAA0003E1); // mov x1, x0
+            HcEmitPop(0);
+            I64 cur_mul_op = HcOpPop();
+            if (cur_mul_op == TOK_STAR) {
+                HcEmit(0x9B017C00); // mul x0, x0, x1
+            } else if (cur_mul_op == TOK_SLASH) {
+                HcEmit(0x9AC10C00); // sdiv x0, x0, x1
+            } else if (cur_mul_op == TOK_PERCENT) {
+                HcEmit(0x9AC10C02); // sdiv x2, x0, x1
+                HcEmit(0x9B018040); // msub x0, x2, x1, x0
+            }
         }
+        lf = isf;
     }
+    g_hc_expr_float = lf;
 }
 
 U0 HcParseAdditive() {
     HcParseMultiplicative();
+    I64 lf = g_hc_expr_float;
     while (g_hc_tok == TOK_PLUS || g_hc_tok == TOK_MINUS) {
         HcOpPush(g_hc_tok);
         HcLexNext();
+        if (lf) HcEmit(0x9E660000); // fmov x0, d0
         HcEmitPush(0);
         HcParseMultiplicative();
-        HcEmit(0xAA0003E1); // mov x1, x0
-        HcEmitPop(0);
-
-        I64 cur_add_op = HcOpPop();
-        if (cur_add_op == TOK_PLUS) {
-            HcEmit(0x8B010000); // add x0, x0, x1
+        I64 rf = g_hc_expr_float;
+        I64 isf = (lf || rf);
+        if (isf) {
+            HcEmit(0x9E660001); // fmov x1, d0 (right)
+            HcEmitPop(0);
+            HcEmit(0x9E670000); // fmov d0, x0 (left)
+            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            I64 op = HcOpPop();
+            if (op == TOK_MINUS) HcEmit(0x1E613800); // fsub d0,d0,d1
+            else HcEmit(0x1E612800);                 // fadd d0,d0,d1
         } else {
-            HcEmit(0xCB010000); // sub x0, x0, x1
+            HcEmit(0xAA0003E1); // mov x1, x0
+            HcEmitPop(0);
+            I64 cur_add_op = HcOpPop();
+            if (cur_add_op == TOK_PLUS) {
+                HcEmit(0x8B010000); // add x0, x0, x1
+            } else {
+                HcEmit(0xCB010000); // sub x0, x0, x1
+            }
         }
+        lf = isf;
     }
+    g_hc_expr_float = lf;
 }
 
 U0 HcParseShift() {
