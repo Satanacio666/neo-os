@@ -639,25 +639,25 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         U8 *arg = cmd + 7;
         while (*arg == ' ') arg++;
         if (strcmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
-            gfx_set_zero_ram_mode(1);
+            GfxDeviceSetZeroRam(1);
             doldoc_print("$FG,GREEN$[ZERORAM]$FG$ Zero-RAM Direct Scanout enabled (0 ms blit)!\n");
         } else if (strcmp(arg, "off") == 0 || strcmp(arg, "0") == 0) {
-            gfx_set_zero_ram_mode(0);
+            GfxDeviceSetZeroRam(0);
             doldoc_print("$FG,YELLOW$[ZERORAM]$FG$ Double-buffered RAM backbuffer restored.\n");
         } else {
-            doldoc_printf("Zero-RAM mode: %s\n", gfx_is_zero_ram_mode() ? "ACTIVE" : "OFF");
+            doldoc_printf("Zero-RAM mode: %s\n", GfxDeviceIsZeroRam() ? "ACTIVE" : "OFF");
         }
     } else if (strncmp(cmd, "render", 6) == 0) {
         U8 *arg = cmd + 6;
         while (*arg == ' ') arg++;
         if (strcmp(arg, "cpu") == 0) {
-            gfx_backend_set_mode(0);
+            GfxDeviceSetMode(0);
             doldoc_print("$FG,CYAN$[GFX]$FG$ Switched to Pure CPU Software Graphics.\n");
         } else if (strcmp(arg, "gpu") == 0) {
-            gfx_backend_set_mode(1);
+            GfxDeviceSetMode(1);
             doldoc_print("$FG,MAUVE$[GFX]$FG$ Switched to VirtIO-GPU Hardware DMA Scanout.\n");
         } else if (strcmp(arg, "smp") == 0) {
-            gfx_backend_set_mode(2);
+            GfxDeviceSetMode(2);
             doldoc_print("$FG,GREEN$[GFX]$FG$ Switched to SMP Multi-Core Parallel Graphics.\n");
         } else {
             doldoc_print("Usage: render <cpu | gpu | smp>\n");

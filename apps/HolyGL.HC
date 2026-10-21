@@ -282,7 +282,7 @@ U0 HolyGLBegin(I64 mode) {
 
 // Rasterize a 2D screen-space triangle with 16-bit depth testing
 U0 HolyGLDrawTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, I64 z_avg, U32 col) {
-  if (g_hgl.wireframe || GpuGetShading() == RASTER_SHADE_WIREFRAME) {
+  if (g_hgl.wireframe || GfxDeviceGetShading() == RASTER_SHADE_WIREFRAME) {
     gfx_draw_line(x0, y0, x1, y1, col);
     gfx_draw_line(x1, y1, x2, y2, col);
     gfx_draw_line(x2, y2, x0, y0, col);

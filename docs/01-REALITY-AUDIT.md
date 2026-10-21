@@ -94,8 +94,8 @@ merging; P4.0 only froze the baseline.
 | VirtIO-Block MMIO driver | **[REAL]** `boot/runtime/virtio_blk.c` (live) + `VirtioBlk.HC` (delegates). |
 | RedSea 64-bit contiguous FS | **[REAL]** `boot/runtime/redsea.c` (live, 715 lines) + `RedSea.HC`. |
 | RedSea reclaims sectors / dynamic `next_alloc_lba` / grow-allocates | **[MISSING]** old defects (watermark-only; ignores `sector_count`) — needs verification but reported unfixed. |
-| VirtIO-GPU 2D | **[PARTIAL]** `VirtioGpu.HC` sends **truncated** commands (`RESOURCE_CREATE_2D` 40→32, `TRANSFER_TO_HOST_2D` 56→48) — real bug (master P4). |
-| `GFX_MODE_HW_ACCELERATED` real | **[STUB]** old claim: it only renamed + set `feature_flags=0x0F`. |
+| VirtIO-GPU 2D | **[REAL]** (P4.1) — merged into `apps/GfxDevice.HC`; the two **truncated** commands are fixed (`RESOURCE_CREATE_2D` 40, `TRANSFER_TO_HOST_2D` 56). Verified live: device active, `VirtioGpuFlushRect/Full` return 0, `render gpu` + `GfxPresent` present without fault. 3D (virgl) deferred to P9. |
+| `GFX_MODE_HW_ACCELERATED` real | **[PARTIAL]** (P4.1) — `GfxDeviceSetMode(GFX_MODE_GPU_HW)` now drives a working 2D DMA present path; it is not a 3D accel mode. |
 | Mouse/tablet input | **[PARTIAL]** old "empty `mouse_poll`, static cursor" — now `Mouse.HC`/`VirtioInput.HC` exist; needs verification. |
 | VirtIO-Net, audio, USB xHCI | **[MISSING]** never implemented. |
 | FDT parser (Pi 4/5, RK3326) | **[MISSING]** QEMU-only. |

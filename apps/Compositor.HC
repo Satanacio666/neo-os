@@ -488,13 +488,13 @@ U0 CompositorPresent() {
         if (c_y + c_h > g_comp.screen_h) c_h = g_comp.screen_h - c_y;
 
         if (c_w >= g_comp.screen_w && c_h >= g_comp.screen_h) {
-            gfx_backend_present(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
+            GfxPresent(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
         } else if (c_w > 0 && c_h > 0) {
-            gfx_backend_present(c_x, c_y, c_w, c_h, 0);
+            GfxPresent(c_x, c_y, c_w, c_h, 0);
         }
         CompositorClearDamage();
     } else {
-        gfx_backend_present(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
+        GfxPresent(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
         CompositorClearDamage();
     }
 

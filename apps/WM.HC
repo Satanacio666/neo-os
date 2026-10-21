@@ -963,7 +963,7 @@ U0 menu_toggle() {
 }
 
 U0 gpu_config_open() {
-    GpuConfigPrintDolDoc();
+    GfxDevicePrintDolDoc();
     g_wm.is_dirty = 1;
 }
 

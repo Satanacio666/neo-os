@@ -73,8 +73,7 @@ U0 KernelInitMain() {
     KInitLoad("Keyboard.HC");
     KInitLoad("Mouse.HC");
     KInitLoad("VirtioInput.HC");
-    KInitLoad("VirtioGpu.HC");
-    KInitLoad("GfxBackend.HC");
+    KInitLoad("GfxDevice.HC");
 
     // Stage 5: 3D Graphics, Geometry, Mathematics & Physics
     KInitLog("Stage 5: 3D Graphics, Geometry, Mathematics & Physics...");

@@ -327,6 +327,12 @@ Still **open** (deliberately not fixed):
   new in-guest `renderbench` (`13063 tri/s, 9122 Kpix/s, 72 Mpix/s`). The render fragmentation the plan targets
   is unchanged (two Z-buffers, four triangle paths, three damage/present trackers); the 43-function dead list
   and write-only state are recorded in doc 2 §P4.0 to drive P4.8.
+- **P4.1 unified device — DONE.** Decision: `GfxBackend.HC` + `VirtioGpu.HC` are merged into one
+  `apps/GfxDevice.HC` with a single target resolver (`GfxDeviceTarget`), one damage tracker, and one present
+  (`GfxPresent`); the virtio-gpu transport lives in the same file. The **truncated command bug is fixed**
+  (`RESOURCE_CREATE_2D` 40, `TRANSFER_TO_HOST_2D` 56) — verified live (device active, flushes return 0,
+  `render gpu` presents without fault). Write-only knobs and dead `gl*`/`virtio_gpu_*` aliases deleted
+  (symbols 1330 → 1310). Virtio-gpu stays **2D**; virgl/Venus 3D is deferred to P9.
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.

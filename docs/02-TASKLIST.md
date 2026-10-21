@@ -501,15 +501,15 @@ fakes, no scalar fallback (AArch64 mandates NEON), deterministic per tile (same 
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P4, 02-PRIORITY-PLAN P4, P2-P6-MIGRATION-SPECS §1–§3, 01-VERIFIED-TRUTH §2.3)`
 
-**Current state (verified).** `Render.HC` = 2D canvas + damage + `gfx_*` API + a flat `gfx_draw_triangle_fill`
-(`Render.HC:529`). `RasterTile.HC` = a 64×64 tile with **real** per-pixel barycentric Z (`RasterTriangleZ`,
-`RasterTile.HC:58`) but flat color only, plus a duplicate no-Z path (`TileRasterTri:149`). `HolyGL.HC` = GL
-API but its submit path (`HolyGLSubmitTriangle:370`) averages NDC Z to a single `z_avg` (`:401-405`) and calls
-`HolyGLDrawTriangleZ:284` (flat Z, flat color). **Two Z-buffers** (`g_hgl_zbuf` `HolyGL.HC:68` and
-`g_tile_zbuf` `RasterTile.HC:13`). `GfxBackend.HC` = write-only knobs. `VirtioGpu.HC` sends **truncated**
-commands (verified: `RESOURCE_CREATE_2D` struct is 40 B but `VirtioGpu.HC:345` sends 32; `TRANSFER_TO_HOST_2D`
-struct is 56 B but `:417` sends 48). `FontMono` is a bitmap font + a stub SFNT parser; `FontVector` is
-procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_size`, `zprecision`, `culling`).
+**Current state (verified at P4 start; superscripts = fixed since).** `Render.HC` = 2D canvas + damage +
+`gfx_*` API + a flat `gfx_draw_triangle_fill` (`Render.HC:529`). `RasterTile.HC` = a 64×64 tile with **real**
+per-pixel barycentric Z (`RasterTriangleZ`, `RasterTile.HC:58`) but flat color only, plus a duplicate no-Z path
+(`TileRasterTri:149`). `HolyGL.HC` = GL API but its submit path (`HolyGLSubmitTriangle:370`) averages NDC Z to a
+single `z_avg` (`:401-405`) and calls `HolyGLDrawTriangleZ:284` (flat Z, flat color). **Two Z-buffers**
+(`g_hgl_zbuf` `HolyGL.HC:68` and `g_tile_zbuf` `RasterTile.HC:13`). `GfxBackend.HC` = write-only knobs
+(**P4.1**). `VirtioGpu.HC` sent **truncated** commands — `RESOURCE_CREATE_2D` 32 (need 40) and
+`TRANSFER_TO_HOST_2D` 48 (need 56) — (**P4.1**). `FontMono` is a bitmap font + a stub SFNT parser; `FontVector`
+is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_size`, `zprecision`, `culling`).
 
 ### P4.0 — Baseline, render gate & inventory — ✅ **DONE**
 - [x] **Golden-frame gate:** `RenderGoldenScene()` (`Render.HC`) draws a fixed integer-coordinate scene
@@ -564,15 +564,24 @@ procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_size
   `HolyGLDrawTriangleZ` flat `z_avg`, `RasterTriangleZ` real per-pixel Z); three damage/present
   trackers (Render dirty + `gfx_swap_*`, `GfxBackendPresent`, `Compositor*`).
 
-### P4.1 — One `GfxDevice.HC` (backend + present unification) — ⬜
-- [ ] **Merge** `GfxBackend.HC` + `VirtioGpu.HC` + Render's damage/present into `GfxDevice.HC`. One target
-      resolver (`GfxDeviceTarget()`), one damage tracker, one `GfxPresent(rect)`.
-- [ ] **Fix the truncated virtio-gpu commands** (the only real HW bug): send the full struct sizes —
-      `RESOURCE_CREATE_2D` 32→**40** (`VirtioGpu.HC:345`), `TRANSFER_TO_HOST_2D` 48→**56** (`:417`); audit
-      `ATTACH_BACKING`/`SET_SCANOUT` against the spec.
-- [ ] **Decision (research):** stay on **virtio-gpu 2D** for P4 (guest software-renders, host blits). Virgl/
+### P4.1 — One `GfxDevice.HC` (backend + present unification) — ✅ **DONE**
+- [x] **Merge** `GfxBackend.HC` + `VirtioGpu.HC` + Render's damage/present into one **`apps/GfxDevice.HC`**
+      (the two old files are deleted). One device state (`g_gdev`), **one target resolver** `GfxDeviceTarget()`
+      (→ `RenderGetTargetBuffer`), **one damage tracker** (`GfxDeviceDamage` → Render's single dirty rect),
+      **one present** `GfxPresent(x,y,w,h,full)` (double-buffer copy / direct-VRAM + optional GPU DMA). Callers
+      updated: `Shell.HC` (`GfxDeviceSetMode`/`SetZeroRam`/`IsZeroRam`), `Compositor.HC` (`GfxPresent`),
+      `WM.HC` (`GfxDevicePrintDolDoc`), `HolyGL.HC` (`GfxDeviceGetShading`); `KernelInit.HC` loads one module;
+      `p1-parity.sh` probes `g_gdev.mode`.
+- [x] **Fix the truncated virtio-gpu commands** (the only real HW bug): `RESOURCE_CREATE_2D` 32→**40** and
+      `TRANSFER_TO_HOST_2D` 48→**56** now send the full structs. Audited against the spec: `ATTACH_BACKING`
+      **48** ✓, `SET_SCANOUT` **48** ✓, `RESOURCE_FLUSH` **48** ✓ (already correct). Verified live: the device
+      is active (`VirtioGpuIsAvailable()==1`) and `VirtioGpuFlushRect/Full` now return **0** (previously the
+      truncated transfer dropped `resource_id`). `render gpu` + `GfxPresent` present the whole frame with no fault.
+- [x] **Decision (research):** stay on **virtio-gpu 2D** for P4 (guest software-renders, host blits). Virgl/
       Venus 3D needs host Vulkan + a big QEMU patch set (Collabora/QEMU docs) → **deferred to P9**.
-- [ ] Delete `GfxBackend` write-only knobs (`GpuSetRasterEngine/TileSize/Zprecision/Culling` — no readers).
+- [x] Delete `GfxBackend` write-only knobs (`GpuSetRasterEngine/TileSize/Zprecision/Culling/SmpCores` and the
+      `active_tab`/`feature_flags` state — no behaviour readers) and the dead `gl*` aliases + `virtio_gpu_*`
+      lowercase aliases + `GpuConfigMain`/`VirtioGpuSelfTest`/`GfxBackendSelfTest`. Symbol count **1330 → 1310**.
 
 ### P4.2 — One tiled NEON rasterizer (the core) — ⬜
 - [ ] **Promote `RasterTriangleZ`** as the single rasterizer; **wire `HolyGLSubmitTriangle` to it**; delete

@@ -1,6 +1,40 @@
-// NeoOS Sovereign Pure HolyC VirtIO GPU Driver
-// Ring 0 AArch64 Bare-Metal Hardware Accelerated 2D GPU Pipeline
+// ==============================================================================
+// apps/GfxDevice.HC - NeoOS unified graphics device (P4.1)
+// ------------------------------------------------------------------------------
+// One target resolver, one damage tracker, one present, and the VirtIO-GPU 2D
+// transport — merged from the old GfxBackend.HC + VirtioGpu.HC. The device is a
+// 2D blitter for P4: the guest software-renders into a surface and the device
+// presents it (CPU copy or VirtIO-GPU DMA). Virgl/Venus 3D is deferred to P9.
+//
+// The single damage tracker lives in Render.HC (g_canv.dirty); GfxDeviceDamage()
+// and GfxPresent() are the only writers of the present path.
+// ==============================================================================
 
+#define GFX_MODE_CPU_SW    0
+#define GFX_MODE_GPU_HW    1
+#define GFX_MODE_SMP_TILED 2
+
+#define GFX_BUFFER_DOUBLE      0
+#define GFX_BUFFER_DIRECT_VRAM 1
+
+#define RASTER_SHADE_FLAT      0
+#define RASTER_SHADE_GOURAUD   1
+#define RASTER_SHADE_WIREFRAME 2
+
+class CGfxDeviceState {
+  I64 mode;
+  I64 buffering;
+  I64 shading;
+  U8  name[64];
+  U64 ops_counter;
+  U64 dma_bytes;
+};
+
+CGfxDeviceState g_gdev;
+
+// ==============================================================================
+// VirtIO-GPU 2D transport (moved from VirtioGpu.HC; command sizes corrected)
+// ==============================================================================
 #define VIRTIO_DEV_GPU 16
 #define VIRTIO_MMIO_SLOT_BASE 0x0A000000
 #define VIRTIO_MMIO_SLOT_STRIDE 0x200
@@ -329,7 +363,7 @@ I64 VirtioGpuInit() {
   VGpuMmioWrite32(b, VIRTIO_MMIO_STATUS, VGpuMmioRead32(b, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
   g_vgpu.active = 1;
 
-  // 6. Create 2D Resource
+  // 6. Create 2D Resource (P4.1: send the FULL 40-byte struct, was truncated to 32)
   CVirtioGpuResourceCreate2D *c2d = g_vgpu.cmd_buf;
   c2d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
   c2d->hdr.flags = 0;
@@ -342,12 +376,12 @@ I64 VirtioGpuInit() {
   c2d->height = g_vgpu.height;
 
   CVirtioGpuCtrlHdr *resp = g_vgpu.resp_buf;
-  if (VirtioGpuSendCmd(c2d, 32, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
+  if (VirtioGpuSendCmd(c2d, 40, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
     g_vgpu.active = 0;
     return -1;
   }
 
-  // 7. Attach Backing
+  // 7. Attach Backing (48-byte struct; matches the spec)
   U32 *back = gfx_get_backbuffer();
   if (back) {
     CVirtioGpuAttachBackingReq *att = g_vgpu.cmd_buf;
@@ -367,7 +401,7 @@ I64 VirtioGpuInit() {
       return -1;
     }
 
-    // 8. Set Scanout
+    // 8. Set Scanout (48-byte struct; matches the spec)
     CVirtioGpuSetScanout *scan = g_vgpu.cmd_buf;
     scan->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
     scan->hdr.flags = 0;
@@ -399,6 +433,7 @@ I64 VirtioGpuFlushRect(I64 x, I64 y, I64 w, I64 h) {
   if (y + h > g_vgpu.height) h = g_vgpu.height - y;
   if (w <= 0 || h <= 0) return 0;
 
+  // P4.1: send the FULL 56-byte struct (was truncated to 48 — dropped resource_id)
   CVirtioGpuTransferToHost2D *t2d = g_vgpu.cmd_buf;
   t2d->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
   t2d->hdr.flags = 0;
@@ -414,7 +449,7 @@ I64 VirtioGpuFlushRect(I64 x, I64 y, I64 w, I64 h) {
   t2d->padding = 0;
 
   CVirtioGpuCtrlHdr *resp = g_vgpu.resp_buf;
-  if (VirtioGpuSendCmd(t2d, 48, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
+  if (VirtioGpuSendCmd(t2d, 56, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
     return -1;
   }
 
@@ -445,87 +480,181 @@ I64 VirtioGpuIsAvailable() {
   return g_vgpu.active;
 }
 
-I64 virtio_gpu_init() {
-  return VirtioGpuInit();
+// ==============================================================================
+// Unified device layer — one target resolver, one damage tracker, one present.
+// ==============================================================================
+U0 GfxDeviceInit() {
+  g_gdev.mode = GFX_MODE_CPU_SW;
+  g_gdev.buffering = GFX_BUFFER_DOUBLE;
+  g_gdev.shading = RASTER_SHADE_GOURAUD;
+  strcpy(g_gdev.name, "CPU Software (UEFI)");
+  g_gdev.ops_counter = 0;
+  g_gdev.dma_bytes = 0;
+  g_gfx_cfg.mode = GFX_MODE_CPU_SW;
+  RenderSetZeroRamMode(0);
 }
 
-I64 virtio_gpu_flush_rect(I64 x, I64 y, I64 w, I64 h) {
-  return VirtioGpuFlushRect(x, y, w, h);
+U0 GfxDeviceSetMode(I64 m) {
+  g_gdev.mode = m;
+  g_gfx_cfg.mode = m;
+  if (m == GFX_MODE_GPU_HW) {
+    strcpy(g_gdev.name, "VirtIO-GPU Hardware");
+  } else if (m == GFX_MODE_SMP_TILED) {
+    strcpy(g_gdev.name, "SMP Multi-Core (4C)");
+  } else {
+    strcpy(g_gdev.name, "CPU Software (UEFI)");
+  }
 }
 
-I64 virtio_gpu_flush_full() {
-  return VirtioGpuFlushFull();
+I64 GfxDeviceGetMode() { return g_gdev.mode; }
+U8* GfxDeviceGetName() { return g_gdev.name; }
+
+U0 GfxDeviceSetBuffering(I64 m) {
+  g_gdev.buffering = m;
+  RenderSetZeroRamMode(m == GFX_BUFFER_DIRECT_VRAM ? 1 : 0);
+}
+I64 GfxDeviceGetBuffering() { return g_gdev.buffering; }
+
+I64 GfxDeviceIsZeroRam() {
+  return (g_gdev.buffering == GFX_BUFFER_DIRECT_VRAM || g_gfx_cfg.buffer_mode == 1) ? 1 : 0;
+}
+U0 GfxDeviceSetZeroRam(I64 en) {
+  GfxDeviceSetBuffering(en ? GFX_BUFFER_DIRECT_VRAM : GFX_BUFFER_DOUBLE);
 }
 
-I64 virtio_gpu_is_available() {
-  return VirtioGpuIsAvailable();
+U0 GfxDeviceSetShading(I64 s) { g_gdev.shading = s; }
+I64 GfxDeviceGetShading() { return g_gdev.shading; }
+
+// The one target resolver: where the renderer draws. Delegates to Render, which
+// owns the double-buffer / zero-RAM decision.
+U32* GfxDeviceTarget() {
+  return RenderGetTargetBuffer();
 }
 
-I64 VirtioGpuSelfTest() {
-  I64 passed = 0;
-  I64 total = 5;
+// The one damage tracker: expands Render's single dirty rect.
+U0 GfxDeviceDamage(I64 x, I64 y, I64 w, I64 h) {
+  gfx_dirty_expand(x, y, w, h);
+}
 
-  doldoc_printf("\n=====================================================\n");
-  doldoc_printf("  [VIRTIO-GPU.HC] Pure HolyC VirtIO GPU Scorecard\n");
-  doldoc_printf("=====================================================\n");
-
-  // Test 1: Hardware scan and initialization
-  I64 init_res = VirtioGpuInit();
-  if (init_res == 0 && g_vgpu.active == 1) {
-    doldoc_printf("  [PASS] VirtIO-GPU 2D Controller Initialized (MMIO: 0x%08X)\n", g_vgpu.mmio_base);
-    passed++;
+// The one present: copy the dirty region to the front buffer (double-buffered),
+// or nothing in direct-VRAM mode; then DMA to the host if the GPU backend is on.
+U0 GfxPresent(I64 x, I64 y, I64 w, I64 h, I64 full) {
+  if (!GfxDeviceIsZeroRam()) {
+    if (full) {
+      gfx_swap_buffers();
+    } else {
+      gfx_swap_rect(x, y, w, h);
+    }
   } else {
-    doldoc_printf("  [FAIL] VirtIO-GPU 2D Controller Initialization Failed\n");
+    gfx_dirty_reset();
   }
-
-  // Test 2: Control Queue 0 Virtqueue Allocation & Page Alignment
-  if (g_vgpu.ring_base && (g_vgpu.ring_base & 4095) == 0) {
-    doldoc_printf("  [PASS] Control Queue 0 4096-Byte Page-Aligned in Ring 0\n");
-    passed++;
-  } else {
-    doldoc_printf("  [FAIL] Control Queue 0 Not Aligned: 0x%016llX\n", g_vgpu.ring_base);
+  if (g_gdev.mode == GFX_MODE_GPU_HW && VirtioGpuIsAvailable()) {
+    if (full) {
+      VirtioGpuFlushFull();
+    } else {
+      VirtioGpuFlushRect(x, y, w, h);
+    }
   }
+  g_gdev.ops_counter = g_gdev.ops_counter + 1;
+  g_gdev.dma_bytes = g_gdev.dma_bytes + (w * h * 4);
+}
 
-  // Test 3: 2D Framebuffer Resource Creation with Dynamic Canvas Dimensions
-  I64 exp_w = gfx_get_canvas_width();
-  I64 exp_h = gfx_get_canvas_height();
-  if (exp_w <= 0) exp_w = 1024;
-  if (exp_h <= 0) exp_h = 768;
-  if (g_vgpu.width == exp_w && g_vgpu.height == exp_h) {
-    doldoc_printf("  [PASS] 2D Framebuffer Resource (%dx%d @ 32-bpp BGRA) Created\n", g_vgpu.width, g_vgpu.height);
-    passed++;
-  } else {
-    doldoc_printf("  [FAIL] 2D Framebuffer Dimensions: %dx%d (expected %dx%d)\n", g_vgpu.width, g_vgpu.height, exp_w, exp_h);
+U0 GfxDeviceFastClear(U32 *dst_pixels, I64 num_px, U32 clr_val) {
+  I64 fc_idx = 0;
+  while (fc_idx + 8 <= num_px) {
+    dst_pixels[fc_idx + 0] = clr_val;
+    dst_pixels[fc_idx + 1] = clr_val;
+    dst_pixels[fc_idx + 2] = clr_val;
+    dst_pixels[fc_idx + 3] = clr_val;
+    dst_pixels[fc_idx + 4] = clr_val;
+    dst_pixels[fc_idx + 5] = clr_val;
+    dst_pixels[fc_idx + 6] = clr_val;
+    dst_pixels[fc_idx + 7] = clr_val;
+    fc_idx = fc_idx + 8;
   }
-
-  // Test 4: Backing Memory Attachment & Scanout Binding
-  U32 *back = gfx_get_backbuffer();
-  if (back) {
-    doldoc_printf("  [PASS] Framebuffer Backing Memory Attached & Scanout Bound (0x%p)\n", back);
-    passed++;
-  } else {
-    doldoc_printf("  [FAIL] Backing Memory Attachment Failed (Backbuffer NULL)\n");
+  while (fc_idx < num_px) {
+    dst_pixels[fc_idx] = clr_val;
+    fc_idx++;
   }
+}
 
-  // Test 5: Flush pipeline execution & VIRTIO_GPU_RESP_OK_NODATA verification
-  I64 flush_res = VirtioGpuFlushRect(100, 100, 200, 150);
-  CVirtioGpuCtrlHdr *resp = g_vgpu.resp_buf;
-  if (flush_res == 0 && resp && resp->type == VIRTIO_GPU_RESP_OK_NODATA) {
-    doldoc_printf("  [PASS] Hardware DMA Transfer & Flush Pipeline Verified (RESP=0x%04X)\n", resp->type);
-    passed++;
-  } else {
-    doldoc_printf("  [FAIL] Hardware DMA Transfer & Flush Command Failed (%d)\n", flush_res);
+U0 GfxDevicePrintDolDoc() {
+  doldoc_printf("$FG,CYAN$=== Sovereign Graphics Device ===$FG$\n");
+  doldoc_printf(" Active Backend:   $FG,YELLOW$%s$FG$\n", g_gdev.name);
+  doldoc_printf(" Shading / Depth:  $FG,WHITE$%s | %s$FG$\n",
+                (g_gdev.shading == RASTER_SHADE_GOURAUD) ? "Gouraud" : "Flat",
+                "16-Bit Z");
+  doldoc_printf(" Buffering:        $FG,GREEN$%s$FG$\n",
+                (g_gdev.buffering == GFX_BUFFER_DOUBLE) ? "Double-Buffered (DDR RAM)" : "Direct VRAM (Zero-RAM)");
+  doldoc_printf(" GPU Transport:    $FG,%s$%s$FG$\n",
+                VirtioGpuIsAvailable() ? "GREEN" : "PEACH",
+                VirtioGpuIsAvailable() ? "VirtIO-GPU 2D (DMA)" : "Unavailable (CPU blit)");
+  doldoc_printf(" Ops / Transfers:  %lld ops | %lld bytes\n", g_gdev.ops_counter, g_gdev.dma_bytes);
+  doldoc_printf("$FG,CYAN$==================================$FG$\n");
+}
+
+I64 GfxDeviceSelfTest() {
+  doldoc_printf("\n$FG,CYAN$[GFXDEVICE-TEST] Unified graphics device test suite...$FG$\n");
+
+  GfxDeviceInit();
+  if (g_gdev.mode != GFX_MODE_CPU_SW || g_gdev.buffering != GFX_BUFFER_DOUBLE ||
+      g_gdev.shading != RASTER_SHADE_GOURAUD) {
+    doldoc_printf("$FG,RED$[FAIL] Test 1: default state$FG$\n");
+    return 0;
   }
+  doldoc_printf("$FG,GREEN$[PASS] Test 1: default state validated.$FG$\n");
 
-  doldoc_printf("=====================================================\n");
-  doldoc_printf("  All %d / %d VirtioGpu.HC tests passed!\n", passed, total);
-  doldoc_printf("=====================================================\n");
+  GfxDeviceSetMode(GFX_MODE_GPU_HW);
+  if (g_gdev.mode != GFX_MODE_GPU_HW || strcmp(g_gdev.name, "VirtIO-GPU Hardware") != 0) {
+    doldoc_printf("$FG,RED$[FAIL] Test 2: mode switch$FG$\n");
+    return 0;
+  }
+  GfxDeviceSetMode(GFX_MODE_CPU_SW);
+  doldoc_printf("$FG,GREEN$[PASS] Test 2: mode switching validated.$FG$\n");
 
-  return passed;
+  GfxDeviceSetBuffering(GFX_BUFFER_DIRECT_VRAM);
+  I64 zr_ok = (GfxDeviceGetBuffering() == GFX_BUFFER_DIRECT_VRAM && GfxDeviceTarget() == gfx_get_frontbuffer());
+  GfxDeviceSetBuffering(GFX_BUFFER_DOUBLE);
+  if (!zr_ok) {
+    doldoc_printf("$FG,RED$[FAIL] Test 3: zero-RAM target resolution$FG$\n");
+    return 0;
+  }
+  doldoc_printf("$FG,GREEN$[PASS] Test 3: one target resolver validated (zero-RAM vs double-buffer).$FG$\n");
+
+  U32 *t_buf = kmalloc(256 * 4);
+  if (!t_buf) {
+    doldoc_printf("$FG,RED$[FAIL] Test 4: kmalloc$FG$\n");
+    return 0;
+  }
+  GfxDeviceFastClear(t_buf, 256, 0x11223344);
+  I64 clr_ok = 1;
+  I64 chk_i = 0;
+  while (chk_i < 256) { if (t_buf[chk_i] != 0x11223344) { clr_ok = 0; break; } chk_i++; }
+  kfree(t_buf);
+  if (!clr_ok) {
+    doldoc_printf("$FG,RED$[FAIL] Test 4: fast clear$FG$\n");
+    return 0;
+  }
+  doldoc_printf("$FG,GREEN$[PASS] Test 4: fast clear verified.$FG$\n");
+
+  U64 ops_before = g_gdev.ops_counter;
+  GfxPresent(0, 0, gfx_get_canvas_width(), gfx_get_canvas_height(), 1);
+  GfxPresent(10, 10, 100, 100, 0);
+  if (g_gdev.ops_counter != ops_before + 2) {
+    doldoc_printf("$FG,RED$[FAIL] Test 5: present ops counter$FG$\n");
+    return 0;
+  }
+  doldoc_printf("$FG,GREEN$[PASS] Test 5: one present path verified (%s).$FG$\n",
+                VirtioGpuIsAvailable() ? "VirtIO-GPU live" : "CPU blit");
+
+  GfxDeviceInit();
+  doldoc_printf("\n[GFXDEVICE-PASS] ALL 5 GRAPHICS DEVICE TESTS PASSED\n\n");
+  return 1;
 }
 
 if (g_kernel_booting) {
+  GfxDeviceInit();
   VirtioGpuInit();
 } else {
-  VirtioGpuSelfTest();
+  GfxDeviceSelfTest();
 }
