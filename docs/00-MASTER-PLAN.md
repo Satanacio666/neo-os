@@ -57,7 +57,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P0** | Observability & debug harness | ✅ DONE | — |
 | **P0.5** | Test & harness 200% (in-guest SelfTest) | ✅ DONE — one command runs 80/80 + parity 54/54 + twins 5/5 + 0 unresolved + census | `golden-boot.sh` PASS on one boot |
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
-| **P2** | Minimal bootstrap / fix the bootstrap | 🟡 P2.0 done (census + twin-liveness); **P2.1 HAL next** | C = `boot/main.c`+`boot/uefi`+seed+minimal substrate |
+| **P2** | Minimal bootstrap / fix the bootstrap | 🟡 P2.0 + **P2.1 (HAL) done**; **P2.2 VirtioBlk next** | C = `boot/main.c`+`boot/uefi`+seed+minimal substrate |
 | **P3** | Kernel correctness | ⬜ | timer IRQ fires; real scheduler; one allocator/table/HAL |
 | **P4** | Rendering unification (merges) | ⬜ | one `GfxDevice` + one tiled rasterizer + one font |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |

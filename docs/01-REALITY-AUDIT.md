@@ -51,7 +51,7 @@ not in the boot list); C in build = **9** (`boot/main.c`, `boot/seed/{lexer,tabl
 | SMP: 4 cores via PSCI, all active | **[PARTIAL]** PSCI bring-up exists; per-core run queues absent; old "secondaries run outside scheduler / spin" claims: **[PARTIAL]** (now `Smp.HC`). |
 | One allocator | **[MISSING]** two allocators: C `boot/runtime/kheap.c` (live) + dead `KHeap.HC`. |
 | One symbol table | **[MISSING]** C `symbols.c` (1024 buckets, live) + `Symbols.HC` (fallback). Old docs said 256 (dossier) vs 4096 (arch_spec) — both wrong; C is 1024. |
-| One HAL; no hardcoded QEMU MMIO | **[MISSING]** C `hal_platform.c` (live) + `HalPlatform.HC` (dup `g_hal_*`); drivers still partly hardcode `0x09000000`/`0x08000000`/`0x0A000000`. |
+| One HAL; no hardcoded QEMU MMIO | **[PARTIAL]** (P2.1) `apps/HalPlatform.HC` is now the single owner of cache maintenance + board profiles + `g_hal_*`; the C HAL is reduced to a 31-line early-boot stub (`boot/runtime/hal_platform.{c,h}`) that only supplies the VirtIO MMIO aperture to the C block driver, and is retired at P2.2. Drivers still partly hardcode `0x09000000`/`0x08000000`/`0x0A000000`. |
 | Timer: `CNTV_TVAL_EL0` armed, IRQ 27 registered | **[MISSING]** not armed for preemption. Old "100 Hz" vs "1 ms/1000 Hz" contradiction unresolved (arch_spec:214 vs dossier:186). |
 | GIC-3 configured but `-M virt` defaults GIC-2 (dossier.md:190, audit.md:100) | **[PARTIAL]** QEMU now run with `gic-version=2`. |
 | Exceptions reach BSOD; re-entrancy safe | **[PARTIAL]** old `x3=1`/`while(1)__wfe` issues partly fixed; `is_user_jit` recovery exists. |
