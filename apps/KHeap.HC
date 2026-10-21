@@ -473,3 +473,6 @@ if (g_kernel_booting) {
 } else {
   KHeapSelfTest();
 }
+
+// P0.5 twin-liveness probe: proves KHeap.HC is loaded and callable.
+I64 KHeapTwinProbe() { return 0x4B485031; }

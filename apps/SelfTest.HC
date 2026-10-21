@@ -24,6 +24,8 @@ I64 g_parity_ok = 0;
 I64 g_parity_total = 0;
 I64 g_parity_fail = 0;
 I64 g_parity_skip = 0;
+I64 g_twin_pass = 0;
+I64 g_twin_total = 0;
 
 // Run up to three source units in order through Compiler.HC; return the last
 // value. This mirrors the host battery, where each `cmds` entry is a separate
@@ -88,6 +90,26 @@ U0 SelfTestKnown(U8 *name, U8 *src, I64 expect) {
     }
 }
 
+// P0.5.5 twin-liveness: each .HC twin exposes <X>TwinProbe() returning a magic
+// value, proving the module is loaded and callable (a P2 prerequisite).
+U0 SelfTestTwin(U8 *name, I64 got, I64 expect) {
+    g_twin_total++;
+    if (got == expect) {
+        g_twin_pass++;
+    } else {
+        doldoc_printf("[SELFTEST] FAIL twin %s expect=0x%llX got=0x%llX\n", name, expect, got);
+    }
+}
+
+U0 SelfTestTwins() {
+    SelfTestTwin("HalPlatform.HC", HalTwinProbe(), 0x48414C31);
+    SelfTestTwin("VirtioBlk.HC", VirtioBlkTwinProbe(), 0x56424C31);
+    SelfTestTwin("RedSea.HC", RedSeaTwinProbe(), 0x52534431);
+    SelfTestTwin("Symbols.HC", SymbolsTwinProbe(), 0x53594D31);
+    SelfTestTwin("KHeap.HC", KHeapTwinProbe(), 0x4B485031);
+    doldoc_printf("TWINS: %lld/%lld\n", g_twin_pass, g_twin_total);
+}
+
 // The one shell-driven case (save/run/#include) reduced to its compiler essence:
 // write an include target to RedSea, then compile a unit that #includes it.
 U0 SelfTestInclude() {
@@ -116,6 +138,8 @@ U0 SelfTestRun() {
     g_parity_total = 0;
     g_parity_fail = 0;
     g_parity_skip = 0;
+    g_twin_pass = 0;
+    g_twin_total = 0;
 
     doldoc_print("\n$FG,CYAN$=== NeoOS in-guest SELFTEST ===$FG$\n");
 
@@ -194,6 +218,7 @@ U0 SelfTestRun() {
     SelfTestCheck("forward_struct_ptr", "I64 gfsp(F2 *p) { return p->x; } struct F2 { I64 x; }; F2 ff2; ff2.x = 9; gfsp(&ff2);", 9);
     SelfTestInclude();
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
+    SelfTestTwins();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

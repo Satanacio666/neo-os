@@ -366,6 +366,9 @@ I64 HalPlatformSelfTest() {
   return HalSelfTest();
 }
 
+// P0.5 twin-liveness probe: proves HalPlatform.HC is loaded and callable.
+I64 HalTwinProbe() { return 0x48414C31; }
+
 I64 g_kernel_booting;
 if (g_kernel_booting) {
   HalPlatformInit();

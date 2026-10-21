@@ -753,6 +753,9 @@ I64 redsea_delete_file(U8 *fname) {
   return RedSeaDeleteFile(fname);
 }
 
+// P0.5 twin-liveness probe: proves RedSea.HC is loaded and callable.
+I64 RedSeaTwinProbe() { return 0x52534431; }
+
 I64 g_kernel_booting;
 if (g_kernel_booting) {
   RedSeaMountHardware(1);

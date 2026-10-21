@@ -53,6 +53,13 @@ else
         echo "  [FAIL] parity: ${pline:-<none>} (want 0 diff)"
         fail=1
     fi
+    tline="$(printf '%s\n' "$out" | grep -a 'TWINS: ' | tail -1)"
+    if printf '%s' "$tline" | grep -aq '5/5'; then
+        echo "  [PASS] $tline (twin-liveness)"
+    else
+        echo "  [FAIL] twin-liveness: ${tline:-<none>} (want 5/5)"
+        fail=1
+    fi
 fi
 
 echo "== compiler self-host =="

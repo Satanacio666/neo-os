@@ -341,3 +341,6 @@ if (g_kernel_booting) {
 } else {
   SymbolsSelfTest();
 }
+
+// P0.5 twin-liveness probe: proves Symbols.HC is loaded and callable.
+I64 SymbolsTwinProbe() { return 0x53594D31; }
