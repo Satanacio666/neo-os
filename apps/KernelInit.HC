@@ -41,7 +41,11 @@ U0 KernelInitMain() {
     doldoc_print(" 100% Native HolyC Compilation & Runtime Orchestration\n");
     doldoc_print("======================================================\n\n");
 
-    // Stage 1: Architecture HAL, Memory, Symbol Reflection, Containers & Compiler
+    // Stage 1: Architecture HAL, Memory, Containers & Compiler.
+    // NOTE (P2.7): Compiler.HC now compiles KHeap.HC/Symbols.HC (the "function after
+    // a top-level statement" parser bug is fixed), but the self-hosted compiler still
+    // MIS-COMPILES KHeap.HC at runtime (C-heap canary corruption), so the C-JIT flip
+    // is kept after KHeap/Symbols until that codegen bug is fixed.
     KInitLog("Stage 1: Architecture HAL, Memory, Containers & Compiler...");
     KInitLoad("HalPlatform.HC");
     KInitLoad("Timer.HC");

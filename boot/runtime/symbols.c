@@ -175,48 +175,5 @@ uint64_t symbols_count(void) {
     return total_symbols;
 }
 
-int symbols_iterate(int (*callback)(symbol_t *sym, void *user_data), void *user_data) {
-    int count = 0;
-    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
-        symbol_t *curr = buckets[i];
-        while (curr) {
-            count++;
-            if (callback && callback(curr, user_data) != 0) {
-                return count;
-            }
-            curr = curr->next;
-        }
-    }
-    return count;
-}
 
-void symbols_dump(void) {
-    printf("\n--- GLOBAL SYMBOL TABLE DUMP (%llu symbols) ---\n", (unsigned long long)total_symbols);
-    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
-        symbol_t *curr = buckets[i];
-        while (curr) {
-            const char *type_str = (curr->type == SYM_FUNC) ? "FUNC" :
-                                   (curr->type == SYM_VAR) ? "VAR " : "HW  ";
-            printf(" [%s] %s -> 0x%016llX\n",
-                   type_str, curr->name, (unsigned long long)curr->address);
-            curr = curr->next;
-        }
-    }
-    printf("----------------------------------------------\n\n");
-}
-
-void symbols_print_doldoc(void) {
-    doldoc_printf("$FG,CYAN$--- DYNAMIC SYMBOL TABLE (%llu symbols) ---$FG$\n", (unsigned long long)total_symbols);
-    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
-        symbol_t *curr = buckets[i];
-        while (curr) {
-            const char *type_str = (curr->type == SYM_FUNC) ? "FUNC" :
-                                   (curr->type == SYM_VAR) ? "VAR " : "HW  ";
-            doldoc_printf(" [$FG,YELLOW$%s$FG$] %s -> 0x%016llX\n",
-                          type_str, curr->name, (unsigned long long)curr->address);
-            curr = curr->next;
-        }
-    }
-    doldoc_print("$FG,CYAN$----------------------------------------$FG$\n");
-}
 

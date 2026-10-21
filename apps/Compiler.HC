@@ -341,11 +341,21 @@ U0 HcReset() {
     g_hc_init_count = 0;
 }
 
-// Cache maintenance for freshly JIT-emitted code is owned by apps/HalPlatform.HC
-// (HalFlushCache: dc civac + ic ivau + dsb + isb). Delegate so there is exactly
-// one implementation (P2.1).
+// Cache maintenance for freshly JIT-emitted code. Deliberately self-contained so
+// Compiler.HC has NO dependency on any other .HC module: the C JIT bootstraps
+// ONLY Compiler.HC (P2.7), which then compiles everything else, including
+// HalPlatform.HC (whose HalFlushCache is the runtime implementation).
 U0 HcFlushCache(U64 addr, U64 size) {
-    HalFlushCache(addr, size);
+    if (!addr || size == 0) return;
+    U64 f_p = addr & (~63);
+    U64 f_end = addr + size + 64;
+    while (f_p < f_end) {
+        __dc_civac(f_p);
+        __ic_ivau(f_p);
+        f_p += 64;
+    }
+    __dsb_sy();
+    __isb();
 }
 
 // ------------------------------------------------------------------------------
@@ -2790,6 +2800,30 @@ U0 HcEmitDeferredInits() {
     HcSafeCopy(g_hc_tok_str, ss, 256);
 }
 
+// Lookahead: does the current token begin a function definition (`Type [*]* name (`)
+// or a class/struct definition? Used to end a top-level statement block when a
+// declaration follows it. Restores the lexer state either way.
+I64 HcAtFunctionDef() {
+    if (g_hc_tok == TOK_CLASS || g_hc_tok == TOK_STRUCT) return 1;
+    if (!HcIsTypeToken(g_hc_tok) && !(g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0)) return 0;
+    I64 sp = g_hc_pos;
+    I64 st = g_hc_tok;
+    I64 sv = g_hc_tok_val;
+    I64 stp = g_hc_tok_pos;
+    U8  ss[256];
+    HcSafeCopy(ss, g_hc_tok_str, 256);
+    HcLexNext();
+    while (g_hc_tok == TOK_STAR) HcLexNext();
+    I64 is_fn = 0;
+    if (g_hc_tok == TOK_IDENT) {
+        HcLexNext();
+        is_fn = (g_hc_tok == TOK_LPAREN);
+    }
+    g_hc_pos = sp; g_hc_tok = st; g_hc_tok_val = sv; g_hc_tok_pos = stp;
+    HcSafeCopy(g_hc_tok_str, ss, 256);
+    return is_fn;
+}
+
 U0 HcParseProgram() {
     while (g_hc_tok != TOK_EOF) {
         if (g_hc_tok == TOK_CLASS || g_hc_tok == TOK_STRUCT) {
@@ -2968,6 +3002,12 @@ U0 HcParseProgram() {
         HcEmitPrologue();
         HcEmitDeferredInits();
         while (g_hc_tok != TOK_EOF) {
+            // A function (or class/struct) definition may follow top-level statements
+            // — e.g. boot modules end with `if (g_kernel_booting) {...}` followed by a
+            // function. Break so the outer loop parses it as a declaration instead of
+            // mis-parsing it as a statement. Global variable declarations are left to
+            // HcParseStatement (local semantics) to preserve prior behaviour.
+            if (HcAtFunctionDef()) break;
             I64 repl_pp = g_hc_pos;
             HcParseStatement();
             if (g_hc_pos <= repl_pp && g_hc_tok != TOK_EOF) {

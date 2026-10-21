@@ -10,9 +10,6 @@ static heap_stats_t stats = {0};
 static uintptr_t s_heap_start = 0;
 static uintptr_t s_heap_end = 0;
 
-uintptr_t kheap_get_start(void) { return s_heap_start; }
-uintptr_t kheap_get_end(void) { return s_heap_end; }
-
 int kheap_is_valid_ptr(void *ptr) {
     if (!ptr) return 0;
     uintptr_t p = (uintptr_t)ptr;
@@ -166,52 +163,8 @@ void kfree(void *ptr) {
     smp_spin_unlock(&s_heap_spinlock);
 }
 
-void* kcalloc(size_t num, size_t size) {
-    if (num != 0 && size > (size_t)-1 / num) return NULL;
-    size_t total = num * size;
-    void *ptr = kmalloc(total);
-    if (ptr) {
-        memset(ptr, 0, total);
-    }
-    return ptr;
-}
-
-void* krealloc(void *ptr, size_t new_size) {
-    if (!ptr) return kmalloc(new_size);
-    if (new_size == 0) {
-        kfree(ptr);
-        return NULL;
-    }
-
-    heap_block_t *block = (heap_block_t*)ptr - 1;
-    if (block->canary_head != HEAP_CANARY) {
-        printf("[HEAP] FATAL: Invalid canary in krealloc!\n");
-        return NULL;
-    }
-
-    if (block->size >= new_size) {
-        return ptr; // Already big enough
-    }
-
-    void *new_ptr = kmalloc(new_size);
-    if (new_ptr) {
-        memcpy(new_ptr, ptr, block->size);
-        kfree(ptr);
-    }
-    return new_ptr;
-}
-
 void kheap_get_stats(heap_stats_t *out_stats) {
     if (out_stats) {
         *out_stats = stats;
     }
-}
-
-void kheap_dump(void) {
-    printf("[HEAP] Total: %llu KB | Used: %llu KB | Free: %llu KB | Allocs: %llu | Frees: %llu\n",
-           (unsigned long long)(stats.total_memory / 1024),
-           (unsigned long long)(stats.used_memory / 1024),
-           (unsigned long long)(stats.free_memory / 1024),
-           (unsigned long long)stats.allocation_count,
-           (unsigned long long)stats.free_count);
 }
