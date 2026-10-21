@@ -29,6 +29,10 @@ class CExceptionState {
 
 CExceptionState g_exc;
 I64 g_exc_selftest_active;
+// P3.6 guardrail 4: set by the shell while executing a user REPL command. A fault
+// with this set (or the legacy is_user_jit flag) unwinds to the shell; otherwise
+// it is a kernel fault and reaches the BSOD.
+I64 g_exc_user_ok = 0;
 U8  g_exc_line_buf[128];
 
 U8* ExceptionsDecodeClass(U32 ec) {
@@ -149,9 +153,13 @@ U0 ExceptionsRenderBsod(CTrapFrame *f, U64 esr, U64 far) {
 I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
   if (!f) return 0;
 
-  // Proper re-entrancy guard (resets to 0 on exit so sequential faults never hang!)
+  // P3.6: double-fault guard. A fault while handling a fault cannot be unwound;
+  // do NOT recurse into BSOD rendering (that could fault again). Print a terminal
+  // banner and halt.
   if (g_exc.in_fault != 0) {
-    doldoc_printf("[EXC FATAL] Recursive exception fault loop detected (in_fault=%lld). Halting.\n", g_exc.in_fault);
+    g_exc.panic_count = g_exc.panic_count + 1;
+    doldoc_printf("$FG,RED$[EXC FATAL] DOUBLE FAULT (in_fault=%lld) EC=0x%02X ELR=0x%016llX FAR=0x%016llX. HALTED.$FG$\n",
+                  g_exc.in_fault, (esr >> 26) & 0x3F, f->elr_el1, far);
     while (1) {
       __wfe();
     }
@@ -175,21 +183,24 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
 
   U8 *ec_desc = ExceptionsDecodeClass(ec);
 
-  // Sovereign Error Recovery Protocol:
-  // If the fault occurred in userland HolyC code (inside the JIT code pool),
-  // display a structured DolDoc crash card and unwind cleanly to ShellRecover()!
-  if (is_user_jit) {
+  // Sovereign Error Recovery Protocol (P3.6 guardrail 4):
+  // A fault during a user REPL command (g_exc_user_ok) or a JIT task
+  // (is_user_jit) unwinds cleanly to ShellRecover(); any other (kernel) fault is
+  // unrecoverable and reaches the BSOD.
+  if (is_user_jit || g_exc_user_ok) {
     g_exc.recovered_exceptions = g_exc.recovered_exceptions + 1;
-    doldoc_print("\n$CARD,title=\"Sovereign Ring-0 Fault Recovery (JIT Task Unwound)\",w=96,h=6,bg=0xFF1E1E2E,border=0xFFF38BA8$\n");
-    doldoc_printf("  $FG,RED$[EXC #%lld]$FG$ EC=0x%02X ($FG,YELLOW$%s$FG$) | Insn=0x%08X\n",
-                  g_exc.total_exceptions, ec, ec_desc, insn_val);
-    doldoc_printf("  $FG,SAPPHIRE$ELR_EL1:$FG$ 0x%016llX  $FG,SAPPHIRE$FAR_EL1:$FG$ 0x%016llX  $FG,SAPPHIRE$ESR_EL1:$FG$ 0x%016llX\n",
-                  f->elr_el1, far, esr);
-    doldoc_printf("  $FG,SAPPHIRE$X0..X3 :$FG$ 0x%016llX  0x%016llX  0x%016llX  0x%016llX\n",
-                  f->x[0], f->x[1], f->x[2], f->x[3]);
-    doldoc_printf("  $FG,SAPPHIRE$X16/17 :$FG$ 0x%016llX  0x%016llX  $FG,SAPPHIRE$X30(LR):$FG$ 0x%016llX\n",
-                  f->x[16], f->x[17], f->lr);
-    doldoc_print("$HR$\n");
+    if (!g_exc_selftest_active) {
+      doldoc_print("\n$CARD,title=\"Sovereign Ring-0 Fault Recovery (JIT Task Unwound)\",w=96,h=6,bg=0xFF1E1E2E,border=0xFFF38BA8$\n");
+      doldoc_printf("  $FG,RED$[EXC #%lld]$FG$ EC=0x%02X ($FG,YELLOW$%s$FG$) | Insn=0x%08X\n",
+                    g_exc.total_exceptions, ec, ec_desc, insn_val);
+      doldoc_printf("  $FG,SAPPHIRE$ELR_EL1:$FG$ 0x%016llX  $FG,SAPPHIRE$FAR_EL1:$FG$ 0x%016llX  $FG,SAPPHIRE$ESR_EL1:$FG$ 0x%016llX\n",
+                    f->elr_el1, far, esr);
+      doldoc_printf("  $FG,SAPPHIRE$X0..X3 :$FG$ 0x%016llX  0x%016llX  0x%016llX  0x%016llX\n",
+                    f->x[0], f->x[1], f->x[2], f->x[3]);
+      doldoc_printf("  $FG,SAPPHIRE$X16/17 :$FG$ 0x%016llX  0x%016llX  $FG,SAPPHIRE$X30(LR):$FG$ 0x%016llX\n",
+                    f->x[16], f->x[17], f->lr);
+      doldoc_print("$HR$\n");
+    }
 
     U64 rec_addr = symbols_lookup("ShellRecover");
     if (!rec_addr) rec_addr = symbols_lookup("ShellInit");

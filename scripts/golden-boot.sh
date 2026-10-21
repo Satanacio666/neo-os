@@ -102,6 +102,13 @@ else
         echo "  [FAIL] preemption: ${scline:-<none>} (want SCHED: PASS)"
         fail=1
     fi
+    bline="$(printf '%s\n' "$out" | grep -a 'BSOD: ' | tail -1)"
+    if printf '%s' "$bline" | grep -aq 'PASS'; then
+        echo "  [PASS] $bline (kernel-fault vs REPL boundary)"
+    else
+        echo "  [FAIL] bsod boundary: ${bline:-<none>} (want BSOD: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

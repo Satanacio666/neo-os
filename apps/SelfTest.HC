@@ -219,6 +219,29 @@ U0 SelfTestSched() {
     }
 }
 
+// P3.6: verify the fault classification boundary (guardrail 4) non-destructively.
+// A kernel fault (no user_ok) must PANIC (return 0); a user fault (user_ok) must
+// RECOVER (return 1). g_exc_selftest_active suppresses actual BSOD rendering.
+U0 SelfTestBsod() {
+    g_exc_selftest_active = 1;
+    CTrapFrame f;
+    f.elr_el1 = 0x50000000;
+    f.lr = 0;
+    f.spsr_el1 = 0;
+    f.sp_el0 = 0;
+    g_exc_user_ok = 0;
+    I64 r_panic = ExceptionsHandleSync(&f, 0x96000007, 0x29, 0);
+    g_exc_user_ok = 1;
+    I64 r_recover = ExceptionsHandleSync(&f, 0x96000007, 0x29, 0);
+    g_exc_user_ok = 0;
+    g_exc_selftest_active = 0;
+    if (r_panic == 0 && r_recover == 1) {
+        doldoc_print("BSOD: PASS\n");
+    } else {
+        doldoc_printf("BSOD: FAIL (panic=%lld recover=%lld)\n", r_panic, r_recover);
+    }
+}
+
 // P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
 // hard assertions are promoted to pass/fail as each capability lands
 // (P3.4 / P3.6 / P3.7).
@@ -347,6 +370,7 @@ U0 SelfTestRun() {
     SelfTestHalCache();
     SelfTestFs();
     SelfTestSched();
+    SelfTestBsod();
     SelfTestKernel();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

@@ -772,7 +772,10 @@ U0 ShellRunCommand(U8 *raw_cmd) {
 }
 
 U0 shell_run_command(U8 *raw_cmd) {
+    // P3.6 guardrail 4: a fault during a user command unwinds to the shell.
+    g_exc_user_ok = 1;
     ShellRunCommand(raw_cmd);
+    g_exc_user_ok = 0;
 }
 
 U0 ShellPoll() {
@@ -786,7 +789,9 @@ U0 ShellPoll() {
             strcpy(cur_cmd, g_shell_cmd);
             g_shell_len = 0;
             g_shell_cmd[0] = 0;
+            g_exc_user_ok = 1;
             ShellRunCommand(cur_cmd);
+            g_exc_user_ok = 0;
             g_cursor_visible = 1;
             doldoc_draw_cursor(1);
             g_shell_dirty = 1;

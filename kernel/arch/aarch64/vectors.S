@@ -176,7 +176,7 @@ handle_curr_el_sp0_sync:
     mov  x0, sp
     mrs  x1, esr_el1
     mrs  x2, far_el1
-    mov  x3, #1
+    mov  x3, #0
     adrp x16, g_arch_vectors
     add  x16, x16, :lo12:g_arch_vectors
     ldr  x16, [x16, #0]
@@ -203,7 +203,7 @@ handle_curr_el_spx_sync:
     mov  x0, sp
     mrs  x1, esr_el1
     mrs  x2, far_el1
-    mov  x3, #1
+    mov  x3, #0
     adrp x16, g_arch_vectors
     add  x16, x16, :lo12:g_arch_vectors
     ldr  x16, [x16, #0]
