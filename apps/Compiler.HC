@@ -341,17 +341,10 @@ U0 HcReset() {
     g_hc_init_count = 0;
 }
 
+// Cache maintenance for freshly JIT-emitted code is owned by apps/HalPlatform.HC
+// (HalFlushCache: dc civac + ic ivau + dsb + isb). Delegate so there is exactly
+// one implementation (P2.1).
 U0 HcFlushCache(U64 addr, U64 size) {
-    if (!addr || size == 0) return;
-    U64 f_p = addr & (~63);
-    U64 f_end = addr + size + 64;
-    while (f_p < f_end) {
-        __dc_civac(f_p);
-        __ic_ivau(f_p);
-        f_p += 64;
-    }
-    __dsb_sy();
-    __isb();
     HalFlushCache(addr, size);
 }
 

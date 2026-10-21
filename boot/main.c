@@ -267,7 +267,7 @@ int main(int argc, char **argv)
     symbols_register("doldoc_print", (void*)boot_uart_doldoc_print, SYM_FUNC);
     symbols_register("doldoc_printf", (void*)doldoc_printf, SYM_FUNC);
     symbols_register("doldoc_register_holyc", (void*)doldoc_register_holyc, SYM_FUNC);
-    symbols_register("hal_flush_cache", (void*)hal_flush_cache, SYM_FUNC);
+    // hal_flush_cache is owned by apps/HalPlatform.HC (P2.1); no C implementation.
     symbols_register("uart_putc", (void*)uart_putc, SYM_FUNC);
     symbols_register("uart_puts", (void*)uart_puts, SYM_FUNC);
 
