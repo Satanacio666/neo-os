@@ -242,6 +242,18 @@ U0 HcStrCat(U8 *dest, U8 *src) {
     dest[d_len + s_len] = 0;
 }
 
+// Store one scalar into a compile-time array buffer at element index idx with the
+// given element byte width. Kept as a small top-level helper (rather than an inline
+// nested-block pointer store) because the C JIT miscompiles typed stores through a
+// pointer local declared in a deeply nested block of a large function.
+U0 HcStoreElem(U64 base, I64 idx, I64 val, I64 scale) {
+    U64 addr = base + (U64)(idx * scale);
+    if (scale == 1) *(U8*)addr = val;
+    else if (scale == 2) *(U16*)addr = val;
+    else if (scale == 4) *(U32*)addr = val;
+    else *(I64*)addr = val;
+}
+
 // ------------------------------------------------------------------------------
 // Character & Type Classification Helpers
 // ------------------------------------------------------------------------------
@@ -274,8 +286,11 @@ I64 HcIsSpace(U8 c) {
 }
 
 I64 HcIsTypeToken(I64 tok) {
+    // `auto` is accepted as a declaration type (TempleOS/HolyC storage class);
+    // it behaves as a signed 64-bit integer here.
     if (tok == TOK_TYPE_I64 || tok == TOK_TYPE_U0 || tok == TOK_TYPE_F64 ||
-        tok == TOK_TYPE_U8  || tok == TOK_TYPE_U16 || tok == TOK_TYPE_U32) {
+        tok == TOK_TYPE_U8  || tok == TOK_TYPE_U16 || tok == TOK_TYPE_U32 ||
+        tok == TOK_AUTO) {
         return 1;
     }
     return 0;
@@ -2254,7 +2269,35 @@ U0 HcParseStatement() {
                     }
                     if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     I64 arr_elem_sz = (is_p > 0) ? 8 : base_scale;
-                    HcAddLocalTyped(vname, arr_elem_sz, 2, (is_p > 0) ? -1 : st_idx, arr_cnt);
+                    I64 arr_off = HcAddLocalTyped(vname, arr_elem_sz, 2, (is_p > 0) ? -1 : st_idx, arr_cnt);
+                    // Local array initializer list: Type a[N] = { e0, e1, ... };
+                    if (g_hc_tok == TOK_EQUAL) {
+                        HcLexNext(); // eat '='
+                        if (g_hc_tok == TOK_LBRACE) {
+                            HcLexNext(); // eat '{'
+                            I64 ai = 0;
+                            while (g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF && ai < arr_cnt) {
+                                I64 aev = 0;
+                                I64 aflt = 0;
+                                I64 aneg = 0;
+                                if (g_hc_tok == TOK_MINUS) { aneg = 1; HcLexNext(); }
+                                if (g_hc_tok == TOK_FLOAT) { aev = g_hc_tok_val; aflt = 1; HcLexNext(); }
+                                else if (g_hc_tok == TOK_NUMBER) { aev = g_hc_tok_val; HcLexNext(); }
+                                else if (g_hc_tok == TOK_STRING) { aev = g_hc_tok_val; HcLexNext(); }
+                                else break;
+                                if (aneg) { if (aflt) aev = aev ^ (1 << 63); else aev = -aev; }
+                                I64 aeoff = arr_off + ai * arr_elem_sz;
+                                HcEmitImm64(0, aev);
+                                HcEmitStoreLocal(0, aeoff);
+                                ai++;
+                                if (g_hc_tok == TOK_COMMA) HcLexNext();
+                                else break;
+                            }
+                            if (g_hc_tok == TOK_RBRACE) HcLexNext();
+                        } else {
+                            g_hc_error = 1; // only literal initializer lists are supported
+                        }
+                    }
                 } else if (st_idx >= 0 && is_p == 0) {
                     HcAddLocalTyped(vname, base_scale, 3, st_idx, 1);
                 } else {
@@ -2792,7 +2835,9 @@ U0 HcParseProgram() {
                 // a constant expression of the form N, N*M or N+M (macros are already
                 // substituted by the lexer), e.g. `[HC_MAX_GLOBALS * 32]`.
                 I64 g_count = 1;
+                I64 g_has_bracket = 0;
                 while (g_hc_tok == TOK_LBRACKET) {
+                    g_has_bracket = 1;
                     HcLexNext();
                     I64 dim = 1;
                     if (g_hc_tok == TOK_NUMBER) { dim = g_hc_tok_val; HcLexNext(); }
@@ -2808,7 +2853,7 @@ U0 HcParseProgram() {
                 }
                 // Top-level global variable declaration: Type g_var [= val];
                 U64 g_slot = symbols_lookup(fname);
-                I64 g_is_arr = (g_count > 1) ? 1 : 0;
+                I64 g_is_arr = g_has_bracket;
                 if (!g_slot) {
                     I64 g_elem_sz = g_is_ptr ? 8 : g_elem_bytes;
                     I64 g_alloc = g_is_arr ? (g_count * g_elem_sz) : (g_is_ptr ? 8 : g_bytes);
@@ -2848,6 +2893,28 @@ U0 HcParseProgram() {
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
                     I64 g_init_pos = g_hc_tok_pos; // start of the initializer expression
+                    if (g_is_arr && !g_is_ptr && g_hc_tok == TOK_LBRACE) {
+                        // Array initializer list: Type name[N] = { e0, e1, ... };
+                        HcLexNext(); // eat '{'
+                        U64 g_base = *(U64*)g_slot; // array cell -> element base
+                        I64 gi = 0;
+                        while (g_hc_tok != TOK_RBRACE && g_hc_tok != TOK_EOF && gi < g_count) {
+                            I64 gev = 0;
+                            I64 gflt = 0;
+                            I64 gneg = 0;
+                            if (g_hc_tok == TOK_MINUS) { gneg = 1; HcLexNext(); }
+                            if (g_hc_tok == TOK_FLOAT) { gev = g_hc_tok_val; gflt = 1; HcLexNext(); }
+                            else if (g_hc_tok == TOK_NUMBER) { gev = g_hc_tok_val; HcLexNext(); }
+                            else if (g_hc_tok == TOK_STRING) { gev = g_hc_tok_val; HcLexNext(); }
+                            else break;
+                            if (gneg) { if (gflt) gev = gev ^ (1 << 63); else gev = -gev; }
+                            HcStoreElem(g_base, gi, gev, g_elem_bytes);
+                            gi++;
+                            if (g_hc_tok == TOK_COMMA) HcLexNext();
+                            else break;
+                        }
+                        if (g_hc_tok == TOK_RBRACE) HcLexNext();
+                    } else {
                     I64 g_neg = 0;
                     if (g_hc_tok == TOK_MINUS) {
                         g_neg = 1;
@@ -2881,6 +2948,7 @@ U0 HcParseProgram() {
                             g_skip++;
                         }
                     }
+                    } // end non-array initializer
                 }
                 if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
                 continue;
