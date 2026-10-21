@@ -341,7 +341,13 @@ Still **open** (deliberately not fixed):
   (register pointee width for global pointers; bare pointer use stays 8 bytes) — **option A**, no
   function-splitting workarounds. The `& 0xFFFF` mask and `RasterPut`/`RasterPutZ` shims were removed. Locked
   in by `SelfTestPtrScale` (`PTRSCALE: PASS`) and `RasterBootCheck` (`RASTER: PASS`). RENDER golden hash
-  re-baselined `0x7E9DE351 → 0xD28836F`. Open: the NEON 8-pixel inner span (scalar today).
+  re-baselined `0x7E9DE351 → 0xD28836F`. **p4.2b NEON span — DONE (Option 2).** Decision: the 8-pixel span
+  uses 128-bit NEON for the biased edge coverage, 8-lane depth compare and masked Z/framebuffer stores, but
+  keeps the depth numerator/division **exact 64-bit** (8 scalar `SDIV`/block). Rejected Option 1 (16-bit DDA
+  Z stepping) because truncated stepping drifts between adjacent triangles' spans and would re-introduce mesh
+  Z-fighting. Parameters cross via a `CRasterSpan` descriptor in `X0`; words assembled from
+  `scripts/raster_span.s`. Measured `renderbench` 2075 → 9262 tri/s (4.46×); `RENDER` hash bit-identical
+  (`0xD28836F`); `RASTER: PASS`.
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.

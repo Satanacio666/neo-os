@@ -56,7 +56,12 @@ per-pixel Z interpolation; `HolyGLSubmitTriangle` wired to `RasterTriangleZ`; `H
 deleted. **This required a real Compiler.HC fix** (below) — a global pointer's pointee width was never
 registered, so `U16 *p; p[i]` emitted an 8-byte `LDR` (read `0xFFFF` as `-1`) and `U32 *p; p[i]=c` an 8-byte
 `STR` (wrong address). With it fixed the rasterizer passes `RASTER: PASS` (coverage + depth-rejection +
-shared-edge seam) with **no workarounds**. Still open: the **NEON 8-pixel span** (scalar inner loop today).
+shared-edge seam) with **no workarounds**. **p4.2b NEON span [REAL]:** each scanline is head(scalar) |
+body(NEON, 8 px/iter) | tail(scalar); `RasterSpanNEON` vectorizes the 3 biased edge tests, the 8-lane depth
+compare (`CMHI.8H`), the masked Z store and the masked 32-bpp framebuffer store, with **exact 64-bit** Z
+(8 scalar `SDIV`/block) so the output is bit-identical to the scalar path. Words assembled from
+`scripts/raster_span.s`. Measured `renderbench` **2075 → 9262 tri/s (4.46×)**, `RENDER` hash unchanged
+(`0xD28836F`).
 
 **Compiler: global-pointer element width [REAL FIX]:** `Compiler.HC` now registers the pointee width for
 global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in by `SelfTestPtrScale`

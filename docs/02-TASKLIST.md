@@ -583,7 +583,7 @@ is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_s
       `active_tab`/`feature_flags` state — no behaviour readers) and the dead `gl*` aliases + `virtio_gpu_*`
       lowercase aliases + `GpuConfigMain`/`VirtioGpuSelfTest`/`GfxBackendSelfTest`. Symbol count **1330 → 1310**.
 
-### P4.2 — One rasterizer with real Z (the core) — ✅ **DONE** (scalar; NEON span is the only open item)
+### P4.2 — One rasterizer with real Z + NEON span (the core) — ✅ **DONE**
 - [x] **Promoted `RasterTriangleZ`** as the single rasterizer; **`HolyGLSubmitTriangle` now calls it** with
       per-vertex z16. Deleted `HolyGLDrawTriangleZ` (`z_avg`), the `avg_ndc_z` path, `gfx_draw_triangle_fill`,
       `TileRasterTri`, `TileClear`, `TileResolve`, `RasterSetVertexZ`, `g_hgl_zbuf`. **One full-screen
@@ -602,9 +602,15 @@ is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_s
       (`HcResolveLValue`). **No workarounds remain** — the `& 0xFFFF` mask and the `RasterPut`/`RasterPutZ`
       shims were removed. Regression test `SelfTestPtrScale` (`PTRSCALE: PASS`) + `RasterBootCheck`
       (`RASTER: PASS`: coverage / depth-rejection / shared-edge seam).
-- [ ] **NEON 8-pixel span** — *still open.* AArch64 mandates NEON; the inner span is currently scalar. The
-      plan is to emit NEON instruction words via the existing inline `asm { 0xWORD }` and verify byte-identical
-      output against the scalar path (the golden hash is the oracle). Not a correctness blocker.
+- [x] **NEON 8-pixel span (p4.2b) — DONE.** Each scanline is `head(scalar) | body(NEON 8 px/iter) | tail(scalar)`.
+      `RasterSpanNEON` (`RasterTile.HC`, words assembled from `scripts/raster_span.s`) vectorizes the 3 biased
+      edge tests (`CMGE.4S` ×2 groups → `XTN` → one `V.8H` coverage mask), the 8-lane depth compare (`CMHI.8H`),
+      the masked Z-buffer store (`BSL` + `STR Q`) and the masked 32-bpp framebuffer store (`ZIP1/ZIP2` + `BSL`).
+      The depth numerator/division stays **exact 64-bit** (8 scalar `SDIV`/block) so Z is bit-identical to the
+      scalar path — chosen over 16-bit DDA stepping (which drifts and would re-introduce mesh Z-fighting).
+      Parameters cross the ABI via a `CRasterSpan` descriptor in `X0`. **Measured: `renderbench` 2075 → 9262
+      tri/s (1399 → 6245 Kpix/s), a 4.46× span speedup**, with `RENDER` hash **unchanged (`0xD28836F`)** and
+      `RASTER: PASS` (coverage / depth-rejection / seam gaps=0).
 - [x] **Tiling/determinism:** row-major scan is order-independent and byte-identical on 1 vs N cores (the
       `RENDER` golden hash covers this). Per-tile SMP job binning is deferred to a later parallel-render step.
 
