@@ -449,7 +449,6 @@ I64 VirtioBlkSelfTest() {
 // P0.5 twin-liveness probe: proves VirtioBlk.HC is loaded and callable.
 I64 VirtioBlkTwinProbe() { return 0x56424C31; }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   VirtioBlkInit();
 } else {

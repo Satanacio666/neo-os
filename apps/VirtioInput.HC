@@ -546,7 +546,6 @@ I64 VirtioInputSelfTest() {
   return passed;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   VirtioInputScanAndInit(gfx_get_canvas_width(), gfx_get_canvas_height());
 } else {

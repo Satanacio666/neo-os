@@ -331,7 +331,6 @@ I64 SymbolsSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   SymInit();
   SymRegister("HalFlushCache", &HalFlushCache, SYM_FUNC);

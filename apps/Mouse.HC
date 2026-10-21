@@ -339,7 +339,6 @@ U0 mouse_draw_cursor_front() {
   MouseDrawCursorFront();
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   MouseInit(gfx_get_canvas_width(), gfx_get_canvas_height());
 } else {

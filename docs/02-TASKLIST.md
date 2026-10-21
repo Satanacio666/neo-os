@@ -370,6 +370,29 @@ recovery). Memory is *discovered* (already read from the UEFI memory map) and ev
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P3, 02-PRIORITY-PLAN P3, P2-P6-MIGRATION-SPECS §7, 01-VERIFIED-TRUTH §2.2)`
 
+### P3 guardrails (LOCKED — apply to every sub-step below)
+1. **Interrupt-safe JIT & allocator critical sections (P3.4/P3.5/P3.8).** Once `CNTV_CTL_EL0` is armed and
+   preemption is live, a timer IRQ can fire mid-`CompilerCompileAndRun` or mid-`kmalloc`. `KHeap.HC`,
+   `Symbols.HC` and the JIT emitter must guard all mutations with an explicit **IRQ-mask / spinlock** primitive
+   (`DAIFSet`/`DAIFClr` for the local core; `LDXR`/`STXR` for SMP), **or** preemption must be deferred while a
+   task holds the compiler/heap lock. No mutation path may run unguarded with IRQs unmasked.
+2. **Full trap-frame context switching on preemption (P3.4/P3.5).** `cpu_switch_context`'s callee-saved save
+   (`X19–X30`, `SP`, `D8–D15`) is correct for *voluntary* `TaskYield()` (the compiler knows `X0–X18` are dead).
+   For *asynchronous timer preemption*, the IRQ vector already pushes the full volatile frame (`X0–X30`,
+   `ELR_EL1`, `SPSR_EL1`, and `Q0–Q31`); the preemptive switch must transition **through that IRQ frame** or
+   switch `SP_EL1` in the IRQ epilogue so `X0–X18`/`D0–D7` are never clobbered mid-expression.
+3. **Sovereign handover in P3.8 (LOCKED — the C owner is frozen at handover).** `Symbols.HC` ingests the seed
+   symbols from the C bootstrap table into its unified 1024-bucket table, then SIC-patches `symbols_register`,
+   `symbols_lookup`, `symbols_is_func`, `symbols_is_var`, `symbols_var_cell`, `symbols_sic_cell`. `KHeap.HC`
+   initializes its free list strictly **above** the C seed's high-water mark (from the UEFI memory map via
+   `boot_probe_memory`), then SIC-patches `kmalloc`/`kfree`; `KHeapFree` treats any pointer **below** that
+   high-water mark as a **pinned bootstrap block** (no-op / route to seed) so freeing early-boot structures never
+   trips a false `HEAP_CANARY` panic. **The "C stays the runtime owner" alternative is OFF THE TABLE.**
+4. **BSOD vs. REPL recovery boundary (P3.6).** Classify faults by `ELR_EL1` in `ExceptionsHandleSync`: a fault
+   inside a user REPL expression / JIT task unwinds cleanly to the shell prompt; a fault inside a core kernel
+   range (`Sched.HC`, `KHeap.HC`, `Gic.HC`) triggers `ExceptionsRenderBsod` with full register, symbol+offset and
+   assembly-instruction dumps.
+
 **Current state (verified).** Timer is a pure software tick (`TimerTick()` just increments `g_timer.system_ticks`,
 `Timer.HC:81`); `TimerInit` never writes `CNTP/CNTV_TVAL_EL0` or `CNTP_CTL_EL0`. `GicInit` programs the distributor
 but **no handler is registered at boot** and interrupts are masked (`disable_interrupts()` in `ExceptionsInit`,
@@ -440,14 +463,20 @@ both `HalPlatform.HC:37` and `Timer.HC:13`.
 - [ ] Spinlocks: verify `smp_spin_lock` uses `LDXR/STXR` + `wfe`/`sev` (`smp_entry.S:56`). *(Refs: Linux arm64
       memory-model; Arm "Software Synchronization Primitives in A64".)*
 
-### P3.8 — Allocator & symbol-table unification — ⬜
-- [ ] **Decision spike first.** The C seed allocator/symbol table is the *bootstrap floor* (the compiler needs
-      them before any `.HC` runs — P2's whole point). Recommendation: keep the C seed as the bootstrap, and make
-      the `.HC` `KHeap`/`Symbols` the **runtime owner** via the same **SIC hot-patch** used for RedSea/Virtio in
-      P2 (`kmalloc`/`kfree`/`symbols_*` resolve to the `.HC` implementations once they load). Alternative
-      (simpler, less sovereign): keep the C table as the single owner and delete the `.HC` duplicates.
-- [ ] Delete the duplicate structures on the losing side (`HEAP_CANARY`/`CHeapBlock` dup; the 256-bucket vs
-      1024-bucket table). Port `SymCanonicalMatch`/Pascal↔snake helpers to whichever table wins.
+### P3.8 — Sovereign handover: `.HC` becomes the sole runtime owner — ⬜ **(LOCKED — no alternative)**
+The C seed allocator/symbol table is the *bootstrap floor* (the compiler needs them before any `.HC` runs). At a
+single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC hot-patch, and the C seed is
+**frozen** — it is never again the runtime owner.
+- [ ] **Symbols.HC:** ingest the seed symbols from the C bootstrap table into the unified **1024-bucket** table,
+      then SIC-patch `symbols_register`, `symbols_lookup`, `symbols_is_func`, `symbols_is_var`,
+      `symbols_var_cell`, `symbols_sic_cell` → `Symbols.HC`.
+- [ ] **KHeap.HC:** init the free list strictly **above** the C seed high-water mark (UEFI map via
+      `boot_probe_memory`), then SIC-patch `kmalloc`/`kfree` → `KHeap.HC`.
+- [ ] **Pinned bootstrap blocks:** in `KHeapFree`, any pointer **below** the seed high-water mark is a pinned
+      bootstrap block → no-op / route to seed (never a false `HEAP_CANARY` panic).
+- [ ] Freeze the C seed allocator/table at the moment handover completes; delete the losing duplicate structures
+      (`HEAP_CANARY`/`CHeapBlock` dup; the 256- vs 1024-bucket table). Port `SymCanonicalMatch`/Pascal↔snake
+      helpers into `Symbols.HC`.
 
 ### P3.9 — Verify — ⬜
 - [ ] **Exit — MET when:** a **hardware timer IRQ fires** and drives the tick; **preemptive** scheduling works

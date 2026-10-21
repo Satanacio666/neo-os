@@ -301,7 +301,6 @@ I64 ExceptionsSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   ExceptionsInit();
 } else {

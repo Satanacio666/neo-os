@@ -190,6 +190,15 @@ U0 SelfTestInclude() {
     SelfTestCompare("include_vfs", CompilerCompileAndRun("#include \"__inc1.HC\"\ng_inc + 2;"), 7);
 }
 
+// P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
+// hard assertions are promoted to pass/fail as each capability lands
+// (P3.4 / P3.6 / P3.7).
+U0 SelfTestKernel() {
+    doldoc_printf("KERNEL: timer_freq=%lld ticks=%lld cores=%lld exc=%lld recovered=%lld panics=%lld\n",
+                  TimerGetFrequency(), TimerGetTicks(), SmpGetCoreCount(),
+                  g_exc.total_exceptions, g_exc.recovered_exceptions, g_exc.panic_count);
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -302,6 +311,7 @@ U0 SelfTestRun() {
     SelfTestSymbols();
     SelfTestHalCache();
     SelfTestFs();
+    SelfTestKernel();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

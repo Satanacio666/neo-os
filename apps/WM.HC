@@ -1069,7 +1069,6 @@ U0 WMEventLoop() {
     uart_puts("[WM] Exited WMEventLoop while loop\n");
 }
 
-I64 g_kernel_booting;
 if (!g_kernel_booting) {
     WMMain();
 }

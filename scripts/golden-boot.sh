@@ -81,6 +81,13 @@ else
         echo "  [FAIL] fs round-trip: ${fline:-<none>} (want PASS)"
         fail=1
     fi
+    kline="$(printf '%s\n' "$out" | grep -a 'KERNEL: ' | tail -1)"
+    if printf '%s' "$kline" | grep -aq 'KERNEL:'; then
+        echo "  [PASS] $kline"
+    else
+        echo "  [FAIL] kernel report: ${kline:-<none>} (want KERNEL: line)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

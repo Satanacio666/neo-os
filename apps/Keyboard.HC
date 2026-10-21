@@ -298,7 +298,6 @@ I64 keyboard_getchar() {
     return KeyboardGetChar();
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
     KeyboardInit();
 } else {

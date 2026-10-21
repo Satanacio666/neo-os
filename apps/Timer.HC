@@ -10,7 +10,6 @@ class CTimerState {
 };
 
 CTimerState g_timer;
-U64 g_hal_timer_freq;
 
 U64 TimerQueryHwFreq() {
   U64 frq = __mrs_cntfrq();
@@ -157,7 +156,6 @@ I64 TimerSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   TimerInit(1000);
 } else {

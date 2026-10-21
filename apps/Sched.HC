@@ -363,7 +363,6 @@ U0 top_print_doldoc() {
   SmpPrintDolDoc();
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   SchedInit();
 } else {

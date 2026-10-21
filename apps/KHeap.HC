@@ -462,7 +462,6 @@ I64 KHeapSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   if (!g_kheap_boot_pool) {
     g_kheap_boot_pool = kmalloc(1048576);

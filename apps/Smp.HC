@@ -403,7 +403,6 @@ I64 SmpSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   SmpInit();
 } else {

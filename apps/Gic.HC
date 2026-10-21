@@ -36,8 +36,6 @@ class CGicState {
 };
 
 CGicState g_gic;
-U64 g_hal_gicd_base;
-U64 g_hal_gicc_base;
 
 U64 GicGetDistBase() {
   if (g_hal_gicd_base != 0) return g_hal_gicd_base;
@@ -285,7 +283,6 @@ I64 GicSelfTest() {
   return 1;
 }
 
-I64 g_kernel_booting;
 if (g_kernel_booting) {
   GicInit();
   GicBindVectors();
