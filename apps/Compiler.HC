@@ -3034,6 +3034,69 @@ U0 HcPrescanStructs() {
     HcSafeCopy(g_hc_tok_str, ss, 256);
 }
 
+// #include preprocessor expansion. Recursively splices `#include "file"` targets
+// (read from the RedSea VFS) into one flat source buffer before lexing, matching
+// the C JIT's expand_includes. Returns the expanded length.
+I64 HcExpandIncludes(U8 *src, U8 *out, I64 cap, I64 depth) {
+    if (depth > 8) return 0;
+    I64 si = 0;
+    I64 oi = 0;
+    while (src[si] != 0 && oi < cap - 1) {
+        if (src[si] == 35) {
+            I64 after = si + 1;
+            while (src[after] == 32 || src[after] == 9) after++;
+            if (strncmp(src + after, "include", 7) == 0) {
+                after = after + 7;
+                while (src[after] == 32 || src[after] == 9) after++;
+                if (src[after] == 34) {
+                    after++;
+                    U8 ifn[128];
+                    I64 fi = 0;
+                    while (src[after] != 0 && src[after] != 34 && fi < 127) {
+                        ifn[fi] = src[after];
+                        fi++;
+                        after++;
+                    }
+                    ifn[fi] = 0;
+                    if (src[after] == 34) after++;
+                    U8 *ibuf = kmalloc(131072);
+                    if (ibuf) {
+                        I64 isz = 0;
+                        if (redsea_read_file(ifn, ibuf, 131071, &isz) == 0) {
+                            ibuf[isz] = 0;
+                            oi = oi + HcExpandIncludes(ibuf, out + oi, cap - oi, depth + 1);
+                            // Separate the spliced content from whatever follows on the
+                            // same line so tokens never glue together.
+                            if (oi < cap - 1) { out[oi] = 10; oi++; }
+                        }
+                        kfree(ibuf);
+                    }
+                    // Resume immediately after the closing quote (do NOT skip the rest
+                    // of the line) so `#include "f" code;` keeps `code;`.
+                    si = after;
+                    continue;
+                }
+            }
+        }
+        out[oi] = src[si];
+        oi++;
+        si++;
+    }
+    out[oi] = 0;
+    return oi;
+}
+
+// 1-based line number of a source position (for diagnostics).
+I64 HcLineOf(I64 pos) {
+    I64 ln = 1;
+    I64 i = 0;
+    while (i < pos && i < g_hc_len) {
+        if (g_hc_src[i] == 10) ln++;
+        i++;
+    }
+    return ln;
+}
+
 // ------------------------------------------------------------------------------
 // Compiler Compile & Run Driver (Persistent Monotonic Code Pool)
 // ------------------------------------------------------------------------------
@@ -3046,9 +3109,19 @@ I64 CompilerCompileAndRun(U8 *src) {
     I64 start_idx = g_hc_pool_offset;
     U64 start_addr = g_hc_code + start_idx * 4;
 
-    g_hc_src = src;
+    U8 *use_src = src;
+    U8 *exp_buf = 0;
+    if (strstr(src, "#include") != 0) {
+        exp_buf = kmalloc(262144);
+        if (exp_buf) {
+            HcExpandIncludes(src, exp_buf, 262143, 0);
+            use_src = exp_buf;
+        }
+    }
+
+    g_hc_src = use_src;
     g_hc_pos = 0;
-    g_hc_len = strlen(src);
+    g_hc_len = strlen(use_src);
     HcLexNext(); // Prime lexer
 
     HcPrescanStructs(); // register forward struct/class definitions first
@@ -3056,10 +3129,11 @@ I64 CompilerCompileAndRun(U8 *src) {
     HcParseProgram();
 
     if (g_hc_error) {
-        doldoc_printf("$FG,RED$[COMPILER.HC] internal error (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld defs=%lld code=%lld)$FG$\n",
-                      g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
-                      g_hc_global_count, g_hc_def_count, g_hc_code_len);
+        doldoc_printf("$FG,RED$[COMPILER.HC] internal error at line %lld (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld code=%lld)$FG$\n",
+                      HcLineOf(g_hc_pos), g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
+                      g_hc_global_count, g_hc_code_len);
         g_hc_pool_offset = start_idx;
+        if (exp_buf) kfree(exp_buf);
         return -1;
     }
 
@@ -3069,6 +3143,8 @@ I64 CompilerCompileAndRun(U8 *src) {
     if (emitted_insns > 0) {
         HcFlushCache(start_addr, emitted_insns * 4);
     }
+
+    if (exp_buf) kfree(exp_buf);
 
     if (g_hc_unit_main) {
         g_hc_exec_fn = g_hc_unit_main;
