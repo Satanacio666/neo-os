@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Golden boot regression gate for NeoOS.
+#
+# Boots once, asserts the boot-log invariants, then runs the ENTIRE regression
+# battery with a SINGLE in-guest command (`selftest`, apps/SelfTest.HC) framed by
+# a sentinel — no per-case UART round trips. Self-host stays a second command.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG=/tmp/neo-os-serial.log
 SHOT="${1:-/tmp/golden-boot.png}"
+SENTINEL='<<<NEO-DONE:selftest>>>'
 
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "  [PASS] $1 = $3"; else echo "  [FAIL] $1: expected $2 got $3"; fail=1; fi; }
@@ -24,15 +29,31 @@ check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
 check "C JIT errors"        0 "$(count '\[JIT\] Error')"
 check "unresolved forward refs" 0 "$(count 'unresolved reference')"
 
-echo "== compiler self-test (7/7) =="
-if python3 "$ROOT/scripts/uart-repl.py" 'CompilerSelfTest();' 2>/dev/null | grep -aq 'All 7 / 7 tests passed'; then
-    echo "  [PASS] CompilerSelfTest = 7/7"
+echo "== in-guest SELFTEST (one command, apps/SelfTest.HC) =="
+out="$(python3 "$ROOT/scripts/neo_uart.py" --sentinel "$SENTINEL" --timeout 120 'selftest' 2>/dev/null || true)"
+if ! printf '%s' "$out" | grep -aq "$SENTINEL"; then
+    echo "  [FAIL] selftest did not finish (no sentinel — fault or hang)"
+    grep -aE "internal error|EXC #" "$LOG" 2>/dev/null | tail -2
+    fail=1
 else
-    echo "  [FAIL] CompilerSelfTest != 7/7"; fail=1
+    line="$(printf '%s\n' "$out" | grep -a 'SELFTEST: ' | tail -1)"
+    res="${line##*SELFTEST: }"; res="${res%% *}"       # "74/74"
+    a="${res%%/*}"; b="${res##*/}"
+    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" -ge 74 ] 2>/dev/null; then
+        echo "  [PASS] SELFTEST = $res"
+    else
+        echo "  [FAIL] SELFTEST = ${res:-<none>} (want a==b and a>=74)"
+        printf '%s\n' "$out" | grep -a '\[SELFTEST\] FAIL' | head -5
+        fail=1
+    fi
+    pline="$(printf '%s\n' "$out" | grep -a 'engine parity:' | tail -1)"
+    if printf '%s' "$pline" | grep -aq '0 diff'; then
+        echo "  [PASS] $pline"
+    else
+        echo "  [FAIL] parity: ${pline:-<none>} (want 0 diff)"
+        fail=1
+    fi
 fi
-
-echo "== golden JIT battery =="
-python3 "$ROOT/scripts/run-jit-golden.py" 2>&1 | tail -1 || fail=1
 
 echo "== compiler self-host =="
 "$ROOT/scripts/self-host-test.sh" || fail=1

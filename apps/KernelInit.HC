@@ -50,6 +50,7 @@ U0 KernelInitMain() {
     // Lexer.HC removed: orphan third tokenizer (Compiler.HC uses its own HcLexNext).
     KInitLoad("Compiler.HC");
     g_hc_ready = 1;
+    KInitLoad("SelfTest.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography
     KInitLog("Stage 2: 2D Graphics Canvas & Scalable Vector Typography...");

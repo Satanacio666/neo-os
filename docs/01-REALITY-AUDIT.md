@@ -109,6 +109,7 @@ not in the boot list); C in build = **9** (`boot/main.c`, `boot/seed/{lexer,tabl
 | 6-config 3.0 s time-limited suite | **[SUPERSEDED]** same. |
 | `/BENCH_REPORT.TXT`, `/BENCH_COMPARISON.TXT`, `/BENCH_PROFILER.LOG`, `/BENCH_SPIKES.LOG` | **[MISSING]** planned. |
 | Harness `scripts/*.py` (`test_p8_holygl.py`, `test_p9_compiler.py`, `test_cold_boot.py`, …) | **[GONE]/[MISSING]** current harness is `golden-boot.sh`, `self-host-test.sh`, `p1-parity.sh`, `run-jit-golden.py`, `audit-symbols.sh`, `crash-decode.py`, `screenshot-diff.py`, `check-token-parity.py`. |
+| In-guest regression battery `apps/SelfTest.HC` + `selftest` builtin | **[REAL]** (P0.5) one command runs 74/74 cases in-guest; also reports in-process engine parity (`PARITY: 49/49`, 0 diff, 4 seed-skip). Host drives it via the `<<<NEO-DONE:selftest>>>` sentinel (`scripts/neo_uart.py`). Supersedes the host-side `run-jit-golden.py` battery. Limitation: once per boot (compiler re-entrancy). |
 
 ## H. Ideas/claims that are NOT implemented (research only)
 

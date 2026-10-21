@@ -55,6 +55,114 @@ task.md Phases 8–11)`.
 
 ---
 
+## P0.5 — Test & harness 200% upgrade (one in-guest SelfTest; kill per-command UART) — 🟡 IN PROGRESS (core landed)
+
+**Landed (verified via `golden-boot.sh`):** `apps/SelfTest.HC` runs the whole 74-case battery in-guest
+through the shell builtin `selftest`, printing `SELFTEST: 74/74 PASS`, `PARITY: 49/49` (0 diff, 4 seed-skip)
+and the sentinel `<<<NEO-DONE:selftest>>>`. `scripts/neo_uart.py` is the shared driver that frames on the
+sentinel; `uart-repl.py` is now a shim over it. `golden-boot.sh` boots once and runs the battery with **one**
+command. The legacy host battery (`run-jit-golden.py` + `cases.json`) is superseded (kept for back-compat).
+**Known limitation:** the corpus assumes fresh compiler state — a second `selftest` in one boot is guarded
+(warns, does not run) because recompiling the battery trips a pre-existing `Compiler.HC` re-entrancy bug.
+
+**Why.** The P0 harness works but is not *sovereign*: it tests the OS from the outside, over a frameless
+byte stream, with host-side heuristics, and the tests themselves live on the host. This priority makes the
+OS test *itself* in HolyC and reduces the host to a thin launcher. It is a prerequisite for the P2 hardening
+list (twin-liveness, census, allocator/symbol/FS stress, determinism), which is named there but has no home.
+
+**Diagnosis (verified this session).**
+1. **No framing.** `scripts/uart-repl.py:38-68` and `scripts/run-jit-golden.py:54-68` send one line, then
+   guess completion by polling `/tmp/neo-os-serial.log` for size-stability (`NEO_WAIT` 1.5–2.5 s +
+   `NEO_SETTLE`). Every command pays a fixed wait; output is regex-scraped from a shared log.
+2. **Fragmented.** Five scripts each re-implement connect/send/wait/read: `uart-repl.py`, `run-jit-golden.py`,
+   `self-host-test.sh`, `golden-boot.sh`, `p1-parity.sh`.
+3. **Tests live on the host** (`tests/jit_golden/cases.json` + Python/bash), so adding a case means editing
+   JSON/Python, not dogfooding HolyC.
+4. **Parity costs two boots.** `p1-parity.sh` patches `apps/KernelInit.HC`, rebuilds, boots twice (C-JIT vs
+   flip), and probes ~15 globals one-at-a-time (`p1-parity.sh:222-266`); it cannot compare the two engines
+   in one process.
+5. **Conflicting locking.** `p1-flip-test.sh:56-60` takes `flock` on `/tmp/neo-os-vm.lock`; `p1-parity.sh:37-39`
+   deliberately takes none (the running QEMU inherits the fd) — they cannot be safely co-scheduled.
+6. **Doc drift.** The verification matrix below and the P1 heading say **65/65**; the P0 heading says
+   65/67; `tests/jit_golden/cases.json` actually holds **75** cases (1 `known`), i.e. **74/74** active. Stale
+   numbers undermine the gate and must be corrected here.
+
+**Target architecture.**
+- **`apps/SelfTest.HC`** — one in-guest runner, the single source of truth for tests. Holds the battery as
+  in-source `src`/`expect` pairs, runs each through **both** engines (`CompilerCompileAndRun` and
+  `jit_compile_and_run`) and compares (in-process parity), plus twin-liveness, stress, and determinism.
+  Prints a machine-readable `SELFTEST: <pass>/<total> PASS` summary and per-case lines; `Main()` returns 0/1.
+- **Sentinel framing** — the shell/runner emits `<<<NEO-DONE:<id>>>>` after a command; the host reads to the
+  sentinel instead of guessing. Since the gate collapses to **one** command (`selftest`), framing largely
+  disappears anyway.
+- **One host driver** `scripts/neo_uart.py` (lib) + thin CLI, replacing the duplicated send/wait/read.
+- **One gate** `scripts/golden-boot.sh`: boot once → send `selftest` → assert summary + boot-log invariants.
+
+**Work breakdown.**
+- [x] **P0.5.1 — `apps/SelfTest.HC` skeleton.** ✅ `SelfTestRun()` + `SelfTestCase(name,src,expect)`; `Main()`
+      returns pass/fail; add a `selftest` builtin in `apps/Shell.HC`; print the sentinel summary.
+- [x] **P0.5.2 — Port the 75 battery cases** ✅ from `tests/jit_golden/cases.json` into `SelfTest.HC` verbatim
+      (keep the JSON as the historical record, tag it superseded-by-`SelfTest.HC` in doc 01).
+- [x] **P0.5.3 — In-process parity.** ✅ (49/49 agree, 0 diff, 4 seed-skip) For each case run both engines and assert equal; report
+      `PARITY: <n>/<total>`. Replaces the two-boot `p1-parity.sh` for the battery corpus.
+- [x] **P0.5.4 — Sentinel protocol.** ✅ (`scripts/neo_uart.py`; `uart-repl.py` shim) Emit `NEO-DONE`; make `scripts/neo_uart.py` frame on it; keep
+      `uart-repl.py` as a back-compat shim.
+- [ ] **P0.5.5 — Twin-liveness probes.** `HalTwinProbe`/`VirtioBlkTwinProbe`/`RedSeaTwinProbe`/
+      `SymbolsTwinProbe`/`KHeapTwinProbe` (magic returns); `SelfTest.HC` asserts all five; feeds P2.
+- [ ] **P0.5.6 — Census gate.** `scripts/census-c-runtime.sh` (from P2.0) invoked by the gate; fails on any
+      increase vs a checked-in baseline `tests/census-baseline.txt`.
+- [ ] **P0.5.7 — Symbol audit in-guest.** `symbols_audit()` → 0 undefined / 0 unresolved / 0 late-bound;
+      `SelfTest.HC` asserts; `audit-symbols.sh` becomes a thin wrapper.
+- [x] **P0.5.8 — Rewrite `golden-boot.sh`** ✅ to one `selftest` command + boot-log invariants + a host
+      hang-timeout; fold `self-host-test.sh` and `run-jit-golden.py` in (self-host stays a second command).
+- [ ] **P0.5.9 — Makefile:** `make check` (gate), `make selftest`, `make census`, `make parity`.
+- [ ] **P0.5.10 — Retire legacy:** move the ~45 `scripts/test_*.py` to `scripts/_superseded/` (never delete)
+      and mark them in doc 01.
+
+**Coverage expansion (the "200%").** Beyond the 75 ported cases:
+- [ ] **Negative tests** — assert the compiler *rejects* malformed input (`2 + ;`, unterminated struct, bad
+      token) with a clean error (ties to the P0/P1 syntax-error detection).
+- [ ] **Diagnostics** — assert the reported line number is correct for a multi-line fault.
+- [ ] **F64 depth** — NaN/Inf, `(F64)`/`(I64)` round-trips, mixed int/float chains.
+- [ ] **Types** — 2-D arrays, nested structs, unions, enums, `typedef`, arrays of function pointers.
+- [ ] **Lexer edges** — line/block comments, string escapes, `#define` with arguments.
+- [ ] **Stress** — allocator churn + double-free (canary), 4096-symbol register/lookup, FS
+      create/read/overwrite/delete + sector-boundary reads.
+- [ ] **Determinism** — run the battery twice, hash outputs, assert identical; identical boot symbol dump +
+      heap high-water across repeated boots.
+- [ ] **Per-module parity** — all 34 modules through both engines, in-process.
+
+**File-level change list.**
+| Path | Today | After |
+|---|---|---|
+| `apps/SelfTest.HC` | — | new: the one runner |
+| `apps/Shell.HC` | no `selftest`/`echo` | `selftest` builtin + sentinel emit |
+| `scripts/neo_uart.py` | — | new: shared send/read/sentinel lib |
+| `scripts/uart-repl.py` | duplicated driver | shim over `neo_uart.py` |
+| `scripts/run-jit-golden.py` | host battery | thin: `selftest` → summary |
+| `scripts/golden-boot.sh` | 4 stages | one `selftest` + boot greps |
+| `scripts/self-host-test.sh` | standalone | folded into gate |
+| `scripts/p1-parity.sh` | 2 boots + UART probes | one boot, in-guest parity |
+| `scripts/census-c-runtime.sh` | — | new: baseline-diff gate |
+| `scripts/audit-symbols.sh` | log grep | wrapper over `symbols_audit()` |
+| `tests/jit_golden/cases.json` | source of truth | historical (superseded) |
+
+**Exit (Definition of Done).**
+- `make check` boots once and prints `SELFTEST: N/N PASS`, `PARITY: N/N`, `SELF-HOST: PASS`.
+- Adding a test requires editing **only** `apps/SelfTest.HC`.
+- No host script polls a log for size-stability; all framing is sentinel-based.
+- Legacy `test_*.py` moved out of the golden path; doc 01 updated; the matrix numbers corrected to 74/74.
+
+**Risks / open questions.**
+- A fault inside `SelfTest.HC` hangs the guest → the host timeout is the only backstop; keep it.
+- In-process parity is stricter than today's two-boot parity; expect it to surface real engine divergences
+  (that is the point, but it may block the gate — triage into `known`).
+- Boot-time invariants (32 subsystems, 0 exceptions) can only be grepped host-side — stay in `golden-boot.sh`.
+- `selftest` at boot (auto) or on demand? Auto is stronger but lengthens boot; propose a
+  `g_selftest_on_boot` flag, default on in the gate image.
+
+---
+
 ## P1 — Compiler (self-hosting) — ✅ **COMPLETE** (self-hosts; REPL/`run` on Compiler.HC; battery 65/65; parity PASS)
 
 **Goal:** `apps/Compiler.HC` compiles every `.HC` module *and itself*; C JIT only seeds it.
@@ -293,15 +401,19 @@ bootstrap); keep `boot/uefi` as vendored libc vs port it; the allocator's bootst
 
 | Check | Command | Expected |
 |---|---|---|
-| Golden gate | `scripts/golden-boot.sh` | `GOLDEN BOOT: PASS` |
+| Golden gate (one boot) | `scripts/golden-boot.sh` | `GOLDEN BOOT: PASS` |
+| In-guest battery | inside the gate: `selftest` (one command) | `SELFTEST: 74/74 PASS` |
+| In-guest parity | inside the gate: `selftest` | `PARITY: 49/49`, `0 diff` |
 | Self-host | `scripts/self-host-test.sh` | `SELF-HOST: PASS` |
-| Self-test | UART `CompilerSelfTest();` | `All 7 / 7 tests passed` |
-| Engine parity | `scripts/p1-parity.sh` | `RESULT: PASS — engines agree` |
+| Module parity | `scripts/p1-parity.sh` | `RESULT: PASS — engines agree` |
 | Undefined syms | `scripts/audit-symbols.sh` | 0 undefined, 0 unresolved |
-| JIT battery | `scripts/run-jit-golden.py` | 65/65 (script-mode target) |
+| Legacy battery | `scripts/run-jit-golden.py` | 74/74 (superseded by `selftest`) |
 | Token parity | `scripts/check-token-parity.py` | 71 tokens identical |
 | Visual | `scripts/screenshot-diff.py` | no unexpected diff |
 | Cycles | `rg "shell_run_command" apps/DolDoc.HC apps/WM.HC` | empty |
+
+> The battery is **75 cases** in `tests/jit_golden/cases.json` (1 `known`), i.e. **74 active** — the
+> earlier "65/65" figures in P0/P1 were stale and are corrected here.
 
 ---
 

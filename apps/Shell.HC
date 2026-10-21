@@ -704,6 +704,8 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         } else {
             doldoc_print("Usage: save <filename> <text content>\n");
         }
+    } else if (strcmp(cmd, "selftest") == 0) {
+        SelfTestRun();
     } else if (strncmp(cmd, "hcrun ", 6) == 0) {
         U8 *fname = cmd + 6;
         while (*fname == ' ') fname++;
