@@ -74,6 +74,13 @@ else
         echo "  [FAIL] hal-cache: ${hline:-<none>} (want PASS)"
         fail=1
     fi
+    fline="$(printf '%s\n' "$out" | grep -a 'FSRT: ' | tail -1)"
+    if printf '%s' "$fline" | grep -aq 'PASS'; then
+        echo "  [PASS] $fline (RedSea.HC round-trip)"
+    else
+        echo "  [FAIL] fs round-trip: ${fline:-<none>} (want PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

@@ -2,9 +2,7 @@
 #include "runtime/kheap.h"
 #include "runtime/symbols.h"
 #include "seed/jit_arm64.h"
-#include "runtime/hal_platform.h"
-#include "runtime/virtio_blk.h"
-#include "runtime/redsea.h"
+#include "seed/seed_fs.h"
 #include <stdarg.h>
 
 #define KERNEL_HEAP_DEFAULT (32 * 1024 * 1024)
@@ -158,7 +156,6 @@ int main(int argc, char **argv)
     (void)argv;
 
     aarch64_enable_fp();
-    hal_platform_init();
     printf("[DEBUG BASE] main is at 0x%016llX\n", (unsigned long long)main);
 
     printf("\n======================================================\n");
@@ -303,22 +300,26 @@ int main(int argc, char **argv)
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
-    // 5. Initialize Cold-Boot Storage to Load KernelInit.HC
-    virtio_blk_init();
-    redsea_init(0);
-    symbols_register("redsea_read_file", (void*)redsea_read_file, SYM_FUNC);
-    symbols_register("redsea_write_file", (void*)redsea_write_file, SYM_FUNC);
-    symbols_register("redsea_list_dir", (void*)redsea_list_dir, SYM_FUNC);
+    // 5. Initialize Cold-Boot Storage.
+    //    P2.2/P2.4: the seed reads the OS's own .HC sources from the FAT32 ESP via
+    //    the UEFI firmware's FAT driver. The block device and filesystem are owned
+    //    entirely by the .HC drivers (VirtioBlk.HC / RedSea.HC) — no C HAL, block
+    //    driver or filesystem.
+    if (seed_fs_init() != 0) {
+        printf("[BOOT] WARN: UEFI filesystem (ESP) unavailable; cannot read .HC sources.\r\n");
+    }
+    symbols_register("seed_read_file", (void*)seed_read_file, SYM_FUNC);
+    // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
     symbols_register("symbols_sic_cell", (void*)symbols_sic_cell, SYM_FUNC);
     symbols_register("symbols_var_cell", (void*)symbols_var_cell, SYM_FUNC);
 
-    // 6. Sovereign Handover: Read and Execute apps/KernelInit.HC
-    printf("[BOOT] Sovereign Handover: Loading apps/KernelInit.HC from RedSea disk...\r\n");
+    // 6. Sovereign Handover: Read and Execute holyc/KernelInit.HC (from the ESP)
+    printf("[BOOT] Sovereign Handover: Loading holyc/KernelInit.HC from the ESP...\r\n");
     static char kinit_src[65536];
-    size_t kinit_len = 0;
-    if (redsea_read_file("KernelInit.HC", kinit_src, sizeof(kinit_src) - 1, &kinit_len) == 0) {
+    int64_t kinit_len = seed_read_file("KernelInit.HC", kinit_src, sizeof(kinit_src) - 1);
+    if (kinit_len > 0) {
         kinit_src[kinit_len] = '\0';
         printf("[BOOT] Compiling and Executing KernelInit.HC (%llu bytes)...\r\n", (unsigned long long)kinit_len);
         int64_t res = 0;
@@ -343,7 +344,7 @@ int main(int argc, char **argv)
         }
         printf("[BOOT] Sovereign KernelInit returned: %lld\r\n", (long long)res);
     } else {
-        printf("[FATAL] Could not read KernelInit.HC from RedSea disk!\r\n");
+        printf("[FATAL] Could not read holyc/KernelInit.HC from the ESP!\r\n");
     }
 
     // 7. Halt if HolyC ever yields back to firmware

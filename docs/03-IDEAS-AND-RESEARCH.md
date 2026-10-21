@@ -244,6 +244,112 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
 
 ---
 
+## 9.5 RedSea v2 — the filesystem (design target: the best FS in the world)
+
+`(research this session via Tavily; see "Research basis" below)`
+
+**Why NeoOS can beat ZFS/bcachefs/Btrfs/Hammer2/RedoxFS on the things that matter here**
+- **SASOS** — a file *is* a range of physical memory: `open()` returns a pointer, `mmap` is free, DMA runs
+  straight out of the file buffer (**zero-copy**). No mainstream FS can do this.
+- **No legacy** — design for NVMe/virtio queue semantics, not 1970s platters.
+- **HolyC + JIT** — the on-disk format can be **compiled into accessors at mount** (JIT + zero-copy
+  serialization, cf. Apache Fury / Cornflakes), and programs are HolyC (**exec = JIT**, no ELF loader).
+- **Full-stack ownership** — block driver, FS and VM are ours.
+
+**Architecture — a checksummed, copy-on-write Bε-tree**
+- **Bε-tree** (BetrFS, USENIX FAST '15) instead of a B+tree: write-optimized; batches many random updates into
+  few sequential writes — ideal for SSDs (kills write amplification).
+- **Merkle-tree checksums** (ZFS): each block's checksum lives in its parent pointer; the whole store is a
+  self-validating tree → silent-corruption detection + **self-healing** (rebuild from a snapshot / parity).
+- **Copy-on-write + superblock ring** (ZFS/bcachefs): never overwrite live data; a commit is an atomic switch
+  to the newest valid superblock generation → **never fsck**, **instant snapshots**, crash consistency.
+- **Extents + inline data**: tiny files live inside the inode; big files are extent lists.
+- **Inline compression** (LZ4 default, Zstd optional) + **content-defined chunking** (CDC, Rabin/gear) for
+  **dedup** and casync-style deltas.
+- **Power-loss safety à la littlefs**: two-phase commit on the superblock ring.
+- **Tiering**: RAM disk (already present) + persistent disk; hot data cached in RAM.
+
+**Novel NeoOS twists (the "insane" part)**
+1. **Compiled filesystem** — metadata are HolyC classes; at mount the JIT emits typed accessors → ~0 parse cost.
+2. **Executable filesystem** — programs are HolyC source; "exec" = JIT; no ELF/loader.
+3. **Direct-mapped files** — `open()` = pointer; DMA straight from the file buffer.
+4. **Semantic/typed files** — files carry schemas; the FS indexes fields → queryable, DB-like.
+5. **Self-healing** — checksums + snapshots reconstruct corrupt blocks (optional erasure coding).
+6. **Capability-secured** — SASOS has no rings; capabilities gate file/device access (no ambient authority;
+   cf. CheriOS).
+7. **Whole-OS versioning** — snapshots are the version unit (Git-for-the-OS).
+
+**Format sketch** — superblock ring (N copies: generation + checksum + root) · Bε-tree nodes (keys +
+values/messages + checksums) · inode (type/size/time/extents|inline/xattrs/schema) · extent (logical, len,
+phys, compression, checksum) · chunk store (content hash → phys).
+
+**Guarantees** — atomic commits · O(1) snapshots · no fsck · verify-on-read · self-heal.
+
+**Inspired by every filesystem (what we take from each):**
+
+| FS | What we borrow |
+|---|---|
+| **FAT/exFAT** | Ubiquity — used **only as the boot medium** the firmware reads; not the OS FS. |
+| **ext4** | Extents, delayed allocation, journaling ideas (we replace journal with COW). |
+| **XFS** | Allocation groups; B+tree-indexed free space; scalability. |
+| **NTFS** | B+tree directory indexes; a metadata log; alternate data streams (→ typed xattrs). |
+| **ReFS** | **Integrity streams** (per-block checksums); COW B+tree; "no fsck, ever". |
+| **ZFS** | **Merkle checksums**, COW, **snapshots**, pooled storage, **self-healing**, dedup, ARC cache. |
+| **Btrfs** | COW subvolumes/snapshots; checksums; RAID; transparent compression. |
+| **bcachefs** | **Bε-tree** metadata; checksums; COW; **tiering**; encryption; erasure coding. |
+| **BetrFS** | The **Bε-tree** write-optimization (batch random writes → sequential). |
+| **Hammer2** | Clustering; instant snapshots; COW; dedup. |
+| **APFS** | **Containers (space sharing)**, **clones**, snapshots, encryption-first, COW. |
+| **littlefs** | **Power-loss safety** via two-phase atomic commits; wear leveling. |
+| **F2FS** | Log-structured, flash-friendly allocation. |
+| **Sprite LFS** | Append-only log writes; segment **cleaning** (garbage collection). |
+| **NILFS** | Continuous, cheap snapshots as a first-class feature. |
+| **WAFL (NetApp)** | COW + snapshots designed for storage arrays. |
+| **RedoxFS** | A clean ZFS-inspired design in a microkernel OS (our closest sibling). |
+| **IPFS / casync** | **Content-addressed** chunks; dedup; delta/sync. |
+| **Venti/Fossil** | Content-addressed archival of every version. |
+| **Plan 9 / 9P** | "Everything is a file" — one namespace for FS, devices, network. |
+| **TempleOS RedSeaFS** | The name + the SASOS "files are memory" ethos (done properly). |
+
+**Net design:** ZFS's integrity + bcachefs/BetrFS's Bε-tree + APFS's containers/clones + littlefs's
+power-loss discipline + IPFS's content addressing + Plan 9's unified namespace — **plus three things no
+mainstream FS has**: SASOS zero-copy, JIT-compiled metadata, and executable (HolyC) files.
+
+**Research basis:** BetrFS (betrfs.org, FAST '15), ZFS Merkle integrity, bcachefs (bcachefs.org), Hammer2,
+RedoxFS (Redox OS), littlefs DESIGN.md, APFS clones/snapshots, ReFS integrity streams, Sprite LFS,
+IPFS/casync content addressing, Apache Fury / Cornflakes zero-copy+JIT serialization, CheriOS
+(single-address-space capabilities), SPDK/NVMe multi-queue.
+
+## 9.6 The driver suite — rebuild everything, "10000%" (roadmap)
+
+`(research this session via Tavily; slot into P3/P4/P9)`
+
+| # | Subsystem | Perfect-driver goal | Basis |
+|---|---|---|---|
+| 1 | Block: virtio-blk → NVMe, AHCI, SDHCI, USB-MSC | multi-queue async, zero-copy DMA, polled mode, hotplug | SPDK / NVMe |
+| 2 | Partitioning: GPT/MBR/RedSea | GUIDs, redundant headers, auto-discovery | UEFI/GPT |
+| 3 | Storage mgmt: RAID/erasure, **AES-XTS** encryption, integrity | self-healing, keys never touch disk | ZFS/bcachefs |
+| 4 | Network: virtio-net/e1000 + HolyC TCP/IP | zero-copy, SMP-scalable, modern CC | lwIP ideas |
+| 5 | Input: virtio-input, USB HID, PS/2 | sub-ms latency, multi-touch, hotplug | — |
+| 6 | Display/GPU: virtio-gpu + GOP | 2D/3D accel, vsync, multi-monitor | — |
+| 7 | Interrupts: GICv2/v3 + MSI/MSI-X | per-CPU, priorities, low latency | ARM GICv3 |
+| 8 | PCIe: ECAM enum, BAR/IOMMU | hotplug, DMA remapping | — |
+| 9 | Timers/RTC: ARM generic timer, RTC | nanosecond, tickless, monotonic | — |
+| 10 | Power: PSCI + ACPI | suspend/shutdown/thermal | — |
+| 11 | RNG: virtio-rng + `RNDR` | crypto-grade | — |
+| 12 | Sound: virtio-snd | low-latency mixing | — |
+| 13 | Memory: PMM/buddy, DMA pools, optional MMU/MTE | NUMA-aware, huge pages, SASOS-preserving | — |
+| 14 | Security: capability model (no rings) | fine-grained caps, no ambient authority | CheriOS |
+| 15 | Firmware: UEFI runtime, ACPI, FDT | unified device discovery, de-hardcode MMIO | — |
+| 16 | Console: PL011/16550/framebuffer | one unified console | — |
+| 17 | Watchdog / thermal | auto-recover, throttle | — |
+| 18 | Telemetry: PMU, tracepoints | zero-overhead profiling | — |
+
+**Cross-cutting foundations:** one async/polled I/O model; DMA + IOMMU; capability security; power management;
+zero-overhead telemetry; device discovery (ACPI/FDT) so nothing is hardcoded.
+
+---
+
 ## 10. Things explicitly classified DEAD (do not resurrect)
 
 `(from 00-CONSOLIDATED §3.4, 02-audit §2.5, forensic dossier §2.1)`

@@ -27,11 +27,9 @@ SRCS_C = boot/main.c \
          boot/seed/lexer.c \
          boot/seed/table.c \
          boot/seed/jit_arm64.c \
-         boot/runtime/virtio_blk.c \
-         boot/runtime/redsea.c \
+         boot/seed/seed_fs.c \
          boot/runtime/kheap.c \
-         boot/runtime/symbols.c \
-         boot/runtime/hal_platform.c
+         boot/runtime/symbols.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \
@@ -125,6 +123,9 @@ disk: $(TARGET_EFI)
 	mcopy -i $(DISK_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI
 	@printf "FS0:\r\ncd EFI\\\\BOOT\r\nBOOTAA64.EFI\r\n" > $(BUILD_DIR)/startup.nsh
 	mcopy -i $(DISK_IMG) $(BUILD_DIR)/startup.nsh ::/startup.nsh
+	@echo "Copying HolyC sources to the ESP (::/holyc) for the P2.2 bootstrap..."
+	mmd -i $(DISK_IMG) ::/holyc
+	mcopy -i $(DISK_IMG) apps/*.HC ::/holyc/
 	@echo "Packaging RedSea 32MB disk image from apps/..."
 	python3 scripts/mkredsea.py $(REDSEA_IMG) apps/
 	@echo ">>> Boot disk image ready at $(DISK_IMG) <<<"

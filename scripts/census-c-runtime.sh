@@ -18,10 +18,11 @@ BASELINE="$ROOT/tests/census-baseline.txt"
 
 count() { rg -o --no-filename "\b$1\b" "$ROOT/apps"/*.HC 2>/dev/null | wc -l | tr -d ' '; }
 
-# NOTE (P2.1): hal_flush_cache is deliberately NOT listed — it is owned by
-# apps/HalPlatform.HC, not the C runtime. Only genuine .HC->C calls belong here.
-SYMBOLS="kmalloc kfree symbols_register symbols_lookup \
-redsea_read_file redsea_write_file redsea_list_dir symbols_is_defined \
+# NOTE (P2.1/P2.4): hal_flush_cache, redsea_* and virtio_* are deliberately NOT
+# listed — they are owned by apps/HalPlatform.HC, apps/RedSea.HC and apps/VirtioBlk.HC,
+# not the C runtime. Only genuine .HC->C calls belong here: the seed allocator
+# (kmalloc/kfree), the seed symbol table (symbols_*), and the compiler seed.
+SYMBOLS="kmalloc kfree symbols_register symbols_lookup symbols_is_defined \
 symbols_var_cell symbols_sic_cell symbols_count symbols_unresolved_count \
 jit_compile_and_run"
 

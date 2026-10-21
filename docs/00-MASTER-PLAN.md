@@ -57,7 +57,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P0** | Observability & debug harness | ✅ DONE | — |
 | **P0.5** | Test & harness 200% (in-guest SelfTest) | ✅ DONE — one command runs 80/80 + parity 54/54 + twins 5/5 + 0 unresolved + census | `golden-boot.sh` PASS on one boot |
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
-| **P2** | Minimal bootstrap / fix the bootstrap | 🟡 P2.0 + **P2.1 (HAL) done**; **P2.2 VirtioBlk next** | C = `boot/main.c`+`boot/uefi`+seed+minimal substrate |
+| **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
 | **P3** | Kernel correctness | ⬜ | timer IRQ fires; real scheduler; one allocator/table/HAL |
 | **P4** | Rendering unification (merges) | ⬜ | one `GfxDevice` + one tiled rasterizer + one font |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
@@ -84,6 +84,14 @@ remaining 27 (the "flip", commit `0b2db9d`).
 **The "Stage-2 binary blob" is REMOVED** — it came from the superseded `FUTURE_IMPLEMENTATIONS_MASTER_ROADMAP.md`
 (Task 5.4) and `task.md` (Phase 16); it is the opposite of `.HC` sovereignty and was never requested. Options
 B/C (fold a minimal seed into `boot/main.c`; true self-host from source) remain possible later. **No blob.**
+
+**P2 bootstrap — DONE.** The old "delete the C runtime `.c`" plan was **unreachable**: the C FS/block stack
+(`boot/main.c` → C `redsea.c` → C `virtio_blk.c`) loaded *every* `.HC` module. Fixed by giving the seed the
+`.HC` sources *without* a filesystem of its own: it uses the **UEFI firmware's own FAT driver**
+(`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`) to read them from the FAT32 ESP — no custom FS, no block driver, no blob,
+no custom layout. `main.c` never calls `ExitBootServices`. The C block driver, filesystem and HAL were then
+deleted; `boot/runtime/` is now only `{kheap.c, symbols.c}` (the frozen seed substrate). Seed floor =
+`boot/main.c` + `boot/seed/*` + `boot/runtime/{kheap,symbols}.c` + vendored `boot/uefi/*`.
 
 ---
 

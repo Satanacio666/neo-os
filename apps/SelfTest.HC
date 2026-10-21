@@ -20,6 +20,7 @@ I64 g_selftest_fail = 0;
 I64 g_selftest_known_pass = 0;
 I64 g_selftest_known_total = 0;
 U8  g_halcache_buf[256];   // P2.1.5: static buffer for the HAL cache-coherency check
+I64 g_fs_rt_size = 0;      // P2.5: out-size for the filesystem round-trip check
 I64 g_selftest_done = 0;   // guard: the corpus is a once-per-boot regression check
 I64 g_parity_ok = 0;
 I64 g_parity_total = 0;
@@ -158,6 +159,30 @@ U0 SelfTestHalCache() {
     }
 }
 
+// P2.5: exercise the .HC-owned filesystem (apps/RedSea.HC) directly — write a
+// file, read it back, verify the bytes. The C filesystem is gone (P2.3).
+U0 SelfTestFs() {
+    U8 wbuf[64];
+    U8 rbuf[64];
+    I64 i = 0;
+    while (i < 64) { wbuf[i] = (i * 3 + 1) & 0xFF; rbuf[i] = 0; i++; }
+    redsea_write_file("__p2_rt.HC", wbuf, 64);
+    g_fs_rt_size = 0;
+    redsea_read_file("__p2_rt.HC", rbuf, 64, &g_fs_rt_size);
+    I64 ok = (g_fs_rt_size == 64);
+    if (ok) {
+        i = 0;
+        while (i < 64) { if (rbuf[i] != wbuf[i]) { ok = 0; break; } i++; }
+    }
+    if (ok) {
+        doldoc_print("[SELFTEST] PASS fs round-trip (RedSea.HC)\n");
+        doldoc_print("FSRT: PASS\n");
+    } else {
+        doldoc_printf("[SELFTEST] FAIL fs round-trip (n=%lld)\n", g_fs_rt_size);
+        doldoc_print("FSRT: FAIL\n");
+    }
+}
+
 // The one shell-driven case (save/run/#include) reduced to its compiler essence:
 // write an include target to RedSea, then compile a unit that #includes it.
 U0 SelfTestInclude() {
@@ -276,6 +301,7 @@ U0 SelfTestRun() {
     SelfTestTwins();
     SelfTestSymbols();
     SelfTestHalCache();
+    SelfTestFs();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

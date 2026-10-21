@@ -208,6 +208,17 @@ Each row: the conflicting claims (with sources), the verified reality, and the v
 - **Reality:** **[PARTIAL]** — C is confined to `boot/` but still the live runtime. `(from 01-REALITY-AUDIT §A)`
 - **Verdict:** dual-tier is the current *de facto* state; "C only bootstrap" is the target (P2).
 
+### A29. P2 exit "no project runtime `.c`" vs its own "Irreducible C keeps a block/FS reader"
+- **Exit claim:** `02-TASKLIST` old P2.6 — "`SRCS_C` = `boot/main.c` + `boot/seed/*` + `boot/uefi/*`; 0 `.HC`→C runtime calls".
+- **Irreducible claim:** same doc, "Irreducible C" list — keep "the smallest allocator + symbol table +
+  block/FS reader that `Compiler.HC` needs *before* any `.HC` module can run".
+- **Reality (verified `92a5878`):** the C FS/block stack (`boot/main.c:307-321` → C `redsea.c` → C
+  `virtio_blk.c`) loads *every* `.HC` module, so those C files **cannot** be deleted while modules come from
+  the disk through the C FS. The two claims are mutually exclusive.
+- **Verdict:** the exit claim was wrong. P2 is rewritten (doc 02) around a **bootstrap image** that gives the
+  seed the `.HC` sources without a filesystem; only then can C `redsea.c`/`virtio_blk.c` be deleted. The seed
+  floor is `boot/main.c` + `boot/seed/*` + `boot/runtime/{kheap,symbols}.c` + vendored `boot/uefi/*`.
+
 ---
 
 ## Part B — Superseded / retired claims (do NOT act on)
@@ -257,6 +268,12 @@ Each row: the conflicting claims (with sources), the verified reality, and the v
 13. **Lua permanently excised** (Phase 5) for pure HolyC sovereignty.
 14. **Zero-RAM + double-buffered dual mode**; double-buffer default for tear-free interactive; Zero-RAM opt-in.
 15. **Golden gate green after every change**; self-host gate required too.
+16. **Bootstrap = seed compiler substrate only** (allocate + symbols + compile + obtain `.HC` bytes); the
+    seed has **no FS and no OS block driver**. `.HC` sources reach the seed from the FAT32 ESP via the **UEFI
+    firmware's own FAT driver** (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`; `boot/seed/seed_fs.c`) — **DONE**.
+    C `redsea.c`/`virtio_blk.c`/`hal_platform.c` are **deleted**; `boot/runtime/` = `{kheap.c, symbols.c}`
+    (the frozen seed substrate). C seed = 6 files. `.HC`→C census = 159 (all seed). Rejected alternatives:
+    embedding `.HC` source in the EFI image; a raw TOC'd disk region.
 
 ---
 
@@ -272,6 +289,10 @@ Each row: the conflicting claims (with sources), the verified reality, and the v
 6. **P9 — GPU scope:** software-first with a stubbed seam (recommended) vs GPU-first.
 7. **P10 — MCU target:** RISC-V vs Xtensa; whole-OS vs render/compute offload (offload recommended).
 8. **P7 — Benchmark phase model:** 40 real phases vs relabel; 3.0 s vs 15.0 s per phase.
+9. **P2.2 — Bootstrap source of the `.HC` files:** **RESOLVED — UEFI SimpleFS.** The seed reads the `.HC`
+   sources from the FAT32 ESP via the firmware's own `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` (no custom FS, no
+   block driver, no blob; `main.c` never calls `ExitBootServices`). Rejected: embedding the `.HC` source in
+   the EFI image; a raw TOC'd disk region + seed sector reader.
 
 ---
 
@@ -283,11 +304,11 @@ Still **open** (deliberately not fixed):
 - Preemptive task switching (`sched_tick` stub; `cpu_switch_context` zero callers) — C1.
 - `GetMemoryMap` integration — **now fixed** (P2a); keep for completeness — C3.
 - Hardcoded QEMU `virt` MMIO addresses (needs FDT) — C11.
-- Full C→`.HC` migration (project C = 9 today) — P2/P8. **P2.1 correction (verified `68cc2dc`):** the 22 `.HC`
-  `hal_flush_cache` sites already bind to the `.HC` implementation (the C one registered in `boot/main.c:270`
-  is overwritten and dead); the C `g_hal_*` globals ARE still used by C `virtio_blk.c:42-44` at early boot, so
-  the C HAL can only be reduced to a stub now and deleted at P2.2.
-- RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open.
+- Full C→`.HC` migration — **P2 DONE**: project C = **6** (`boot/main.c`,
+  `boot/seed/{lexer,table,jit_arm64,seed_fs}.c`, `boot/runtime/{kheap,symbols}.c`). The C FS/block/HAL are
+  gone; the seed reads `.HC` from the FAT32 ESP via the UEFI firmware's FAT driver. Remaining C is the frozen
+  seed substrate (allocator + symbol table + compiler).
+- RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.
 - **Compiler:** >8-arg calls hard error; `auto` hang risk; `#include` inside `Compiler.HC`; diagnostics; script-mode gaps (fnptr/F64-struct/forward-struct/cross-unit) — P1.1/P1.2. **New (found by the P0.5 expansion):** 2-D arrays fault (Data Abort); `enum` unsupported (returns -1); function-like `#define` unsupported (returns -1); an unterminated `struct {` is silently accepted (returns 0); a global-`F64` subtraction (`F64 r = 0.0 - q;`) returned 0; recompiling the whole battery twice in one boot trips a re-entrancy fault (guarded in `SelfTest.HC`).

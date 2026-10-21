@@ -3636,8 +3636,9 @@ static void prescan_struct_defs(const char *source) {
     cb_release(&dummy);
 }
 
-// RedSea file reader (registered as a JIT symbol; declared here for the preprocessor).
-extern int redsea_read_file(const char *filename, void *buffer, size_t max_bytes, size_t *out_size);
+// Bootstrap file reader: the UEFI firmware's FAT driver (P2.2). Declared here for
+// the preprocessor's `#include` expansion.
+extern int64_t seed_read_file(const char *name, void *buf, size_t max_bytes);
 
 #define INCLUDE_MAX_DEPTH 8
 #define INCLUDE_BUF_SIZE  (256 * 1024)
@@ -3664,8 +3665,8 @@ static size_t expand_includes(const char *src, char *out, size_t cap, int depth)
                     if (*q == '"') q++;
                     char *fb = (char*)kmalloc(INCLUDE_BUF_SIZE);
                     if (fb) {
-                        size_t len = 0;
-                        if (redsea_read_file(name, fb, INCLUDE_BUF_SIZE - 1, &len) == 0) {
+                        int64_t len = seed_read_file(name, fb, INCLUDE_BUF_SIZE - 1);
+                        if (len > 0) {
                             fb[len] = '\0';
                             o += expand_includes(fb, out + o, cap - o, depth + 1);
                         } else {

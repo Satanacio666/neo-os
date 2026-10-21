@@ -9,11 +9,18 @@ Current verified baseline (HEAD `efc6b81`, tree clean):
 `GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · battery **65/65** · `p1-parity` **PASS**
 (34 modules, engines agree) · `check-token-parity` **71 identical**.
 
-**Repo inventory today:** `apps/*.HC` = **36** (34 loaded by `KernelInit.HC`, plus `TestJitP0.HC` and one other
-not in the boot list); C in build = **9** (`boot/main.c`, `boot/seed/{lexer,table,jit_arm64}.c`,
-`boot/runtime/{virtio_blk,redsea,kheap,symbols,hal_platform}.c`); asm = **4** (`kernel/sched/switch.S`,
+**Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
+C in build = **6** (`boot/main.c`, `boot/seed/{lexer,table,jit_arm64,seed_fs}.c`,
+`boot/runtime/{kheap,symbols}.c`); asm = **4** (`kernel/sched/switch.S`,
 `kernel/arch/aarch64/{vectors,smp_entry,ffi_arm64}.S`). Old docs claimed 51 `.HC` / 43 `.c` / 215 files / 75k LOC
 (inconsistent between `179/71,440` and `215/75,143`) — those counts are stale.
+
+**P2 bootstrap [REAL]:** the C seed has **no filesystem and no block driver**. `boot/main.c` reads the OS's
+own `.HC` sources from the FAT32 ESP via the UEFI firmware's FAT driver (`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`,
+`boot/seed/seed_fs.c`); the block device (`VirtioBlk.HC`) and filesystem (`RedSea.HC`) are `.HC`-owned. C
+`redsea.c`/`virtio_blk.c`/`hal_platform.c` were **deleted**. `boot/runtime/` = `{kheap.c, symbols.c}` (the
+frozen seed allocator + symbol table). `.HC`→C census: **159** (all seed: `kmalloc`/`kfree`/`symbols_*`/
+`jit_compile_and_run`).
 
 ---
 

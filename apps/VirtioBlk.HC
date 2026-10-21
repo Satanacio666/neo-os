@@ -132,17 +132,7 @@ I64 VirtioBlkInit() {
 
   U64 b = g_vblk.mmio_base;
 
-  // If device is already initialized and active in Ring 0 (e.g. by boot loader),
-  // bind capacity and mark active without resetting, keeping C virtqueues intact!
-  U32 cur_st = VBlkMmioRead32(b, VIRTIO_MMIO_STATUS);
-  if (cur_st & VIRTIO_STATUS_DRIVER_OK) {
-    U64 cap_l = VBlkMmioRead32(b, VIRTIO_MMIO_CONFIG);
-    U64 cap_h = VBlkMmioRead32(b, VIRTIO_MMIO_CONFIG + 4);
-    g_vblk.capacity_sectors = (((U64)cap_h << 32) | (cap_l & 0xFFFFFFFF));
-    g_vblk.active = 1;
-    return 0;
-  }
-
+  // P2.4: VirtioBlk.HC owns the device — always reset and initialise our own rings.
   // 1. Reset device
   VBlkMmioWrite32(b, VIRTIO_MMIO_STATUS, 0);
 
@@ -236,9 +226,6 @@ I64 VirtioBlkInit() {
 
 I64 VirtioBlkReadSectors(U64 lba, U32 count, U8 *buf) {
   if (g_vblk.active == 0 || buf == 0 || count == 0) return -1;
-  if (g_vblk.vq_desc == 0) {
-    return virtio_read(lba, count, buf);
-  }
   U64 b = g_vblk.mmio_base;
 
   CVirtioBlkReq *req_ptr = g_vblk.req;
@@ -297,9 +284,6 @@ I64 VirtioBlkReadSectors(U64 lba, U32 count, U8 *buf) {
 
 I64 VirtioBlkWriteSectors(U64 lba, U32 count, U8 *buf) {
   if (g_vblk.active == 0 || buf == 0 || count == 0) return -1;
-  if (g_vblk.vq_desc == 0) {
-    return virtio_write(lba, count, buf);
-  }
   U64 b = g_vblk.mmio_base;
 
   CVirtioBlkReq *req_ptr = g_vblk.req;

@@ -18,15 +18,17 @@ U0 KInitLoad(U8 *fname) {
         doldoc_printf("[KERNEL-INIT] FATAL: Out of memory loading %s\n", fname);
         return;
     }
-    I64 fsize = 0;
-    if (redsea_read_file(fname, kinit_load_buf, 131071, &fsize) == 0) {
+    // P2.2: boot modules come from the FAT32 ESP via the UEFI firmware's file
+    // reader (seed_read_file), not from the C RedSea filesystem.
+    I64 fsize = seed_read_file(fname, kinit_load_buf, 131071);
+    if (fsize > 0) {
         kinit_load_buf[fsize] = 0;
         doldoc_printf("[KERNEL-INIT] Compiling %s (%lld bytes)...\n", fname, fsize);
         I64 res;
         if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }
         doldoc_printf("[KERNEL-INIT] %s compiled, res = %lld\n", fname, res);
     } else {
-        doldoc_printf("[KERNEL-INIT WARN] Could not read %s from RedSea disk!\n", fname);
+        doldoc_printf("[KERNEL-INIT WARN] Could not read %s from the ESP!\n", fname);
     }
     kfree(kinit_load_buf);
 }
