@@ -148,6 +148,7 @@ I64   g_hc_arg_float[32];        // transient: which call args are F64
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
 I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
+I64   g_hc_global_is_ptr[HC_MAX_GLOBALS]; // 1 if the global is a pointer (e.g. FBox *p)
 I64   g_hc_global_is_float[HC_MAX_GLOBALS];
 I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
 I64   g_hc_global_count;
@@ -513,7 +514,7 @@ U64 HcFindFunc(U8 *name) {
 // calls into not-yet-emitted code. Forward references (still pointing at the
 // unresolved trap) are resolved normally.
 U0 HcPublishFunc(U8 *name, U64 addr) {
-    if (!symbols_is_defined(name)) {
+    if (!symbols_is_defined(name) || !symbols_is_func(name)) {
         symbols_register(name, addr, 1);
     }
 }
@@ -1160,6 +1161,28 @@ I64 HcGlobalIsArray(U8 *name) {
     return 0;
 }
 
+// Mark a global as a pointer (Type *name). Needed so `name->member` dereferences
+// the pointer cell before applying the member offset (a struct *value* global
+// instead treats the symbol itself as the struct storage).
+U0 HcRegisterGlobalPtr(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_ptr[i] = 1; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_is_ptr[g_hc_global_count] = 1;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalIsPtr(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_ptr[i];
+    }
+    return 0;
+}
+
 U0 HcRegisterGlobalFloat(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_float[i] = 1; return; }
@@ -1218,6 +1241,7 @@ U0 HcResetGlobalType(U8 *name) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
             g_hc_global_st_idx[i] = -1;
             g_hc_global_is_arr[i] = 0;
+            g_hc_global_is_ptr[i] = 0;
             g_hc_global_is_float[i] = 0;
             g_hc_global_elem_scale[i] = 0;
             return;
@@ -1277,6 +1301,13 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             if (HcGlobalIsArray(ident_name)) {
                 HcEmit(0xF9400000); // ldr x0, [x0] : array cell -> base address
                 cur_mode = 2;
+            } else if (HcGlobalIsPtr(ident_name)) {
+                // Global pointer (possibly to a struct). Dereference the cell once
+                // before indexing / -> member access; leave cur_mode = 0 so the
+                // member/index loops below do NOT dereference a second time.
+                if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
+                    HcEmit(0xF9400000); // ldr x0, [x0]
+                }
             } else if (cur_st_idx >= 0) {
                 cur_mode = 3; // global struct value: the symbol IS its storage
             } else if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
@@ -1434,8 +1465,11 @@ U0 HcParsePrimary() {
         HcSafeCopy(ident_name, g_hc_tok_str, 64);
         HcLexNext();
 
-        // Direct Function Call: ident(arg1, arg2, ...)
-        if (g_hc_tok == TOK_LPAREN && HcFindLocalIdx(ident_name) < 0) {
+        // Direct Function Call: ident(arg1, arg2, ...). If ident names a VARIABLE
+        // (e.g. a global function pointer `I64 fp = &inc;`), fall through to the
+        // indirect-call path below so we load the pointer's value and blr it,
+        // instead of treating the variable's storage cell as the call target.
+        if (g_hc_tok == TOK_LPAREN && HcFindLocalIdx(ident_name) < 0 && !symbols_is_var(ident_name)) {
             I64 is_intr = HcIsIntrinsic(ident_name);
             U64 sic = is_intr ? 0 : (U64)symbols_sic_cell(ident_name);
             HcOpPush(sic);
@@ -1579,9 +1613,11 @@ U0 HcParseUnary() {
             I64 amp_ao = 0;
             I64 amp_flt = 0;
             HcResolveLValue(amp_name, &amp_scale, &amp_ao, &amp_flt);
+            g_hc_expr_float = 0; // address-of yields an integer pointer
             return;
         }
         HcParseUnary();
+        g_hc_expr_float = 0;
         return;
     }
     if (g_hc_tok == TOK_SIZEOF) {
@@ -1607,6 +1643,7 @@ U0 HcParseUnary() {
         }
         if (g_hc_tok == TOK_RPAREN) HcLexNext();
         HcEmitImm64(0, sz_val);
+        g_hc_expr_float = 0; // sizeof yields an integer
         return;
     }
     if (g_hc_tok == TOK_STAR) {
@@ -1649,6 +1686,7 @@ U0 HcParseUnary() {
         HcParseUnary();
         deref_sz = HcOpPop();
         HcEmitLoadSized(0, 0, deref_sz);
+        g_hc_expr_float = 0; // integer-sized dereference load
         return;
     }
     HcParsePrimary();
@@ -2796,7 +2834,11 @@ U0 HcParseProgram() {
                 // self-host compiler indexes and dereferences global arrays wrongly.
                 HcResetGlobalType(fname);
                 if (g_is_arr) HcRegisterGlobalArray(fname);
-                if (g_st_idx >= 0 && !g_is_ptr) HcRegisterGlobalStruct(fname, g_st_idx);
+                if (g_is_ptr) HcRegisterGlobalPtr(fname);
+                // Record the struct type for BOTH a struct value global and a
+                // pointer-to-struct global, so `g.field` and `p->field` resolve
+                // member offsets (HcGlobalIsPtr distinguishes the two at use site).
+                if (g_st_idx >= 0) HcRegisterGlobalStruct(fname, g_st_idx);
                 if (save_t == TOK_TYPE_F64 && !g_is_ptr) HcRegisterGlobalFloat(fname);
                 // Register the array element width for indexing even when the storage
                 // was already allocated by the C JIT (symbols_lookup found it): the
@@ -2893,6 +2935,38 @@ U0 HcParseProgram() {
 }
 
 // ------------------------------------------------------------------------------
+// Forward-struct pre-scan. Walks the whole unit once and registers every
+// `struct`/`class` definition (names, member offsets, sizes) BEFORE the real parse,
+// so a type used before its definition resolves (e.g. `I64 getfx(F *p) {...}`
+// preceding `struct F { I64 x; }`). Mirrors the C JIT's prescan_struct_defs.
+// The lexer state is saved/restored so the caller's parse position is preserved.
+// ------------------------------------------------------------------------------
+U0 HcPrescanStructs() {
+    I64 sp = g_hc_pos;
+    I64 st = g_hc_tok;
+    I64 sv = g_hc_tok_val;
+    I64 stp = g_hc_tok_pos;
+    U8  ss[256];
+    HcSafeCopy(ss, g_hc_tok_str, 256);
+
+    g_hc_pos = 0;
+    HcLexNext();
+    while (g_hc_tok != TOK_EOF) {
+        if (g_hc_tok == TOK_STRUCT || g_hc_tok == TOK_CLASS) {
+            HcParseStructDef();
+        } else {
+            HcLexNext();
+        }
+    }
+
+    g_hc_pos = sp;
+    g_hc_tok = st;
+    g_hc_tok_val = sv;
+    g_hc_tok_pos = stp;
+    HcSafeCopy(g_hc_tok_str, ss, 256);
+}
+
+// ------------------------------------------------------------------------------
 // Compiler Compile & Run Driver (Persistent Monotonic Code Pool)
 // ------------------------------------------------------------------------------
 I64 CompilerCompileAndRun(U8 *src) {
@@ -2908,6 +2982,8 @@ I64 CompilerCompileAndRun(U8 *src) {
     g_hc_pos = 0;
     g_hc_len = strlen(src);
     HcLexNext(); // Prime lexer
+
+    HcPrescanStructs(); // register forward struct/class definitions first
 
     HcParseProgram();
 

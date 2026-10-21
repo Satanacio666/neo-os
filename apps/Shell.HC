@@ -729,7 +729,8 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         if (redsea_read_file(fname, fbuf, 131071, &fsize) == 0) {
             fbuf[fsize] = 0;
             doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%lld bytes)...\n", fname, fsize);
-            I64 res = jit_compile_and_run(fbuf);
+            I64 res;
+            if (g_hc_ready) { res = CompilerCompileAndRun(fbuf); } else { res = jit_compile_and_run(fbuf); }
             doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
         } else {
             doldoc_printf("$FG,RED$File not found on RedSea disk: %s$FG$\n", fname);
@@ -759,7 +760,8 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         }
         kfree(fbuf);
     } else {
-        I64 res = jit_compile_and_run(cmd);
+        I64 res;
+        if (g_hc_ready) { res = CompilerCompileAndRun(cmd); } else { res = jit_compile_and_run(cmd); }
         doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
     }
 

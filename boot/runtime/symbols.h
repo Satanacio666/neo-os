@@ -22,6 +22,8 @@ typedef struct symbol {
 void     symbols_init(void);
 int      symbols_register(const char *name, void *address, symbol_type_t type);
 int      symbols_is_defined(const char *name);
+int      symbols_is_func(const char *name);
+int      symbols_is_var(const char *name);
 void*    symbols_lookup(const char *name);
 symbol_t* symbols_lookup_entry(const char *name);
 symbol_t* symbols_lookup_or_reserve(const char *name, symbol_type_t default_type);

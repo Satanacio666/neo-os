@@ -259,6 +259,8 @@ int main(int argc, char **argv)
     symbols_register("symbols_lookup", (void*)symbols_lookup, SYM_FUNC);
     symbols_register("symbols_register", (void*)symbols_register, SYM_FUNC);
     symbols_register("symbols_is_defined", (void*)symbols_is_defined, SYM_FUNC);
+    symbols_register("symbols_is_func", (void*)symbols_is_func, SYM_FUNC);
+    symbols_register("symbols_is_var", (void*)symbols_is_var, SYM_FUNC);
     symbols_register("symbols_count", (void*)symbols_count, SYM_FUNC);
     symbols_register("jit_eval", (void*)jit_eval, SYM_FUNC);
     symbols_register("jit_compile_and_run", (void*)jit_compile_and_run, SYM_FUNC);

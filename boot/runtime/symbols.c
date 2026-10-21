@@ -142,6 +142,24 @@ int symbols_is_defined(const char *name) {
     return (s && s->address && s->address != (void*)symbols_unresolved_trap);
 }
 
+// 1 if the symbol exists as a FUNCTION with a real (non-trap) address. Used by the
+// HolyC compiler's HcPublishFunc to decide whether a function definition may
+// override an existing symbol: it may override a leaked/forward VARIABLE cell
+// (so a REPL function named like a stray global still binds correctly), but must
+// never clobber a real function the RUNNING compiler provides (self-host safety).
+int symbols_is_func(const char *name) {
+    symbol_t *s = symbols_lookup_entry(name);
+    return (s && s->type == SYM_FUNC && s->address && s->address != (void*)symbols_unresolved_trap);
+}
+
+// 1 if the symbol exists as a VARIABLE with a real address. Used by the HolyC
+// compiler to route `ident(args)` through the indirect (function-pointer) call
+// path when ident names a variable rather than a function.
+int symbols_is_var(const char *name) {
+    symbol_t *s = symbols_lookup_entry(name);
+    return (s && s->type == SYM_VAR && s->address && s->address != (void*)symbols_unresolved_trap);
+}
+
 uint64_t symbols_count(void) {
     return total_symbols;
 }
