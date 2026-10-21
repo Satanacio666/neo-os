@@ -19,6 +19,7 @@ I64 g_selftest_total = 0;
 I64 g_selftest_fail = 0;
 I64 g_selftest_known_pass = 0;
 I64 g_selftest_known_total = 0;
+U8  g_halcache_buf[256];   // P2.1.5: static buffer for the HAL cache-coherency check
 I64 g_selftest_done = 0;   // guard: the corpus is a once-per-boot regression check
 I64 g_parity_ok = 0;
 I64 g_parity_total = 0;
@@ -135,6 +136,26 @@ U0 SelfTestSymbols() {
         doldoc_printf("[SELFTEST] FAIL symbol audit (%lld symbols, %lld unresolved)\n", n, u);
     }
     doldoc_printf("SYMS: %lld symbols, %lld unresolved\n", n, u);
+}
+
+// P2.1.5: exercise the .HC-owned cache-maintenance path directly — write a
+// buffer, flush it via HalFlushCache (apps/HalPlatform.HC), and read it back.
+U0 SelfTestHalCache() {
+    I64 hc_i = 0;
+    while (hc_i < 256) {
+        g_halcache_buf[hc_i] = (hc_i * 7 + 3) & 0xFF;
+        hc_i++;
+    }
+    HalFlushCache((U64)&g_halcache_buf[0], 256);
+    I64 ok = (g_halcache_buf[0] == 3 && g_halcache_buf[10] == 73 && g_halcache_buf[255] == ((255 * 7 + 3) & 0xFF));
+    if (ok) {
+        doldoc_print("[SELFTEST] PASS hal-cache (HalFlushCache coherency)\n");
+        doldoc_print("HALCACHE: PASS\n");
+    } else {
+        doldoc_printf("[SELFTEST] FAIL hal-cache (0=%d 10=%d 255=%d)\n",
+                      g_halcache_buf[0], g_halcache_buf[10], g_halcache_buf[255]);
+        doldoc_print("HALCACHE: FAIL\n");
+    }
 }
 
 // The one shell-driven case (save/run/#include) reduced to its compiler essence:
@@ -254,6 +275,7 @@ U0 SelfTestRun() {
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();
+    SelfTestHalCache();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

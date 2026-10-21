@@ -2,7 +2,6 @@ kmalloc	52
 kfree	45
 symbols_register	29
 symbols_lookup	23
-hal_flush_cache	22
 redsea_read_file	11
 redsea_write_file	7
 redsea_list_dir	2

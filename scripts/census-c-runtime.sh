@@ -18,7 +18,9 @@ BASELINE="$ROOT/tests/census-baseline.txt"
 
 count() { rg -o --no-filename "\b$1\b" "$ROOT/apps"/*.HC 2>/dev/null | wc -l | tr -d ' '; }
 
-SYMBOLS="kmalloc kfree symbols_register symbols_lookup hal_flush_cache \
+# NOTE (P2.1): hal_flush_cache is deliberately NOT listed — it is owned by
+# apps/HalPlatform.HC, not the C runtime. Only genuine .HC->C calls belong here.
+SYMBOLS="kmalloc kfree symbols_register symbols_lookup \
 redsea_read_file redsea_write_file redsea_list_dir symbols_is_defined \
 symbols_var_cell symbols_sic_cell symbols_count symbols_unresolved_count \
 jit_compile_and_run"

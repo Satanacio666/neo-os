@@ -67,6 +67,13 @@ else
         echo "  [FAIL] symbol audit: ${sline:-<none>} (want 0 unresolved)"
         fail=1
     fi
+    hline="$(printf '%s\n' "$out" | grep -a 'HALCACHE: ' | tail -1)"
+    if printf '%s' "$hline" | grep -aq 'PASS'; then
+        echo "  [PASS] $hline (HalFlushCache coherency)"
+    else
+        echo "  [FAIL] hal-cache: ${hline:-<none>} (want PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="
