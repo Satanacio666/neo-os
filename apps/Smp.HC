@@ -52,95 +52,34 @@ U32 smp_get_core_count() {
   return SmpGetCoreCount();
 }
 
-// Per-core isolated worker loops so each secondary core has 100% disjoint SYM_VAR slots
-U0 SmpWorkerLoop1() {
-  g_smp_hc.core_online[1] = 1;
+// One generic per-core worker loop (no copy-paste). Each core owns its own job
+// slot (SmpGetJob) and idles in WFE until the BSP posts a job.
+U0 SmpWorkerLoop(U32 core_id) {
+  CSmpJob *j = SmpGetJob(core_id);
+  g_smp_hc.core_online[core_id] = 1;
   __dmb_ish();
   __sev();
-  CSmpJob *j_c1 = g_smp_hc.jobs + 32;
   while (1) {
-    while (!j_c1->pending) {
+    while (!j->pending) {
       __wfe();
     }
     __dmb_ish();
-    U64 fn_c1 = j_c1->fn;
-    U64 arg_c1 = j_c1->arg;
-    U64 t0_c1 = __mrs_cntvct();
-    if (fn_c1 >= 0x40000000) {
-      fn_c1(arg_c1);
+    U64 fn = j->fn;
+    U64 arg = j->arg;
+    U64 t0 = __mrs_cntvct();
+    if (fn >= 0x40000000) {
+      fn(arg);
     }
-    U64 t1_c1 = __mrs_cntvct();
-    U64 dt_c1 = t1_c1 - t0_c1;
-    if (dt_c1 == 0) dt_c1 = 1;
-    g_smp_hc.core_active_ticks[1] = g_smp_hc.core_active_ticks[1] + dt_c1;
-    g_smp_hc.core_total_ticks[1] = t1_c1 - g_smp_boot_vct;
+    U64 t1 = __mrs_cntvct();
+    U64 dt = t1 - t0;
+    if (dt == 0) dt = 1;
+    g_smp_hc.core_active_ticks[core_id] = g_smp_hc.core_active_ticks[core_id] + dt;
+    g_smp_hc.core_total_ticks[core_id] = t1 - g_smp_boot_vct;
     __dmb_ish();
-    j_c1->pending = 0;
+    j->pending = 0;
     __dmb_ish();
-    j_c1->completed = 1;
-    g_smp_hc.core_heartbeat[1] = g_smp_hc.core_heartbeat[1] + 1;
-    __dmb_ish();
-    __sev();
-  }
-}
-
-U0 SmpWorkerLoop2() {
-  g_smp_hc.core_online[2] = 1;
-  __dmb_ish();
-  __sev();
-  CSmpJob *j_c2 = g_smp_hc.jobs + 64;
-  while (1) {
-    while (!j_c2->pending) {
-      __wfe();
-    }
-    __dmb_ish();
-    U64 fn_c2 = j_c2->fn;
-    U64 arg_c2 = j_c2->arg;
-    U64 t0_c2 = __mrs_cntvct();
-    if (fn_c2 >= 0x40000000) {
-      fn_c2(arg_c2);
-    }
-    U64 t1_c2 = __mrs_cntvct();
-    U64 dt_c2 = t1_c2 - t0_c2;
-    if (dt_c2 == 0) dt_c2 = 1;
-    g_smp_hc.core_active_ticks[2] = g_smp_hc.core_active_ticks[2] + dt_c2;
-    g_smp_hc.core_total_ticks[2] = t1_c2 - g_smp_boot_vct;
-    __dmb_ish();
-    j_c2->pending = 0;
-    __dmb_ish();
-    j_c2->completed = 1;
-    g_smp_hc.core_heartbeat[2] = g_smp_hc.core_heartbeat[2] + 1;
-    __dmb_ish();
-    __sev();
-  }
-}
-
-U0 SmpWorkerLoop3() {
-  g_smp_hc.core_online[3] = 1;
-  __dmb_ish();
-  __sev();
-  CSmpJob *j_c3 = g_smp_hc.jobs + 96;
-  while (1) {
-    while (!j_c3->pending) {
-      __wfe();
-    }
-    __dmb_ish();
-    U64 fn_c3 = j_c3->fn;
-    U64 arg_c3 = j_c3->arg;
-    U64 t0_c3 = __mrs_cntvct();
-    if (fn_c3 >= 0x40000000) {
-      fn_c3(arg_c3);
-    }
-    U64 t1_c3 = __mrs_cntvct();
-    U64 dt_c3 = t1_c3 - t0_c3;
-    if (dt_c3 == 0) dt_c3 = 1;
-    g_smp_hc.core_active_ticks[3] = g_smp_hc.core_active_ticks[3] + dt_c3;
-    g_smp_hc.core_total_ticks[3] = t1_c3 - g_smp_boot_vct;
-    __dmb_ish();
-    j_c3->pending = 0;
-    __dmb_ish();
-    j_c3->completed = 1;
-    g_smp_hc.core_heartbeat[3] = g_smp_hc.core_heartbeat[3] + 1;
+    j->completed = 1;
+    g_smp_hc.core_heartbeat[core_id] = g_smp_hc.core_heartbeat[core_id] + 1;
     __dmb_ish();
     __sev();
   }
@@ -148,9 +87,7 @@ U0 SmpWorkerLoop3() {
 
 U0 SmpSecondaryWorker(U32 unused_core_arg) {
   U32 hw_cid = __mrs_mpidr() & 3;
-  if (hw_cid == 1) SmpWorkerLoop1();
-  if (hw_cid == 2) SmpWorkerLoop2();
-  if (hw_cid == 3) SmpWorkerLoop3();
+  SmpWorkerLoop(hw_cid);
   while (1) {
     __wfe();
   }
@@ -231,6 +168,10 @@ U0 SmpInit() {
 
 I64 SmpDispatch(U32 core_id, U64 fn, U64 arg) {
   if (core_id == 0 || core_id >= SMP_MAX_CORES || fn == 0) return -1;
+  // P3.7: NO silent local-execution fallback. If the target core is offline the
+  // dispatch fails explicitly (single-core mode is a diagnostic, never a hidden
+  // BSP execution that would fake parallelism).
+  if (!g_smp_hc.core_online[core_id]) return -1;
 
   U64 bsp_t0 = __mrs_cntvct();
   CSmpJob *j = SmpGetJob(core_id);
@@ -242,32 +183,10 @@ I64 SmpDispatch(U32 core_id, U64 fn, U64 arg) {
   __dmb_ish();
   __sev();
 
-  // If secondary core is online via PSCI, wait with bounded timeout for mailbox completion
-  if (g_smp_hc.core_online[core_id]) {
-    I64 wait_iters = 0;
-    while (!j->completed && wait_iters < 100000) {
-      __sev();
-      wait_iters++;
-    }
-  }
-
-  // Fallback to local execution if secondary core is offline (single-core QEMU mode)
-  // or did not respond within the bounded timeout window
-  if (!j->completed) {
-    U64 t0 = __mrs_cntvct();
-    if (fn >= 0x40000000) {
-      fn(arg);
-    }
-    U64 t1 = __mrs_cntvct();
-    U64 dt = t1 - t0;
-    if (dt == 0) dt = 1;
-    g_smp_hc.core_active_ticks[core_id] = g_smp_hc.core_active_ticks[core_id] + dt;
-    g_smp_hc.core_total_ticks[core_id] = g_smp_hc.core_total_ticks[core_id] + dt;
-    j->pending = 0;
-    __dmb_ish();
-    j->completed = 1;
-    g_smp_hc.core_heartbeat[core_id] = g_smp_hc.core_heartbeat[core_id] + 1;
-    __dmb_ish();
+  I64 wait_iters = 0;
+  while (!j->completed && wait_iters < 1000000) {
+    __sev();
+    wait_iters++;
   }
 
   U64 bsp_t1 = __mrs_cntvct();
@@ -276,6 +195,8 @@ I64 SmpDispatch(U32 core_id, U64 fn, U64 arg) {
   g_smp_hc.core_active_ticks[0] = g_smp_hc.core_active_ticks[0] + bsp_dt;
   g_smp_hc.core_total_ticks[0] = bsp_t1 - g_smp_boot_vct;
   g_smp_hc.core_heartbeat[0] = g_smp_hc.core_heartbeat[0] + 1;
+
+  if (!j->completed) return -1; // timed out; the job did NOT run
   return 0;
 }
 

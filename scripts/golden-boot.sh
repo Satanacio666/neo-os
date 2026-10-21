@@ -109,6 +109,13 @@ else
         echo "  [FAIL] bsod boundary: ${bline:-<none>} (want BSOD: PASS)"
         fail=1
     fi
+    mline="$(printf '%s\n' "$out" | grep -a 'SMP: ' | tail -1)"
+    if printf '%s' "$mline" | grep -aq 'PASS'; then
+        echo "  [PASS] $mline (secondary-core dispatch)"
+    else
+        echo "  [FAIL] smp dispatch: ${mline:-<none>} (want SMP: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

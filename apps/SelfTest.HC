@@ -242,6 +242,22 @@ U0 SelfTestBsod() {
     }
 }
 
+// P3.7: dispatch a real job to a secondary core and verify it actually ran there
+// (payload written + no silent BSP fallback).
+I64 g_smp_probe_acc = 0;
+U0 SelfTestSmpWorker(U64 arg) {
+    g_smp_probe_acc = arg + 0x1000;
+}
+U0 SelfTestSmp() {
+    g_smp_probe_acc = 0;
+    I64 r = SmpDispatch(1, (U64)&SelfTestSmpWorker, 0x99);
+    if (r == 0 && g_smp_probe_acc == 0x1099) {
+        doldoc_print("SMP: PASS\n");
+    } else {
+        doldoc_printf("SMP: FAIL (r=%lld acc=0x%llX)\n", r, g_smp_probe_acc);
+    }
+}
+
 // P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
 // hard assertions are promoted to pass/fail as each capability lands
 // (P3.4 / P3.6 / P3.7).
@@ -371,6 +387,7 @@ U0 SelfTestRun() {
     SelfTestFs();
     SelfTestSched();
     SelfTestBsod();
+    SelfTestSmp();
     SelfTestKernel();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
