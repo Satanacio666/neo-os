@@ -101,27 +101,89 @@ Routing the shell REPL/`run` through `CompilerCompileAndRun` now yields **65/65*
 
 ---
 
-## P2 — Minimal bootstrap (make everything but the irreducible seed HolyC)
+## P2 — Minimal bootstrap (make everything but the irreducible seed HolyC) — 🟡 IN PROGRESS
 
-**Truth [PARTIAL]:** C is *physically confined* to `boot/` but *functionally live*. The build has 9 project `.c`
-(`boot/main.c`; `boot/seed/{lexer,table,jit_arm64}.c`; `boot/runtime/{kheap,symbols,hal_platform,virtio_blk,redsea}.c`)
-plus the vendored `boot/uefi/*.c` (9) and 5 `.S`. `.HC` modules still call **C** for alloc/symbols/block I/O/FS.
-`(from docs/master/00-MASTER-CONSOLIDATED-PLAN §6 P2, 02-PRIORITY-PLAN P2, P2-P6-MIGRATION-SPECS §7.1)`
+**Objective.** Shrink the C substrate to the *irreducible bootstrap* and make every `.HC` twin the single
+source of truth for its subsystem, so "everything above the seed is HolyC".
 
-**Irreducible C (the true minimal bootstrap):** UEFI entry+GOP+memmap; a compiler to compile `.HC` (seed);
-allocator+symbol table; block driver+FS (to *read* `.HC`). Everything above is already `.HC`.
+**Current truth [PARTIAL]** (verified `c78bbdd`): project C = **9** files
+`boot/main.c`; `boot/seed/{lexer,table,jit_arm64}.c`; `boot/runtime/{kheap,symbols,hal_platform,virtio_blk,redsea}.c`
+(+ vendored `boot/uefi/*.c` ×9, + `boot/uefi/reloc.S`; asm = 5). Live-call census from `apps/*.HC`:
+`kmalloc` 52, `kfree` 45, `symbols_register` 29, `symbols_lookup` 23, `hal_flush_cache` 22,
+`redsea_read_file` 11, `redsea_write_file` 6, `redsea_list_dir` 2, `symbols_is_defined`/`symbols_var_cell`/
+`symbols_sic_cell` 1 each, `jit_compile_and_run` 4 (the seed — stays).
+`(from 00-MASTER-CONSOLIDATED-PLAN §6 P2, P2-P6-MIGRATION-SPECS §7.1, 01-REALITY-AUDIT §A)`
 
-**Work — retire the C runtime by making the `.HC` twins live, least-circular first:**
-- [x] `GetMemoryMap`-derived heap/JIT pool (`7199c3e`).
-- [x] C physically confined to `boot/seed` + `boot/runtime` (`708c92a`, `P2b.1`).
-- [ ] `HalPlatform.HC` live — **finding:** only load-bearing C HAL function is `hal_flush_cache`; the C `g_hal_*`
-      are unused by C. Reduce C HAL to a cache-flush helper.
-- [ ] `VirtioBlk.HC` live (own the virtqueue; stop delegating to C).
-- [ ] `RedSea.HC` live (own the FS; retire `redsea.c`).
-- [ ] `Symbols.HC` live (retire `symbols.c`).
-- [ ] `KHeap.HC` live (retire `kheap.c`) — last, most circular.
-- [ ] Delete each C file once its `.HC` replacement is load-bearing.
-- [ ] **Exit:** C = `boot/main.c` + `boot/uefi/*` + the compiler seed + minimal allocator/symbols/loader.
+**Irreducible C (the target floor):**
+1. `boot/main.c` — UEFI entry, GOP, `GetMemoryMap`, jump into `.HC`.
+2. `boot/seed/*` — the JIT that compiles `Compiler.HC` (retired only at P8, Option C).
+3. `boot/uefi/*` — freestanding libc/syscalls (vendored, not "our" C).
+4. The smallest allocator + symbol table + block/FS reader that `Compiler.HC` needs *before* any `.HC`
+   module can run — to be shrunk as far as self-hosting allows.
+
+**Circularity rule:** a subsystem's C is retired only after its `.HC` twin is load-bearing; twins are
+retired in **reverse dependency order** so nothing depends on a not-yet-live twin.
+
+### P2.0 — Baseline & harness (do first)
+- [ ] Freeze baseline: `golden-boot.sh` PASS, battery 74/74, `SELF-HOST: PASS`, `p1-parity` PASS (`c78bbdd`).
+- [ ] Add **C-call census gate** `scripts/census-c-runtime.sh` — greps `apps/*.HC` for the C-runtime symbols
+      above and fails if any count *increases* during P2 (regression guard).
+- [ ] Add **twin-liveness probes** — a boot-time self-test per twin, callable over UART and asserted in
+      `golden-boot.sh`.
+- [ ] Snapshot `symbols_dump` + heap high-water mark before/after each step for parity.
+
+### P2.1 — HAL: `HalPlatform.HC` owns the platform
+- **Finding:** the only load-bearing C HAL entry called from `.HC` is `hal_flush_cache` (22 sites); the C
+  `g_hal_*` globals are unused by C. `HalPlatform.HC` is loaded (Stage 1) but its flush delegates to C.
+- [ ] Make `HalPlatform.HC` own cache maintenance (`dc civac`/`ic ivau`/`dsb sy`/`isb`) and the `g_hal_*`
+      globals; reduce `boot/runtime/hal_platform.c` to a thin trampoline, then delete it once
+      `Compiler.HC`'s `HcFlushCache` calls the `.HC` path.
+- [ ] Verify: battery 74/74, parity PASS, `hal_flush_cache` C-calls from `.HC` → 0. **Risk:** low.
+
+### P2.2 — VirtioBlk: `VirtioBlk.HC` owns the virtqueue
+- [ ] Port virtqueue setup/notify/poll + read/write from `boot/runtime/virtio_blk.c` into `VirtioBlk.HC`
+      (exists, 13.6 KB, currently delegating); own the descriptor/avail/used rings.
+- [ ] Verify: `redsea_read_file` of a known file returns identical bytes; parity PASS. **Risk:** medium.
+
+### P2.3 — RedSea: `RedSea.HC` owns the filesystem
+- [ ] Port the RedSea directory/sector logic from `boot/runtime/redsea.c` into `RedSea.HC`; retire
+      `redsea_read_file`/`redsea_write_file`/`redsea_list_dir` C-calls from `.HC` (11/6/2 sites).
+- [ ] Verify: `save`/`run`/`cat`/`hcrun` round-trip; self-host PASS. **Risk:** medium.
+
+### P2.4 — Symbols: `Symbols.HC` owns the table
+- [ ] Port `symbols_register`/`lookup`/`lookup_entry`/`lookup_or_reserve`/`is_defined`/`is_func`/`is_var`/
+      `var_cell`/`sic_cell` into `Symbols.HC` (unify the 256 vs 1024 bucket split).
+- [ ] Verify: 0 undefined / 0 unresolved at boot; parity PASS; self-host PASS.
+- **Risk:** high — the compiler uses the table. Keep `symbols.c` until the `.HC` table passes parity.
+
+### P2.5 — KHeap: `KHeap.HC` owns the allocator (last, most circular)
+- [ ] Port `kmalloc`/`kfree` (+ `HEAP_CANARY`/`CHeapBlock`) into `KHeap.HC` (52/45 call sites).
+- [ ] Bootstrap: keep a tiny C bump allocator as the seed arena; switch to `KHeap.HC` once it can allocate.
+- [ ] Verify: no double-free/canary faults under stress. **Risk:** highest (rollback: flag-gated flip).
+
+### P2.6 — Seed minimization & C deletion
+- [ ] Delete each `boot/runtime/*.c` once its twin is live and its census is 0.
+- [ ] Reduce `boot/seed/` to the minimum that still compiles `Compiler.HC` (Option B); Option C deferred to P8.
+- [ ] Update `Makefile` `SRCS_C`; keep `boot/uefi/*` (vendored).
+- [ ] **Exit:** `SRCS_C` = `boot/main.c` + `boot/seed/*` + `boot/uefi/*`; 0 `.HC`→C runtime calls.
+
+### P2 — 200% hardening (make it bullet-proof)
+- [ ] **C-call census = 0** for every retired subsystem, enforced by `scripts/census-c-runtime.sh`.
+- [ ] **Twin-liveness tests** for all five twins, run inside `golden-boot.sh`.
+- [ ] **Allocator stress:** malloc/free churn, fragmentation, exhaustion, double-free (canary) detection.
+- [ ] **Symbol stress:** register/lookup 4096+ names, collisions, redefinition, forward refs.
+- [ ] **FS stress:** create/read/overwrite/delete many files; large files; sector-boundary reads.
+- [ ] **Determinism:** identical boot symbol dump + heap high-water mark across repeated boots.
+- [ ] **Per-module parity:** `p1-parity --per-module` PASS for all 34 modules.
+- [ ] **Docs:** update `01-REALITY-AUDIT`/`00-MASTER-PLAN` to the new C inventory; keep the census gate.
+
+**P2 exit (Definition of Done):**
+- `SRCS_C` has no project runtime `.c` (only `boot/main.c` + `boot/seed/*` + vendored `boot/uefi/*`).
+- Every `.HC` twin is load-bearing; the C-call census is 0 for alloc/symbols/FS/HAL.
+- `golden-boot.sh` PASS (with twin-liveness), battery 74/74, `SELF-HOST: PASS`, `p1-parity` PASS. Commit + bundle.
+
+**Open questions (decide at the P2 boundary):** seed Option B (minimize) vs Option C (true HolyC source
+bootstrap); keep `boot/uefi` as vendored libc vs port it; the allocator's bootstrap-arena design.
 
 ---
 
