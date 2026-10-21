@@ -135,6 +135,15 @@ U32 HalGetUartIrq() {
   return 33;
 }
 
+// P3.2: memory is DISCOVERED from the UEFI memory map (boot_probe_memory), not
+// hardcoded. These getters are the single HAL view of the discovered memory.
+U64 HalGetTotalRam()  { return g_total_ram_bytes; }
+U64 HalGetFreeRam()   { return g_free_ram_bytes; }
+U64 HalGetHeapBase()  { return g_uefi_heap_base; }
+U64 HalGetHeapSize()  { return g_uefi_heap_size; }
+U64 hal_get_total_ram() { return g_total_ram_bytes; }
+U64 hal_get_free_ram()  { return g_free_ram_bytes; }
+
 U0 HalFlushCache(U64 addr, I64 size) {
   if (addr == 0 || size <= 0) return;
   U64 dc_line = addr & ~63;
