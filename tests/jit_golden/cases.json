@@ -366,8 +366,7 @@
       "expect": "0x2A"
     },
     {
-      "name": "known_bare_deref_stmt",
-      "known": true,
+      "name": "bare_deref_stmt",
       "cmds": [
         "I64 v = 7; I64 *q = &v; *q;"
       ],
@@ -489,6 +488,74 @@
         "I64 g_parr[4]; I64 gparw() { g_parr[0] = 3; g_parr[3] = 9; return g_parr[0] + g_parr[3]; } gparw();"
       ],
       "expect": "0xC"
+    },
+    {
+      "name": "auto_decl",
+      "note": "TempleOS/HolyC 'auto' storage class (behaves as I64).",
+      "cmds": [
+        "auto av = 7; av + 1;"
+      ],
+      "expect": "0x8"
+    },
+    {
+      "name": "array_init_global",
+      "note": "Top-level array initializer list.",
+      "cmds": [
+        "I64 ai3[3] = {10, 20, 30}; ai3[0] + ai3[2];"
+      ],
+      "expect": "0x28"
+    },
+    {
+      "name": "array_init_one_elem",
+      "note": "1-element array is still an array (g_has_bracket, not g_count>1).",
+      "cmds": [
+        "I64 aone[1] = {7}; aone[0];"
+      ],
+      "expect": "0x7"
+    },
+    {
+      "name": "array_init_local",
+      "note": "Function-local array initializer list.",
+      "cmds": [
+        "I64 laf() { I64 la3[3] = {4, 5, 6}; return la3[0] + la3[2]; } laf();"
+      ],
+      "expect": "0xA"
+    },
+    {
+      "name": "array_init_f64",
+      "note": "F64 array initializer list stores IEEE-754 bits; 1.5 + 2.5 = 4.0.",
+      "cmds": [
+        "F64 af2[2] = {1.5, 2.5}; af2[0] + af2[1];"
+      ],
+      "expect": "0x4010000000000000"
+    },
+    {
+      "name": "fnptr_indirect_call",
+      "note": "Call through a global function pointer (indirect blr).",
+      "cmds": [
+        "I64 fci(I64 x) { return x + 1; }",
+        "I64 fcp = &fci;",
+        "fcp(41);"
+      ],
+      "expect": "0x2A"
+    },
+    {
+      "name": "forward_struct_ptr",
+      "note": "Forward struct used via pointer before its definition (pre-scan).",
+      "cmds": [
+        "I64 gfsp(F2 *p) { return p->x; } struct F2 { I64 x; }; F2 ff2; ff2.x = 9; gfsp(&ff2);"
+      ],
+      "expect": "0x9"
+    },
+    {
+      "name": "include_vfs",
+      "note": "Compiler.HC #include splices a RedSea file (5 + 2 = 7).",
+      "cmds": [
+        "save __inc1.HC I64 g_inc = 5;",
+        "save __inc2.HC #include \"__inc1.HC\" g_inc + 2;",
+        "run __inc2.HC"
+      ],
+      "expect": "0x7"
     },
     {
       "name": "known_over8_args",

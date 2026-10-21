@@ -20,6 +20,16 @@ check "shell active"        1 "$(count 'DolDocShell active')"
 check "all 32 subsystems"   1 "$(count 'ALL 32 HOLYC SUBSYSTEMS')"
 check "exceptions"          0 "$(count 'Synchronous Exception')"
 check "undefined identifiers" 0 "$(count 'undefined identifier')"
+check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
+check "C JIT errors"        0 "$(count '\[JIT\] Error')"
+check "unresolved forward refs" 0 "$(count 'unresolved reference')"
+
+echo "== compiler self-test (7/7) =="
+if python3 "$ROOT/scripts/uart-repl.py" 'CompilerSelfTest();' 2>/dev/null | grep -aq 'All 7 / 7 tests passed'; then
+    echo "  [PASS] CompilerSelfTest = 7/7"
+else
+    echo "  [FAIL] CompilerSelfTest != 7/7"; fail=1
+fi
 
 echo "== golden JIT battery =="
 python3 "$ROOT/scripts/run-jit-golden.py" 2>&1 | tail -1 || fail=1

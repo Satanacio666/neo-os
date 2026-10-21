@@ -1590,6 +1590,11 @@ U0 HcParsePrimary() {
         }
         return;
     }
+
+    // Any other token (a binary operator, ';', ')', '}', EOF, ...) cannot begin a
+    // primary expression. Flag a hard error instead of silently emitting nothing,
+    // which would let malformed input like `2 + ;` miscompile.
+    g_hc_error = 1;
 }
 
 U0 HcParseUnary() {
@@ -3042,7 +3047,21 @@ I64 HcExpandIncludes(U8 *src, U8 *out, I64 cap, I64 depth) {
     I64 si = 0;
     I64 oi = 0;
     while (src[si] != 0 && oi < cap - 1) {
+        // A '#' starts a directive ONLY as the first non-whitespace char on its
+        // line. This prevents a '#include' that appears inside a string literal
+        // (e.g. Compiler.HC's own `strstr(src, "#include")`) from being expanded.
+        I64 dir_ok = 0;
         if (src[si] == 35) {
+            I64 ls = si;
+            while (ls > 0 && src[ls - 1] != 10) ls--;
+            dir_ok = 1;
+            I64 q = ls;
+            while (q < si) {
+                if (src[q] != 32 && src[q] != 9) { dir_ok = 0; break; }
+                q++;
+            }
+        }
+        if (src[si] == 35 && dir_ok) {
             I64 after = si + 1;
             while (src[after] == 32 || src[after] == 9) after++;
             if (strncmp(src + after, "include", 7) == 0) {
