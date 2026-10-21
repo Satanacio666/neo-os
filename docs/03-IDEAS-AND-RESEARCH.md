@@ -377,6 +377,32 @@ IPFS/casync content addressing, Apache Fury / Cornflakes zero-copy+JIT serializa
 **Cross-cutting foundations:** one async/polled I/O model; DMA + IOMMU; capability security; power management;
 zero-overhead telemetry; device discovery (ACPI/FDT) so nothing is hardcoded.
 
+### 9.7 P3 implementation decisions & references (research, 2026-10)
+The *chosen* implementations for the P3 steps (doc 2 §P3), with sources.
+- **GIC — stay GICv2 for P3.** QEMU `virt` under TCG defaults to **GICv2** (`GICD 0x08000000`, `GICC 0x08010000`),
+  which is exactly what `Gic.HC` already programs; GICv3/ITS is a later platform item. Refs: QEMU `virt`
+  docs / libvirt commit "Use GICv2 for aarch64/virt TCG guests"; Löwenware "AArch64 GIC and timer interrupt".
+- **Timer IRQ — arm the EL1 virtual timer.** `CNTV_TVAL_EL0 = freq/hz`, `CNTV_CTL_EL0 = 1`, PPI **27** on QEMU
+  virt (`HalPlatform` already has `irq_timer = 27`); the EL1 *physical* timer is INTID **30**. Re-arm `TVAL` each
+  tick (level-sensitive). Refs: "AArch64 Programmer's Guide: Generic Timer"; Löwenware.
+- **Context switch — save callee-saved x19-x30 + SP + D8-D15.** The existing `kernel/sched/switch.S` already does
+  this (AArch64 AAPCS64 callee-saved set); it just needs a caller (the tick/scheduler). Refs: CS3210 Lab 4
+  (preemptive multitasking on AArch64); Harvard CS161 "Kernel yields"; Waterloo CS452 lec04.
+- **Scheduler — round-robin within priority bands**, quantum ~10–50 ms, no starvation. Refs: osdev
+  "Scheduling Algorithms"; Round-robin scheduling (Wikipedia).
+- **Exceptions — derive recoverable-vs-panic from `ELR_EL1`/`SPSR_EL1`, not a hardcoded flag.** `ESR_EL1` EC
+  (bits 31:26) classifies the fault; `FAR_EL1` holds the faulting address; `ELR_EL1` the return PC; `SPSR_EL1`
+  the pre-exception PSTATE. Kernel (EL1) faults must reach the BSOD; only JIT-pool faults are recoverable.
+  Refs: osdev "AArch64 Exceptions"; Wenbo Shen "AArch64 Exception Handling".
+- **SMP — PSCI `CPU_ON`, per-core stacks/queues, cache coherency, `wfe`/`sev` idle.** Secondary cores must have
+  identical `SCTLR/TCR/MAIR/TTBR0/VBAR` and shared data cleaned before handoff; prefer PSCI over spin-table.
+  Refs: Bootlin "SMP bring-up on ARM SoCs"; optee_os "aarch64 MMU setup sequence"; Zephyr SMP docs.
+- **Spinlocks — `LDXR/STXR` (or `LDAXR/STLXR`) + `wfe`/`sev`.** Load/store-exclusive with acquire/release
+  semantics; `wfe` to back off. Refs: Linux arm64 memory-model; Arm "Software Synchronization Primitives in A64";
+  Microsoft "The AArch64 processor, part 14: Barriers".
+- **Memory discovery — UEFI `GetMemoryMap` (already used), not hardcoded.** `boot_probe_memory()` sizes the heap
+  and JIT pool from `EfiConventionalMemory`. Ref: UEFI spec §7 Boot Services.
+
 ---
 
 ## 10. Things explicitly classified DEAD (do not resurrect)

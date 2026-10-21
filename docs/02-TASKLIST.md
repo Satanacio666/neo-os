@@ -361,19 +361,99 @@ subsystem is compiled at runtime by the self-hosted HolyC compiler.
 
 ---
 
-## P3 — Kernel correctness (make it a real kernel)
+## P3 — Kernel correctness (make it a real kernel) — ⬜ **NEXT** (plan complete; see doc 03 §9.7 for research/refs)
+
+**Goal.** Turn the cooperative, effectively single-core substrate into a real kernel: **one** allocator, **one**
+symbol table, **one** HAL, a **timer IRQ that actually fires**, a **preemptive** scheduler that uses the
+assembled context switch, working SMP with per-core queues, and a **BSOD for kernel faults** (not a silent
+recovery). Memory is *discovered* (already read from the UEFI memory map) and every global has exactly one owner.
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P3, 02-PRIORITY-PLAN P3, P2-P6-MIGRATION-SPECS §7, 01-VERIFIED-TRUTH §2.2)`
-- [ ] **Allocator:** one allocator (C `kheap.c` live; `KHeap.HC` `KMalloc/KFree` dead). Remove `HEAP_CANARY`/`CHeapBlock` dup.
-- [ ] **Symbols:** one table (C `symbols.c`, 1024 buckets, live; `Symbols.HC` 256, fallback). Port `SymCanonicalMatch`/Pascal↔snake helpers in.
-- [ ] **HAL:** one set of `g_hal_*` globals; add missing platforms + `g_hal_timer_freq`.
-- [ ] **Timer:** arm `CNTP_TVAL_EL0`/`CNTV_TVAL_EL0`; register timer IRQ (`GicRegisterHandler(27, TimerTick)`).
-- [ ] **GIC:** dedupe `g_hal_gicd/gicc_base`; register the timer handler at boot.
-- [ ] **Scheduler:** wire `cpu_switch_context` (assembled+registered, **zero callers**); real run queue; `task_yield` from the tick; make it preemptive.
-- [ ] **SMP:** per-core run queues; drop the silent local-execution fallback; delete `SmpWorkerLoop1/2/3` copy-paste; idle secondaries `wfe`/`sev`.
-- [ ] **Exceptions:** fix `vectors.S` hardcoded `x3=1` (kernel faults must reach the BSOD); kill the `while(1)__wfe()` re-entrancy hang; clean ESR/FAR/ELR dump.
-- [ ] **Globals:** dedupe `g_kernel_booting` (**redeclared in 14 files** — start here), `g_hal_*`, `top_print_doldoc`.
-- [ ] **Exit:** a timer IRQ fires; preemptive scheduling works; memory is discovered, not hardcoded.
+
+**Current state (verified).** Timer is a pure software tick (`TimerTick()` just increments `g_timer.system_ticks`,
+`Timer.HC:81`); `TimerInit` never writes `CNTP/CNTV_TVAL_EL0` or `CNTP_CTL_EL0`. `GicInit` programs the distributor
+but **no handler is registered at boot** and interrupts are masked (`disable_interrupts()` in `ExceptionsInit`,
+`Exceptions.HC:225`). `Sched.HC` `TaskYield` only relabels task states — it **never calls `cpu_switch_context`**
+(which is assembled + registered at `main.c:298` but has **zero callers**). `SmpDispatch` has a **silent local
+execution fallback** (`Smp.HC:256-271`) and `SmpWorkerLoop1/2/3` are copy-paste (`Smp.HC:56/87/118`).
+`vectors.S` hardcodes `x3=1` for every sync fault (`vectors.S:179,206`) so **kernel faults are treated as
+recoverable JIT faults** and never reach the BSOD; the re-entrancy guard `while(1)__wfe()` (`Exceptions.HC:155`)
+hangs instead of panicking. Globals are duplicated: `I64 g_kernel_booting;` in **15** `.HC` files,
+`g_hal_gicd_base`/`g_hal_gicc_base` in both `HalPlatform.HC:32-33` and `Gic.HC:39-40`, `g_hal_timer_freq` in
+both `HalPlatform.HC:37` and `Timer.HC:13`.
+
+### P3.0 — Baseline, kernel gate & inventory — ⬜
+- [ ] **Kernel gate:** add in-guest `kernbench`/`schedtest`; assert `TICK: PASS` (timer IRQ count rises),
+      `SMP: PASS` (cores online), `BSOD: PASS` (a deliberate kernel fault reaches the BSOD). Wire into
+      `golden-boot.sh`.
+- [ ] **Inventory:** every `g_hal_*`, every `g_kernel_booting`, every duplicated global/fn, every dead fn.
+
+### P3.1 — Global dedup & ownership (**start here**) — ⬜
+- [ ] Delete the **15** `I64 g_kernel_booting;` redeclarations (keep the definition in `KernelInit.HC:8`).
+- [ ] One owner for `g_hal_*` (see P3.2) and `top_print_doldoc` (`Sched.HC:361` vs elsewhere).
+- [ ] Rationale: lowest-risk, unblocks P3.3–P3.7, and removes cross-module symbol aliasing.
+
+### P3.2 — HAL unification — ⬜
+- [ ] **One** set of `g_hal_*` globals; delete the duplicate `g_hal_gicd_base`/`g_hal_gicc_base`
+      (`Gic.HC:39-40` → use `HalGetGicdBase()`/`HalGetGiccBase()`) and the duplicate `g_hal_timer_freq`.
+- [ ] Keep the 5 platform profiles; make `g_hal_timer_freq` single-owned (from `CNTFRQ_EL0`).
+- [ ] Memory: `boot_probe_memory()` already reads the **UEFI memory map** (`main.c:120-152`) → keep; expose
+      `g_total_ram_bytes`/`g_free_ram_bytes` through the HAL and delete any remaining hardcoded sizes.
+
+### P3.3 — GIC correctness — ⬜
+- [ ] Dedupe bases (P3.2); **register the timer handler at boot** (`GicRegisterHandler(HalGetTimerIrq(), TimerTick)`).
+- [ ] Fix IAR/EOIR ordering; handle SGI/PPI/SPI ranges; keep PPIs enabled across ticks (already noted `Gic.HC:196`).
+- [ ] **Decision (research):** stay on **GICv2** — QEMU `virt` TCG defaults to GICv2 (matches the existing
+      GICD `0x08000000` / GICC `0x08010000` code). GICv3/ITS is a later platform item, not a P3 blocker.
+- [ ] `GicBindVectors()` + `enable_interrupts()` at the end of boot (unmask IRQs).
+
+### P3.4 — Timer IRQ (the trigger that makes it a kernel) — ⬜
+- [ ] Arm the **virtual timer** `CNTV_TVAL_EL0 = freq/hz` + `CNTV_CTL_EL0 = 1` (QEMU virt `irq_timer = 27` is the
+      EL1 virtual timer; the EL1 *physical* timer is INTID 30 — use the platform's `irq_timer` and the matching
+      register). *(Refs: AArch64 Programmer's Guide: Generic Timer; Löwenware.)*
+- [ ] Handler re-arms `CNTV_TVAL_EL0` every tick (level-sensitive), calls `TimerTick()`, then the scheduler.
+- [ ] Verify `g_timer.system_ticks` increments from the **hardware IRQ** (gate `TICK: PASS`).
+
+### P3.5 — Preemptive scheduler — ⬜
+- [ ] **Wire `cpu_switch_context`** (`kernel/sched/switch.S`; currently zero callers): per-task context
+      (callee-saved x19-x30 + SP + D8-D15) saved/restored on every switch.
+- [ ] Real run queue; on each tick decrement `quantum_remaining`; at 0 pick the next ready task and switch.
+      **Decision:** round-robin within priority bands (matches the existing `priority` field); quantum ≈10–50 ms
+      (research: RR/no-starvation). `TaskYield` becomes a real switch, not a relabel.
+- [ ] Safe task exit/reap (keep the deferred-zombie pattern, but only free after the switch completes).
+
+### P3.6 — Exceptions & BSOD — ⬜
+- [ ] **Fix `vectors.S` hardcoded `x3=1`** (`:179,:206`): pass `0` and let `ExceptionsHandleSync` decide
+      recoverable-vs-panic from `ELR_EL1` (JIT pool range = recoverable; kernel `.HC`/C = panic). Kernel faults
+      must reach `ExceptionsRenderBsod`.
+- [ ] Kill the `while(1)__wfe()` double-fault hang (`Exceptions.HC:155`) → a proper double-fault panic card.
+- [ ] Clean ESR/FAR/ELR/SPSR dump + a full EC decode table (`osdev AArch64 Exceptions`).
+
+### P3.7 — SMP correctness — ⬜
+- [ ] Delete `SmpWorkerLoop1/2/3` copy-paste → **one** generic worker loop with a **per-core run queue**.
+- [ ] Drop the **silent local-execution fallback** in `SmpDispatch` (`Smp.HC:256-271`) — make single-core mode
+      explicit/diagnostic, never a hidden BSP execution.
+- [ ] Idle secondaries with `wfe`/`sev`; PSCI `CPU_ON` with proper entry + **per-core stacks**.
+- [ ] **Cache coherency:** secondary cores must have the same `SCTLR/TCR/MAIR/TTBR0/VBAR` (already copied via
+      `g_mmu_config`, `Smp.HC:186-200`) and shared data must be cleaned before handoff (`dc civac`/`dsb`/`isb`).
+      *(Refs: Bootlin SMP bring-up; optee_os MMU setup sequence.)*
+- [ ] Spinlocks: verify `smp_spin_lock` uses `LDXR/STXR` + `wfe`/`sev` (`smp_entry.S:56`). *(Refs: Linux arm64
+      memory-model; Arm "Software Synchronization Primitives in A64".)*
+
+### P3.8 — Allocator & symbol-table unification — ⬜
+- [ ] **Decision spike first.** The C seed allocator/symbol table is the *bootstrap floor* (the compiler needs
+      them before any `.HC` runs — P2's whole point). Recommendation: keep the C seed as the bootstrap, and make
+      the `.HC` `KHeap`/`Symbols` the **runtime owner** via the same **SIC hot-patch** used for RedSea/Virtio in
+      P2 (`kmalloc`/`kfree`/`symbols_*` resolve to the `.HC` implementations once they load). Alternative
+      (simpler, less sovereign): keep the C table as the single owner and delete the `.HC` duplicates.
+- [ ] Delete the duplicate structures on the losing side (`HEAP_CANARY`/`CHeapBlock` dup; the 256-bucket vs
+      1024-bucket table). Port `SymCanonicalMatch`/Pascal↔snake helpers to whichever table wins.
+
+### P3.9 — Verify — ⬜
+- [ ] **Exit — MET when:** a **hardware timer IRQ fires** and drives the tick; **preemptive** scheduling works
+      (a spinning task is preempted, a second task runs); **memory is discovered** from the UEFI map (not
+      hardcoded); SMP cores come online with per-core queues; a **kernel fault reaches the BSOD**; and the gate
+      is green (`SELFTEST`, `TICK`, `SMP`, `BSOD`, `GOLDEN BOOT`).
 
 ---
 
