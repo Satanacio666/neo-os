@@ -223,20 +223,35 @@ boot_variant() {  # $1 = tag
 # Probe one expression with the C JIT REPL or with Compiler.HC (save+hcrun).
 # Both are normalised to unsigned hex so the two columns are comparable.
 probe_one() {  # $1 = expr  $2 = repl|hc
-    local g="$1" eng="$2" out hex dec
-    if [ "$eng" = "hc" ]; then
-        out="$(python3 "$ROOT/scripts/uart-repl.py" \
-               "save __PARITY_PROBE.HC I64 Main() { return $g; }" \
-               "hcrun __PARITY_PROBE.HC" 2>/dev/null || true)"
-        dec="$(printf '%s\n' "$out" | sed -n 's/.*\[HCRUN\].*-> *\(-*[0-9][0-9]*\).*/\1/p' | tail -1)"
-        if [ -n "$dec" ]; then
-            hex="$(python3 -c 'import sys; print(format(int(sys.argv[1]) & 0xFFFFFFFFFFFFFFFF, "X"))' "$dec" 2>/dev/null)"
-        fi
-    else
-        out="$(python3 "$ROOT/scripts/uart-repl.py" "$g;" 2>/dev/null || true)"
-        hex="$(printf '%s\n' "$out" | sed -n 's/.*-->.*(0x\([0-9A-Fa-f]*\)).*/\1/p' | tail -1)"
-    fi
-    printf '%s' "${hex:-N/A}"
+    # Fixed-wait UART probes can race the shell as it starts; retry a few times so
+    # a transient miss is not reported as a divergence.
+    local g="$1" eng="$2" out hex dec attempt a b
+    # A slow shell can return the *previous* command's value, so require two
+    # consecutive probes to agree (and use a longer UART wait).
+    for attempt in 1 2 3 4 5; do
+        read_probe() {
+            if [ "$eng" = "hc" ]; then
+                out="$(NEO_WAIT=3 NEO_SETTLE=0.7 python3 "$ROOT/scripts/uart-repl.py" \
+                       "save __PARITY_PROBE.HC I64 Main() { return $g; }" \
+                       "hcrun __PARITY_PROBE.HC" 2>/dev/null || true)"
+                dec="$(printf '%s\n' "$out" | sed -n 's/.*\[HCRUN\].*-> *\(-*[0-9][0-9]*\).*/\1/p' | tail -1)"
+                if [ -n "$dec" ]; then
+                    hex="$(python3 -c 'import sys; print(format(int(sys.argv[1]) & 0xFFFFFFFFFFFFFFFF, "X"))' "$dec" 2>/dev/null)"
+                else
+                    hex=""
+                fi
+            else
+                out="$(NEO_WAIT=3 NEO_SETTLE=0.7 python3 "$ROOT/scripts/uart-repl.py" "$g;" 2>/dev/null || true)"
+                hex="$(printf '%s\n' "$out" | sed -n 's/.*-->.*(0x\([0-9A-Fa-f]*\)).*/\1/p' | tail -1)"
+            fi
+        }
+        read_probe; a="$hex"
+        sleep 0.4
+        read_probe; b="$hex"
+        if [ -n "$a" ] && [ "$a" = "$b" ]; then hex="$a"; break; fi
+        sleep 1
+    done
+    printf '%s' "${hex:-${a:-N/A}}"
 }
 
 probe_globals() {  # $1 = tag  $2 = variant
@@ -258,6 +273,7 @@ run_one() {  # $1 = tag  $2 = variant
     cp "$SERLOG" "$OUT/$tag.log" 2>/dev/null || : > "$OUT/$tag.log"
     echo "[p1-parity]   verdict: $verdict"
     if [ "$verdict" = "clean" ]; then
+        sleep 1   # let the shell event loop start accepting input before probing
         probe_globals "$tag" "$variant"
     else
         : > "$OUT/$tag.globals"
