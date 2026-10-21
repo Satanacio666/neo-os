@@ -314,6 +314,13 @@ Still **open** (deliberately not fixed):
   struct size (92) instead of 8, so `SymInit()` clobbered the C-heap. Fixed (register element width for all
   global arrays; only use the pointee struct size when no width is registered). The C JIT now compiles **only**
   `Compiler.HC`; the seed compiles **1** module, not 7. Gate green.
+- **P3 kernel correctness — DONE.** Hardware timer IRQ (EL1 virtual timer PPI 27), preemptive scheduling
+  (trap-frame switch through the IRQ vector), SMP (cores 1–3 online via PSCI), kernel faults → BSOD / REPL
+  faults unwind, UEFI memory-map discovery, and the **sovereign handover** (`.HC` KHeap/Symbols own
+  `kmalloc`/`kfree`/`symbols_*` via SIC hot-patch). The C seed allocator/symbol table remain the *bootstrap*
+  floor (frozen at handover), not the runtime owner. `SOVEREIGN/TICK/SCHED/BSOD/SMP` gates green. Residual
+  (not blocking): SMP per-core **run queues** (workers are job-mailbox based), tickless idle, `.HC` ownership
+  of the C JIT seed.
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.

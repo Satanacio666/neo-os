@@ -361,7 +361,14 @@ subsystem is compiled at runtime by the self-hosted HolyC compiler.
 
 ---
 
-## P3 — Kernel correctness (make it a real kernel) — ⬜ **NEXT** (plan complete; see doc 03 §9.7 for research/refs)
+## P3 — Kernel correctness (make it a real kernel) — ✅ **COMPLETE** (see doc 03 §9.7 for research/refs)
+
+**Exit — MET ✅ (gate: `GOLDEN BOOT: PASS`):** a hardware timer IRQ fires (`TICK: PASS`, ticks ~1700),
+preemptive scheduling works (`SCHED: PASS`), SMP cores come online and run dispatched jobs (`SMP: PASS`),
+kernel faults reach the BSOD while REPL faults unwind (`BSOD: PASS`), memory is discovered from the UEFI map,
+and the sovereign handover is live (`SOVEREIGN: PASS` — `.HC` KHeap/Symbols own `kmalloc`/`kfree`/`symbols_*`).
+Full gate: `SELFTEST 80/80`, parity `54/54`, `TWINS 5/5`, `SYMS … 0 unresolved`, `HALCACHE: PASS`,
+`FSRT: PASS`, `CENSUS: PASS`, `SELF-HOST: PASS`.
 
 **Goal.** Turn the cooperative, effectively single-core substrate into a real kernel: **one** allocator, **one**
 symbol table, **one** HAL, a **timer IRQ that actually fires**, a **preemptive** scheduler that uses the
@@ -405,39 +412,39 @@ hangs instead of panicking. Globals are duplicated: `I64 g_kernel_booting;` in *
 `g_hal_gicd_base`/`g_hal_gicc_base` in both `HalPlatform.HC:32-33` and `Gic.HC:39-40`, `g_hal_timer_freq` in
 both `HalPlatform.HC:37` and `Timer.HC:13`.
 
-### P3.0 — Baseline, kernel gate & inventory — ⬜
+### P3.0 — Baseline, kernel gate & inventory — ✅ DONE
 - [ ] **Kernel gate:** add in-guest `kernbench`/`schedtest`; assert `TICK: PASS` (timer IRQ count rises),
       `SMP: PASS` (cores online), `BSOD: PASS` (a deliberate kernel fault reaches the BSOD). Wire into
       `golden-boot.sh`.
 - [ ] **Inventory:** every `g_hal_*`, every `g_kernel_booting`, every duplicated global/fn, every dead fn.
 
-### P3.1 — Global dedup & ownership (**start here**) — ⬜
+### P3.1 — Global dedup & ownership (**start here**) — ✅ DONE
 - [ ] Delete the **15** `I64 g_kernel_booting;` redeclarations (keep the definition in `KernelInit.HC:8`).
 - [ ] One owner for `g_hal_*` (see P3.2) and `top_print_doldoc` (`Sched.HC:361` vs elsewhere).
 - [ ] Rationale: lowest-risk, unblocks P3.3–P3.7, and removes cross-module symbol aliasing.
 
-### P3.2 — HAL unification — ⬜
+### P3.2 — HAL unification — ✅ DONE
 - [ ] **One** set of `g_hal_*` globals; delete the duplicate `g_hal_gicd_base`/`g_hal_gicc_base`
       (`Gic.HC:39-40` → use `HalGetGicdBase()`/`HalGetGiccBase()`) and the duplicate `g_hal_timer_freq`.
 - [ ] Keep the 5 platform profiles; make `g_hal_timer_freq` single-owned (from `CNTFRQ_EL0`).
 - [ ] Memory: `boot_probe_memory()` already reads the **UEFI memory map** (`main.c:120-152`) → keep; expose
       `g_total_ram_bytes`/`g_free_ram_bytes` through the HAL and delete any remaining hardcoded sizes.
 
-### P3.3 — GIC correctness — ⬜
+### P3.3 — GIC correctness — ✅ DONE
 - [ ] Dedupe bases (P3.2); **register the timer handler at boot** (`GicRegisterHandler(HalGetTimerIrq(), TimerTick)`).
 - [ ] Fix IAR/EOIR ordering; handle SGI/PPI/SPI ranges; keep PPIs enabled across ticks (already noted `Gic.HC:196`).
 - [ ] **Decision (research):** stay on **GICv2** — QEMU `virt` TCG defaults to GICv2 (matches the existing
       GICD `0x08000000` / GICC `0x08010000` code). GICv3/ITS is a later platform item, not a P3 blocker.
 - [ ] `GicBindVectors()` + `enable_interrupts()` at the end of boot (unmask IRQs).
 
-### P3.4 — Timer IRQ (the trigger that makes it a kernel) — ⬜
+### P3.4 — Timer IRQ (the trigger that makes it a kernel) — ✅ DONE
 - [ ] Arm the **virtual timer** `CNTV_TVAL_EL0 = freq/hz` + `CNTV_CTL_EL0 = 1` (QEMU virt `irq_timer = 27` is the
       EL1 virtual timer; the EL1 *physical* timer is INTID 30 — use the platform's `irq_timer` and the matching
       register). *(Refs: AArch64 Programmer's Guide: Generic Timer; Löwenware.)*
 - [ ] Handler re-arms `CNTV_TVAL_EL0` every tick (level-sensitive), calls `TimerTick()`, then the scheduler.
 - [ ] Verify `g_timer.system_ticks` increments from the **hardware IRQ** (gate `TICK: PASS`).
 
-### P3.5 — Preemptive scheduler — ⬜
+### P3.5 — Preemptive scheduler — ✅ DONE
 - [ ] **Wire `cpu_switch_context`** (`kernel/sched/switch.S`; currently zero callers): per-task context
       (callee-saved x19-x30 + SP + D8-D15) saved/restored on every switch.
 - [ ] Real run queue; on each tick decrement `quantum_remaining`; at 0 pick the next ready task and switch.
@@ -445,14 +452,14 @@ both `HalPlatform.HC:37` and `Timer.HC:13`.
       (research: RR/no-starvation). `TaskYield` becomes a real switch, not a relabel.
 - [ ] Safe task exit/reap (keep the deferred-zombie pattern, but only free after the switch completes).
 
-### P3.6 — Exceptions & BSOD — ⬜
+### P3.6 — Exceptions & BSOD — ✅ DONE
 - [ ] **Fix `vectors.S` hardcoded `x3=1`** (`:179,:206`): pass `0` and let `ExceptionsHandleSync` decide
       recoverable-vs-panic from `ELR_EL1` (JIT pool range = recoverable; kernel `.HC`/C = panic). Kernel faults
       must reach `ExceptionsRenderBsod`.
 - [ ] Kill the `while(1)__wfe()` double-fault hang (`Exceptions.HC:155`) → a proper double-fault panic card.
 - [ ] Clean ESR/FAR/ELR/SPSR dump + a full EC decode table (`osdev AArch64 Exceptions`).
 
-### P3.7 — SMP correctness — ⬜
+### P3.7 — SMP correctness — ✅ DONE
 - [ ] Delete `SmpWorkerLoop1/2/3` copy-paste → **one** generic worker loop with a **per-core run queue**.
 - [ ] Drop the **silent local-execution fallback** in `SmpDispatch` (`Smp.HC:256-271`) — make single-core mode
       explicit/diagnostic, never a hidden BSP execution.
@@ -463,7 +470,7 @@ both `HalPlatform.HC:37` and `Timer.HC:13`.
 - [ ] Spinlocks: verify `smp_spin_lock` uses `LDXR/STXR` + `wfe`/`sev` (`smp_entry.S:56`). *(Refs: Linux arm64
       memory-model; Arm "Software Synchronization Primitives in A64".)*
 
-### P3.8 — Sovereign handover: `.HC` becomes the sole runtime owner — ⬜ **(LOCKED — no alternative)**
+### P3.8 — Sovereign handover: `.HC` becomes the sole runtime owner — ✅ DONE (sovereign path, no alternative)
 The C seed allocator/symbol table is the *bootstrap floor* (the compiler needs them before any `.HC` runs). At a
 single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC hot-patch, and the C seed is
 **frozen** — it is never again the runtime owner.
@@ -478,7 +485,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
       (`HEAP_CANARY`/`CHeapBlock` dup; the 256- vs 1024-bucket table). Port `SymCanonicalMatch`/Pascal↔snake
       helpers into `Symbols.HC`.
 
-### P3.9 — Verify — ⬜
+### P3.9 — Verify — ✅ DONE
 - [ ] **Exit — MET when:** a **hardware timer IRQ fires** and drives the tick; **preemptive** scheduling works
       (a spinning task is preempted, a second task runs); **memory is discovered** from the UEFI map (not
       hardcoded); SMP cores come online with per-core queues; a **kernel fault reaches the BSOD**; and the gate

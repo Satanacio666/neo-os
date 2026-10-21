@@ -58,8 +58,8 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P0.5** | Test & harness 200% (in-guest SelfTest) | ✅ DONE — one command runs 80/80 + parity 54/54 + twins 5/5 + 0 unresolved + census | `golden-boot.sh` PASS on one boot |
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
 | **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
-| **P3** | Kernel correctness | ⬜ **NEXT** — plan complete (doc 2 §P3, doc 3 §9.7) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
-| **P4** | Rendering unification (merges) | ⬜ — plan complete (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font |
+| **P3** | Kernel correctness | ✅ **DONE** — timer IRQ, preemptive scheduler, SMP, BSOD, sovereign handover (doc 2 §P3) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
+| **P4** | Rendering unification (merges) | ⬜ **NEXT** — plan complete (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
 | **P6** | Shell (action executor over a CDoc) | ⬜ | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | ⬜ | one real 40-phase suite; profilers merged |

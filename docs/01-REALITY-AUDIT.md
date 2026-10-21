@@ -28,6 +28,15 @@ compiles all **31** remaining `.HC` modules at runtime (`apps/KernelInit.HC`: `C
 The fix that unblocked it: pointer-element array indexing used the pointee struct size as the stride
 (`CSymbol *g_sym_buckets[256]` strided by 92 instead of 8) — see doc 2 §P2.7.
 
+**P3 kernel correctness [REAL]:** a **hardware timer IRQ** fires (EL1 virtual timer, PPI 27, `CNTV_TVAL_EL0`;
+`TICK: PASS`, ticks ~1700); the scheduler is **preemptive** — the IRQ vector resumes whatever SP
+`SchedOnTick` returns and new tasks get a full 784-byte trap frame (`SCHED: PASS`); **SMP** brings cores 1–3
+online via PSCI and runs dispatched jobs (`SMP: PASS`); **kernel faults reach the BSOD** while REPL faults
+unwind (`BSOD: PASS`); memory is discovered from the **UEFI memory map**; and the **sovereign handover** is
+live — `.HC` `KHeap`/`Symbols` own `kmalloc`/`kfree`/`symbols_*` via SIC hot-patch (`SOVEREIGN: PASS`). See
+doc 2 §P3. Not yet done: SMP **per-core run queues** (workers are job-mailbox based), a tickless idle, and
+`.HC` ownership of the **C JIT seed** itself (still needed to compile `Compiler.HC`).
+
 ---
 
 ## A. Boot & bootstrap
