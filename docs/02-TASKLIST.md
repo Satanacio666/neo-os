@@ -377,17 +377,97 @@ subsystem is compiled at runtime by the self-hosted HolyC compiler.
 
 ---
 
-## P4 — Rendering unification (one pipeline)
+## P4 — Rendering unification (one pipeline) — ⬜ **NEXT** (plan complete; see doc 03 §3.1 for research/refs)
+
+**Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
+real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
+fakes, no scalar fallback (AArch64 mandates NEON), deterministic per tile (same image on 1 vs N cores).
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P4, 02-PRIORITY-PLAN P4, P2-P6-MIGRATION-SPECS §1–§3, 01-VERIFIED-TRUTH §2.3)`
-- [ ] **Merge → `GfxDevice.HC`:** `Render` + `GfxBackend` + `VirtioGpu` + Compositor damage/present. One target resolver, one damage, one present.
-- [ ] **Fix `VirtioGpu` truncated commands:** `RESOURCE_CREATE_2D` 40→32 (`VirtioGpu.HC:345`), `TRANSFER_TO_HOST_2D` 56→48 (`:417`); real `ATTACH_BACKING`.
-- [ ] **One tiled NEON rasterizer:** promote `RasterTile.RasterTriangleZ` (real per-pixel Z); wire `HolyGLSubmitTriangle` to it; delete `HolyGLDrawTriangleZ` (`z_avg`), `gfx_draw_triangle_fill`, dead `TileRasterTri`/`TileClear`; one Z-buffer.
-- [ ] **Real features:** per-pixel Z, perspective-correct **textures** (sample stored UVs), **SDF**, small **fragment-shader VM**; **NEON** (4 px/op); **SMP tiles** actually dispatched.
-- [ ] **Merge → `Fonts.HC`:** `FontMono` + `FontVector` + Render's `gfx_draw_char`; drop the mock SFNT.
-- [ ] **Themes:** keep `g_theme`; move its owner out of Compositor; delete Compositor damage/present.
-- [ ] Delete ~60 dead fns + write-only state (`raster_engine`, `tile_size`, `zprecision`, `culling`, tile map). Determinism test (1 core vs N).
-- [ ] **Exit:** a triangle, textured quad, SDF glyph, and shaded mesh all render through one path with real Z.
+
+**Current state (verified).** `Render.HC` = 2D canvas + damage + `gfx_*` API + a flat `gfx_draw_triangle_fill`
+(`Render.HC:529`). `RasterTile.HC` = a 64×64 tile with **real** per-pixel barycentric Z (`RasterTriangleZ`,
+`RasterTile.HC:58`) but flat color only, plus a duplicate no-Z path (`TileRasterTri:149`). `HolyGL.HC` = GL
+API but its submit path (`HolyGLSubmitTriangle:370`) averages NDC Z to a single `z_avg` (`:401-405`) and calls
+`HolyGLDrawTriangleZ:284` (flat Z, flat color). **Two Z-buffers** (`g_hgl_zbuf` `HolyGL.HC:68` and
+`g_tile_zbuf` `RasterTile.HC:13`). `GfxBackend.HC` = write-only knobs. `VirtioGpu.HC` sends **truncated**
+commands (verified: `RESOURCE_CREATE_2D` struct is 40 B but `VirtioGpu.HC:345` sends 32; `TRANSFER_TO_HOST_2D`
+struct is 56 B but `:417` sends 48). `FontMono` is a bitmap font + a stub SFNT parser; `FontVector` is
+procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_size`, `zprecision`, `culling`).
+
+### P4.0 — Baseline, render gate & inventory — ⬜
+- [ ] **Golden-frame gate:** add a deterministic render scene to `SelfTest.HC`; checksum the framebuffer
+      (FNV-1a over the back buffer) and assert a fixed value. This is the P4 regression + determinism gate
+      (1 core vs N cores must hash equal). Wire into `golden-boot.sh` as `RENDER: PASS`.
+- [ ] **Bench:** an in-guest `renderbench` command → tri/sec, textured tri/sec, tile throughput.
+- [ ] **Inventory:** list every `gfx_*`/`HolyGL*` entry point, every dead fn, every write-only global (feed P4.8).
+
+### P4.1 — One `GfxDevice.HC` (backend + present unification) — ⬜
+- [ ] **Merge** `GfxBackend.HC` + `VirtioGpu.HC` + Render's damage/present into `GfxDevice.HC`. One target
+      resolver (`GfxDeviceTarget()`), one damage tracker, one `GfxPresent(rect)`.
+- [ ] **Fix the truncated virtio-gpu commands** (the only real HW bug): send the full struct sizes —
+      `RESOURCE_CREATE_2D` 32→**40** (`VirtioGpu.HC:345`), `TRANSFER_TO_HOST_2D` 48→**56** (`:417`); audit
+      `ATTACH_BACKING`/`SET_SCANOUT` against the spec.
+- [ ] **Decision (research):** stay on **virtio-gpu 2D** for P4 (guest software-renders, host blits). Virgl/
+      Venus 3D needs host Vulkan + a big QEMU patch set (Collabora/QEMU docs) → **deferred to P9**.
+- [ ] Delete `GfxBackend` write-only knobs (`GpuSetRasterEngine/TileSize/Zprecision/Culling` — no readers).
+
+### P4.2 — One tiled NEON rasterizer (the core) — ⬜
+- [ ] **Promote `RasterTriangleZ`** as the single rasterizer; **wire `HolyGLSubmitTriangle` to it**; delete
+      `HolyGLDrawTriangleZ` (`z_avg`), the `avg_ndc_z` path, `gfx_draw_triangle_fill`, `TileRasterTri`,
+      `TileClear`. **One Z-buffer** (`g_hgl_zbuf` retired; the tile owns depth).
+- [ ] **Algorithm (chosen):** Pineda incremental edge functions (Pineda 1988), **16.16 fixed-point** for exact,
+      deterministic coverage; **top-left fill rule** to kill double-drawn shared edges; barycentric weights
+      drive Z. *(Refs: scratchapixel "Rasterization Stage"; krzosa/software_rasterizer.)*
+- [ ] **NEON 8-pixel span** (AArch64 mandates NEON; no scalar fallback): edge functions vectorized, branchless
+      depth test (`cmlt.8h` + `vbsl`/`vcgt`) and 64-byte vector stores. *(Refs: Arm NEON intrinsics reference;
+      "A Trip through the Graphics Pipeline".)* **Implementation note:** HolyC already has inline bracketed
+      `asm { 0xWORD }` (used by `Compiler.HC`) → emit NEON instruction words directly first; an `F32x4`
+      language primitive is a P1 stretch, not a P4 blocker.
+- [ ] **Tiling:** bin triangles per 64×64 (or 32×32) tile, per-tile job queue; per-tile results are
+      order-independent → deterministic. *(Refs: vblanco20-1/Rasterizer; Zielon/CPURasterizer; Laine 2011 HPG.)*
+
+### P4.3 — Textures, filtering & blend modes — ⬜
+- [ ] `glTexImage2D`/`glBindTexture`, texture objects, sampler state (wrap repeat/clamp, filter nearest/
+      bilinear, mipmaps → trilinear).
+- [ ] **Perspective-correct interpolation:** carry `1/w, z/w, u/w, v/w` across the triangle, divide per-pixel
+      (replaces `z_avg`). *(Ref: scratchapixel perspective-correct.)*
+- [ ] **Color space (decision):** shade in **linear light**, present **sRGB**; store **premultiplied alpha**
+      for correct blending, with an sRGB blend path as fallback. *(Refs: Søren Sandmann "Gamma vs premultiplied";
+      HN thread 33301471.)*
+- [ ] Blend modes: opaque / alpha / additive / multiply (replaces the ad-hoc `RenderBlendColor`).
+
+### P4.4 — `Fonts.HC` (merge + SDF) — ⬜
+- [ ] **Merge** `FontMono` + `FontVector` + Render's `gfx_draw_char` into one `Fonts.HC`. Drop the **mock
+      SFNT** parser (`FontParseTableDirectory`).
+- [ ] **Keep the bitmap font** for crisp small text; add **analytical SDF glyphs** for scalable/AA text:
+      rasterize the existing bezier outlines (FontVector) into a distance field at init, sample with
+      `smoothstep`. *(Refs: Chlumsky MSDF / FreeType SDF renderer; stb_truetype SDF; redblobgames SDF guide.)*
+- [ ] **Glyph atlas** with shelf/rect packing (stb_rect_pack style); cache per size. Real metrics from the
+      atlas (kill the hardcoded advances).
+
+### P4.5 — Lighting & shading — ⬜
+- [ ] Move `HolyGLApplyLighting` from per-vertex-at-v0 to **per-fragment**; interpolate normals (Gouraud →
+      per-pixel); add **Blinn-Phong specular**. Gamma-correct shading.
+
+### P4.6 — Fragment-shader VM (stretch; enables SDF/noise/raymarch) — ⬜
+- [ ] Small **bytecode/stack VM** evaluated per **2×2 quad**: fixed op set, `dFdx`/`dFdy` via lane
+      permutation, execution masking. *(Refs: Schmalstieg "High-Performance Software Graphics Pipeline";
+      ProtonVM bytecode interpreter.)*
+- [ ] Built-in shader library first (SDF primitives, multi-octave Perlin/Simplex, Mandelbulb), generic VM
+      for custom shaders. Evaluate 4 px/iteration in NEON lanes.
+
+### P4.7 — Mesh ingestion — ⬜
+- [ ] Streaming **Wavefront OBJ** parser in HolyC: `v/vn/vt/f`, negative (relative) indices, n-gon
+      triangulation. *(Refs: nullprogram "Robust Wavefront OBJ parsing in C"; rapidobj/tinyobjloader.)*
+
+### P4.8 — Merge, delete, verify — ⬜
+- [ ] Delete ~60 dead fns + write-only state; retire duplicate Z-buffers/paths; delete Compositor's
+      damage/present (keep `g_theme`, move ownership out of Compositor).
+- [ ] Determinism test (1 core vs N) + the P4.0 golden-frame hash.
+- [ ] **Exit — MET when:** a flat triangle, a perspective-correct textured quad, an SDF glyph, and a lit
+      Gouraud mesh all render through **one** path with **real per-pixel Z**, and the image is byte-identical
+      on 1 and N cores.
 
 ---
 

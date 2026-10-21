@@ -134,6 +134,35 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
 - **Direct hardware access in HolyC** `(from manifesto §8)`: typed pointer derefs (`#define VIRTIO_GPU_STATUS *(U32*)(…)`)
   and inline bracketed asm.
 
+### 3.1 P4 implementation decisions & references (research, 2026-10)
+These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the sources that justify them.
+- **Rasterization — Pineda incremental edge functions, 16.16 fixed-point, top-left fill rule.** Pineda's
+  1988 "A Parallel Algorithm for Polygon Rasterization" is the canonical parallel-friendly method; integer
+  16.16 gives deterministic coverage. Refs: scratchapixel "Rasterization Stage"; krzosa/software_rasterizer
+  (SIMD+MT); "A Trip through the Graphics Pipeline" (why scanline does *not* map to SIMD).
+- **Tiling & determinism — bin triangles into 64×64 tiles, per-tile job queue.** Per-tile results are
+  order-independent, so 1 core == N cores. Refs: vblanco20-1/Rasterizer (tile binning, lock-free queues);
+  Zielon/CPURasterizer (AVX2, tiled); Laine 2011 "High-Performance Software Rasterization" (bin → coarse →
+  fine stages).
+- **NEON 8-wide spans, branchless depth.** Arm NEON intrinsics reference (`cmlt.8h` compare → `vbsl`/`vcgt`
+  select, 64-byte stores); HolyC emits NEON words via inline `asm {}` today. Ref: Arm ACLE NEON reference.
+- **Perspective-correct interpolation.** Interpolate `1/w, z/w, u/w, v/w`, divide per pixel (kills `z_avg`).
+  Ref: scratchapixel perspective-correct texture mapping.
+- **Color & blending.** Shade in linear light, present sRGB, store premultiplied alpha for correct compositing.
+  Refs: Søren Sandmann "Gamma Correction vs. Premultiplied Pixels"; HN #33301471 (premul + dithering in 8-bit).
+- **Fonts — bitmap for small text + analytical SDF for scalable.** Build the SDF from the existing bezier
+  outlines (single-channel) and sample with `smoothstep`; MSDF is the multi-channel upgrade. Refs: Viktor
+  Chlumsky MSDF thesis + FreeType SDF renderer (GSoC 2020); stb_truetype SDF; redblobgames SDF guide.
+  Atlas packing: stb_rect_pack shelf packing.
+- **Fragment-shader VM.** Small bytecode/stack VM, 2×2 quad, lane-permutation derivatives, execution masking.
+  Refs: Schmalstieg et al. "A High-Performance Software Graphics Pipeline Architecture for the GPU";
+  ProtonVM (parallel bytecode interpreter).
+- **Mesh ingestion.** Streaming OBJ parser handling negative indices + n-gon triangulation. Refs: nullprogram
+  "Robust Wavefront OBJ parsing in C" (2025); rapidobj / tinyobjloader.
+- **virtio-gpu: 2D-only for P4; 3D deferred to P9.** Virgl/Venus require host Vulkan + a large QEMU patch set
+  and are still landing upstream. Refs: Collabora "Venus on QEMU"; Mesa virtio-gpu Venus docs; QEMU virtio-gpu
+  docs (`-device virtio-gpu-gl,hostmem=8G,blob=true,venus=true`).
+
 ---
 
 ## 4. Compiler research (beyond self-hosting)
