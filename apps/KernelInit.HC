@@ -107,10 +107,8 @@ U0 KernelInitMain() {
     g_kernel_booting = 0;
     symbols_report_unresolved();
 
-    // P3.4: arm the EL1 virtual timer (PPI = HalGetTimerIrq) and unmask IRQs.
-    // The GIC handler (registered at Gic.HC load) calls TimerTick(), which
-    // re-arms the level-sensitive PPI. IRQs stayed masked through boot; unmask
-    // last, once every subsystem is live.
+    // P3.4: arm the EL1 virtual timer (PPI registered at Gic.HC load) and unmask
+    // IRQs last. Early IRQs (before the scheduler) are gated by g_sched_ready.
     TimerArm(1000);
     enable_interrupts();
     KInitLog("Timer IRQ armed @ 1000 Hz; interrupts enabled.");

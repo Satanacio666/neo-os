@@ -103,6 +103,11 @@
 #define HC_MAX_LOCALS    64
 #define HC_MAX_FUNCS     128
 
+// P3.5 guardrail 1: non-zero while a compilation is in progress. The scheduler
+// (SchedOnTick) defers preemption while this is set, because the compiler uses
+// global (non-reentrant) state. The C heap masks IRQs internally.
+I64   g_hc_compiling = 0;
+
 // Compiler Source & Lexer State
 U8   *g_hc_src;
 I64   g_hc_pos;
@@ -1952,7 +1957,8 @@ I64 HcIsIntrinsic(U8 *name) {
             strcmp(name, "__mrs_cntfrq") == 0 || strcmp(name, "__mrs_mpidr") == 0 || strcmp(name, "__mrs_esr") == 0 ||
             strcmp(name, "__mrs_far") == 0 || strcmp(name, "__dc_civac") == 0 || strcmp(name, "__ic_ivau") == 0 ||
             strcmp(name, "__mmio_r32") == 0 || strcmp(name, "__mmio_w32") == 0 ||
-            strcmp(name, "__msr_cntv_tval") == 0 || strcmp(name, "__msr_cntv_ctl") == 0);
+            strcmp(name, "__msr_cntv_tval") == 0 || strcmp(name, "__msr_cntv_ctl") == 0 ||
+            strcmp(name, "__irq_disable") == 0 || strcmp(name, "__irq_enable") == 0);
 }
 
 U0 HcEmitIntrinsic(U8 *name) {
@@ -1972,6 +1978,8 @@ U0 HcEmitIntrinsic(U8 *name) {
     else if (strcmp(name, "__mmio_w32") == 0) HcEmit(0xB9000001);
     else if (strcmp(name, "__msr_cntv_tval") == 0) HcEmit(0xD51BE300); // MSR CNTV_TVAL_EL0, X0
     else if (strcmp(name, "__msr_cntv_ctl") == 0) HcEmit(0xD51BE320);  // MSR CNTV_CTL_EL0, X0
+    else if (strcmp(name, "__irq_disable") == 0) HcEmit(0xD50342DF);   // MSR DAIFSet, #2
+    else if (strcmp(name, "__irq_enable") == 0) HcEmit(0xD50342FF);    // MSR DAIFClr, #2
 }
 
 U0 HcParseExpr() {
@@ -3168,6 +3176,7 @@ I64 CompilerCompileAndRun(U8 *src) {
     g_fn_parse_stmt = &HcParseStatement;
     HcInit();
     HcReset();
+    g_hc_compiling = 1; // guardrail 1: defer preemption during compilation
 
     I64 start_idx = g_hc_pool_offset;
     U64 start_addr = g_hc_code + start_idx * 4;
@@ -3196,6 +3205,7 @@ I64 CompilerCompileAndRun(U8 *src) {
                       HcLineOf(g_hc_pos), g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
                       g_hc_global_count, g_hc_code_len);
         g_hc_pool_offset = start_idx;
+        g_hc_compiling = 0;
         if (exp_buf) kfree(exp_buf);
         return -1;
     }
@@ -3208,6 +3218,8 @@ I64 CompilerCompileAndRun(U8 *src) {
     }
 
     if (exp_buf) kfree(exp_buf);
+
+    g_hc_compiling = 0; // compile done: preemption may resume for the unit body
 
     if (g_hc_unit_main) {
         g_hc_exec_fn = g_hc_unit_main;

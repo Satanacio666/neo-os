@@ -190,6 +190,35 @@ U0 SelfTestInclude() {
     SelfTestCompare("include_vfs", CompilerCompileAndRun("#include \"__inc1.HC\"\ng_inc + 2;"), 7);
 }
 
+// P3.5: prove the timer IRQ actually PREEMPTS — create a task whose entry
+// function bumps a counter and exits; KernelMain spins until the scheduler
+// switches the task in (only possible with real preemption).
+I64 g_sched_probe_ran = 0;
+U0 SelfTestSchedWorker(U64 arg) {
+    g_sched_probe_ran = g_sched_probe_ran + 1;
+    TaskExit();
+}
+
+U0 SelfTestSched() {
+    g_sched_probe_ran = 0;
+    // SelfTest.HC is compiled before Sched.HC, so use the raw return value rather
+    // than the (not-yet-defined) CTask struct type.
+    U64 t = TaskCreate("PreemptProbe", (U64)&SelfTestSchedWorker, 0, 8192);
+    if (!t) {
+        doldoc_print("SCHED: FAIL (TaskCreate)\n");
+        return;
+    }
+    I64 guard = 0;
+    while (g_sched_probe_ran == 0 && guard < 20000000) {
+        guard++;
+    }
+    if (g_sched_probe_ran != 0) {
+        doldoc_print("SCHED: PASS\n");
+    } else {
+        doldoc_print("SCHED: FAIL\n");
+    }
+}
+
 // P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
 // hard assertions are promoted to pass/fail as each capability lands
 // (P3.4 / P3.6 / P3.7).
@@ -317,6 +346,7 @@ U0 SelfTestRun() {
     SelfTestSymbols();
     SelfTestHalCache();
     SelfTestFs();
+    SelfTestSched();
     SelfTestKernel();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

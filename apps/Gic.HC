@@ -180,11 +180,13 @@ I64 GicDispatch(U32 sim_irq) {
   return 0;
 }
 
-U0 GicHardwareIrqHandler(U64 trap_frame) {
+// P3.5: returns the SP to resume (the interrupted task's frame, or the next
+// task's frame when the scheduler preempts). The IRQ vector honors x0.
+U64 GicHardwareIrqHandler(U64 trap_frame) {
   U64 gicc_base = GicGetCpuBase();
   U32 iar = __mmio_r32(gicc_base + GICC_IAR);
   U32 irq = iar & 0x3FF;
-  if (irq >= 1020) return;
+  if (irq >= 1020) return trap_frame;
   if (irq < MAX_GIC_INTERRUPTS) {
     CIrqEntry *e = GicGetEntry(irq);
     if (e->enabled && e->handler_fn != 0) {
@@ -197,6 +199,11 @@ U0 GicHardwareIrqHandler(U64 trap_frame) {
     }
   }
   __mmio_w32(gicc_base + GICC_EOIR, iar);
+  // P3.5: only hand the frame to the scheduler once it exists (g_sched_ready is
+  // set by SchedInit). A firmware-armed timer IRQ during boot must not call the
+  // not-yet-defined SchedOnTick.
+  if (g_sched_ready) return SchedOnTick(trap_frame);
+  return trap_frame;
 }
 
 U0 gic_dispatch() {
@@ -286,9 +293,9 @@ I64 GicSelfTest() {
 if (g_kernel_booting) {
   GicInit();
   GicBindVectors();
-  // P3.3: register the EL1 timer handler at boot (PPI from HalGetTimerIrq()).
-  // GicRegisterHandler also enables the line. IRQs stay masked until P3.4 arms
-  // the timer; unmasking here would just spin with nothing pending.
+  // P3.3: register the EL1 timer handler (PPI from HalGetTimerIrq()) and enable
+  // the line. A firmware-armed timer may fire before the scheduler loads; the
+  // handler is gated on g_sched_ready so those early IRQs are harmless.
   GicRegisterHandler(HalGetTimerIrq(), &TimerTick, 0);
 } else {
   GicSelfTest();

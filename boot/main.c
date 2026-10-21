@@ -316,6 +316,10 @@ int main(int argc, char **argv)
     symbols_register("symbols_var_cell", (void*)symbols_var_cell, SYM_FUNC);
 
     // 6. Sovereign Handover: Read and Execute holyc/KernelInit.HC (from the ESP)
+    // P3.5: keep IRQs masked for the whole .HC boot. The firmware may leave the
+    // timer/GIC live; an IRQ before the scheduler (Sched.HC) is loaded would call
+    // the not-yet-defined SchedOnTick. IRQs are unmasked only at Stage 7.
+    disable_interrupts();
     printf("[BOOT] Sovereign Handover: Loading holyc/KernelInit.HC from the ESP...\r\n");
     static char kinit_src[65536];
     int64_t kinit_len = seed_read_file("KernelInit.HC", kinit_src, sizeof(kinit_src) - 1);

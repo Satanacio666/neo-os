@@ -221,7 +221,9 @@ handle_curr_el_spx_irq:
     ldr  x16, [x16, #8]
     cbz  x16, 1f
     blr  x16
-1:  RESTORE_ALL
+    // P3.5: honor the scheduler-chosen SP (preemption).
+1:  mov  sp, x0
+    RESTORE_ALL
     eret
 
 .balign 4

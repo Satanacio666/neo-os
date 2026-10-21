@@ -95,6 +95,13 @@ else
         echo "  [FAIL] timer tick: ${tkline:-<none>} (want TICK: PASS)"
         fail=1
     fi
+    scline="$(printf '%s\n' "$out" | grep -a 'SCHED: ' | tail -1)"
+    if printf '%s' "$scline" | grep -aq 'PASS'; then
+        echo "  [PASS] $scline (preemptive scheduling)"
+    else
+        echo "  [FAIL] preemption: ${scline:-<none>} (want SCHED: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="
