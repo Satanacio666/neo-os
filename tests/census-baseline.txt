@@ -1,0 +1,14 @@
+kmalloc	52
+kfree	45
+symbols_register	29
+symbols_lookup	23
+hal_flush_cache	22
+redsea_read_file	11
+redsea_write_file	7
+redsea_list_dir	2
+symbols_is_defined	1
+symbols_var_cell	1
+symbols_sic_cell	1
+symbols_count	1
+symbols_unresolved_count	1
+jit_compile_and_run	5

@@ -74,7 +74,8 @@ QEMU_FLAGS = -M virt,gic-version=2 \
              -display gtk \
              -serial stdio
 
-.PHONY: all clean run run-headless disk libuefi check-tools
+.PHONY: all clean run run-headless disk libuefi check-tools \
+        check selftest census parity
 
 check-tools:
 	@missing=""; \
@@ -143,5 +144,18 @@ run-headless: all
 clean:
 	rm -rf $(BUILD_DIR)
 	$(MAKE) -C $(UEFI_DIR) clean 2>/dev/null || true
+
+# --- verification targets (P0.5) ---------------------------------------------
+check: all
+	scripts/golden-boot.sh
+
+selftest:
+	python3 scripts/neo_uart.py --sentinel '<<<NEO-DONE:selftest>>>' --timeout 120 'selftest'
+
+census:
+	scripts/census-c-runtime.sh
+
+parity:
+	scripts/p1-parity.sh
 
 -include $(ALL_OBJS:.o=.d)

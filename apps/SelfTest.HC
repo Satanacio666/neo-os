@@ -110,6 +110,19 @@ U0 SelfTestTwins() {
     doldoc_printf("TWINS: %lld/%lld\n", g_twin_pass, g_twin_total);
 }
 
+// P0.5.7 in-guest symbol audit: the table is alive and every forward reference
+// resolved (0 entries still pointing at the unresolved trap).
+U0 SelfTestSymbols() {
+    I64 n = symbols_count();
+    I64 u = symbols_unresolved_count();
+    if (n > 0 && u == 0) {
+        doldoc_printf("[SELFTEST] PASS symbol audit (%lld symbols, 0 unresolved)\n", n);
+    } else {
+        doldoc_printf("[SELFTEST] FAIL symbol audit (%lld symbols, %lld unresolved)\n", n, u);
+    }
+    doldoc_printf("SYMS: %lld symbols, %lld unresolved\n", n, u);
+}
+
 // The one shell-driven case (save/run/#include) reduced to its compiler essence:
 // write an include target to RedSea, then compile a unit that #includes it.
 U0 SelfTestInclude() {
@@ -219,6 +232,7 @@ U0 SelfTestRun() {
     SelfTestInclude();
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
+    SelfTestSymbols();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

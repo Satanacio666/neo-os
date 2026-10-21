@@ -41,6 +41,17 @@ void* symbols_sic_cell(const char *name) {
     return sym ? (void*)&sym->address : NULL;
 }
 
+// Count symbols still pointing at the unresolved trap (0 = fully resolved).
+int64_t symbols_unresolved_count(void) {
+    int n = 0;
+    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
+        for (symbol_t *c = buckets[i]; c; c = c->next) {
+            if (c->address == (void*)symbols_unresolved_trap) n++;
+        }
+    }
+    return n;
+}
+
 void symbols_report_unresolved(void) {
     int n = 0;
     for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {

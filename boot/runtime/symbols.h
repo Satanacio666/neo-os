@@ -30,6 +30,7 @@ symbol_t* symbols_lookup_or_reserve(const char *name, symbol_type_t default_type
 int64_t  symbols_unresolved_trap(void);
 int      symbols_iterate(int (*callback)(symbol_t *sym, void *user_data), void *user_data);
 void     symbols_report_unresolved(void);
+int64_t  symbols_unresolved_count(void);
 void*    symbols_sic_cell(const char *name);
 void*    symbols_var_cell(const char *name);
 void     symbols_dump(void);

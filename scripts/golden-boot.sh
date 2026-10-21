@@ -60,7 +60,17 @@ else
         echo "  [FAIL] twin-liveness: ${tline:-<none>} (want 5/5)"
         fail=1
     fi
+    sline="$(printf '%s\n' "$out" | grep -a 'SYMS: ' | tail -1)"
+    if printf '%s' "$sline" | grep -aq '0 unresolved'; then
+        echo "  [PASS] $sline"
+    else
+        echo "  [FAIL] symbol audit: ${sline:-<none>} (want 0 unresolved)"
+        fail=1
+    fi
 fi
+
+echo "== .HC -> C runtime census =="
+"$ROOT/scripts/census-c-runtime.sh" | tail -1 || fail=1
 
 echo "== compiler self-host =="
 "$ROOT/scripts/self-host-test.sh" || fail=1

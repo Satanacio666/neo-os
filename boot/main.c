@@ -310,6 +310,7 @@ int main(int argc, char **argv)
     symbols_register("redsea_write_file", (void*)redsea_write_file, SYM_FUNC);
     symbols_register("redsea_list_dir", (void*)redsea_list_dir, SYM_FUNC);
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
+    symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
     symbols_register("symbols_sic_cell", (void*)symbols_sic_cell, SYM_FUNC);
     symbols_register("symbols_var_cell", (void*)symbols_var_cell, SYM_FUNC);
 
