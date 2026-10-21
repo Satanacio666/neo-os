@@ -333,10 +333,19 @@ Still **open** (deliberately not fixed):
   (`RESOURCE_CREATE_2D` 40, `TRANSFER_TO_HOST_2D` 56) — verified live (device active, flushes return 0,
   `render gpu` presents without fault). Write-only knobs and dead `gl*`/`virtio_gpu_*` aliases deleted
   (symbols 1330 → 1310). Virtio-gpu stays **2D**; virgl/Venus 3D is deferred to P9.
+- **P4.2 one rasterizer + Compiler.HC root fix — DONE.** Decision: the single rasterizer uses exact **integer**
+  Pineda edges (not 16.16 — exact at integer coords) + top-left rule + per-pixel Z interpolation over one
+  full-screen 16-bit Z-buffer. The blocker was **not** the rasterizer but a self-hosted compiler bug: a global
+  **pointer**'s pointee width was never registered, so indexed use fell back to an 8-byte element stride/width
+  (`U16*` read `0xFFFF` as `-1`; `U32*` stores went to the wrong address). Fixed at the root in `Compiler.HC`
+  (register pointee width for global pointers; bare pointer use stays 8 bytes) — **option A**, no
+  function-splitting workarounds. The `& 0xFFFF` mask and `RasterPut`/`RasterPutZ` shims were removed. Locked
+  in by `SelfTestPtrScale` (`PTRSCALE: PASS`) and `RasterBootCheck` (`RASTER: PASS`). RENDER golden hash
+  re-baselined `0x7E9DE351 → 0xD28836F`. Open: the NEON 8-pixel inner span (scalar today).
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.
-- **Compiler:** >8-arg calls hard error; `auto` hang risk; `#include` inside `Compiler.HC`; diagnostics; script-mode gaps (fnptr/F64-struct/forward-struct/cross-unit) — P1.1/P1.2. **New (found by the P0.5 expansion):** 2-D arrays fault (Data Abort); `enum` unsupported (returns -1); function-like `#define` unsupported (returns -1); an unterminated `struct {` is silently accepted (returns 0); a global-`F64` subtraction (`F64 r = 0.0 - q;`) returned 0; recompiling the whole battery twice in one boot trips a re-entrancy fault (guarded in `SelfTest.HC`).
+- **Compiler:** **global-pointer element width — FIXED (P4.2):** a global pointer (`U16 *p`, `U32 *p`) never registered its pointee width, so `p[i]` used the default 8-byte stride/width (8-byte `LDR`/`STR`). Root-fixed in `Compiler.HC` and locked in by `SelfTestPtrScale`/`RasterBootCheck`. >8-arg calls hard error; `auto` hang risk; `#include` inside `Compiler.HC`; diagnostics; script-mode gaps (fnptr/F64-struct/forward-struct/cross-unit) — P1.1/P1.2. **New (found by the P0.5 expansion):** 2-D arrays fault (Data Abort); `enum` unsupported (returns -1); function-like `#define` unsupported (returns -1); an unterminated `struct {` is silently accepted (returns 0); a global-`F64` subtraction (`F64 r = 0.0 - q;`) returned 0; recompiling the whole battery twice in one boot trips a re-entrancy fault (guarded in `SelfTest.HC`).
 - **Kernel:** one allocator/table/HAL; arm timer + IRQ; real scheduler; SMP queues; exception `x3`; `g_kernel_booting`×14 — P3.
 - **Render:** `z_avg`; textures unsampled; no SDF/shader VM; VirtioGpu truncated commands; `BenchCpuMathNeon` LCG (BEN-01); synthetic telemetry (BEN-02); PMU absent — P4/P7.
 - **DolDoc:** char grid; missing `$MA/$DA/$AN/$ID`/word-wrap; `g_doc_dirty_mask` shift; cycles; fake WM FPS/"4 Cores"; uptime wraps at 999 s — P5.

@@ -65,9 +65,6 @@ class HolyGLContext {
 };
 
 HolyGLContext g_hgl;
-U16 *g_hgl_zbuf = NULL;
-I64 g_hgl_zbuf_w = 0;
-I64 g_hgl_zbuf_h = 0;
 
 U0 HolyGLTransformVertex(CMat4 *mat, F64 x, F64 y, F64 z, F64 w, GLVertex *out) {
   out->x = mat->m[0]  * x + mat->m[1]  * y + mat->m[2]  * z + mat->m[3]  * w;
@@ -76,34 +73,9 @@ U0 HolyGLTransformVertex(CMat4 *mat, F64 x, F64 y, F64 z, F64 w, GLVertex *out) 
   out->w = mat->m[12] * x + mat->m[13] * y + mat->m[14] * z + mat->m[15] * w;
 }
 
+// P4.2: the single full-screen Z-buffer lives in RasterTile.HC.
 U0 HolyGLClearDepth() {
-  if (!g_hgl_zbuf) {
-    g_hgl_zbuf_w = gfx_get_canvas_width();
-    g_hgl_zbuf_h = gfx_get_canvas_height();
-    if (g_hgl_zbuf_w <= 0) g_hgl_zbuf_w = 1280;
-    if (g_hgl_zbuf_h <= 0) g_hgl_zbuf_h = 768;
-    g_hgl_zbuf = kmalloc(g_hgl_zbuf_w * g_hgl_zbuf_h * 2);
-  }
-  if (!g_hgl_zbuf) return;
-
-  I64 x0 = g_hgl.vp_x;
-  I64 y0 = g_hgl.vp_y;
-  I64 x1 = x0 + g_hgl.vp_w;
-  I64 y1 = y0 + g_hgl.vp_h;
-  if (x0 < 0) x0 = 0;
-  if (y0 < 0) y0 = 0;
-  if (x1 > g_hgl_zbuf_w) x1 = g_hgl_zbuf_w;
-  if (y1 > g_hgl_zbuf_h) y1 = g_hgl_zbuf_h;
-  if (x0 >= x1 || y0 >= y1) return;
-
-  I64 row_bytes = (x1 - x0) * 2;
-  U8 *zb_bytes = g_hgl_zbuf;
-  I64 cd_y = y0;
-  while (cd_y < y1) {
-    I64 off = (cd_y * g_hgl_zbuf_w + x0) * 2;
-    memset(zb_bytes + off, 0xFF, row_bytes);
-    cd_y++;
-  }
+  RasterClearZ();
 }
 
 U0 HolyGLInit() {
@@ -280,93 +252,9 @@ U0 HolyGLBegin(I64 mode) {
   g_hgl.v_count = 0;
 }
 
-// Rasterize a 2D screen-space triangle with 16-bit depth testing
-U0 HolyGLDrawTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, I64 z_avg, U32 col) {
-  if (g_hgl.wireframe || GfxDeviceGetShading() == RASTER_SHADE_WIREFRAME) {
-    gfx_draw_line(x0, y0, x1, y1, col);
-    gfx_draw_line(x1, y1, x2, y2, col);
-    gfx_draw_line(x2, y2, x0, y0, col);
-    return;
-  }
-
-  if (!g_hgl.depth_test || !g_hgl_zbuf) {
-    gfx_draw_triangle_fill(x0, y0, x1, y1, x2, y2, col);
-    return;
-  }
-
-  I64 min_x = x0; if (x1 < min_x) min_x = x1; if (x2 < min_x) min_x = x2;
-  I64 max_x = x0; if (x1 > max_x) max_x = x1; if (x2 > max_x) max_x = x2;
-  I64 min_y = y0; if (y1 < min_y) min_y = y1; if (y2 < min_y) min_y = y2;
-  I64 max_y = y0; if (y1 > max_y) max_y = y1; if (y2 > max_y) max_y = y2;
-
-  I64 vx0 = g_hgl.vp_x;
-  I64 vy0 = g_hgl.vp_y;
-  I64 vx1 = vx0 + g_hgl.vp_w - 1;
-  I64 vy1 = vy0 + g_hgl.vp_h - 1;
-  if (vx0 < 0) vx0 = 0;
-  if (vy0 < 0) vy0 = 0;
-  if (vx1 >= g_hgl_zbuf_w) vx1 = g_hgl_zbuf_w - 1;
-  if (vy1 >= g_hgl_zbuf_h) vy1 = g_hgl_zbuf_h - 1;
-
-  if (min_x < vx0) min_x = vx0;
-  if (min_y < vy0) min_y = vy0;
-  if (max_x > vx1) max_x = vx1;
-  if (max_y > vy1) max_y = vy1;
-  if (min_x > max_x || min_y > max_y) return;
-
-  I64 area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-  if (area == 0) return;
-  if (area < 0) {
-    I64 tx = x1; I64 ty = y1;
-    x1 = x2; y1 = y2;
-    x2 = tx; y2 = ty;
-  }
-
-  if (z_avg < 0) z_avg = 0;
-  if (z_avg > 65534) z_avg = 65534;
-
-  U32 *fb = RenderGetTargetBuffer();
-  if (!fb) return;
-  I64 pitch = gfx_get_canvas_pitch();
-  gfx_dirty_expand(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
-
-  I64 a01 = y0 - y1; I64 b01 = x1 - x0;
-  I64 a12 = y1 - y2; I64 b12 = x2 - x1;
-  I64 a20 = y2 - y0; I64 b20 = x0 - x2;
-
-  I64 w0_row = (x2 - x1) * (min_y - y1) - (y2 - y1) * (min_x - x1);
-  I64 w1_row = (x0 - x2) * (min_y - y2) - (y0 - y2) * (min_x - x2);
-  I64 w2_row = (x1 - x0) * (min_y - y0) - (y1 - y0) * (min_x - x0);
-
-  I64 hgl_py = min_y;
-  while (hgl_py <= max_y) {
-    I64 fb_row = hgl_py * pitch;
-    I64 zb_row = hgl_py * g_hgl_zbuf_w;
-    I64 w0 = w0_row;
-    I64 w1 = w1_row;
-    I64 w2 = w2_row;
-
-    I64 hgl_px = min_x;
-    while (hgl_px <= max_x) {
-      if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-        if (z_avg <= g_hgl_zbuf[zb_row + hgl_px]) {
-          g_hgl_zbuf[zb_row + hgl_px] = z_avg;
-          fb[fb_row + hgl_px] = col;
-        }
-      }
-      w0 = w0 + a12;
-      w1 = w1 + a20;
-      w2 = w2 + a01;
-      hgl_px++;
-    }
-    w0_row = w0_row + b12;
-    w1_row = w1_row + b20;
-    w2_row = w2_row + b01;
-    hgl_py++;
-  }
-}
-
-// Dispatches a transformed screen-space triangle to the Z-buffered rasterizer
+// Dispatches a transformed screen-space triangle to the ONE rasterizer (P4.2).
+// Per-vertex NDC Z is mapped to 16-bit depth and interpolated per pixel by
+// RasterTriangleZ (no more averaged z_avg).
 U0 HolyGLSubmitTriangle(GLVertex *v0, GLVertex *v1, GLVertex *v2) {
   // Reject if any vertex is behind or at the near plane (prevents w <= 0 division blowup)
   if (v0->w <= 0.05 || v1->w <= 0.05 || v2->w <= 0.05) return;
@@ -398,18 +286,27 @@ U0 HolyGLSubmitTriangle(GLVertex *v0, GLVertex *v1, GLVertex *v2) {
   I64 sx2 = g_hgl.vp_x + (I64)((ndc_x2 + 1.0) * half_w);
   I64 sy2 = g_hgl.vp_y + (I64)((1.0 - ndc_y2) * half_h);
 
-  // Map average NDC Z in [-1..1] to 16-bit depth [0..65534]
-  F64 avg_ndc_z = (ndc_z0 + ndc_z1 + ndc_z2) * 0.333333;
-  I64 z16 = (I64)((avg_ndc_z + 1.0) * 32767.0);
-  if (z16 < 0) z16 = 0;
-  if (z16 > 65534) z16 = 65534;
-
   U32 col = v0->color;
   if (g_hgl.lighting) {
     col = HolyGLApplyLighting(col, v0->nx, v0->ny, v0->nz);
   }
 
-  HolyGLDrawTriangleZ(sx0, sy0, sx1, sy1, sx2, sy2, z16, col);
+  // Wireframe: outline with lines instead of filling.
+  if (g_hgl.wireframe || GfxDeviceGetShading() == RASTER_SHADE_WIREFRAME) {
+    gfx_draw_line(sx0, sy0, sx1, sy1, col);
+    gfx_draw_line(sx1, sy1, sx2, sy2, col);
+    gfx_draw_line(sx2, sy2, sx0, sy0, col);
+    g_hgl.tris_rendered = g_hgl.tris_rendered + 1;
+    return;
+  }
+
+  // Per-vertex NDC Z in [-1..1] -> 16-bit depth [0..65534], interpolated per pixel.
+  I64 z16_0 = (I64)((ndc_z0 + 1.0) * 32767.0);
+  I64 z16_1 = (I64)((ndc_z1 + 1.0) * 32767.0);
+  I64 z16_2 = (I64)((ndc_z2 + 1.0) * 32767.0);
+  RasterSetDepthTest(g_hgl.depth_test);
+  RasterSetZ(z16_0, z16_1, z16_2);
+  RasterTriangleZ(sx0, sy0, sx1, sy1, sx2, sy2, col);
   g_hgl.tris_rendered = g_hgl.tris_rendered + 1;
 }
 

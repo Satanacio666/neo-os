@@ -293,7 +293,37 @@ U0 SelfTestKernel() {
 // buffer with IRQs masked (no preemption => no concurrent writer), hash the whole
 // surface (32-bit FNV-1a), and assert it equals the frozen baseline. This is the
 // regression + 1-vs-N determinism gate for the whole render pipeline.
-I64 g_render_golden = 0x7E9DE351;   // frozen baseline (verified across reboots)
+I64 g_render_golden = 0x0D28836F;   // frozen baseline (verified across reboots)
+
+// Compiler regression (P4.2 root cause): indexing a GLOBAL pointer must stride
+// by sizeof(pointee) and load/store the pointee width. A `U16 *` indexed at the
+// old default 8-byte stride would write/read 8-byte words and read 0xFFFF as -1.
+// We check the raw bytes through a byte-alias so a wrong scale cannot cancel out.
+U16 *g_ptrtest16 = NULL;
+U32 *g_ptrtest32 = NULL;
+U0 SelfTestPtrScale() {
+    I64 ok = 1;
+    g_ptrtest16 = kmalloc(64);
+    g_ptrtest32 = kmalloc(64);
+    if (!g_ptrtest16 || !g_ptrtest32) {
+        doldoc_print("PTRSCALE: FAIL (alloc)\n");
+        return;
+    }
+    g_ptrtest16[3] = 0xABCD;
+    U8 *alias16 = (U8*)g_ptrtest16;
+    if (alias16[6] != 0xCD || alias16[7] != 0xAB) ok = 0;
+    g_ptrtest16[3] = 0xFFFF;
+    if (g_ptrtest16[3] != 65535) ok = 0;
+    g_ptrtest32[9] = 0xDEADBEEF;
+    U8 *alias32 = (U8*)g_ptrtest32;
+    if (alias32[36] != 0xEF || alias32[39] != 0xDE) ok = 0;
+    if (g_ptrtest32[9] != 0xDEADBEEF) ok = 0;
+    kfree(g_ptrtest16);
+    kfree(g_ptrtest32);
+    if (ok != 0) doldoc_print("PTRSCALE: PASS\n");
+    else doldoc_print("PTRSCALE: FAIL\n");
+}
+
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
@@ -432,6 +462,7 @@ U0 SelfTestRun() {
     SelfTestSmp();
     SelfTestSovereign();
     SelfTestKernel();
+    SelfTestPtrScale();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

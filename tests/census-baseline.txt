@@ -1,5 +1,5 @@
-kmalloc	48
-kfree	44
+kmalloc	50
+kfree	47
 symbols_register	38
 symbols_lookup	26
 symbols_is_defined	1

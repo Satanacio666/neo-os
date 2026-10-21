@@ -43,7 +43,24 @@ masked and asserts the frozen hash **`0x7E9DE351`** (`RENDER: PASS`, verified by
 reboots) — the regression + 1-vs-N determinism gate. `renderbench` reports `13063 tri/s, 9122 Kpix/s,
 72 Mpix/s` (tile Z-raster + canvas clear). The full render dead-code inventory (43 dead fns, write-only
 state, duplicate paths) is in doc 2 §P4.0. The render **fragmentation is still real** — P4.1–P4.8 do the
-merging; P4.0 only froze the baseline.
+merging; P4.0 only froze the baseline. (Hash re-baselined to **`0xD28836F`** at P4.2.)
+
+**P4.1 unified device [REAL]:** `GfxBackend.HC` + `VirtioGpu.HC` are merged into `apps/GfxDevice.HC` (one
+target resolver `GfxDeviceTarget()`, one damage tracker, one `GfxPresent()`); the virtio-gpu **truncated
+command bug is fixed** (`RESOURCE_CREATE_2D` 40, `TRANSFER_TO_HOST_2D` 56). Verified live: device active,
+flushes return 0, `render gpu` + `GfxPresent` present without fault. Symbols 1330→1310.
+
+**P4.2 one rasterizer + real Z [REAL]:** one full-screen 16-bit Z-buffer, Pineda edges, top-left rule,
+per-pixel Z interpolation; `HolyGLSubmitTriangle` wired to `RasterTriangleZ`; `HolyGLDrawTriangleZ`/`z_avg`/
+`avg_ndc_z`/`gfx_draw_triangle_fill`/`TileRasterTri`/`TileClear`/`TileResolve`/`RasterSetVertexZ`/`g_hgl_zbuf`
+deleted. **This required a real Compiler.HC fix** (below) — a global pointer's pointee width was never
+registered, so `U16 *p; p[i]` emitted an 8-byte `LDR` (read `0xFFFF` as `-1`) and `U32 *p; p[i]=c` an 8-byte
+`STR` (wrong address). With it fixed the rasterizer passes `RASTER: PASS` (coverage + depth-rejection +
+shared-edge seam) with **no workarounds**. Still open: the **NEON 8-pixel span** (scalar inner loop today).
+
+**Compiler: global-pointer element width [REAL FIX]:** `Compiler.HC` now registers the pointee width for
+global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in by `SelfTestPtrScale`
+(`PTRSCALE: PASS`, byte-level alias check) and `RasterBootCheck` (`RASTER: PASS`).
 
 ---
 

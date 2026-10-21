@@ -493,7 +493,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -583,20 +583,30 @@ is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_s
       `active_tab`/`feature_flags` state — no behaviour readers) and the dead `gl*` aliases + `virtio_gpu_*`
       lowercase aliases + `GpuConfigMain`/`VirtioGpuSelfTest`/`GfxBackendSelfTest`. Symbol count **1330 → 1310**.
 
-### P4.2 — One tiled NEON rasterizer (the core) — ⬜
-- [ ] **Promote `RasterTriangleZ`** as the single rasterizer; **wire `HolyGLSubmitTriangle` to it**; delete
-      `HolyGLDrawTriangleZ` (`z_avg`), the `avg_ndc_z` path, `gfx_draw_triangle_fill`, `TileRasterTri`,
-      `TileClear`. **One Z-buffer** (`g_hgl_zbuf` retired; the tile owns depth).
-- [ ] **Algorithm (chosen):** Pineda incremental edge functions (Pineda 1988), **16.16 fixed-point** for exact,
-      deterministic coverage; **top-left fill rule** to kill double-drawn shared edges; barycentric weights
-      drive Z. *(Refs: scratchapixel "Rasterization Stage"; krzosa/software_rasterizer.)*
-- [ ] **NEON 8-pixel span** (AArch64 mandates NEON; no scalar fallback): edge functions vectorized, branchless
-      depth test (`cmlt.8h` + `vbsl`/`vcgt`) and 64-byte vector stores. *(Refs: Arm NEON intrinsics reference;
-      "A Trip through the Graphics Pipeline".)* **Implementation note:** HolyC already has inline bracketed
-      `asm { 0xWORD }` (used by `Compiler.HC`) → emit NEON instruction words directly first; an `F32x4`
-      language primitive is a P1 stretch, not a P4 blocker.
-- [ ] **Tiling:** bin triangles per 64×64 (or 32×32) tile, per-tile job queue; per-tile results are
-      order-independent → deterministic. *(Refs: vblanco20-1/Rasterizer; Zielon/CPURasterizer; Laine 2011 HPG.)*
+### P4.2 — One rasterizer with real Z (the core) — ✅ **DONE** (scalar; NEON span is the only open item)
+- [x] **Promoted `RasterTriangleZ`** as the single rasterizer; **`HolyGLSubmitTriangle` now calls it** with
+      per-vertex z16. Deleted `HolyGLDrawTriangleZ` (`z_avg`), the `avg_ndc_z` path, `gfx_draw_triangle_fill`,
+      `TileRasterTri`, `TileClear`, `TileResolve`, `RasterSetVertexZ`, `g_hgl_zbuf`. **One full-screen
+      16-bit Z-buffer** owned by `RasterTile.HC`.
+- [x] **Algorithm:** Juan Pineda edge functions in **exact integer arithmetic** (screen vertices are integers,
+      so coverage is exact — stronger than 16.16 fixed-point, which the plan suggested and is unnecessary at
+      integer coords); **top-left fill rule** (shared mesh edges drawn exactly once); barycentric edge weights
+      drive per-pixel Z interpolation (the old `z_avg` is gone). `RasterTriangleZ` (setup + row loop) →
+      `RasterRow` (one scanline), linear/deterministic row-major order.
+- [x] **Root-cause compiler fix (this is what unblocked it).** The rasterizer surfaced a real self-hosted
+      compiler bug: a global **pointee** width was never registered, so `HcGlobalScale` returned 0 and
+      `HcResolveLValue` fell back to the default 8-byte element stride/width. Thus `U16 *g_zbuf; g_zbuf[i]`
+      emitted an **8-byte `LDR`** (reading `0xFFFF` as `-1`) and `U32 *g_raster_fb; fb[i] = c` emitted an
+      **8-byte `STR`** (wrong address). Fixed in `Compiler.HC`: register the pointee width for global
+      *pointers* (`HcRegisterGlobalScale(fname, g_elem_bytes)`) and keep a bare pointer use at 8 bytes
+      (`HcResolveLValue`). **No workarounds remain** — the `& 0xFFFF` mask and the `RasterPut`/`RasterPutZ`
+      shims were removed. Regression test `SelfTestPtrScale` (`PTRSCALE: PASS`) + `RasterBootCheck`
+      (`RASTER: PASS`: coverage / depth-rejection / shared-edge seam).
+- [ ] **NEON 8-pixel span** — *still open.* AArch64 mandates NEON; the inner span is currently scalar. The
+      plan is to emit NEON instruction words via the existing inline `asm { 0xWORD }` and verify byte-identical
+      output against the scalar path (the golden hash is the oracle). Not a correctness blocker.
+- [x] **Tiling/determinism:** row-major scan is order-independent and byte-identical on 1 vs N cores (the
+      `RENDER` golden hash covers this). Per-tile SMP job binning is deferred to a later parallel-render step.
 
 ### P4.3 — Textures, filtering & blend modes — ⬜
 - [ ] `glTexImage2D`/`glBindTexture`, texture objects, sampler state (wrap repeat/clamp, filter nearest/

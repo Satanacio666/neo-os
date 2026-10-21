@@ -526,54 +526,8 @@ U0 gfx_blend_rect(I64 bx, I64 by, I64 bw, I64 bh, U32 col) {
 U0 gfx_draw_rounded_rect(I64 rx, I64 ry, I64 rw, I64 rh, I64 rad, U32 rcol) {
   RenderRoundedRect(rx, ry, rw, rh, rad, rcol);
 }
-U0 gfx_draw_triangle_fill(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 col) {
-  I64 min_x = x0;
-  if (x1 < min_x) min_x = x1;
-  if (x2 < min_x) min_x = x2;
-  I64 max_x = x0;
-  if (x1 > max_x) max_x = x1;
-  if (x2 > max_x) max_x = x2;
-
-  I64 min_y = y0;
-  if (y1 < min_y) min_y = y1;
-  if (y2 < min_y) min_y = y2;
-  I64 max_y = y0;
-  if (y1 > max_y) max_y = y1;
-  if (y2 > max_y) max_y = y2;
-
-  if (min_x < 0) min_x = 0;
-  if (min_y < 0) min_y = 0;
-  if (max_x >= g_canv.width) max_x = g_canv.width - 1;
-  if (max_y >= g_canv.height) max_y = g_canv.height - 1;
-
-  I64 area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-  if (area == 0) {
-    RenderDrawLine(x0, y0, x1, y1, col);
-    RenderDrawLine(x1, y1, x2, y2, col);
-    return;
-  }
-  if (area < 0) {
-    I64 tx = x1; I64 ty = y1;
-    x1 = x2; y1 = y2;
-    x2 = tx; y2 = ty;
-  }
-
-  RenderDirtyExpand(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
-  I64 py = min_y;
-  while (py <= max_y) {
-    I64 px = min_x;
-    while (px <= max_x) {
-      I64 w0 = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
-      I64 w1 = (x0 - x2) * (py - y2) - (y0 - y2) * (px - x2);
-      I64 w2 = (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0);
-      if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-        RenderPutPixel(px, py, col);
-      }
-      px++;
-    }
-    py++;
-  }
-}
+// P4.2: the old flat 2D triangle fill was deleted. 2D and 3D triangles both go
+// through the ONE rasterizer (RasterTile.HC): RasterSetZ(...) + RasterTriangleZ(...).
 U0 gfx_draw_char(I64 px, I64 py, U8 ch, U32 fg, U32 bg) {
   if (ch < 32 || ch > 126) ch = 32;
   if (px < 0 || py < 0 || px + 8 > g_canv.width || py + 16 > g_canv.height) return;
@@ -790,7 +744,12 @@ U0 RenderGoldenScene() {
   gfx_draw_circle_filled(60, 200, 40, 0xFF3DAEE9);
   gfx_draw_rounded_rect(140, 180, 120, 80, 12, 0xFFF1C40F);
   gfx_draw_gradient_v(300, 10, 80, 200, 0xFFFF5555, 0xFF2222FF);
-  gfx_draw_triangle_fill(300, 240, 420, 300, 340, 380, 0xFFA6E3A1);
+  // The one rasterizer (RasterTile.HC) with a flat depth: proves 2D and 3D
+  // triangles share the same path (real per-pixel Z) now.
+  RasterClearZ();
+  RasterSetDepthTest(1);
+  RasterSetZ(30000, 30000, 30000);
+  RasterTriangleZ(300, 240, 420, 300, 340, 380, 0xFFA6E3A1);
   gfx_draw_text(10, 300, "NEOOS GOLDEN FRAME 0123", 0xFFFFFFFF, 0);
 }
 
@@ -803,9 +762,10 @@ U0 RenderBench() {
 
   I64 iters = 2000;
   I64 total_px = 0;
-  // Clear once, then feed strictly decreasing Z so every triangle passes the
-  // depth test in full (otherwise the tile Z-buffer rejects all but the first).
-  RasterClearTile(0xFF101018);
+  // Clear the depth buffer once, then feed strictly decreasing Z so every
+  // triangle passes the depth test in full (otherwise it rejects all but the first).
+  RasterClearZ();
+  RasterSetDepthTest(1);
   I64 zcur = 60000;
   U64 c0 = __mrs_cntvct();
   I64 i = 0;
@@ -813,9 +773,11 @@ U0 RenderBench() {
     I64 ox = i % 40;
     I64 oy = (i * 7) % 40;
     zcur = zcur - 1;
-    total_px = total_px + RasterTriangleZ(5 + ox, 5 + oy, 50, 15, 30, 55, zcur, 0xFFE056FD);
+    RasterSetZ(zcur, zcur, zcur);
+    total_px = total_px + RasterTriangleZ(5 + ox, 5 + oy, 50, 15, 30, 55, 0xFFE056FD);
     zcur = zcur - 1;
-    total_px = total_px + RasterTriangleZ(2, 45, 55, 35, 25, 5, zcur, 0xFF00E676);
+    RasterSetZ(zcur, zcur, zcur);
+    total_px = total_px + RasterTriangleZ(2, 45, 55, 35, 25, 5, 0xFF00E676);
     i++;
   }
   U64 c1 = __mrs_cntvct();

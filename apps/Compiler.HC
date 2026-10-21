@@ -1331,6 +1331,11 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                 if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
                     HcEmit(0xF9400000); // ldr x0, [x0]
                 }
+                // A BARE pointer use must load the 8-byte pointer value; only an
+                // indexed use (`p[i]`) uses the registered pointee width (cur_scale
+                // set above from HcGlobalScale). Without this, `U32 *fb = ...` style
+                // bare reads would load only sizeof(pointee) bytes.
+                if (g_hc_tok != TOK_LBRACKET) cur_scale = 8;
             } else if (cur_st_idx >= 0) {
                 cur_mode = 3; // global struct value: the symbol IS its storage
             } else if (g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_ARROW) {
@@ -2944,6 +2949,12 @@ U0 HcParseProgram() {
                 // struct size — register 8 so the index path below does not fall
                 // back to the struct size. Value arrays stride by element width.
                 if (g_is_arr) HcRegisterGlobalScale(fname, g_is_ptr ? 8 : g_elem_bytes);
+                // A global POINTER also needs its pointee width registered so that
+                // `p[i]` strides by sizeof(pointee) and loads/stores the pointee
+                // width (e.g. `U16 *zb; zb[i]` must be a 2-byte LDRH, not an 8-byte
+                // LDR). Without this, HcGlobalScale returns 0 and indexing falls
+                // back to the default 8-byte stride/width — the P4.2 rasterizer bug.
+                else if (g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
                     I64 g_init_pos = g_hc_tok_pos; // start of the initializer expression

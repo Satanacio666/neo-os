@@ -28,6 +28,14 @@ check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
 check "C JIT errors"        0 "$(count '\[JIT\] Error')"
 check "unresolved forward refs" 0 "$(count 'unresolved reference')"
+# RASTER: is printed by RasterTile.HC's boot self-check (Stage 5), i.e. in $LOG.
+raline="$(grep -a 'RASTER: ' "$LOG" 2>/dev/null | tail -1)"
+if printf '%s' "$raline" | grep -aq 'PASS'; then
+    echo "  [PASS] $raline (single rasterizer boot check)"
+else
+    echo "  [FAIL] rasterizer: ${raline:-<none>} (want RASTER: PASS)"
+    fail=1
+fi
 
 echo "== in-guest SELFTEST (one command, apps/SelfTest.HC) =="
 out="$(python3 "$ROOT/scripts/neo_uart.py" --sentinel "$SENTINEL" --timeout 120 'selftest' 2>/dev/null || true)"
@@ -128,6 +136,13 @@ else
         echo "  [PASS] $rdline (golden-frame hash)"
     else
         echo "  [FAIL] render golden-frame: ${rdline:-<none>} (want RENDER: PASS)"
+        fail=1
+    fi
+    psline="$(printf '%s\n' "$out" | grep -a 'PTRSCALE: ' | tail -1)"
+    if printf '%s' "$psline" | grep -aq 'PASS'; then
+        echo "  [PASS] $psline (global-pointer element width)"
+    else
+        echo "  [FAIL] pointer element width: ${psline:-<none>} (want PTRSCALE: PASS)"
         fail=1
     fi
 fi

@@ -1,318 +1,244 @@
-// RasterTile.HC - Sovereign L1-Tiled Pineda Edge & 16-Bit Z-Buffer Rasterizer
-// NeoOS AArch64 Ring 0 SASOS Native JIT Execution
-// Operates within 24KB L1 Data Cache Scratchpad (16KB Color + 8KB 16-bit Depth)
+// ==============================================================================
+// apps/RasterTile.HC - NeoOS single rasterizer (P4.2)
+// ------------------------------------------------------------------------------
+// The ONE triangle rasterizer for the whole system (2D fills and HolyGL 3D both
+// go through RasterTriangleZ). Properties:
+//   * Real per-pixel Z: a single full-screen 16-bit depth buffer owned here.
+//   * Juan Pineda edge functions, exact integer arithmetic.
+//   * Top-left fill rule: shared mesh edges are drawn exactly once.
+//   * Deterministic row-major scan, identical on 1 vs N cores.
+//
+// Structure: RasterTriangleZ (setup + row loop) -> RasterRow (one scanline).
+// P4.2 depended on a Compiler.HC fix: indexing a global POINTER must stride by
+// and load/store sizeof(pointee) (HcResolveLValue / HcRegisterGlobalScale). With
+// that fixed, `g_zbuf[i]` is a 2-byte LDRH and `g_raster_fb[i]` a 4-byte STR — no
+// masks or helper shims needed. RasterBootCheck (below) is the regression test.
+// ==============================================================================
 
 I64 TILE_W = 64;
 I64 TILE_H = 64;
-I64 TILE_PIXELS = 4096;
-I64 TILE_COLOR_BYTES = 16384;
-I64 TILE_DEPTH_BYTES = 8192;
 
-// 24KB L1 Cache Scratchpad: 16KB ARGB8888 Color + 8KB U16 Z-Buffer
-U32 g_tile_cbuf[4096];
-U16 g_tile_zbuf[4096];
+U16 *g_zbuf = NULL;
+I64 g_zbuf_w = 0;
+I64 g_zbuf_h = 0;
+I64 g_zbuf_cap = 0;
 
-I64 g_tri_z0 = 32768;
-I64 g_tri_z1 = 32768;
-I64 g_tri_z2 = 32768;
-I64 g_tri_use_vertex_z = 0;
+I64 g_raster_z0 = 0;
+I64 g_raster_z1 = 0;
+I64 g_raster_z2 = 0;
+I64 g_raster_depth_test = 1;
 
-// Juan Pineda Edge Function: evaluates which side of edge (V0->V1) point (px, py) lies
-I64 PinedaEdge(I64 x0, I64 y0, I64 x1, I64 y1, I64 px, I64 py) {
-  return (px - x0) * (y1 - y0) - (py - y0) * (x1 - x0);
-}
+// Per-triangle job state for RasterRow (single-threaded renderer).
+U32 *g_raster_fb = NULL;
+I64 g_raster_pitch = 0;
+I64 g_raster_cw = 0;
+I64 g_raster_min_x = 0;
+I64 g_raster_max_x = 0;
+I64 g_rj_ax = 0; I64 g_rj_ay = 0; I64 g_rj_az = 0;
+I64 g_rj_bx = 0; I64 g_rj_by = 0; I64 g_rj_bz = 0;
+I64 g_rj_cx = 0; I64 g_rj_cy = 0; I64 g_rj_cz = 0;
+I64 g_rj_b0 = 0;
+I64 g_rj_b1 = 0;
+I64 g_rj_b2 = 0;
+I64 g_rj_area = 1;
+U32 g_rj_color = 0;
 
-// Clear both L1 color buffer and 16-bit depth buffer (0xFFFF = far plane)
-U0 RasterClearTile(U32 bg_col) {
-  I64 rc_i = 0;
-  while (rc_i < 4096) {
-    g_tile_cbuf[rc_i] = bg_col;
-    g_tile_zbuf[rc_i] = 0xFFFF;
-    rc_i++;
-  }
-}
-
-// Clear external scratchpad plus internal Z-buffer
-U0 TileClear(U32 *scratchpad, U32 clear_color) {
-  I64 tc_i = 0;
-  while (tc_i < 4096) {
-    if (scratchpad) scratchpad[tc_i] = clear_color;
-    g_tile_cbuf[tc_i] = clear_color;
-    g_tile_zbuf[tc_i] = 0xFFFF;
-    tc_i++;
-  }
-}
-
-U0 RasterSetVertexZ(I64 z0, I64 z1, I64 z2) {
+U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
   if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
   if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
   if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
-  g_tri_z0 = z0;
-  g_tri_z1 = z1;
-  g_tri_z2 = z2;
-  g_tri_use_vertex_z = 1;
+  g_raster_z0 = z0;
+  g_raster_z1 = z1;
+  g_raster_z2 = z2;
 }
 
-// Z-buffered Pineda triangle rasterizer (8 args in X0..X7)
-// Interpolates Z across the triangle and tests z < g_tile_zbuf[idx]
-I64 RasterTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, I64 z_val, U32 color) {
-  I64 min_x = x0;
-  if (x1 < min_x) min_x = x1;
-  if (x2 < min_x) min_x = x2;
+U0 RasterSetDepthTest(I64 en) { g_raster_depth_test = en ? 1 : 0; }
+I64 RasterGetDepthTest() { return g_raster_depth_test; }
 
-  I64 max_x = x0;
-  if (x1 > max_x) max_x = x1;
-  if (x2 > max_x) max_x = x2;
-
-  I64 min_y = y0;
-  if (y1 < min_y) min_y = y1;
-  if (y2 < min_y) min_y = y2;
-
-  I64 max_y = y0;
-  if (y1 > max_y) max_y = y1;
-  if (y2 > max_y) max_y = y2;
-
-  if (min_x < 0) min_x = 0;
-  if (max_x > 64) max_x = 64;
-  if (min_y < 0) min_y = 0;
-  if (max_y > 64) max_y = 64;
-
-  if (min_x >= max_x || min_y >= max_y) {
-    g_tri_use_vertex_z = 0;
-    return 0;
+U0 RasterInit() {
+  I64 w = gfx_get_canvas_width();
+  I64 h = gfx_get_canvas_height();
+  if (w <= 0) w = 1024;
+  if (h <= 0) h = 768;
+  if (g_zbuf && g_zbuf_w == w && g_zbuf_h == h) return;
+  if (g_zbuf && (w * h > g_zbuf_cap)) {
+    kfree(g_zbuf);
+    g_zbuf = NULL;
   }
-
-  I64 z_a = z_val;
-  I64 z_b = z_val;
-  I64 z_c = z_val;
-  if (g_tri_use_vertex_z) {
-    z_a = g_tri_z0;
-    z_b = g_tri_z1;
-    z_c = g_tri_z2;
-    g_tri_use_vertex_z = 0;
+  if (!g_zbuf) {
+    g_zbuf = kmalloc(w * h * 2);
+    g_zbuf_cap = w * h;
   }
+  g_zbuf_w = w;
+  g_zbuf_h = h;
+}
 
-  I64 area = PinedaEdge(x0, y0, x1, y1, x2, y2);
+U0 RasterClearZ() {
+  RasterInit();
+  if (!g_zbuf) return;
+  memset(g_zbuf, 0xFF, g_zbuf_w * g_zbuf_h * 2);
+}
+
+I64 PinedaEdge(I64 ax, I64 ay, I64 bx, I64 by, I64 px, I64 py) {
+  return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+I64 RasterTopLeft(I64 ax, I64 ay, I64 bx, I64 by) {
+  I64 dx = bx - ax;
+  I64 dy = by - ay;
+  if (dy > 0) return 1;
+  if (dy == 0 && dx < 0) return 1;
+  return 0;
+}
+
+// Fill one scanline of the current triangle. Returns pixels drawn.
+I64 RasterRow(I64 yy) {
+  I64 rowoff = yy * g_raster_pitch;
+  I64 zrowoff = yy * g_raster_cw;
+  I64 xx = g_raster_min_x;
+  I64 drawn = 0;
+  while (xx < g_raster_max_x) {
+    I64 w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
+    I64 w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
+    I64 w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
+    if ((w0 + g_rj_b0) >= 0 && (w1 + g_rj_b1) >= 0 && (w2 + g_rj_b2) >= 0) {
+      I64 pz = (w0 * g_rj_az + w1 * g_rj_bz + w2 * g_rj_cz) / g_rj_area;
+      if (pz < 0) pz = 0;
+      if (pz > 65534) pz = 65534;
+      I64 zi = zrowoff + xx;
+      if (g_raster_depth_test == 0 || pz < g_zbuf[zi]) {
+        if (g_raster_depth_test != 0) g_zbuf[zi] = pz;
+        g_raster_fb[rowoff + xx] = g_rj_color;
+        drawn = drawn + 1;
+      }
+    }
+    xx = xx + 1;
+  }
+  return drawn;
+}
+
+// Rasterize one screen-space triangle with per-vertex Z (set via RasterSetZ).
+I64 RasterTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
+  RasterInit();
+  if (!g_zbuf) return 0;
+  U32 *fb = GfxDeviceTarget();
+  if (!fb) return 0;
+  I64 pitch = gfx_get_canvas_pitch();
+  I64 cw = g_zbuf_w;
+  I64 ch = g_zbuf_h;
+
+  I64 ax = x0; I64 ay = y0; I64 az = g_raster_z0;
+  I64 bx = x1; I64 by = y1; I64 bz = g_raster_z1;
+  I64 cx = x2; I64 cy = y2; I64 cz = g_raster_z2;
+
+  I64 area = PinedaEdge(ax, ay, bx, by, cx, cy);
   if (area == 0) return 0;
   if (area < 0) {
-    I64 tx = x1; I64 ty = y1; I64 tz = z_b;
-    x1 = x2; y1 = y2; z_b = z_c;
-    x2 = tx; y2 = ty; z_c = tz;
-    area = -area;
+    I64 sw = bx; bx = cx; cx = sw;
+    sw = by; by = cy; cy = sw;
+    sw = bz; bz = cz; cz = sw;
+    area = 0 - area;
   }
 
-  // Incremental Pineda step deltas
-  I64 a01 = y1 - y0; I64 b01 = x0 - x1;
-  I64 a12 = y2 - y1; I64 b12 = x1 - x2;
-  I64 a20 = y0 - y2; I64 b20 = x2 - x0;
-
-  I64 w0_row = PinedaEdge(x1, y1, x2, y2, min_x, min_y);
-  I64 w1_row = PinedaEdge(x2, y2, x0, y0, min_x, min_y);
-  I64 w2_row = PinedaEdge(x0, y0, x1, y1, min_x, min_y);
-
-  I64 pixels_drawn = 0;
-  I64 rt_py = min_y;
-  while (rt_py < max_y) {
-    I64 row_off = rt_py * 64;
-    I64 w0 = w0_row;
-    I64 w1 = w1_row;
-    I64 w2 = w2_row;
-
-    I64 rt_px = min_x;
-    while (rt_px < max_x) {
-      if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-        I64 pz = (w0 * z_a + w1 * z_b + w2 * z_c) / area;
-        if (pz < 0) pz = 0;
-        if (pz > 65534) pz = 65534;
-        I64 idx = row_off + rt_px;
-        if (pz < g_tile_zbuf[idx]) {
-          g_tile_zbuf[idx] = pz;
-          g_tile_cbuf[idx] = color;
-          pixels_drawn = pixels_drawn + 1;
-        }
-      }
-      w0 = w0 + a12;
-      w1 = w1 + a20;
-      w2 = w2 + a01;
-      rt_px++;
-    }
-    w0_row = w0_row + b12;
-    w1_row = w1_row + b20;
-    w2_row = w2_row + b01;
-    rt_py++;
-  }
-
-  return pixels_drawn;
-}
-
-// Rasterize single triangle into 64x64 L1 cache tile (updates scratchpad and g_tile_cbuf)
-I64 TileRasterTri(U32 *scratchpad, I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
-  I64 min_x = x0;
-  if (x1 < min_x) min_x = x1;
-  if (x2 < min_x) min_x = x2;
-
-  I64 max_x = x0;
-  if (x1 > max_x) max_x = x1;
-  if (x2 > max_x) max_x = x2;
-
-  I64 min_y = y0;
-  if (y1 < min_y) min_y = y1;
-  if (y2 < min_y) min_y = y2;
-
-  I64 max_y = y0;
-  if (y1 > max_y) max_y = y1;
-  if (y2 > max_y) max_y = y2;
-
+  I64 min_x = ax; if (bx < min_x) min_x = bx; if (cx < min_x) min_x = cx;
+  I64 max_x = ax; if (bx > max_x) max_x = bx; if (cx > max_x) max_x = cx;
+  I64 min_y = ay; if (by < min_y) min_y = by; if (cy < min_y) min_y = cy;
+  I64 max_y = ay; if (by > max_y) max_y = by; if (cy > max_y) max_y = cy;
+  max_x = max_x + 1;
+  max_y = max_y + 1;
   if (min_x < 0) min_x = 0;
-  if (max_x > 64) max_x = 64;
   if (min_y < 0) min_y = 0;
-  if (max_y > 64) max_y = 64;
-
+  if (max_x > cw) max_x = cw;
+  if (max_y > ch) max_y = ch;
   if (min_x >= max_x || min_y >= max_y) return 0;
 
-  I64 area = PinedaEdge(x0, y0, x1, y1, x2, y2);
-  if (area == 0) return 0;
-  if (area < 0) {
-    I64 tx = x1; I64 ty = y1;
-    x1 = x2; y1 = y2;
-    x2 = tx; y2 = ty;
+  g_raster_fb = fb;
+  g_raster_pitch = pitch;
+  g_raster_cw = cw;
+  g_raster_min_x = min_x;
+  g_raster_max_x = max_x;
+  g_rj_ax = ax; g_rj_ay = ay; g_rj_az = az;
+  g_rj_bx = bx; g_rj_by = by; g_rj_bz = bz;
+  g_rj_cx = cx; g_rj_cy = cy; g_rj_cz = cz;
+  g_rj_b0 = -1; if (RasterTopLeft(bx, by, cx, cy) != 0) g_rj_b0 = 0;
+  g_rj_b1 = -1; if (RasterTopLeft(cx, cy, ax, ay) != 0) g_rj_b1 = 0;
+  g_rj_b2 = -1; if (RasterTopLeft(ax, ay, bx, by) != 0) g_rj_b2 = 0;
+  g_rj_area = area;
+  g_rj_color = color;
+
+  I64 drawn = 0;
+  for (I64 yy = min_y; yy < max_y; yy = yy + 1) {
+    drawn = drawn + RasterRow(yy);
   }
-
-  I64 a01 = y1 - y0; I64 b01 = x0 - x1;
-  I64 a12 = y2 - y1; I64 b12 = x1 - x2;
-  I64 a20 = y0 - y2; I64 b20 = x2 - x0;
-
-  I64 w0_row = PinedaEdge(x1, y1, x2, y2, min_x, min_y);
-  I64 w1_row = PinedaEdge(x2, y2, x0, y0, min_x, min_y);
-  I64 w2_row = PinedaEdge(x0, y0, x1, y1, min_x, min_y);
-
-  I64 pixels_drawn = 0;
-  I64 tr_py = min_y;
-  while (tr_py < max_y) {
-    I64 row_off = tr_py * 64;
-    I64 w0 = w0_row;
-    I64 w1 = w1_row;
-    I64 w2 = w2_row;
-
-    I64 tr_px = min_x;
-    while (tr_px < max_x) {
-      if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-        if (scratchpad) scratchpad[row_off + tr_px] = color;
-        g_tile_cbuf[row_off + tr_px] = color;
-        pixels_drawn = pixels_drawn + 1;
-      }
-      w0 = w0 + a12;
-      w1 = w1 + a20;
-      w2 = w2 + a01;
-      tr_px++;
-    }
-    w0_row = w0_row + b12;
-    w1_row = w1_row + b20;
-    w2_row = w2_row + b01;
-    tr_py++;
-  }
-
-  return pixels_drawn;
+  return drawn;
 }
 
-// Stream 16KB color block from L1 cache directly to target framebuffer
-U0 TileResolve(U32 *scratchpad, I64 tile_x, I64 tile_y, U32 *fb, I64 pitch) {
-  if (!fb) return;
-  U32 *src = scratchpad ? scratchpad : g_tile_cbuf;
-  I64 tr_y = 0;
-  while (tr_y < 64) {
-    I64 fb_idx = (tile_y + tr_y) * pitch + tile_x;
-    I64 sp_idx = tr_y * 64;
-    I64 tr_x = 0;
-    while (tr_x < 64) {
-      fb[fb_idx + tr_x] = src[sp_idx + tr_x];
-      tr_x++;
+U0 RasterBootCheck() {
+  RasterInit();
+  I64 ok = 1;
+  I64 pit = gfx_get_canvas_pitch();
+
+  RasterClearZ(); RasterSetDepthTest(0); RasterSetZ(1, 1, 1);
+  I64 bn = RasterTriangleZ(100, 100, 300, 100, 200, 300, 0xFF00FF00);
+  doldoc_printf("[RASTER-DIAG] big n=%lld r0=0x%X r64=0x%X r150=0x%X r192=0x%X r290=0x%X\n",
+                bn, g_raster_fb[0 * pit + 200], g_raster_fb[64 * pit + 200],
+                g_raster_fb[150 * pit + 200], g_raster_fb[192 * pit + 200], g_raster_fb[290 * pit + 200]);
+
+  RasterSetDepthTest(1);
+  RasterClearZ();
+  RasterSetZ(1, 1, 1);
+  I64 n = RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFFFF00FF);
+  if (n < 700 || n > 900) { ok = 0; doldoc_printf("[RASTER] coverage n=%lld (want ~800)\n", n); }
+  if (g_raster_fb[30 * pit + 40] != 0xFFFF00FF) { ok = 0; doldoc_print("[RASTER] center pixel not filled\n"); }
+
+  RasterClearZ();
+  RasterSetZ(100, 100, 100);
+  RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFF00FF00);
+  RasterSetZ(5000, 5000, 5000);
+  RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFFFF0000);
+  if (g_raster_fb[30 * pit + 40] != 0xFF00FF00) { ok = 0; doldoc_print("[RASTER] depth rejection failed\n"); }
+
+  // Two triangles sharing the diagonal (100,100)-(200,200) tile the square
+  // [100,200)x[100,200); every pixel must be filled.
+  RasterClearZ();
+  RasterSetZ(1, 1, 1);
+  I64 n1 = RasterTriangleZ(100, 100, 200, 100, 200, 200, 0xFFF1C40F);
+  I64 n2 = RasterTriangleZ(100, 100, 200, 200, 100, 200, 0xFFF1C40F);
+  doldoc_printf("[RASTER-DIAG] seam n1=%lld n2=%lld\n", n1, n2);
+  I64 gaps = 0;
+  I64 gy = 100;
+  while (gy < 200) {
+    I64 gx = 100;
+    while (gx < 200) {
+      if (g_raster_fb[gy * pit + gx] != 0xFFF1C40F) gaps = gaps + 1;
+      gx++;
     }
-    tr_y++;
+    gy++;
+  }
+  if (gaps != 0) { ok = 0; doldoc_printf("[RASTER] shared-edge gaps=%lld\n", gaps); }
+
+  if (ok != 0) {
+    doldoc_print("RASTER: PASS\n");
+  } else {
+    doldoc_print("RASTER: FAIL\n");
   }
 }
 
 U0 RasterTileMain() {
   doldoc_print("\n$FG,CYAN$==============================================================$FG$\n");
-  doldoc_print("$FG,WHITE$   ✦ NeoOS Sovereign L1-Tiled HolyC Rasterizer (RasterTile.HC) ✦$FG$\n");
+  doldoc_print("$FG,WHITE$   NeoOS Single Rasterizer (RasterTile.HC, P4.2)$FG$\n");
   doldoc_print("$FG,CYAN$==============================================================$FG$\n");
-  doldoc_print(" Architecture: Juan Pineda Incremental Edge + 16-Bit Z-Buffer\n");
-  doldoc_print(" Cache Target: 64x64 Tiles (16KB ARGB Color + 8KB Z-16 Depth Buffer)\n");
-  doldoc_print(" Elimination : ZERO C Fallbacks | Pure AArch64 HolyC Execution\n");
+  doldoc_print(" Algorithm: Juan Pineda incremental edges + top-left rule\n");
+  doldoc_print(" Depth    : ONE full-screen 16-bit Z-buffer (owned here)\n");
+  doldoc_print(" Order    : row-major, deterministic (1 vs N cores)\n");
   doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");
-
-  doldoc_print(" [1/4] Benchmarking Z-Buffered Pineda Evaluation (500 Triangles)...\n");
-  I64 start_us = timer_get_uptime_us();
-  I64 total_pixels = 0;
-
-  I64 rt_iter = 0;
-  while (rt_iter < 100) {
-    RasterClearTile(0xFF1B1E20);
-    I64 p1 = RasterTriangleZ(10, 10, 50, 15, 30, 55, 4000, 0xFFE056FD);
-    I64 p2 = RasterTriangleZ(5, 45, 55, 35, 25, 5, 3000, 0xFF00E676);
-    I64 p3 = RasterTriangleZ(15, 20, 40, 50, 60, 25, 2000, 0xFF3DAEE9);
-    I64 p4 = RasterTriangleZ(2, 5, 58, 2, 30, 60, 5000, 0xFFF1C40F);
-    I64 p5 = RasterTriangleZ(8, 55, 52, 58, 30, 12, 1000, 0xFFFF5555);
-    total_pixels = total_pixels + p1 + p2 + p3 + p4 + p5;
-    rt_iter++;
-  }
-
-  I64 end_us = timer_get_uptime_us();
-  I64 elapsed_us = end_us - start_us;
-  if (elapsed_us <= 0) elapsed_us = 1;
-
-  doldoc_printf("  $FG,GREEN$[PASS]$FG$ Z-Rasterized %lld pixels across 500 triangles in %lld us\n",
-                total_pixels, elapsed_us);
-
-  I64 mpix_sec = (total_pixels * 1000) / elapsed_us;
-  doldoc_printf("  $FG,CYAN$[PERF]$FG$ Throughput: %lld Kpix/sec in pure HolyC JIT\n", mpix_sec);
-
-  doldoc_print(" [2/4] Verifying 16-Bit Depth Occlusion (Near vs Far Triangle)...\n");
-  RasterClearTile(0xFF000000);
-  // Draw near triangle (z = 1000, Green) then far overlapping triangle (z = 5000, Red)
-  RasterTriangleZ(10, 10, 50, 10, 30, 50, 1000, 0xFF00FF00);
-  RasterTriangleZ(10, 10, 50, 10, 30, 50, 5000, 0xFFFF0000);
-  U32 center_col = g_tile_cbuf[25 * 64 + 30];
-  U16 center_z   = g_tile_zbuf[25 * 64 + 30];
-  if (center_col == 0xFF00FF00 && center_z == 1000) {
-    doldoc_print("  $FG,GREEN$[PASS]$FG$ 16-bit Z-buffer depth rejection verified (far triangle occluded).\n");
-  } else {
-    doldoc_printf("  $FG,RED$[FAIL]$FG$ Z-buffer occlusion mismatch: col=0x%X z=%lld\n", center_col, (I64)center_z);
-  }
-
-  doldoc_print(" [3/4] Live Framebuffer Tile Resolve & Streaming Blit...\n");
-  U32 *fb = gfx_get_backbuffer();
-  I64 pitch = gfx_get_canvas_pitch();
-  I64 w = gfx_get_canvas_width();
-  I64 h = gfx_get_canvas_height();
-
-  if (fb && pitch > 0) {
-    I64 target_x = w - 80;
-    I64 target_y = 10;
-    if (target_x > 0 && target_y > 0 && target_x + 64 < w && target_y + 64 < h) {
-      TileResolve(g_tile_cbuf, target_x, target_y, fb, pitch);
-      gfx_dirty_expand(target_x, target_y, 64, 64);
-      doldoc_printf("  $FG,GREEN$[PASS]$FG$ Tile resolve streamed directly to backbuffer (%lld, %lld)\n",
-                    target_x, target_y);
-    }
-  }
-
-  doldoc_print(" [4/4] Juan Pineda Analytical Precision Verification...\n");
-  I64 test_e0 = PinedaEdge(0, 0, 10, 0, 5, 5);
-  I64 test_e1 = PinedaEdge(0, 0, 0, 10, 5, 5);
-  if (test_e0 == -50 && test_e1 == 50) {
-    doldoc_print("  $FG,GREEN$[PASS]$FG$ Analytical edge equations exact and verified.\n");
-  } else {
-    doldoc_print("  $FG,RED$[FAIL]$FG$ Analytical edge mismatch!\n");
-  }
-
-  doldoc_print("$FG,CYAN$--------------------------------------------------------------$FG$\n");
-  doldoc_print(" Actions: $BT,\"Re-run Raster Benchmark\",LM=\"run RasterTile.HC\"$  $BT,\"Vector Font\",LM=\"run FontVector.HC\"$  $BT,\"Menu\",LM=\"menu\"$\n");
+  RasterBootCheck();
   doldoc_print("$FG,CYAN$==============================================================$FG$\n\n");
 }
 
 if (g_kernel_booting) {
-  RasterClearTile(0xFF1B1E20);
+  RasterInit();
+  RasterBootCheck();
 } else {
   RasterTileMain();
 }
