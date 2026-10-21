@@ -55,7 +55,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | Pri | System | Status | Gate to exit |
 |---|---|---|---|
 | **P0** | Observability & debug harness | ✅ DONE | — |
-| **P1** | Compiler (self-host) | ✅ **self-hosting**; script-mode gaps remain | both engines agree on all 34 modules + Compiler.HC compiles itself |
+| **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; battery 65/65; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
 | **P2** | Minimal bootstrap / fix the bootstrap | 🟡 C confined to `boot/`; still live runtime | C = `boot/main.c`+`boot/uefi`+seed+minimal substrate |
 | **P3** | Kernel correctness | ⬜ | timer IRQ fires; real scheduler; one allocator/table/HAL |
 | **P4** | Rendering unification (merges) | ⬜ | one `GfxDevice` + one tiled rasterizer + one font |

@@ -55,7 +55,7 @@ task.md Phases 8–11)`.
 
 ---
 
-## P1 — Compiler (self-hosting) — ✅ **self-hosting**; script-mode gaps remain
+## P1 — Compiler (self-hosting) — ✅ **COMPLETE** (self-hosts; REPL/`run` on Compiler.HC; battery 65/65; parity PASS)
 
 **Goal:** `apps/Compiler.HC` compiles every `.HC` module *and itself*; C JIT only seeds it.
 `(from docs/master/00-MASTER-CONSOLIDATED-PLAN §3/§6 P1, P1-DELEGATION §0, 05-NEW-TASKLIST, 04-UPDATED-PRIORITIES)`
@@ -72,30 +72,32 @@ task.md Phases 8–11)`.
 - [x] Flip done (`0b2db9d`): `KernelInit.HC` sets `g_hc_ready = 1` after `Compiler.HC`; later modules route
       through `CompilerCompileAndRun`. `p1-parity.sh` PASS (34 modules, engines agree).
 
-### P1.1 — Close the script-mode gaps (the remaining P1 work)
-Routing the shell REPL/`run` through `CompilerCompileAndRun` currently yields **61/65** battery cases.
-`Shell.HC:732,762` still uses the C JIT for the runtime REPL. Missing capabilities: `(from docs/01-REALITY-AUDIT §B,
-docs/master/NEXT-STEPS, P1-DELEGATION §7)`
-- [ ] Function-pointer **calls** in script mode.
-- [ ] **F64 struct expressions** (`a.x * b.y - …` over F64 members).
-- [ ] **Forward structs** in script mode.
-- [ ] **Cross-unit interference** (state leaking between successive compiles).
-- [ ] Then route `Shell.HC` REPL/`run` through `CompilerCompileAndRun`; retire the C JIT as runtime REPL.
+### P1.1 — Close the script-mode gaps ✅ DONE (commit `f5b6da8`)
+Routing the shell REPL/`run` through `CompilerCompileAndRun` now yields **65/65** battery cases.
+`Shell.HC` routes the REPL and `run <file>` through `CompilerCompileAndRun` when `g_hc_ready`.
+- [x] Function-pointer **calls** in script mode (`symbols_is_var` routes `fp(args)` to the indirect `blr` path).
+- [x] **F64 struct expressions** (`a.x * b.y - …`) — `&`/`sizeof`/`*` now clear the stale `g_hc_expr_float`.
+- [x] **Forward structs** in script mode (`HcPrescanStructs` registers struct/class defs before the parse).
+- [x] **Cross-unit interference** — a function definition may override a leaked VARIABLE but never an
+      existing function (`symbols_is_func`), preserving self-host while fixing REPL name collisions.
+- [x] Global pointer-to-struct member offsets (`HcRegisterGlobalPtr`/`HcGlobalIsPtr`).
 
-### P1.2 — Remaining compiler capability (only if a module needs it)
+### P1.2 — Remaining compiler capability ✅ DONE (commits `83426d9`, `e2c0f1f`)
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P1.3, 04-UPDATED-PRIORITIES §B, P1-DELEGATION §7)`
-- [ ] `#include` **inside `Compiler.HC`** (mirror the C JIT's `expand_includes`).
-- [ ] Diagnostics (`file:line`, type errors).
-- [ ] `auto` — support or hard-error (currently tokenizes, not consumed → hang risk).
-- [ ] Table literals `{…}`; expression/string global initializers (if a module needs them).
-- [ ] Global forward cell via `symbols_lookup_or_reserve`.
-- [ ] >8-arg calls: currently a **hard error** (`0738474`); optionally spill to stack.
+- [x] `#include "file"` **inside `Compiler.HC`** (`HcExpandIncludes` splices VFS files, recursive, mirrors `expand_includes`).
+- [x] Diagnostics — internal errors report the 1-based source line (`HcLineOf`).
+- [x] `auto` — accepted as a declaration type (behaves as I64); no more error/hang.
+- [x] Table literals `{…}` — array initializer lists for globals and locals (1-D, literal elements).
+- [x] Global forward cell — works (`forward_global_var` passes; `symbols_var_cell`/`symbols_lookup_or_reserve`).
+- [ ] >8-arg calls: remains a **clean hard error** (`g_hc_error`), matching the C JIT's 8-arg (X0–X7) limit.
+      Stack spill is deliberately deferred (would diverge from the C JIT and the `known_over8_args` battery case).
 
 ### P1.3 — Retire the C seed (per the no-blob decision)
 - [x] Seed decision = **Option A** (C seed confined to `boot/seed/`, commit `708c92a`). **No blob.** `(from 00-MASTER-CONSOLIDATED-PLAN §4/§8)`
 - [ ] Later (P2/P8): minimize the seed (Option B) or true self-host-from-source (Option C).
 
-**P1 exit:** script-mode parity (65/65) + REPL on `CompilerCompileAndRun` + golden gate PASS.
+**P1 exit — MET ✅:** script-mode parity (65/65) + REPL/`run` on `CompilerCompileAndRun` + golden gate PASS +
+`SELF-HOST: PASS` + `p1-parity` PASS + token parity (71). Verified at commit `e2c0f1f`.
 
 ---
 

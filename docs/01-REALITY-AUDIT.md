@@ -38,9 +38,10 @@ not in the boot list); C in build = **9** (`boot/main.c`, `boot/seed/{lexer,tabl
 | Duplicated tokenizer / `apps/Lexer.HC` dead | **[PARTIAL]** `apps/Lexer.HC` no longer exists; `TOK_*` unified to `boot/seed/tok.h` + `check-token-parity.py` (71 tokens). |
 | `>8` args unsupported | **[REAL]** hard error (documented; matches C JIT). |
 | **Compiler can compile itself** | **[REAL]** `hcrun Compiler.HC → 0` (self-host). Was NOT true before this engagement. |
-| Compiler script-mode = C JIT (REPL/`run`) | **[PARTIAL]** Compiler.HC handles bare expressions & modules, but the REPL still uses the C JIT (`Shell.HC:732,762`): `.HC` REPL is 61/65, missing fnptr calls, F64 struct *expressions*, forward structs, cross-unit interference. |
+| Compiler script-mode = C JIT (REPL/`run`) | **[REAL]** — FIXED. The REPL and `run <file>` now route through `CompilerCompileAndRun` when `g_hc_ready`, and the full JIT battery passes **65/65** under `Compiler.HC` (was 61/65). `p1-parity` PASS. |
+| Compiler language coverage (script mode) | **[REAL]** `auto`, array initializer lists `{…}` (globals + locals, 1-D), `#include "file"` (VFS-spliced), forward structs, function-pointer calls, F64 struct expressions, and line-number diagnostics all work. |
 | **Stage-2 standalone binary blob** (task.md Phase 16, FUTURE Task 5.4) | **[SUPERSEDED]/REMOVED** — master plan §4 rejects it; seed lives in `boot/seed/`. |
-| C JIT (`jit_arm64.c`) decommissioned | **[MISSING]** it is the live seed (Option A) and the runtime REPL compiler. |
+| C JIT (`jit_arm64.c`) decommissioned | **[PARTIAL]** it is still the live seed (Option A) that compiles `Compiler.HC` at boot, but it is **no longer the runtime REPL/`run` compiler**. |
 
 ## C. Kernel
 
