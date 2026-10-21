@@ -76,9 +76,9 @@ P9/P10. The old docs also used "Phase 0–17" (task.md), "Steps 1.0–6.0" (fore
 
 ## 4. The bootstrap (the seed-compiler question — NO blob)
 
-**Paradox:** `Compiler.HC` must be compiled before it can compile anything. Today the C JIT
-(`boot/seed/jit_arm64.c`) compiles `Compiler.HC` + the 6 modules it needs; `Compiler.HC` then compiles the
-remaining 27 (the "flip", commit `0b2db9d`).
+**Paradox:** `Compiler.HC` must be compiled before it can compile anything. The C JIT
+(`boot/seed/jit_arm64.c`) compiles **only `Compiler.HC`**; `Compiler.HC` then compiles **every** other `.HC`
+module (the "flip", now P2.7-complete — the seed compiles 1 module, not 7).
 
 **DECIDED — Option A (implemented, `708c92a`).** The seed compiler is *necessary* C and lives in `boot/seed/`.
 **The "Stage-2 binary blob" is REMOVED** — it came from the superseded `FUTURE_IMPLEMENTATIONS_MASTER_ROADMAP.md`

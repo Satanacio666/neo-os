@@ -42,20 +42,17 @@ U0 KernelInitMain() {
     doldoc_print("======================================================\n\n");
 
     // Stage 1: Architecture HAL, Memory, Containers & Compiler.
-    // NOTE (P2.7): Compiler.HC now compiles KHeap.HC/Symbols.HC (the "function after
-    // a top-level statement" parser bug is fixed), but the self-hosted compiler still
-    // MIS-COMPILES KHeap.HC at runtime (C-heap canary corruption), so the C-JIT flip
-    // is kept after KHeap/Symbols until that codegen bug is fixed.
+    // P2.7: the C JIT compiles ONLY Compiler.HC; the self-hosted compiler then
+    // compiles every other .HC module (including the HAL, heap and symbol table).
     KInitLog("Stage 1: Architecture HAL, Memory, Containers & Compiler...");
+    KInitLoad("Compiler.HC");
+    g_hc_ready = 1;
     KInitLoad("HalPlatform.HC");
     KInitLoad("Timer.HC");
     KInitLoad("Gic.HC");
     KInitLoad("Exceptions.HC");
     KInitLoad("KHeap.HC");
     KInitLoad("Symbols.HC");
-    // Lexer.HC removed: orphan third tokenizer (Compiler.HC uses its own HcLexNext).
-    KInitLoad("Compiler.HC");
-    g_hc_ready = 1;
     KInitLoad("SelfTest.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography

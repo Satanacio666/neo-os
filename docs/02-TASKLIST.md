@@ -327,11 +327,15 @@ The seed implements **no filesystem and no block driver**. It reuses the **UEFI 
 **P2 exit — MET ✅ (one checkpoint at the end of P2):**
 - The seed has **no FS and no OS block driver**; `boot/runtime/` = `{kheap.c, symbols.c}` only.
 - `apps/*.HC` are the single source of truth for HAL/block/FS, loaded from the FAT32 ESP via the firmware.
+- **P2.7:** the C JIT compiles **only** `Compiler.HC`; the seed compiles **1** module (not 7) — every other
+  subsystem is compiled at runtime by the self-hosted HolyC compiler.
 - Gate: `SELFTEST 80/80`, parity `54/54`, `TWINS 5/5`, `SYMS … 0 unresolved`, `HALCACHE: PASS`,
   `FSRT: PASS`, `CENSUS: PASS (159)`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`.
 
-### P2.7 — Compiler-only bootstrap (seed = Compiler.HC alone) — 🟡 PARTIAL
-Goal: the C JIT compiles **only** `Compiler.HC`; the compiler then compiles everything else.
+### P2.7 — Compiler-only bootstrap (seed = Compiler.HC alone) — ✅ **COMPLETE**
+Goal: the C JIT compiles **only** `Compiler.HC`; the compiler then compiles everything else. **Met:** the seed
+now compiles **1** module, not 7. `apps/KernelInit.HC` loads `Compiler.HC` first, sets `g_hc_ready = 1`, then
+loads all 31 remaining modules through `CompilerCompileAndRun`.
 - [x] **Parser bug fixed (commit `95ece53`).** `HcParseProgram`'s top-level statement loop ended at
       EOF, so a function definition after a top-level statement (`if (...) {...}` then `I64 f() {...}` —
       exactly how `KHeap.HC`/`Symbols.HC` end) was mis-parsed → internal error. Added `HcAtFunctionDef()`
@@ -339,12 +343,21 @@ Goal: the C JIT compiles **only** `Compiler.HC`; the compiler then compiles ever
       Verified: `hcrun KHeap.HC` → `2012327920`, `hcrun Symbols.HC` → `1` (were `-1`); battery still `80/80`.
 - [x] `HcFlushCache` is self-contained again → `Compiler.HC` has **no** `.HC` dependency (prereq).
 - [x] Pruned dead seed functions (`kheap.c` 218→170, `symbols.c` 222→179).
-- [ ] **BLOCKED — codegen bug.** With `Compiler.HC` compiling `KHeap.HC`, the **C-heap canaries are
-      corrupted at load** (`[HEAP] FATAL: Memory corruption detected at block …`), then an instruction
-      abort. `Compiler.HC` mis-compiles `KHeap.HC` (likely its pointer arithmetic / global layout). Until
-      fixed, the C-JIT flip stays **after** `KHeap.HC`/`Symbols.HC`, so the seed still compiles 7 modules.
-- [ ] Next: bisect the `KHeap.HC` codegen divergence (compile it with both engines, diff emitted code /
-      global layout), fix `Compiler.HC`, then move the flip before `HalPlatform.HC`.
+- [x] **Codegen bug FOUND & FIXED — pointer-element array stride.** The boot corruption
+      (`[HEAP] FATAL: Memory corruption detected at block …`, then instruction abort) was **not** in
+      `KHeap.HC` — it was in `Symbols.HC`'s top-level `SymInit()`, which zeroes `CSymbol *g_sym_buckets[256]`.
+      `HcResolveLValue`'s index path used the **pointee struct size (92)** as the element stride whenever
+      `cur_st_idx >= 0 && cur_mode != 1`; for an array of *pointers* that stride must be 8. `SymInit` therefore
+      wrote `base + i*92` for `i` up to 255 → far past the 2048-byte buffer → adjacent C-heap canary clobbered.
+      Fix (two lines): register the element width for **all** global arrays (`g_is_ptr ? 8 : g_elem_bytes`) and
+      only fall back to the pointee struct size when no element width is registered. `sizeof(CSymbol)=92` was
+      already correct; `hcr`/parity unaffected.
+- [x] **Verified:** boot with the flip before `HalPlatform.HC` reaches the shell; gate green
+      (`SELFTEST 80/80`, parity `54/54`, `TWINS 5/5`, `SYMS … 0 unresolved`, `HALCACHE: PASS`, `FSRT: PASS`,
+      `CENSUS: PASS (159)`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`).
+
+**P2.7 exit — MET ✅:** `boot/main.c`'s C JIT compiles exactly one `.HC` unit (`Compiler.HC`); every OS
+subsystem is compiled at runtime by the self-hosted HolyC compiler.
 
 ---
 

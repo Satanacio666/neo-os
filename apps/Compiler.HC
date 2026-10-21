@@ -1398,8 +1398,12 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             if (g_hc_tok == TOK_RBRACKET) HcLexNext(); // eat ']'
             HcEmitPop(1); // base address in x1
 
+            // Element stride: prefer a registered element width (set for global
+            // arrays, incl. pointer arrays). Only fall back to the pointee struct
+            // size for an array of inline struct values (no registered width) —
+            // e.g. `CBox boxes[10]` or an inline struct-array member.
             I64 elem_sz = cur_scale;
-            if (cur_st_idx >= 0 && cur_mode != 1) {
+            if (cur_st_idx >= 0 && cur_mode != 1 && HcGlobalScale(ident_name) <= 0) {
                 elem_sz = g_hc_struct_sizes[cur_st_idx];
             }
             if (elem_sz > 1) {
@@ -2921,7 +2925,11 @@ U0 HcParseProgram() {
                 // was already allocated by the C JIT (symbols_lookup found it): the
                 // JIT sizes global arrays at their true element width, so indexing
                 // them at the default 8-byte scale would run out of bounds.
-                if (g_is_arr && !g_is_ptr) HcRegisterGlobalScale(fname, g_elem_bytes);
+                // Element stride for indexing. A pointer-element array (e.g.
+                // `CSymbol *g_sym_buckets[256]`) strides by 8, NOT by the pointee
+                // struct size — register 8 so the index path below does not fall
+                // back to the struct size. Value arrays stride by element width.
+                if (g_is_arr) HcRegisterGlobalScale(fname, g_is_ptr ? 8 : g_elem_bytes);
                 if (g_hc_tok == TOK_EQUAL) {
                     HcLexNext();
                     I64 g_init_pos = g_hc_tok_pos; // start of the initializer expression

@@ -22,6 +22,12 @@ own `.HC` sources from the FAT32 ESP via the UEFI firmware's FAT driver (`EFI_SI
 frozen seed allocator + symbol table). `.HC`→C census: **159** (all seed: `kmalloc`/`kfree`/`symbols_*`/
 `jit_compile_and_run`).
 
+**P2.7 compiler-only bootstrap [REAL]:** the C JIT compiles **only** `Compiler.HC`; the self-hosted compiler
+compiles all **31** remaining `.HC` modules at runtime (`apps/KernelInit.HC`: `Compiler.HC` → `g_hc_ready = 1`
+→ everything else). Verified by the golden gate (`SELFTEST 80/80`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`).
+The fix that unblocked it: pointer-element array indexing used the pointee struct size as the stride
+(`CSymbol *g_sym_buckets[256]` strided by 92 instead of 8) — see doc 2 §P2.7.
+
 ---
 
 ## A. Boot & bootstrap
