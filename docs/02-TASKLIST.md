@@ -330,6 +330,22 @@ The seed implements **no filesystem and no block driver**. It reuses the **UEFI 
 - Gate: `SELFTEST 80/80`, parity `54/54`, `TWINS 5/5`, `SYMS … 0 unresolved`, `HALCACHE: PASS`,
   `FSRT: PASS`, `CENSUS: PASS (159)`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`.
 
+### P2.7 — Compiler-only bootstrap (seed = Compiler.HC alone) — 🟡 PARTIAL
+Goal: the C JIT compiles **only** `Compiler.HC`; the compiler then compiles everything else.
+- [x] **Parser bug fixed (commit `95ece53`).** `HcParseProgram`'s top-level statement loop ended at
+      EOF, so a function definition after a top-level statement (`if (...) {...}` then `I64 f() {...}` —
+      exactly how `KHeap.HC`/`Symbols.HC` end) was mis-parsed → internal error. Added `HcAtFunctionDef()`
+      lookahead so a function/class definition ends the statement block and is parsed by the outer loop.
+      Verified: `hcrun KHeap.HC` → `2012327920`, `hcrun Symbols.HC` → `1` (were `-1`); battery still `80/80`.
+- [x] `HcFlushCache` is self-contained again → `Compiler.HC` has **no** `.HC` dependency (prereq).
+- [x] Pruned dead seed functions (`kheap.c` 218→170, `symbols.c` 222→179).
+- [ ] **BLOCKED — codegen bug.** With `Compiler.HC` compiling `KHeap.HC`, the **C-heap canaries are
+      corrupted at load** (`[HEAP] FATAL: Memory corruption detected at block …`), then an instruction
+      abort. `Compiler.HC` mis-compiles `KHeap.HC` (likely its pointer arithmetic / global layout). Until
+      fixed, the C-JIT flip stays **after** `KHeap.HC`/`Symbols.HC`, so the seed still compiles 7 modules.
+- [ ] Next: bisect the `KHeap.HC` codegen divergence (compile it with both engines, diff emitted code /
+      global layout), fix `Compiler.HC`, then move the flip before `HalPlatform.HC`.
+
 ---
 
 ## P3 — Kernel correctness (make it a real kernel)

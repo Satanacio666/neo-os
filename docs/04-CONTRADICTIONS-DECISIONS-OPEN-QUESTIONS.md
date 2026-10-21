@@ -308,6 +308,10 @@ Still **open** (deliberately not fixed):
   `boot/seed/{lexer,table,jit_arm64,seed_fs}.c`, `boot/runtime/{kheap,symbols}.c`). The C FS/block/HAL are
   gone; the seed reads `.HC` from the FAT32 ESP via the UEFI firmware's FAT driver. Remaining C is the frozen
   seed substrate (allocator + symbol table + compiler).
+- **P2.7 compiler-only bootstrap — PARTIAL.** Parser bug fixed (function after a top-level statement; commit
+  `95ece53`) — `KHeap.HC`/`Symbols.HC` now compile under `Compiler.HC`. **Blocked** by a separate codegen bug:
+  `Compiler.HC` mis-compiles `KHeap.HC`, corrupting the C-heap canaries at load. Until fixed, the C-JIT flip
+  stays after `KHeap.HC`/`Symbols.HC` (seed still compiles 7 modules, not 1).
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.
