@@ -103,6 +103,10 @@ I64 KHeapIsValidPtr(U8 *ptr) {
 U8* KMalloc(I64 p_req_sz) {
   if (p_req_sz <= 0) return 0;
 
+  // P3.8 guardrail 1: IRQ-safe critical section (an IRQ-time KFree must not
+  // deadlock on g_kheap_lock held by the interrupted task).
+  U64 __daif = __mrs_daif();
+  __irq_disable();
   smp_spin_lock(&g_kheap_lock);
 
   I64 aligned_sz = (p_req_sz + 15) & ~15;
@@ -111,6 +115,7 @@ U8* KMalloc(I64 p_req_sz) {
   while (curr) {
     if (curr->canary_head != HEAP_CANARY) {
       smp_spin_unlock(&g_kheap_lock);
+      __msr_daif(__daif);
       doldoc_printf("$FG,RED$[KHEAP] FATAL: Memory corruption at 0x%016X!$FG$\n", curr);
       return 0;
     }
@@ -155,24 +160,29 @@ U8* KMalloc(I64 p_req_sz) {
 
       U8 *ret_ptr = curr + HEAP_BLOCK_HEADER_SIZE;
       smp_spin_unlock(&g_kheap_lock);
+      __msr_daif(__daif);
       return ret_ptr;
     }
     curr = curr->next;
   }
 
   smp_spin_unlock(&g_kheap_lock);
+  __msr_daif(__daif);
   return 0;
 }
 
 U0 KFree(U8 *ptr) {
   if (!ptr) return;
-  if (!KHeapIsValidPtr(ptr)) return;
+  if (!KHeapIsValidPtr(ptr)) return; // pinned seed block (below the pool) -> no-op
 
+  U64 __daif = __mrs_daif();
+  __irq_disable();
   smp_spin_lock(&g_kheap_lock);
 
   CHeapBlock *blk = ptr - HEAP_BLOCK_HEADER_SIZE;
   if (blk->canary_head != HEAP_CANARY || blk->is_free) {
     smp_spin_unlock(&g_kheap_lock);
+    __msr_daif(__daif);
     return;
   }
 
@@ -219,6 +229,7 @@ U0 KFree(U8 *ptr) {
 
   KhSyncStats();
   smp_spin_unlock(&g_kheap_lock);
+  __msr_daif(__daif);
 }
 
 U8* KCalloc(I64 p_num, I64 p_elem_sz) {
@@ -462,12 +473,25 @@ I64 KHeapSelfTest() {
   return 1;
 }
 
+// P3.8 sovereign handover: hot-patch the seed allocator to the .HC owner. Callers
+// (compiled with SIC cells) now allocate from the sovereign pool. Any pointer
+// below the pool (a seed bootstrap block) is pinned: KHeapIsValidPtr rejects it,
+// so KFree no-ops instead of tripping a false HEAP_CANARY panic.
+U0 KHeapHandover() {
+  if (!g_kheap_boot_pool) return;
+  symbols_register("kmalloc", &KMalloc, SYM_FUNC);
+  symbols_register("kfree", &KFree, SYM_FUNC);
+}
+
 if (g_kernel_booting) {
+  // Allocate the 8 MB sovereign pool from the seed heap up front (before the seed
+  // heap fragments), initialise the .HC free list; the handover patch is applied
+  // at Stage 7 via KHeapHandover().
   if (!g_kheap_boot_pool) {
-    g_kheap_boot_pool = kmalloc(1048576);
+    g_kheap_boot_pool = kmalloc(8388608);
   }
   if (g_kheap_boot_pool) {
-    KHeapInit(g_kheap_boot_pool, 1048576);
+    KHeapInit(g_kheap_boot_pool, 8388608);
   }
 } else {
   KHeapSelfTest();

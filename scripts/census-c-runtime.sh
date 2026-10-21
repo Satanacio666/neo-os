@@ -16,7 +16,9 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$ROOT/tests/census-baseline.txt"
 
-count() { rg -o --no-filename "\b$1\b" "$ROOT/apps"/*.HC 2>/dev/null | wc -l | tr -d ' '; }
+# Count CALL sites (`name(`), not bare words — comments and string literals such
+# as symbols_register("kmalloc", ...) must not inflate the count.
+count() { rg -o --no-filename "\b$1\(" "$ROOT/apps"/*.HC 2>/dev/null | wc -l | tr -d ' '; }
 
 # NOTE (P2.1/P2.4): hal_flush_cache, redsea_* and virtio_* are deliberately NOT
 # listed — they are owned by apps/HalPlatform.HC, apps/RedSea.HC and apps/VirtioBlk.HC,

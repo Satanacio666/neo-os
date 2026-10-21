@@ -1,7 +1,7 @@
-kmalloc	52
-kfree	45
-symbols_register	29
-symbols_lookup	23
+kmalloc	48
+kfree	44
+symbols_register	38
+symbols_lookup	26
 symbols_is_defined	1
 symbols_var_cell	1
 symbols_sic_cell	1

@@ -107,6 +107,12 @@ U0 KernelInitMain() {
     g_kernel_booting = 0;
     symbols_report_unresolved();
 
+    // P3.8: sovereign handover — KHeap.HC takes over kmalloc/kfree (the seed
+    // allocator is frozen from here on). Done before the shell allocates anything.
+    KHeapHandover();
+    SymbolsHandover();
+    KInitLog("Sovereign handover: KHeap.HC + Symbols.HC own the runtime.");
+
     // P3.4: arm the EL1 virtual timer (PPI registered at Gic.HC load) and unmask
     // IRQs last. Early IRQs (before the scheduler) are gated by g_sched_ready.
     TimerArm(1000);

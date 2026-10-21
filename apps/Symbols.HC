@@ -5,7 +5,7 @@
 #define SYM_VAR      2
 #define SYM_HARDWARE 3
 
-#define SYM_HASH_BUCKETS 256
+#define SYM_HASH_BUCKETS 1024
 
 class CSymbol {
   U8       name[64];
@@ -15,7 +15,7 @@ class CSymbol {
   CSymbol *next;
 };
 
-CSymbol *g_sym_buckets[256];
+CSymbol *g_sym_buckets[1024];
 U64      g_sym_total_count;
 I64      g_sym_initialized;
 U8       g_sym_alt_pascal[64];
@@ -207,6 +207,68 @@ U64 SymLookup(U8 *name) {
   CSymbol *sym = SymLookupEntry(name);
   if (sym) return sym->address;
   return 0;
+}
+
+// ------------------------------------------------------------------------------
+// P3.8 sovereign handover: Symbols.HC becomes the runtime owner of the symbol
+// table. The seed's symbols_* entries are SIC-patched to point here so every
+// .HC caller (compiled with SIC cells) uses this table; the seed table is frozen.
+// ------------------------------------------------------------------------------
+U64 SymUnresolvedTrap() { return 0; }
+
+U0 SymIngest(U8 *name, U64 address, I64 type) {
+  SymRegister(name, address, type);
+}
+
+// A forward reference still points at the trap; treat it as "not defined" so
+// HcPublishFunc may override it with the real function.
+I64 SymIsDefined(U8 *name) {
+  CSymbol *s = SymLookupEntry(name);
+  return (s && s->address != 0 && s->address != (U64)&SymUnresolvedTrap) ? 1 : 0;
+}
+
+I64 SymIsFunc(U8 *name) {
+  CSymbol *s = SymLookupEntry(name);
+  return (s && s->type == SYM_FUNC && s->address != 0 && s->address != (U64)&SymUnresolvedTrap) ? 1 : 0;
+}
+
+I64 SymIsVar(U8 *name) {
+  CSymbol *s = SymLookupEntry(name);
+  return (s && s->type == SYM_VAR && s->address != 0 && s->address != (U64)&SymUnresolvedTrap) ? 1 : 0;
+}
+
+U64 SymVarCell(U8 *name) {
+  CSymbol *s = SymLookupEntry(name);
+  if (!s) {
+    U8 *cell = kmalloc(8);
+    if (cell) { *(U64*)cell = 0; SymRegister(name, (U64)cell, SYM_VAR); }
+    s = SymLookupEntry(name);
+  }
+  return s ? s->address : 0;
+}
+
+U64 SymSicCell(U8 *name) {
+  CSymbol *s = SymLookupEntry(name);
+  if (!s) {
+    SymRegister(name, (U64)&SymUnresolvedTrap, SYM_FUNC);
+    s = SymLookupEntry(name);
+  }
+  return s ? (U64)&s->address : 0;
+}
+
+U0 SymbolsHandover() {
+  // 1. Patch the seed API FIRST so the ingested copy (step 2) records the .HC
+  //    owner addresses. symbols_register is patched LAST so patches 1..6 still
+  //    reach the seed table.
+  symbols_register("symbols_lookup", &SymLookup, SYM_FUNC);
+  symbols_register("symbols_is_defined", &SymIsDefined, SYM_FUNC);
+  symbols_register("symbols_is_func", &SymIsFunc, SYM_FUNC);
+  symbols_register("symbols_is_var", &SymIsVar, SYM_FUNC);
+  symbols_register("symbols_var_cell", &SymVarCell, SYM_FUNC);
+  symbols_register("symbols_sic_cell", &SymSicCell, SYM_FUNC);
+  symbols_register("symbols_register", &SymRegister, SYM_FUNC);
+  // 2. Ingest every seed symbol into this 1024-bucket table.
+  symbols_foreach(&SymIngest);
 }
 
 U64 SymLookupCanonical(U8 *name) {

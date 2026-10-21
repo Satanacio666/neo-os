@@ -116,6 +116,13 @@ else
         echo "  [FAIL] smp dispatch: ${mline:-<none>} (want SMP: PASS)"
         fail=1
     fi
+    ovline="$(printf '%s\n' "$out" | grep -a 'SOVEREIGN: ' | tail -1)"
+    if printf '%s' "$ovline" | grep -aq 'PASS'; then
+        echo "  [PASS] $ovline (.HC owns kmalloc/kfree/symbols_*)"
+    else
+        echo "  [FAIL] sovereign handover: ${ovline:-<none>} (want SOVEREIGN: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

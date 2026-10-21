@@ -258,6 +258,22 @@ U0 SelfTestSmp() {
     }
 }
 
+// P3.8: verify the sovereign handover took effect - the live kmalloc / symbols_*
+// resolve to the .HC owners, not the seed implementations.
+U0 SelfTestSovereign() {
+    U64 km = symbols_lookup("kmalloc");
+    U64 kf = symbols_lookup("kfree");
+    U64 sl = symbols_lookup("symbols_lookup");
+    U64 sr = symbols_lookup("symbols_register");
+    if (km == (U64)&KMalloc && kf == (U64)&KFree &&
+        sl == (U64)&SymLookup && sr == (U64)&SymRegister) {
+        doldoc_print("SOVEREIGN: PASS\n");
+    } else {
+        doldoc_printf("SOVEREIGN: FAIL (km=0x%llX kf=0x%llX sl=0x%llX sr=0x%llX)\n",
+                      km, kf, sl, sr);
+    }
+}
+
 // P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
 // hard assertions are promoted to pass/fail as each capability lands
 // (P3.4 / P3.6 / P3.7).
@@ -388,6 +404,7 @@ U0 SelfTestRun() {
     SelfTestSched();
     SelfTestBsod();
     SelfTestSmp();
+    SelfTestSovereign();
     SelfTestKernel();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

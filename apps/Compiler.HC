@@ -1958,7 +1958,8 @@ I64 HcIsIntrinsic(U8 *name) {
             strcmp(name, "__mrs_far") == 0 || strcmp(name, "__dc_civac") == 0 || strcmp(name, "__ic_ivau") == 0 ||
             strcmp(name, "__mmio_r32") == 0 || strcmp(name, "__mmio_w32") == 0 ||
             strcmp(name, "__msr_cntv_tval") == 0 || strcmp(name, "__msr_cntv_ctl") == 0 ||
-            strcmp(name, "__irq_disable") == 0 || strcmp(name, "__irq_enable") == 0);
+            strcmp(name, "__irq_disable") == 0 || strcmp(name, "__irq_enable") == 0 ||
+            strcmp(name, "__mrs_daif") == 0 || strcmp(name, "__msr_daif") == 0);
 }
 
 U0 HcEmitIntrinsic(U8 *name) {
@@ -1980,6 +1981,8 @@ U0 HcEmitIntrinsic(U8 *name) {
     else if (strcmp(name, "__msr_cntv_ctl") == 0) HcEmit(0xD51BE320);  // MSR CNTV_CTL_EL0, X0
     else if (strcmp(name, "__irq_disable") == 0) HcEmit(0xD50342DF);   // MSR DAIFSet, #2
     else if (strcmp(name, "__irq_enable") == 0) HcEmit(0xD50342FF);    // MSR DAIFClr, #2
+    else if (strcmp(name, "__mrs_daif") == 0) HcEmit(0xD53B4220);      // MRS X0, DAIF
+    else if (strcmp(name, "__msr_daif") == 0) HcEmit(0xD51B4220);      // MSR DAIF, X0
 }
 
 U0 HcParseExpr() {

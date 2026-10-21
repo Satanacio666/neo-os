@@ -314,6 +314,7 @@ int main(int argc, char **argv)
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
     symbols_register("symbols_sic_cell", (void*)symbols_sic_cell, SYM_FUNC);
     symbols_register("symbols_var_cell", (void*)symbols_var_cell, SYM_FUNC);
+    symbols_register("symbols_foreach", (void*)symbols_foreach, SYM_FUNC);
 
     // 6. Sovereign Handover: Read and Execute holyc/KernelInit.HC (from the ESP)
     // P3.5: keep IRQs masked for the whole .HC boot. The firmware may leave the

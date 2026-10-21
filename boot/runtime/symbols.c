@@ -175,5 +175,15 @@ uint64_t symbols_count(void) {
     return total_symbols;
 }
 
+// P3.8: enumerate the seed symbol table so Symbols.HC can ingest it at handover.
+void symbols_foreach(void (*cb)(const char *name, void *address, int64_t type)) {
+    if (!cb) return;
+    for (int i = 0; i < SYMBOL_HASH_BUCKETS; i++) {
+        for (symbol_t *c = buckets[i]; c; c = c->next) {
+            cb(c->name, c->address, (int64_t)c->type);
+        }
+    }
+}
+
 
 

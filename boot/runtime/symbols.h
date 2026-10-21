@@ -33,5 +33,7 @@ int64_t  symbols_unresolved_count(void);
 void*    symbols_sic_cell(const char *name);
 void*    symbols_var_cell(const char *name);
 uint64_t symbols_count(void);
+// P3.8: enumerate every seed symbol so Symbols.HC can ingest them at handover.
+void     symbols_foreach(void (*cb)(const char *name, void *address, int64_t type));
 
 #endif // NEO_SYMBOLS_H
