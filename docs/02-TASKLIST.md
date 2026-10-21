@@ -493,7 +493,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — ⬜ **NEXT** (plan complete; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -511,12 +511,58 @@ commands (verified: `RESOURCE_CREATE_2D` struct is 40 B but `VirtioGpu.HC:345` s
 struct is 56 B but `:417` sends 48). `FontMono` is a bitmap font + a stub SFNT parser; `FontVector` is
 procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_size`, `zprecision`, `culling`).
 
-### P4.0 — Baseline, render gate & inventory — ⬜
-- [ ] **Golden-frame gate:** add a deterministic render scene to `SelfTest.HC`; checksum the framebuffer
-      (FNV-1a over the back buffer) and assert a fixed value. This is the P4 regression + determinism gate
-      (1 core vs N cores must hash equal). Wire into `golden-boot.sh` as `RENDER: PASS`.
-- [ ] **Bench:** an in-guest `renderbench` command → tri/sec, textured tri/sec, tile throughput.
-- [ ] **Inventory:** list every `gfx_*`/`HolyGL*` entry point, every dead fn, every write-only global (feed P4.8).
+### P4.0 — Baseline, render gate & inventory — ✅ **DONE**
+- [x] **Golden-frame gate:** `RenderGoldenScene()` (`Render.HC`) draws a fixed integer-coordinate scene
+      (clear, rects, line, AA circle, rounded rect, vertical gradient, filled triangle, 8×16 text);
+      `RenderHashBuffer()` is a 32-bit FNV-1a over the whole back buffer (row-by-row, explicit pitch).
+      `SelfTestRender()` (`SelfTest.HC`) renders with IRQs masked (no preemptive writer) and asserts the
+      frozen hash **`0x7E9DE351`** (verified byte-identical across ≥3 reboots). `golden-boot.sh` asserts
+      `RENDER: PASS`. Restores the display via `gfx_clear` + `doldoc_mark_all_dirty`. This is the P4
+      regression + 1-vs-N determinism gate.
+- [x] **Bench:** in-guest `renderbench` (shell command → `RenderBench()`). Reports the tile Z-rasterizer
+      **tri/s** and **Kpix/s** and the full-canvas **Mpix/s** clear rate. Measured (this host):
+      `13063 tri/s, 9122 Kpix/s, 72 Mpix/s`. (Textured tri/s is deferred to P4.3; the bench is the
+      measurement harness and will grow that line when textures land.)
+- [x] **Inventory:** (verified by call-site count across `apps/ boot/ kernel/`; a name with **0 call
+      sites** is dead. This feeds P4.8.)
+
+  **Entry points — 2D canvas (`gfx_*`, `Render.HC`):** `gfx_get_canvas_width/height/pitch`,
+  `gfx_get_backbuffer/frontbuffer`, `gfx_set_clip`, `gfx_reset_clip`, `gfx_dirty_expand`,
+  `gfx_dirty_all`, `gfx_put_pixel`, `gfx_get_pixel`, `gfx_draw_line`, `gfx_draw_rect`, `gfx_blend_rect`,
+  `gfx_draw_rounded_rect`, `gfx_draw_triangle_fill`, `gfx_draw_char`, `gfx_draw_text`, `gfx_draw_string`,
+  `gfx_clear`, `gfx_swap_buffers`, `gfx_swap_rect`, `gfx_vsync_set`, `gfx_vsync_wait`, `gfx_lerp_color`,
+  `gfx_draw_circle_filled`, `gfx_draw_gradient_v`, `gfx_draw_soft_shadow`, plus the P4.0 additions
+  `RenderHashBuffer`, `RenderGoldenScene`, `RenderBench`.
+
+  **Entry points — 3D (`HolyGL.HC`):** `HolyGL{Init,Viewport,MatrixMode,LoadIdentity,Push/PopMatrix,
+  Translatef,Rotatef,Scalef,Perspective,Color3f,Color3ub,TexCoord2f,Normal3f,Begin,Vertex3f,Vertex2f,End,
+  Enable,Disable,ClearDepth,SubmitTriangle,SubmitLine,RenderCube,RenderCubeAt,Main}` and the `gl*`
+  aliases. **`glViewport` is the only `gl*` alias with a live caller** (`HolyBenchmark.HC:56`); the other
+  18 are dead wrappers.
+
+  **Entry points — tile raster (`RasterTile.HC`):** `PinedaEdge`, `RasterClearTile`, `RasterTriangleZ`,
+  `TileResolve`, `RasterTileMain`.
+
+  **Entry points — backend/present:** `GfxBackend{Init,SetMode,Present,FastClear,SelfTest}`,
+  `gfx_backend_{set_mode,present}`, `gfx_set_zero_ram_mode`, `gfx_is_zero_ram_mode`,
+  `VirtioGpu{Init,FlushRect,FlushFull,IsAvailable,SendCmd}`.
+
+  **Dead functions (0 call sites) — 43 verified:** `gfx_mark_dirty`, `gfx_dirty_reset`, `gfx_draw_circle`,
+  `RenderIsZeroRamMode`, `gfx_backend_get_mode`; `TileClear`, `TileRasterTri`, `RasterSetVertexZ`;
+  `HolyGLSetWireframe` + 18 dead `gl*` aliases; `GpuSetRasterEngine`, `GpuGetRasterEngine`, `GpuConfigMain`;
+  `virtio_gpu_init`, `virtio_gpu_flush_rect`, `virtio_gpu_flush_full`, `virtio_gpu_is_available`;
+  `FontInitAtlas`, `FontDrawChar`, `FontDrawString`, `FontMeasureWrappedHeight`; `VectorDrawGlyph`,
+  `VectorDrawString`; `CompositorMain`, `CompositorDrawBox`, `CompositorQueryTileOwner`.
+
+  **Write-only / dead state (set but not read for behaviour):** `CGfxBackendState.raster_engine`,
+  `.tile_size`, `.zprecision`, `.smp_cores`, `.culling`, `.active_tab`, `.feature_flags` (only printed
+  by `GpuConfigPrintDolDoc` / exercised by the self-test; real culling reads `g_hgl.cull_face`). Only
+  `.shading_mode` is read for behaviour (`GpuGetShading` → wireframe branch in `HolyGLDrawTriangleZ`).
+
+  **Duplicate paths to collapse:** two Z-buffers (`g_hgl_zbuf` `HolyGL.HC:68` vs `g_tile_zbuf`
+  `RasterTile.HC:13`); four triangle paths (`gfx_draw_triangle_fill` no-Z, `TileRasterTri` no-Z,
+  `HolyGLDrawTriangleZ` flat `z_avg`, `RasterTriangleZ` real per-pixel Z); three damage/present
+  trackers (Render dirty + `gfx_swap_*`, `GfxBackendPresent`, `Compositor*`).
 
 ### P4.1 — One `GfxDevice.HC` (backend + present unification) — ⬜
 - [ ] **Merge** `GfxBackend.HC` + `VirtioGpu.HC` + Render's damage/present into `GfxDevice.HC`. One target

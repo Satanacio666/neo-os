@@ -289,6 +289,32 @@ U0 SelfTestKernel() {
     }
 }
 
+// P4.0: deterministic golden-frame gate. Render the fixed scene into the back
+// buffer with IRQs masked (no preemption => no concurrent writer), hash the whole
+// surface (32-bit FNV-1a), and assert it equals the frozen baseline. This is the
+// regression + 1-vs-N determinism gate for the whole render pipeline.
+I64 g_render_golden = 0x7E9DE351;   // frozen baseline (verified across reboots)
+U0 SelfTestRender() {
+    I64 saved_daif = __mrs_daif();
+    __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
+    RenderGoldenScene();
+    U32 *rbuf = RenderGetTargetBuffer();
+    I64 rw = gfx_get_canvas_width();
+    I64 rh = gfx_get_canvas_height();
+    I64 rpitch = gfx_get_canvas_pitch();
+    I64 rhash = RenderHashBuffer(rbuf, rw, rh, rpitch);
+    __msr_daif(saved_daif);
+    if (rhash == g_render_golden) {
+        doldoc_printf("RENDER: PASS (golden=0x%llX)\n", rhash);
+    } else {
+        doldoc_printf("RENDER: FAIL (hash=0x%llX golden=0x%llX)\n", rhash, g_render_golden);
+    }
+    // Restore the display: clear and force a full DolDoc repaint so the golden
+    // scene does not linger behind the shell.
+    gfx_clear(0xFF000000);
+    doldoc_mark_all_dirty();
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -406,6 +432,7 @@ U0 SelfTestRun() {
     SelfTestSmp();
     SelfTestSovereign();
     SelfTestKernel();
+    SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

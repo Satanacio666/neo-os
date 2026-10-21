@@ -138,7 +138,7 @@ U0 ShellNavHistory(I64 dir) {
 U0 ShellAutocomplete() {
     if (g_shell_len <= 0) return;
 
-    U8 *builtins[30];
+    U8 *builtins[32];
     builtins[0]  = "help";
     builtins[1]  = "ls";
     builtins[2]  = "dir";
@@ -168,7 +168,8 @@ U0 ShellAutocomplete() {
     builtins[26] = "vsync ";
     builtins[27] = "zeroram ";
     builtins[28] = "save ";
-    builtins[29] = 0;
+    builtins[29] = "renderbench";
+    builtins[30] = 0;
 
     U8 entries[3072];
     I64 file_count = redsea_get_entries(entries, 48);
@@ -479,7 +480,7 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
         doldoc_print("  $FG,YELLOW$Themes & Skins:$FG$ $FG,CYAN$theme <mocha|latte|tokyo|nord|temple|cyberpunk>$FG$, $FG,CYAN$compositor$FG$\n");
         doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$run TestJitP0.HC$FG$\n");
-        doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
+        doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$renderbench$FG$ (tri/s, Mpix/s), $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
         doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$cd <dir>$FG$, $FG,CYAN$mkdir <dir>$FG$, $FG,CYAN$rm <file>$FG$, $FG,CYAN$cat <file>$FG$, $FG,CYAN$save <file> <text>$FG$\n");
         doldoc_print("  $FG,YELLOW$Live HolyC JIT:$FG$ Type any HolyC expression or function directly at the prompt (e.g. $FG,GREEN$2 + 2 * 10;$FG$)\n\n\n");
     } else if (strcmp(cmd, "clear") == 0 || strcmp(cmd, "cls") == 0) {
@@ -590,6 +591,9 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         ShellInspectSource(arg);
     } else if (strcmp(cmd, "src") == 0) {
         doldoc_print("Usage: src <file.HC> (e.g. src DolDoc.HC, src DolDoc.HC, src Compiler.HC)\n");
+    } else if (strcmp(cmd, "renderbench") == 0) {
+        RenderBench();
+        return;
     } else if (strcmp(cmd, "bench") == 0) {
         ShellRunCommand("run HolyBenchmark.HC");
         return;

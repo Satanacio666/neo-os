@@ -321,6 +321,12 @@ Still **open** (deliberately not fixed):
   floor (frozen at handover), not the runtime owner. `SOVEREIGN/TICK/SCHED/BSOD/SMP` gates green. Residual
   (not blocking): SMP per-core **run queues** (workers are job-mailbox based), tickless idle, `.HC` ownership
   of the C JIT seed.
+- **P4.0 render gate — DONE.** Decision: the P4 regression/determinism gate is a **frozen golden-frame hash**
+  (`0x7E9DE351`, 32-bit FNV-1a over the whole back buffer) rendered by `RenderGoldenScene()` with IRQs masked
+  so no preemptive writer can perturb it; asserted as `RENDER: PASS` in `golden-boot.sh`. Measured with the
+  new in-guest `renderbench` (`13063 tri/s, 9122 Kpix/s, 72 Mpix/s`). The render fragmentation the plan targets
+  is unchanged (two Z-buffers, four triangle paths, three damage/present trackers); the 43-function dead list
+  and write-only state are recorded in doc 2 §P4.0 to drive P4.8.
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open (→ RedSea v2, doc 03 §9.5).
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.

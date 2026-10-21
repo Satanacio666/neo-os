@@ -744,6 +744,102 @@ U0 gfx_draw_soft_shadow(I64 sx, I64 sy, I64 sw, I64 sh, I64 radius, U32 shadow_c
   gfx_blend_rect(sx + 4, sy + sh + 3, sw - 8, 2, (shadow_col & 0x00FFFFFF) | 0x15000000);
 }
 
+// ==============================================================================
+// P4.0 — Golden-frame regression + determinism gate, and the render benchmark.
+// ------------------------------------------------------------------------------
+// RenderHashBuffer is a 32-bit FNV-1a over an ARGB8888 surface (row-by-row with
+// an explicit pitch). All arithmetic is kept inside 32 bits so it is identical
+// on every core and every boot. Used by SelfTestRender() and the P4.8 1-vs-N
+// determinism check.
+// ==============================================================================
+I64 RenderHashBuffer(U32 *buf, I64 w, I64 h, I64 pitch) {
+  if (!buf) return 0;
+  I64 hash = 2166136261;
+  I64 y = 0;
+  while (y < h) {
+    I64 row = y * pitch;
+    I64 x = 0;
+    while (x < w) {
+      U32 px = buf[row + x];
+      hash = (hash ^ (px & 0xFF)) & 0xFFFFFFFF;
+      hash = (hash * 16777619) & 0xFFFFFFFF;
+      hash = (hash ^ ((px >> 8) & 0xFF)) & 0xFFFFFFFF;
+      hash = (hash * 16777619) & 0xFFFFFFFF;
+      hash = (hash ^ ((px >> 16) & 0xFF)) & 0xFFFFFFFF;
+      hash = (hash * 16777619) & 0xFFFFFFFF;
+      hash = (hash ^ ((px >> 24) & 0xFF)) & 0xFFFFFFFF;
+      hash = (hash * 16777619) & 0xFFFFFFFF;
+      x++;
+    }
+    y++;
+  }
+  return hash;
+}
+
+// A fully deterministic scene: fixed integer coordinates, fixed ARGB colors and
+// no timing/state dependence. gfx_clear covers the whole surface first so the
+// result is independent of whatever was in the buffer before. Exercises the 2D
+// canvas paths (rect, line, AA circle, rounded rect, gradient, text) and the
+// filled-triangle path that P4.2 folds into the unified tile rasterizer.
+U0 RenderGoldenScene() {
+  RenderResetClip();
+  gfx_clear(0xFF101018);
+  gfx_draw_rect(10, 10, 100, 60, 0xFFE056FD);
+  gfx_draw_rect(130, 10, 100, 60, 0xFF00E676);
+  gfx_draw_line(10, 100, 220, 160, 0xFFFFFFFF);
+  gfx_draw_circle_filled(60, 200, 40, 0xFF3DAEE9);
+  gfx_draw_rounded_rect(140, 180, 120, 80, 12, 0xFFF1C40F);
+  gfx_draw_gradient_v(300, 10, 80, 200, 0xFFFF5555, 0xFF2222FF);
+  gfx_draw_triangle_fill(300, 240, 420, 300, 340, 380, 0xFFA6E3A1);
+  gfx_draw_text(10, 300, "NEOOS GOLDEN FRAME 0123", 0xFFFFFFFF, 0);
+}
+
+// In-guest render benchmark (shell command `renderbench`). Reports the current
+// tile Z-rasterizer triangle + pixel throughput and the full-canvas clear rate.
+U0 RenderBench() {
+  doldoc_print("\n$FG,CYAN$=== NeoOS Render Benchmark ===$FG$\n");
+  U64 freq = __mrs_cntfrq();
+  if (freq == 0) freq = 62500000;
+
+  I64 iters = 2000;
+  I64 total_px = 0;
+  // Clear once, then feed strictly decreasing Z so every triangle passes the
+  // depth test in full (otherwise the tile Z-buffer rejects all but the first).
+  RasterClearTile(0xFF101018);
+  I64 zcur = 60000;
+  U64 c0 = __mrs_cntvct();
+  I64 i = 0;
+  while (i < iters) {
+    I64 ox = i % 40;
+    I64 oy = (i * 7) % 40;
+    zcur = zcur - 1;
+    total_px = total_px + RasterTriangleZ(5 + ox, 5 + oy, 50, 15, 30, 55, zcur, 0xFFE056FD);
+    zcur = zcur - 1;
+    total_px = total_px + RasterTriangleZ(2, 45, 55, 35, 25, 5, zcur, 0xFF00E676);
+    i++;
+  }
+  U64 c1 = __mrs_cntvct();
+  U64 cycles = c1 - c0;
+  if (cycles == 0) cycles = 1;
+  I64 tris = iters * 2;
+  I64 tris_sec = (tris * freq) / cycles;
+  I64 kpix_sec = (total_px * freq) / (cycles * 1000);
+  doldoc_printf("  Z-raster : %lld tris / %lld cycles -> $FG,GREEN$%lld tri/s$FG$, %lld Kpix/s\n",
+                tris, cycles, tris_sec, kpix_sec);
+
+  I64 w = gfx_get_canvas_width();
+  I64 h = gfx_get_canvas_height();
+  U64 d0 = __mrs_cntvct();
+  gfx_clear(0xFF202020);
+  U64 d1 = __mrs_cntvct();
+  U64 dc = d1 - d0;
+  if (dc == 0) dc = 1;
+  I64 mpix = ((w * h) * freq) / (dc * 1000000);
+  doldoc_printf("  Canvas   : %lldx%lld clear / %lld cycles -> $FG,GREEN$%lld Mpix/s$FG$\n",
+                w, h, dc, mpix);
+  doldoc_print("$FG,CYAN$=====================================$FG$\n\n");
+}
+
 U0 RenderSelfTest() {
   doldoc_print("\n[RENDER-TEST] Starting Pure HolyC 2D Graphics & Compositing Engine...\n");
   I64 all_pass = 1;

@@ -123,6 +123,13 @@ else
         echo "  [FAIL] sovereign handover: ${ovline:-<none>} (want SOVEREIGN: PASS)"
         fail=1
     fi
+    rdline="$(printf '%s\n' "$out" | grep -a 'RENDER: ' | tail -1)"
+    if printf '%s' "$rdline" | grep -aq 'PASS'; then
+        echo "  [PASS] $rdline (golden-frame hash)"
+    else
+        echo "  [FAIL] render golden-frame: ${rdline:-<none>} (want RENDER: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

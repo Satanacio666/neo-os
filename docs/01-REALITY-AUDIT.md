@@ -37,6 +37,14 @@ live — `.HC` `KHeap`/`Symbols` own `kmalloc`/`kfree`/`symbols_*` via SIC hot-p
 doc 2 §P3. Not yet done: SMP **per-core run queues** (workers are job-mailbox based), a tickless idle, and
 `.HC` ownership of the **C JIT seed** itself (still needed to compile `Compiler.HC`).
 
+**P4.0 render gate [REAL]:** `RenderGoldenScene()` renders a fixed integer-coordinate scene into the back
+buffer; `RenderHashBuffer()` is a 32-bit FNV-1a over the whole surface; `SelfTestRender()` runs it with IRQs
+masked and asserts the frozen hash **`0x7E9DE351`** (`RENDER: PASS`, verified byte-identical across ≥3
+reboots) — the regression + 1-vs-N determinism gate. `renderbench` reports `13063 tri/s, 9122 Kpix/s,
+72 Mpix/s` (tile Z-raster + canvas clear). The full render dead-code inventory (43 dead fns, write-only
+state, duplicate paths) is in doc 2 §P4.0. The render **fragmentation is still real** — P4.1–P4.8 do the
+merging; P4.0 only froze the baseline.
+
 ---
 
 ## A. Boot & bootstrap
