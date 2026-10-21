@@ -78,6 +78,20 @@ U0 SelfTestCheck3(U8 *name, I64 expect, U8 *s0, U8 *s1, U8 *s2) {
     SelfTestCompare(name, SelfTestEval(s0, s1, s2), expect);
 }
 
+// Negative test: the compiler MUST reject malformed input with a clean error
+// (CompilerCompileAndRun returns -1), not miscompile it.
+U0 SelfTestReject(U8 *name, U8 *src) {
+    I64 got = CompilerCompileAndRun(src);
+    g_selftest_total++;
+    if (got == -1) {
+        g_selftest_pass++;
+        doldoc_printf("[SELFTEST] PASS %s (rejected)\n", name);
+    } else {
+        g_selftest_fail++;
+        doldoc_printf("[SELFTEST] FAIL %s expected rejection, got %lld\n", name, got);
+    }
+}
+
 // Pre-existing defect: reported, but not counted against the pass total.
 U0 SelfTestKnown(U8 *name, U8 *src, I64 expect) {
     I64 got = SelfTestEval(src, 0, 0);
@@ -229,6 +243,13 @@ U0 SelfTestRun() {
     SelfTestCheck("array_init_f64", "F64 af2[2] = {1.5, 2.5}; af2[0] + af2[1];", 4616189618054758400);
     SelfTestCheck3("fnptr_indirect_call", 42, "I64 fci(I64 x) { return x + 1; }", "I64 fcp = &fci;", "fcp(41);");
     SelfTestCheck("forward_struct_ptr", "I64 gfsp(F2 *p) { return p->x; } struct F2 { I64 x; }; F2 ff2; ff2.x = 9; gfsp(&ff2);", 9);
+    // --- coverage expansion (P0.5) ---
+    SelfTestReject("neg_bad_expr", "2 + ;");
+    SelfTestCheck("lex_block_comment", "I64 bc = 7; /* c */ bc + 1;", 8);
+    SelfTestCheck("type_nested_struct", "struct Inner { I64 a; }; struct Outer { Inner i; I64 b; }; Outer o; o.i.a = 3; o.b = 4; o.i.a + o.b;", 7);
+    SelfTestCheck("type_typedef", "typedef I64 MyInt; MyInt m = 5; m;", 5);
+    SelfTestCheck("f64_int_cast2", "(I64)((F64)9 + 0.5);", 9);
+    SelfTestCheck("f64_global_if", "F64 nn = 1.0; if (nn < 2.0) nn = 3.0; nn;", 4613937818241073152);
     SelfTestInclude();
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();

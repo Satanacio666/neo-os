@@ -287,7 +287,7 @@ Still **open** (deliberately not fixed):
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open.
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.
-- **Compiler:** >8-arg calls hard error; `auto` hang risk; `#include` inside `Compiler.HC`; diagnostics; script-mode gaps (fnptr/F64-struct/forward-struct/cross-unit) — P1.1/P1.2.
+- **Compiler:** >8-arg calls hard error; `auto` hang risk; `#include` inside `Compiler.HC`; diagnostics; script-mode gaps (fnptr/F64-struct/forward-struct/cross-unit) — P1.1/P1.2. **New (found by the P0.5 expansion):** 2-D arrays fault (Data Abort); `enum` unsupported (returns -1); function-like `#define` unsupported (returns -1); an unterminated `struct {` is silently accepted (returns 0); a global-`F64` subtraction (`F64 r = 0.0 - q;`) returned 0; recompiling the whole battery twice in one boot trips a re-entrancy fault (guarded in `SelfTest.HC`).
 - **Kernel:** one allocator/table/HAL; arm timer + IRQ; real scheduler; SMP queues; exception `x3`; `g_kernel_booting`×14 — P3.
 - **Render:** `z_avg`; textures unsampled; no SDF/shader VM; VirtioGpu truncated commands; `BenchCpuMathNeon` LCG (BEN-01); synthetic telemetry (BEN-02); PMU absent — P4/P7.
 - **DolDoc:** char grid; missing `$MA/$DA/$AN/$ID`/word-wrap; `g_doc_dirty_mask` shift; cycles; fake WM FPS/"4 Cores"; uptime wraps at 999 s — P5.
