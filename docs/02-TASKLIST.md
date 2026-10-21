@@ -107,17 +107,17 @@ list (twin-liveness, census, allocator/symbol/FS stress, determinism), which is 
       `PARITY: <n>/<total>`. Replaces the two-boot `p1-parity.sh` for the battery corpus.
 - [x] **P0.5.4 — Sentinel protocol.** ✅ (`scripts/neo_uart.py`; `uart-repl.py` shim) Emit `NEO-DONE`; make `scripts/neo_uart.py` frame on it; keep
       `uart-repl.py` as a back-compat shim.
-- [ ] **P0.5.5 — Twin-liveness probes.** `HalTwinProbe`/`VirtioBlkTwinProbe`/`RedSeaTwinProbe`/
+- [x] **P0.5.5 — Twin-liveness probes.** ✅ (`TWINS: 5/5`, gate-checked) `HalTwinProbe`/`VirtioBlkTwinProbe`/`RedSeaTwinProbe`/
       `SymbolsTwinProbe`/`KHeapTwinProbe` (magic returns); `SelfTest.HC` asserts all five; feeds P2.
-- [ ] **P0.5.6 — Census gate.** `scripts/census-c-runtime.sh` (from P2.0) invoked by the gate; fails on any
+- [x] **P0.5.6 — Census gate.** ✅ (`scripts/census-c-runtime.sh` + `tests/census-baseline.txt`, gate-checked) `scripts/census-c-runtime.sh` (from P2.0) invoked by the gate; fails on any
       increase vs a checked-in baseline `tests/census-baseline.txt`.
-- [ ] **P0.5.7 — Symbol audit in-guest.** `symbols_audit()` → 0 undefined / 0 unresolved / 0 late-bound;
+- [x] **P0.5.7 — Symbol audit in-guest.** ✅ (`SYMS: 1383 symbols, 0 unresolved`; `symbols_unresolved_count()` C accessor) `symbols_audit()` → 0 undefined / 0 unresolved / 0 late-bound;
       `SelfTest.HC` asserts; `audit-symbols.sh` becomes a thin wrapper.
 - [x] **P0.5.8 — Rewrite `golden-boot.sh`** ✅ to one `selftest` command + boot-log invariants + a host
       hang-timeout; fold `self-host-test.sh` and `run-jit-golden.py` in (self-host stays a second command).
-- [ ] **P0.5.9 — Makefile:** `make check` (gate), `make selftest`, `make census`, `make parity`.
-- [ ] **P0.5.10 — Retire legacy:** move the ~45 `scripts/test_*.py` to `scripts/_superseded/` (never delete)
-      and mark them in doc 01.
+- [x] **P0.5.9 — Makefile:** `make check` (gate), `make selftest`, `make census`, `make parity`. ✅
+- [x] **P0.5.10 — Retire legacy:** moved 40 `scripts/test_*.py` to `scripts/_superseded/` (git mv, never
+      deleted) and noted them in doc 01. ✅
 
 **Coverage expansion (the "200%").** Beyond the 75 ported cases:
 - [ ] **Negative tests** — assert the compiler *rejects* malformed input (`2 + ;`, unterminated struct, bad
