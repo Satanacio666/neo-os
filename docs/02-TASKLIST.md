@@ -217,7 +217,7 @@ Routing the shell REPL/`run` through `CompilerCompileAndRun` now yields **65/65*
 
 ---
 
-## P2 — Minimal bootstrap (make everything but the irreducible seed HolyC) — 🟡 IN PROGRESS
+## P2 — Minimal bootstrap (make everything but the irreducible seed HolyC) — 🟡 IN PROGRESS (P2.0 done; **P2.1 NEXT**)
 
 **Objective.** Shrink the C substrate to the *irreducible bootstrap* and make every `.HC` twin the single
 source of truth for its subsystem, so "everything above the seed is HolyC".
@@ -226,9 +226,20 @@ source of truth for its subsystem, so "everything above the seed is HolyC".
 `boot/main.c`; `boot/seed/{lexer,table,jit_arm64}.c`; `boot/runtime/{kheap,symbols,hal_platform,virtio_blk,redsea}.c`
 (+ vendored `boot/uefi/*.c` ×9, + `boot/uefi/reloc.S`; asm = 5). Live-call census from `apps/*.HC`:
 `kmalloc` 52, `kfree` 45, `symbols_register` 29, `symbols_lookup` 23, `hal_flush_cache` 22,
-`redsea_read_file` 11, `redsea_write_file` 6, `redsea_list_dir` 2, `symbols_is_defined`/`symbols_var_cell`/
-`symbols_sic_cell` 1 each, `jit_compile_and_run` 4 (the seed — stays).
+`redsea_read_file` 11, `redsea_write_file` 7, `redsea_list_dir` 2, `symbols_is_defined`/`symbols_var_cell`/
+`symbols_sic_cell`/`symbols_count`/`symbols_unresolved_count` 1 each, `jit_compile_and_run` 5 (the seed — stays).
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P2, P2-P6-MIGRATION-SPECS §7.1, 01-REALITY-AUDIT §A)`
+
+**⚠ Correction (verified `68cc2dc`, this session) — the old P2.1 finding was wrong:**
+- The 22 `hal_flush_cache` sites in `apps/*.HC` **already bind to the `.HC` implementation**:
+  `symbols_lookup("hal_flush_cache")` → `0x77745A40` (JIT pool, next to `HalFlushCache` `0x777457C0`), while
+  `symbols_lookup("hal_platform_init")` → `0x78EF0D70` (C binary). The C `hal_flush_cache` registered at
+  `boot/main.c:270` is **overwritten** when `HalPlatform.HC` loads (C-JIT `symbols_register` updates the
+  address). **No C file calls it** — it is dead code.
+- The C `g_hal_*` globals are **NOT** unused by C: `boot/runtime/virtio_blk.c:42-44` uses
+  `hal_get_virtio_slots()` / `hal_get_virtio_base(slot)`, which read the C `g_hal_virtio_base/slots/stride`.
+  C `virtio_blk` runs at early boot (to read the first `.HC` file) **before** `HalPlatform.HC` loads, so a
+  minimal C stub must stay until **P2.2** retires C `virtio_blk`.
 
 **Irreducible C (the target floor):**
 1. `boot/main.c` — UEFI entry, GOP, `GetMemoryMap`, jump into `.HC`.
@@ -240,21 +251,70 @@ source of truth for its subsystem, so "everything above the seed is HolyC".
 **Circularity rule:** a subsystem's C is retired only after its `.HC` twin is load-bearing; twins are
 retired in **reverse dependency order** so nothing depends on a not-yet-live twin.
 
-### P2.0 — Baseline & harness (do first)
-- [ ] Freeze baseline: `golden-boot.sh` PASS, battery 74/74, `SELF-HOST: PASS`, `p1-parity` PASS (`c78bbdd`).
-- [ ] Add **C-call census gate** `scripts/census-c-runtime.sh` — greps `apps/*.HC` for the C-runtime symbols
-      above and fails if any count *increases* during P2 (regression guard).
-- [ ] Add **twin-liveness probes** — a boot-time self-test per twin, callable over UART and asserted in
-      `golden-boot.sh`.
-- [ ] Snapshot `symbols_dump` + heap high-water mark before/after each step for parity.
+### P2.0 — Baseline & harness — ✅ DONE (delivered by P0.5)
+- [x] Freeze baseline: `golden-boot.sh` PASS, `SELFTEST: 80/80`, `SELF-HOST: PASS`, `p1-parity` PASS. ✅
+- [x] **C-call census gate** `scripts/census-c-runtime.sh` + `tests/census-baseline.txt` (fails on any
+      increase; wired into `golden-boot.sh`). ✅
+- [x] **Twin-liveness probes** (`<X>TwinProbe()`, asserted as `TWINS: 5/5` in the gate). ✅
+- [ ] Snapshot `symbols_dump` + heap high-water mark before/after each step for parity. (open)
 
-### P2.1 — HAL: `HalPlatform.HC` owns the platform
-- **Finding:** the only load-bearing C HAL entry called from `.HC` is `hal_flush_cache` (22 sites); the C
-  `g_hal_*` globals are unused by C. `HalPlatform.HC` is loaded (Stage 1) but its flush delegates to C.
-- [ ] Make `HalPlatform.HC` own cache maintenance (`dc civac`/`ic ivau`/`dsb sy`/`isb`) and the `g_hal_*`
-      globals; reduce `boot/runtime/hal_platform.c` to a thin trampoline, then delete it once
-      `Compiler.HC`'s `HcFlushCache` calls the `.HC` path.
-- [ ] Verify: battery 74/74, parity PASS, `hal_flush_cache` C-calls from `.HC` → 0. **Risk:** low.
+### P2.1 — HAL: `HalPlatform.HC` owns the platform — ⬜ **NEXT**
+
+**Corrected goal.** `.HC` is the single owner of cache maintenance and the platform-profile table; the C HAL
+shrinks to the minimal early-boot stub that C `virtio_blk.c` needs; the dead C cache function is deleted.
+Full C-HAL deletion is **deferred to P2.2** (blocked on retiring C `virtio_blk`).
+
+#### P2.1.0 — Baseline & binding proof (do first)
+- [ ] Freeze: `golden-boot.sh` PASS (`SELFTEST: 80/80`, parity 54/54, `TWINS: 5/5`, `SYMS: … 0 unresolved`,
+      `CENSUS: PASS`, `SELF-HOST: PASS`).
+- [ ] Record the binding proof (must show the C cache fn is dead):
+      `symbols_lookup("hal_flush_cache")` → JIT pool (`0x77…`); `symbols_lookup("hal_platform_init")` → C (`0x78…`).
+- [ ] Confirm C callers: `rg -n 'hal_flush_cache' boot --glob '!boot/uefi/**'` → def + registration only;
+      `rg -n 'hal_' boot/runtime/virtio_blk.c` → only `hal_get_virtio_slots`/`hal_get_virtio_base`.
+
+#### P2.1.1 — Delete the dead C cache function
+- [ ] Remove `hal_flush_cache` from `boot/runtime/hal_platform.c` (the function) and its declaration from
+      `boot/runtime/hal_platform.h`.
+- [ ] Remove `symbols_register("hal_flush_cache", …)` from `boot/main.c:270`.
+- [ ] Verify: build; boot; `symbols_lookup("hal_flush_cache")` still resolves in the JIT pool (`.HC` owns it);
+      gate green.
+
+#### P2.1.2 — Reduce the C HAL to the minimal early-boot stub
+- [ ] `boot/runtime/hal_platform.c`: keep only `g_hal_virtio_base/slots/stride`, `hal_platform_init()`
+      (hardcode QEMU virt: base `0x0A000000`, slots `32`, stride `0x200`), and the two virtio accessors.
+      Drop the uart/gicd/gicc globals + getters, the RPi4/RPi5 profiles, `hal_get_platform`/`hal_set_platform`/
+      `hal_platform_select`, and `hal_flush_cache`.
+- [ ] `boot/runtime/hal_platform.h`: shrink to what `virtio_blk.c` needs
+      (`hal_platform_init`, `hal_get_virtio_base`, `hal_get_virtio_slots`); drop the rest.
+- [ ] Verify: build (no missing symbols); boot reaches shell; `virtio_blk` still finds the block device and
+      RedSea loads all modules; gate green.
+
+#### P2.1.3 — `.HC` fully owns the path; de-duplicate `HcFlushCache`
+- [ ] Confirm `apps/HalPlatform.HC` owns cache maintenance (`HalFlushCache`: `dc civac`+`ic ivau`+`dsb`+`isb`),
+      the five platform profiles, `g_hal_*`, and `HalSystemReset`.
+- [ ] Simplify `apps/Compiler.HC:HcFlushCache` to delegate to `HalFlushCache(addr, size)` (drop the duplicated
+      inline flush) so there is exactly one cache-maintenance implementation.
+- [ ] Verify: `SELF-HOST: PASS`; battery `80/80` (JIT-emitted code still flushes and executes).
+
+#### P2.1.4 — Census reclassification
+- [ ] Remove `hal_flush_cache` from `SYMBOLS` in `scripts/census-c-runtime.sh` (it is a `.HC` symbol now);
+      re-baseline `tests/census-baseline.txt` via `--write`.
+- [ ] Verify: `CENSUS: PASS` with `hal_flush_cache` no longer listed.
+
+#### P2.1.5 — Hardening
+- [ ] Add a direct cache-coherency check to `apps/SelfTest.HC` (allocate a buffer, write, `HalFlushCache`,
+      read back, assert) — `HalTwinProbe` already covers liveness.
+- [ ] Keep `HalSelfTest()` reachable (`HalPlatformSelfTest()`), and (optional) assert it from the in-guest suite.
+
+#### P2.1.6 — Docs + gate + commit + bundle
+- [ ] Update `01-REALITY-AUDIT` (C HAL inventory + the correction), `00-MASTER-PLAN` (P2 row), `04` if needed.
+- [ ] `golden-boot.sh` PASS; `git commit`; `git bundle create /home/user/project/neo-os.bundle --all`.
+
+**P2.1 exit (Definition of Done):** `hal_flush_cache` has **no C implementation**; `boot/runtime/hal_platform.c`
+is a ~30-line early-boot stub (only the VirtIO MMIO constants C `virtio_blk.c` needs); `.HC` owns cache +
+platform; the census no longer lists `hal_flush_cache`; gate green. **Risk: low.**
+**Rollback:** `git checkout --` the touched files (no committed state depends on the change).
+**Deferred to P2.2:** deleting the C HAL stub entirely (blocked on retiring C `virtio_blk.c`).
 
 ### P2.2 — VirtioBlk: `VirtioBlk.HC` owns the virtqueue
 - [ ] Port virtqueue setup/notify/poll + read/write from `boot/runtime/virtio_blk.c` into `VirtioBlk.HC`

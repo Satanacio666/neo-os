@@ -283,7 +283,10 @@ Still **open** (deliberately not fixed):
 - Preemptive task switching (`sched_tick` stub; `cpu_switch_context` zero callers) — C1.
 - `GetMemoryMap` integration — **now fixed** (P2a); keep for completeness — C3.
 - Hardcoded QEMU `virt` MMIO addresses (needs FDT) — C11.
-- Full C→`.HC` migration (project C = 9 today) — P2/P8.
+- Full C→`.HC` migration (project C = 9 today) — P2/P8. **P2.1 correction (verified `68cc2dc`):** the 22 `.HC`
+  `hal_flush_cache` sites already bind to the `.HC` implementation (the C one registered in `boot/main.c:270`
+  is overwritten and dead); the C `g_hal_*` globals ARE still used by C `virtio_blk.c:42-44` at early boot, so
+  the C HAL can only be reduced to a stub now and deleted at P2.2.
 - RedSea in-place sector allocation / reclaim / dynamic `next_alloc_lba` — open.
 - Tracked binary artifacts in git — historical.
 - No CI workflow — historical.
