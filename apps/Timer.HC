@@ -77,8 +77,25 @@ U64 TimerGetUptimeSec() {
   return TimerGetUptimeUs() / 1000000;
 }
 
+// P3.4: arm the EL1 virtual timer. QEMU virt routes it to PPI 27
+// (HalGetTimerIrq). CNTV_TVAL_EL0 auto-loads CNTV_CVAL_EL0 = CNTVCT + TVAL.
+U0 TimerArm(I64 hz) {
+  U64 frq = TimerQueryHwFreq();
+  if (hz > 0) {
+    U64 interval = frq / hz;
+    if (interval == 0) interval = 1;
+    g_timer.interval_ticks = interval;
+  }
+  if (g_timer.interval_ticks == 0) g_timer.interval_ticks = frq / 1000;
+  if (g_timer.interval_ticks == 0) g_timer.interval_ticks = 1;
+  __msr_cntv_tval(g_timer.interval_ticks);
+  __msr_cntv_ctl(1); // ENABLE=1, IMASK=0
+}
+
+// Fired from the GIC PPI (level-sensitive) -> increment the tick and re-arm.
 U0 TimerTick() {
   g_timer.system_ticks = g_timer.system_ticks + 1;
+  __msr_cntv_tval(g_timer.interval_ticks);
 }
 
 U0 TimerSleepMs(I64 p_ms) {

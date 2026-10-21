@@ -197,6 +197,12 @@ U0 SelfTestKernel() {
     doldoc_printf("KERNEL: timer_freq=%lld ticks=%lld cores=%lld exc=%lld recovered=%lld panics=%lld\n",
                   TimerGetFrequency(), TimerGetTicks(), SmpGetCoreCount(),
                   g_exc.total_exceptions, g_exc.recovered_exceptions, g_exc.panic_count);
+    // P3.4: the hardware timer IRQ must actually fire (drives g_timer.system_ticks).
+    if (TimerGetTicks() > 0) {
+        doldoc_print("TICK: PASS\n");
+    } else {
+        doldoc_print("TICK: FAIL\n");
+    }
 }
 
 U0 SelfTestRun() {

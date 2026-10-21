@@ -1030,6 +1030,12 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
             } else if (strcmp(ident_name, "__mmio_w32") == 0) {
                 emit_u32(cb, 0xB9000001); // STR W1, [X0]
                 return;
+            } else if (strcmp(ident_name, "__msr_cntv_tval") == 0) {
+                emit_u32(cb, 0xD51BE300); // MSR CNTV_TVAL_EL0, X0
+                return;
+            } else if (strcmp(ident_name, "__msr_cntv_ctl") == 0) {
+                emit_u32(cb, 0xD51BE320); // MSR CNTV_CTL_EL0, X0
+                return;
             }
 
             // 2. Late-Bound Symbol Indirect Cell (SIC) Resolution (Zero Forward Declarations!)

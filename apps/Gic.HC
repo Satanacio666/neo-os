@@ -286,6 +286,10 @@ I64 GicSelfTest() {
 if (g_kernel_booting) {
   GicInit();
   GicBindVectors();
+  // P3.3: register the EL1 timer handler at boot (PPI from HalGetTimerIrq()).
+  // GicRegisterHandler also enables the line. IRQs stay masked until P3.4 arms
+  // the timer; unmasking here would just spin with nothing pending.
+  GicRegisterHandler(HalGetTimerIrq(), &TimerTick, 0);
 } else {
   GicSelfTest();
 }

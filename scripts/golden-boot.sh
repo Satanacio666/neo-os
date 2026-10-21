@@ -88,6 +88,13 @@ else
         echo "  [FAIL] kernel report: ${kline:-<none>} (want KERNEL: line)"
         fail=1
     fi
+    tkline="$(printf '%s\n' "$out" | grep -a 'TICK: ' | tail -1)"
+    if printf '%s' "$tkline" | grep -aq 'PASS'; then
+        echo "  [PASS] $tkline (hardware timer IRQ)"
+    else
+        echo "  [FAIL] timer tick: ${tkline:-<none>} (want TICK: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="
