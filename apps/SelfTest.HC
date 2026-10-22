@@ -943,6 +943,10 @@ U0 SelfTestRun() {
     // Regression: a 7-arg function with mixed int/F64 args called with an F64
     // function-call expression in a middle argument (the GearAddVertex pattern).
     SelfTestCheck2("f64_seven_arg_mixed", 4611686018427387904, "F64 h7(I64 a, F64 b, F64 c, F64 d, F64 e, F64 f, F64 g) { return b + c + d + e + f + g; }", "h7(1, 4.0 * 0.5, 0.0, 0.0, 0.0, 0.0, 0.0);");
+    // Regression (P4.6 root fix): a local F64 array's element floatness used to be
+    // inherited from the PREVIOUS declaration, so `a[0] = 1.0` was stored/loaded as
+    // raw integer bits. 1.0 + 1.5 + 1.5 == 4.0.
+    SelfTestCheck("f64_local_array_assign", "F64 a[3]; a[0] = 1.0; a[1] = 1.5; a[2] = 1.5; a[0] + a[1] + a[2];", 4616189618054758400);
     SelfTestCheck2("macro_define_add", 42, "#define MAC21 21", "MAC21 + MAC21;");
     SelfTestCheck2("macro_define_expr", 42, "#define MACEXPR 6 * 7", "MACEXPR;");
     SelfTestCheck("addr_of_array_elem", "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;", 20);
@@ -985,6 +989,7 @@ U0 SelfTestRun() {
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();
+    ShaderVMSelfTest();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

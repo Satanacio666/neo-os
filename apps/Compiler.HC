@@ -157,10 +157,12 @@ I64   g_hc_local_offsets[256];
 I64   g_hc_local_scales[256];    // 1, 2, 4, 8, or struct size
 I64   g_hc_local_is_ptr[256];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
 I64   g_hc_local_is_float[256];  // 1 if this local is an F64
+I64   g_hc_local_elem_float[256]; // 1 if this local's ELEMENT/POINTEE is F64 (arrays, F64*)
 I64   g_hc_local_st_idx[256];    // struct index or -1
 I64   g_hc_local_strides[256 * 4]; // per-dim byte strides for local arrays (0 = none)
 I64   g_hc_local_count;
 I64   g_hc_decl_float;          // transient: current declaration is F64
+I64   g_hc_decl_elem_float;     // transient: current decl's element/pointee is F64
 I64   g_hc_frame_offset;
 
 // Persistent Compiled Function Table
@@ -609,6 +611,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         g_hc_local_scales[g_hc_local_count] = scale;
         g_hc_local_is_ptr[g_hc_local_count] = is_ptr;
         g_hc_local_is_float[g_hc_local_count] = g_hc_decl_float;
+        g_hc_local_elem_float[g_hc_local_count] = g_hc_decl_elem_float;
         g_hc_local_st_idx[g_hc_local_count] = st_idx;
         g_hc_local_strides[g_hc_local_count * 4 + 0] = 0;
         g_hc_local_strides[g_hc_local_count * 4 + 1] = 0;
@@ -1532,6 +1535,9 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
         } else if (cur_mode == 1 && (g_hc_tok == TOK_ARROW || g_hc_tok == TOK_LBRACKET || g_hc_tok == TOK_DOT)) {
             HcEmitLoadLocal(0, rlv_off);
             cur_mode = 0;
+            // P4.6 root fix: indexing a POINTER local (e.g. `F64 *px; px[i]`) must
+            // use the POINTEE floatness, not the pointer's own (which is always 0).
+            if (g_hc_tok == TOK_LBRACKET) cur_is_float = g_hc_local_elem_float[loc_idx];
         } else {
             HcEmitAddrLocal(0, rlv_off);
             if (cur_mode == 1) {
@@ -2549,6 +2555,8 @@ U0 HcParseStatement() {
                     HcLexNext();
                 }
             }
+            g_hc_decl_float = 0;   // P4.6: function pointers are never F64
+            g_hc_decl_elem_float = 0;
             I64 fp_off = HcAddLocalTyped(fn_vname, 8, 1, -1, 1);
             if (g_hc_tok == TOK_EQUAL) {
                 HcLexNext();
@@ -2593,7 +2601,14 @@ U0 HcParseStatement() {
                         if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     }
                     I64 arr_elem_sz = (is_p > 0) ? 8 : base_scale;
+                    // P4.6 root fix: HcAddLocalTyped records the element floatness
+                    // from g_hc_decl_float, but the local-array path never set it,
+                    // so an F64 array inherited the PREVIOUS declaration's type and
+                    // its elements were read/written as integers. Set it explicitly.
+                    g_hc_decl_float = (is_p > 0) ? 0 : base_is_float;
+                    g_hc_decl_elem_float = base_is_float;
                     I64 arr_off = HcAddLocalTyped(vname, arr_elem_sz, 2, (is_p > 0) ? -1 : st_idx, arr_cnt);
+                    g_hc_decl_elem_float = 0;
                     // Per-dimension strides: stride[last] = elem width,
                     // stride[d] = dims[d+1]*stride[d+1]  (row stride for [i]).
                     I64 l_acc = arr_elem_sz;
@@ -2636,14 +2651,18 @@ U0 HcParseStatement() {
                         }
                     }
                 } else if (st_idx >= 0 && is_p == 0) {
+                    g_hc_decl_float = 0;   // P4.6: struct-value locals are never F64
+                    g_hc_decl_elem_float = 0;
                     HcAddLocalTyped(vname, base_scale, 3, st_idx, 1);
                 } else {
                     I64 var_scale = (is_p > 0) ? base_scale : 8;
                     I64 ptr_mode = (is_p > 0) ? 1 : 0;
                     I64 decl_is_f = (is_p == 0 && base_is_float);
                     g_hc_decl_float = decl_is_f;
+                    g_hc_decl_elem_float = base_is_float;   // F64* local: pointee is F64
                     I64 decl_off = HcAddLocalTyped(vname, var_scale, ptr_mode, st_idx, 1);
                     g_hc_decl_float = 0;
+                    g_hc_decl_elem_float = 0;
                     if (g_hc_tok == TOK_EQUAL) {
                         HcLexNext(); // eat '='
                         HcParseExpr(); // result in x0 (or d0 if float)
@@ -3079,8 +3098,10 @@ U0 HcParseFunction(U8 *func_name) {
 
                 I64 v_scale = p_is_ptr ? p_scale : 8;
                 g_hc_decl_float = (p_is_float && !p_is_ptr) ? 1 : 0;
+                g_hc_decl_elem_float = p_is_float;   // F64* param: pointee is F64
                 I64 fn_arg_off = HcAddLocalTyped(pname, v_scale, p_is_ptr, p_st_idx, 1);
                 g_hc_decl_float = 0;
+                g_hc_decl_elem_float = 0;
                 if (p_is_float && !p_is_ptr) {
                     HcEmit(0xFD0003A0 | ((fn_arg_off >> 3) << 10) | param_count); // str d{pc}, [x29,#off]
                 } else {

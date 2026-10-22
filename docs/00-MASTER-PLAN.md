@@ -59,7 +59,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
 | **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
 | **P3** | Kernel correctness | ✅ **DONE** — timer IRQ, preemptive scheduler, SMP, BSOD, sovereign handover (doc 2 §P3) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
-| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears); P4.6–P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font |
+| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes); P4.7–P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
 | **P6** | Shell (action executor over a CDoc) | ⬜ | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | ⬜ | one real 40-phase suite; profilers merged |
@@ -209,6 +209,12 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
   filter and the blend. **One pipeline only** (`RasterTriangleZ → RasterRow → RasterSpanNEON | textured
   span`) — no parallel/`permanent scalar rasterizer`. The 2D golden path forces the NEON solid span so
   `RENDER 0xD28836F` stays bit-exact.
+- **Programmable fragments (`apps/ShaderVM.HC`, `scripts/shader_quad.s`)**: a register bytecode VM over a 2×2
+  quad (16 registers × 4 lanes, SoA) whose arithmetic core is 128-bit NEON (`ShaderOp4`, 75 words) — one
+  instruction = 4 px; `dFdx`/`dFdy` by lane permutation; execution masking via a per-lane predicate and mask
+  stack. Built-in library (Perlin/fBm/Mandelbulb/SDF) + a text assembler for custom shaders; a native 4-lane
+  raymarcher evaluates the field 4 lanes at a time through `ShaderOp4`. Separate path from the fixed-function
+  rasterizer, so the golden 2D hash is untouched.
 
 ### 9.5 Fonts & typography (`apps/Fonts.HC` merge, `apps/DolDoc.HC`) — inspiration: stb_truetype
 - **stb_truetype v2 signed-area AA rasterizer** + `GetGlyphSDF` (or rasterize-then-EDT). Bake a **SDF atlas**
@@ -248,7 +254,13 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
   (`HcReset` cleared the per-unit table), so `r * MathCos(a)` promoted the double's raw bits as an integer.
   A persistent `name → returns-F64` table + `HcPrescanFuncs` fixed it; gears render `800 tris / 71410 px`
   (`3D-GEARS: PASS`), `RENDER 0xD28836F` untouched.
-- Remaining near-term ladder: **P4.6 fragment VM**
-  → P4.7 OBJ → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell → **P7** bench
-  → **P8** self-host-all → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into their
-  owning priorities.
+- **P4.6 (fragment-shader VM) DONE** — `apps/ShaderVM.HC`: a register bytecode VM over a 2×2 quad with a
+  128-bit NEON op core (`ShaderOp4`, `scripts/shader_quad.s`), `dFdx`/`dFdy` by lane permutation, execution
+  masking, a Perlin/fBm/Mandelbulb/SDF library + a text assembler, and a native 4-lane raymarcher; DolDoc
+  routes `$SHADER$` `vm`/`sdf`/`noise`/`mandel`/`bulb` to it (`shader 9`, `shadervm`). `SHADERVM: PASS (14/14)`,
+  `SELFTEST 85/85`, `RENDER 0xD28836F` untouched, census 181 unchanged. On the way, **two `Compiler.HC` root
+  bugs** were fixed: local-array element floatness (inherited from the previous declaration) and pointer-local
+  indexing (`F64 *p; p[i]`) using the pointer's own floatness instead of the pointee (D13).
+- Remaining near-term ladder: **P4.7 OBJ** → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell
+  → **P7** bench → **P8** self-host-all → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into
+  their owning priorities.

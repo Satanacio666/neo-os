@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix, P4.6 ✅ fragment-shader VM; next P4.7 OBJ; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -806,12 +806,43 @@ amb/diff/spec). After the shared coverage/depth stage the kernel dispatches:
       `3D-GEARS: PASS`, `SHADING: PASS`, `TEXTURE: PASS`, `FONTS: PASS`, `SELF-HOST: PASS`, `CENSUS: PASS`,
       `GOLDEN BOOT: PASS`.
 
-### P4.6 — Fragment-shader VM (stretch; enables SDF/noise/raymarch) — ⬜
-- [ ] Small **bytecode/stack VM** evaluated per **2×2 quad**: fixed op set, `dFdx`/`dFdy` via lane
-      permutation, execution masking. *(Refs: Schmalstieg "High-Performance Software Graphics Pipeline";
-      ProtonVM bytecode interpreter.)*
-- [ ] Built-in shader library first (SDF primitives, multi-octave Perlin/Simplex, Mandelbulb), generic VM
-      for custom shaders. Evaluate 4 px/iteration in NEON lanes.
+### P4.6 — Fragment-shader VM — ✅ **DONE**
+**Goal (met):** a small bytecode VM evaluated per 2×2 quad, with `dFdx`/`dFdy` via lane permutation and
+execution masking; a built-in shader library first (SDF/noise/Mandelbulb) and a generic VM for custom shaders;
+4 px/iteration in NEON lanes.
+
+- [x] **`apps/ShaderVM.HC`** — a register bytecode machine: 16 shader registers × **4 lanes** (SoA 2×2 quad),
+      instruction = 4×I64 `[op,a,b,c]`. ISA: `mov/movi add/sub/mul/div/min/max sqrt/rsq/abs/neg/floor/fract
+      sin/cos len2/len3/dot2 mix/clamp/smooth fragx/fragy/time dfdx/dfdy if/else/endif jmp/jnz/jz
+      perlin/fbm/mandel/sdfsphere/sdfbox/sdftorus out`.
+- [x] **NEON op core** `ShaderOp4` (`scripts/shader_quad.s`, 75 words): add/sub/mul/div/min/max/sqrt/rsq/abs/
+      neg/floor/fract applied to all four lanes with 2× `.2d` (`frsqrte`+`frsqrts` for `rsq`). One instruction
+      = 4 px. The interpreter does only the per-lane masked blend.
+- [x] **`dFdx`/`dFdy` via lane permutation** (quad layout 0=(x,y) 1=(x+sx,y) 2=(x,y+sy) 3=(x+sx,y+sy)).
+- [x] **Execution masking:** `if r[a]` → 4-bit predicate ∩ current mask, mask stack for `else`/`endif`; ops
+      write only active lanes.
+- [x] **Built-in library first:** Perlin gradient noise (`ShaderPerlin3`), multi-octave fBm (`ShaderFbm3`),
+      Mandelbulb DE (`ShaderMandelbulbDE`, with `atan2`/`acos`/`log`), SDF primitives; plus a **text assembler**
+      (`ShaderVMAssemble`, mnemonics + labels) for custom shaders. Built-in programs: animated gradient,
+      shaded 2-D SDF disc (uses `dfdx`/`dfdy`), Perlin fBm, and a **masked Mandelbrot** (real divergence loop).
+- [x] **Native 4-lane raymarcher** (`ShaderRaymarchQuad`): marches 4 px/iteration against a sphere+torus+plane
+      whose field (`ShaderField4`) is evaluated **4 lanes at a time through `ShaderOp4`**, finite-difference
+      normal + Blinn-Phong + gamma. Exposed as the `shadervm` shell command.
+- [x] **Integration:** DolDoc routes `$SHADER$` types `vm`/`sdf`/`noise`/`mandel`/`bulb` to
+      `ShaderVMRenderNode` (direct call — Stage 5 loads before DolDoc, no `symbols_lookup`, census unchanged);
+      `ShaderEditor` preset 9 shows the live VM gallery; `KernelInit` Stage 5 loads `ShaderVM.HC` (34 subsystems).
+- [x] **Root fixes it required (`Compiler.HC`):** local-array element floatness was inherited from the
+      *previous* declaration (`F64 a[3]; a[0]=1.0;` → raw integer bits), and indexing a **pointer local**
+      (`F64 *p; p[i]`) used the pointer's own floatness instead of the pointee. Fixed via `g_hc_decl_float` /
+      `g_hc_decl_elem_float` / `g_hc_local_elem_float`; regression `f64_local_array_assign`.
+- [x] **`SHADERVM: PASS (14/14)`** gate (`SelfTestShaderVM`): op-core add/mul/sqrt, VM arithmetic, derivatives,
+      masking (both branches), library ranges, a text-assembled countdown loop, the 4-lane field value
+      (`2.25` at the torus) and an SDF viewport fill. Visual: the raymarched sphere/torus/plane and the live
+      `shader 9` gallery captured by screendump.
+- [x] **Golden invariant:** the VM is a separate path → `RENDER: PASS (0xD28836F)` untouched (bit-exact).
+- [x] **Exit — MET:** `SELFTEST 85/85`, `PARITY 54/54 (0 diff)`, `RENDER: PASS (0xD28836F)`, `3D: PASS`,
+      `3D-GEARS: PASS`, `SHADING: PASS`, `SHADERVM: PASS (14/14)`, `TEXTURE: PASS`, `FONTS: PASS`,
+      `CENSUS: PASS (181)`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`.
 
 ### P4.7 — Mesh ingestion — ⬜
 - [ ] Streaming **Wavefront OBJ** parser in HolyC: `v/vn/vt/f`, negative (relative) indices, n-gon
@@ -904,10 +935,12 @@ amb/diff/spec). After the shared coverage/depth stage the kernel dispatches:
 | Check | Command | Expected |
 |---|---|---|
 | Golden gate (one boot) | `scripts/golden-boot.sh` | `GOLDEN BOOT: PASS` |
-| In-guest battery | inside the gate: `selftest` (one command) | `SELFTEST: 80/80 PASS` |
+| In-guest battery | inside the gate: `selftest` (one command) | `SELFTEST: 85/85 PASS` |
 | In-guest parity | inside the gate: `selftest` | `PARITY: 54/54`, `0 diff` |
 | Twin-liveness | inside the gate: `selftest` | `TWINS: 5/5` |
 | Symbol audit | inside the gate: `selftest` | `SYMS: <n> symbols, 0 unresolved` |
+| Shading (P4.5) | inside the gate: `selftest` | `SHADING: PASS` |
+| Fragment-shader VM (P4.6) | inside the gate: `selftest` | `SHADERVM: PASS (14/14)` |
 | C-runtime census | `scripts/census-c-runtime.sh` | `CENSUS: PASS` |
 | Self-host | `scripts/self-host-test.sh` | `SELF-HOST: PASS` |
 | Module parity | `scripts/p1-parity.sh` | `RESULT: PASS — engines agree` |
@@ -917,8 +950,9 @@ amb/diff/spec). After the shared coverage/depth stage the kernel dispatches:
 | Visual | `scripts/screenshot-diff.py` | no unexpected diff |
 | Cycles | `rg "shell_run_command" apps/DolDoc.HC apps/WM.HC` | empty |
 
-> `tests/jit_golden/cases.json` holds **75 cases** (1 `known`), i.e. **74 active**; the in-guest suite is
-> those 74 plus **6 new** coverage cases = **80 checks**. The earlier "65/65" figures in P0/P1 were stale.
+> `tests/jit_golden/cases.json` holds **84 cases** (1 `known`), i.e. **83 active**; the in-guest suite is
+> those 83 plus coverage/subsystem gates = **85 counted checks** (`SELFTEST 85/85`). The earlier "65/65" /
+> "75 cases" / "80 checks" figures are stale.
 
 ---
 

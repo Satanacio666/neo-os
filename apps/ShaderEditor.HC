@@ -41,11 +41,11 @@ U0 ShaderEditorRenderIDE(I64 preset) {
     doldoc_printf("  iTime Speed : $SL,\"g_shader_speed\",min=5,max=100,val=%lld,w=130,target=%lld$   ", g_shader_speed, &g_shader_speed);
     doldoc_printf("  iZoom Scale : $SL,\"g_shader_zoom\",min=10,max=100,val=%lld,w=130,target=%lld$\n", g_shader_zoom, &g_shader_zoom);
     doldoc_printf("  SDF Morph   : $SL,\"g_shader_morph\",min=10,max=100,val=%lld,w=130,target=%lld$\n", g_shader_morph, &g_shader_morph);
-    doldoc_print("  Presets: $BT,\"Plasma\",LM=\"shader 0\"$ $BT,\"Torus\",LM=\"shader 1\"$ $BT,\"Caustics\",LM=\"shader 2\"$ $BT,\"Fire\",LM=\"shader 3\"$ $BT,\"Tunnel\",LM=\"shader 4\"$ $BT,\"Metaballs\",LM=\"shader 5\"$ $BT,\"Stars\",LM=\"shader 6\"$ $BT,\"Fractal\",LM=\"shader 7\"$ $BT,\"Quad View\",LM=\"shader 8\"$\n");
+    doldoc_print("  Presets: $BT,\"Plasma\",LM=\"shader 0\"$ $BT,\"Torus\",LM=\"shader 1\"$ $BT,\"Caustics\",LM=\"shader 2\"$ $BT,\"Fire\",LM=\"shader 3\"$ $BT,\"Tunnel\",LM=\"shader 4\"$ $BT,\"Metaballs\",LM=\"shader 5\"$ $BT,\"Stars\",LM=\"shader 6\"$ $BT,\"Fractal\",LM=\"shader 7\"$ $BT,\"Quad View\",LM=\"shader 8\"$ $BT,\"VM Gallery\",LM=\"shader 9\"$\n");
     doldoc_print("$HR$\n");
 
     // Live Shader Viewport + HolyC Kernel Source Code
-    I64 card2_h = (preset == 8) ? 10 : 12;
+    I64 card2_h = (preset == 8 || preset == 9) ? 10 : 12;
     doldoc_printf("$CARD,title=\"2. Real-Time Procedural Fragment Shader Viewports (Shadertoy)\",w=112,h=%lld$\n", card2_h);
     if (preset == 0) {
         doldoc_print("  $FG,YELLOW$Active Kernel: Shader #0 [Cyber Plasma Interference Field]$FG$\n");
@@ -79,6 +79,10 @@ U0 ShaderEditorRenderIDE(I64 preset) {
         doldoc_print("  $FG,YELLOW$Active Kernel: Shader #7 [Complex Fractal Orbit-Trap Kaleidoscope]$FG$\n");
         doldoc_print("  $FG,CYAN$U32 FragFractal(I64 zx, I64 zy, I64 t) { z = z^2 + c(t); return OrbitTrapColor(Min(Abs(zx), Abs(zy))); }$FG$\n\n");
         doldoc_print("    $SHADER,type=\"fractal\",w=360,h=108$\n\n\n\n\n\n");
+    } else if (preset == 9) {
+        doldoc_print("  $FG,YELLOW$P4.6 Fragment-Shader VM Gallery (2x2 NEON quad, dFdx/dFdy, execution masking)$FG$\n");
+        doldoc_print("  $FG,CYAN$Bytecode programs: procedural gradient | SDF disc | Perlin fBm | masked Mandelbrot | raymarched Mandelbulb$FG$\n\n");
+        doldoc_print("   $SHADER,type=\"vm\",w=176,h=72$  $SHADER,type=\"sdf\",w=176,h=72$  $SHADER,type=\"noise\",w=176,h=72$  $SHADER,type=\"mandel\",w=176,h=72$\n\n\n\n");
     } else {
         doldoc_print("  $FG,YELLOW$Active Kernel: Quad Simultaneous Shadertoy Gallery (Plasma, Torus, Fire, Tunnel)$FG$\n");
         doldoc_print("  $FG,CYAN$Click any shader viewport or drag any uniform slider above to step & mutate in real time!$FG$\n\n");
@@ -95,7 +99,7 @@ U0 ShaderEditorCmd(U8 *arg) {
         return;
     }
     while (*arg == ' ') arg++;
-    if (*arg >= '0' && *arg <= '8') ShaderEditorRenderIDE(*arg - '0');
+    if (*arg >= '0' && *arg <= '9') ShaderEditorRenderIDE(*arg - '0');
     else ShaderEditorRenderIDE(8);
 }
 

@@ -625,6 +625,14 @@
       "expect": "0xDEAE7E89"
     },
     {
+      "name": "f64_local_array_assign",
+      "note": "P4.6 root fix: local F64 array element floatness (1.0+1.5+1.5 == 4.0).",
+      "cmds": [
+        "F64 a[3]; a[0] = 1.0; a[1] = 1.5; a[2] = 1.5; a[0] + a[1] + a[2];"
+      ],
+      "expect": "0x4010000000000000"
+    },
+    {
       "name": "known_over8_args",
       "known": true,
       "cmds": [

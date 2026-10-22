@@ -5,12 +5,13 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD P4.5, `main` tree clean** — updated 2026-10):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 84/84` · `PARITY 54/54`
-(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
+Current verified baseline (**HEAD P4.6, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 85/85` · `PARITY 54/54`
+(0 diff, 6 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
 `3D-GEARS: PASS (tris=800 ink=71410)` · `SHADING: PASS (phong=30 lum_max=182 gouraud=218)` ·
+`SHADERVM: PASS (14/14)` (fragment-shader VM: NEON quad, derivatives, masking) ·
 `PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
-`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1466, 0 unresolved`.
+`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1533, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
@@ -135,7 +136,7 @@ global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in
 | Textures (UV) | **[STUB]** `HolyGLTexCoord2f` discards UVs; stored never sampled. |
 | NEON SIMD rasterizer | **[PARTIAL]** `RasterTile.HC` claims Pineda 64×64; live path scalar-ish; tile size claimed 64×64 (manifesto) vs 32×32 (arch_spec/impl_plan). |
 | 4 rasterizers / 3 fonts / 2 damage / ~3 present paths | **[PARTIAL]** fragmentation real (master P4). |
-| Gouraud / SDF / shader VM | **[STUB]/[MISSING]** flat shading live; SDF + fragment-shader VM absent. |
+| Gouraud / SDF / shader VM | **[REAL]** Gouraud + per-fragment Blinn-Phong in the one NEON kernel (P4.5); a bytecode fragment-shader VM with 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, a Perlin/fBm/Mandelbulb/SDF library and a 4-lane raymarcher (P4.6, `ShaderVM.HC`). |
 | Zero-RAM direct-to-VRAM | **[REAL]** (with tearing trade-off, documented). |
 | `SMP_TILED` actually dispatched | **[PARTIAL]** often falls back to Core-0 execution. |
 | 40-phase benchmark | **[MISSING]** old 16-phase/6-phase matrices; master P7 wants one 40-phase suite. |
@@ -247,6 +248,30 @@ accumulators (advanced `8*delta` per block, fanned over 8 lanes with `FMLA`), no
 rotates per-vertex normals into view space (`HolyGLViewNormal`) and feeds the rasterizer; `RenderGoldenScene`
 forces flat. `SelfTestShading` → **`SHADING: PASS (phong=30 lum_max=182 gouraud=218)`**; a normal-swept quad
 renders a smooth gradient with a specular highlight (verified by screendump).
+
+### P4.6 — fragment-shader VM (2×2 NEON quad) — **[REAL]**
+
+`apps/ShaderVM.HC` is a **register bytecode VM** evaluated per **2×2 fragment quad**: 16 registers × 4 lanes
+(SoA), a 4-word instruction `[op,a,b,c]`, and a fixed ISA (arithmetic, `len`/`dot`/`mix`/`clamp`/`smooth`,
+`fragx`/`fragy`/`time`, `dfdx`/`dfdy`, `if`/`else`/`endif`, `jmp`/`jnz`/`jz`, library ops, `out`). The
+arithmetic core is **128-bit NEON** (`ShaderOp4`, hand-encoded in `scripts/shader_quad.s`, 75 words) so one
+instruction applies to all four lanes at once. `dFdx`/`dFdy` use lane permutation; `if` builds a 4-bit
+per-lane predicate intersected with the current mask (**execution masking**) with a mask stack for `else`.
+The **built-in library** (native fast paths) provides Perlin gradient noise, multi-octave fBm, a Mandelbulb
+distance estimator (with `atan2`/`acos`/`log`), and SDF primitives; a **text assembler** compiles custom
+shaders into the same bytecode. Built-in programs: animated gradient, shaded 2-D SDF disc, Perlin fBm, and a
+**masked Mandelbrot** (real per-lane divergence). A native **4-lane raymarcher** (`ShaderRaymarchQuad`)
+marches 4 px/iteration against a sphere+torus+plane whose field is evaluated 4 lanes at a time through
+`ShaderOp4`, with a finite-difference normal + Blinn-Phong + gamma. DolDoc routes the `$SHADER$` types
+`vm`/`sdf`/`noise`/`mandel`/`bulb` to it (direct call, no census growth); `shader 9` shows the live gallery
+and `shadervm` shows the raymarch. `SelfTestShaderVM` → **`SHADERVM: PASS (14/14)`**; visually confirmed.
+
+**Root fixes it surfaced (compiler).** Two latent `Compiler.HC` bugs blocked local F64 arrays: (a) a **local
+array's element floatness** was never set (inherited from the *previous* declaration), so `F64 a[3]; a[0]=1.0`
+stored/loaded raw integer bits; (b) indexing a **pointer local** (`F64 *p; p[i]`) used the pointer's own
+floatness (always 0) instead of the **pointee**. Both are fixed at the root via `g_hc_decl_float` /
+`g_hc_decl_elem_float` / `g_hc_local_elem_float`; regression `f64_local_array_assign` (`0x4010000000000000`).
+`RENDER 0xD28836F` untouched (bit-exact); census unchanged (181).
 
 ### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
 `FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only

@@ -1166,6 +1166,13 @@ U0 DolDocParseShader(U8 *tag) {
 // Supports 8 Native Procedural Shaders with Real-Time Uniform Reaction
 // ============================================================================
 U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
+    // P4.6: the procedural fragment-shader VM owns these types ("vm","sdf",
+    // "noise","mandel","bulb"). ShaderVM.HC loads in Stage 5, before DolDoc
+    // (Stage 6), so these are direct calls bound through the SIC cell.
+    if (ShaderTypeId(sh_type) >= 0) {
+        ShaderVMRenderNode(vx, vy, vw, vh, sh_type);
+        return;
+    }
     I64 t_ms = timer_get_uptime_ms();
     I64 phase = ((t_ms * g_shader_speed) / 400) + g_doc_anim_tick * 3;
     I64 zoom = g_shader_zoom;

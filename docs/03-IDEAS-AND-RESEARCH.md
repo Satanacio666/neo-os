@@ -125,9 +125,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
 - **Mesh ingestion** `(from FUTURE roadmap §3.4)`: streaming Wavefront OBJ parser in HolyC. **[MISSING]**.
 - **HolyGL as the compositor backend** `(from FUTURE roadmap §3.5)`: DolDoc 2D cards/glass/shadows → HolyGL textured quads.
 - **Shader engine (native 2×2 NEON quad SoA)** `(from FUTURE roadmap §4, forensic dossier §3.5/§4.2, SKILL.md Order 17)`:
-  evaluate 4 pixels/iteration with `float32x4_t`; Newton-Raphson `vrsqrteq_f32`/`vrsqrtsq_f32`; `dFdx`/`dFdy` via
-  lane permutations; execution masking (`vcgtq_f32`/`vbslq_f32`); authentic raymarched SDF primitives; multi-octave
-  Perlin/Simplex noise; Mandelbulb; 32×32 tiles across 4 cores. **[MISSING]** (current shaders are 2D approximations).
+  evaluate 4 pixels/iteration with NEON lanes; Newton-Raphson `FRSQRTE`/`FRSQRTS`; `dFdx`/`dFdy` via lane
+  permutations; execution masking (a per-lane predicate + mask stack); raymarched SDF primitives; multi-octave
+  Perlin/fBm noise; Mandelbulb; a text assembler for custom shaders. **[REAL — P4.6]** (`apps/ShaderVM.HC`,
+  `scripts/shader_quad.s`); the legacy 2-D `$SHADER$` approximations remain in `DolDoc.HC` for the other type
+  strings. 32×32 tile parallelism across 4 cores is still open (P9).
 - **NEON span rasterizer** `(from single_core…_audit §2/§4, complete_render_stack §3.4)`: 8-pixel simultaneous
   depth test (`cmlt.8h`), branchless select (`bsl`/`bit`), 64-byte vector writes.
 - **F32x4 SIMD as a HolyC primitive** `(from neo_os_grand_architecture_manifesto §8)`: `F32x4 v1 = {…}; v1+v2 → fadd v0.4s`.
@@ -154,9 +156,9 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
   outlines (single-channel) and sample with `smoothstep`; MSDF is the multi-channel upgrade. Refs: Viktor
   Chlumsky MSDF thesis + FreeType SDF renderer (GSoC 2020); stb_truetype SDF; redblobgames SDF guide.
   Atlas packing: stb_rect_pack shelf packing.
-- **Fragment-shader VM.** Small bytecode/stack VM, 2×2 quad, lane-permutation derivatives, execution masking.
-  Refs: Schmalstieg et al. "A High-Performance Software Graphics Pipeline Architecture for the GPU";
-  ProtonVM (parallel bytecode interpreter).
+- **Fragment-shader VM.** Small register bytecode VM, 2×2 quad (SoA), lane-permutation derivatives, execution
+  masking — **implemented in P4.6** (see §3.1.2). Refs: Schmalstieg et al. "A High-Performance Software
+  Graphics Pipeline Architecture for the GPU"; ProtonVM (parallel bytecode interpreter).
 - **Mesh ingestion.** Streaming OBJ parser handling negative indices + n-gon triangulation. Refs: nullprogram
   "Robust Wavefront OBJ parsing in C" (2025); rapidobj / tinyobjloader.
 - **virtio-gpu: 2D-only for P4; 3D deferred to P9.** Virgl/Venus require host Vulkan + a large QEMU patch set
@@ -183,6 +185,39 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
   emitted `scvtf` on the double's raw bits. Fixed with a persistent name→returns-F64 table + a brace-depth-0
   `HcPrescanFuncs` pre-pass. Lesson: a codegen type-loss bug can masquerade as a geometry/math bug for a long
   time; always dump raw vertex *bits* before blaming the algorithm.
+
+#### 3.1.2 P4.6 fragment-VM implementation notes (2026-10)
+- **Register VM, not a stack VM, over a 2×2 quad.** A stack VM's push/pop traffic dominates when the data is
+  already vector-shaped; a fixed 16-register file × 4 lanes (SoA) maps one instruction to one NEON op across
+  the whole quad. Instruction = `[op, a, b, c]` (4×I64). The interpreter is a plain dispatch loop; the
+  arithmetic is out-sourced to a hand-encoded NEON core so "4 px/iteration" is literal.
+- **The NEON op core (`ShaderOp4`) is the whole point.** `aarch64` gives `fadd/fsub/fmul/fdiv/fmin/fmax` and
+  `fabs/fneg/fsqrt/frintm` for `.2d`, so a 4-lane double op is two `.2d` instructions. `rsq` uses
+  `FRSQRTE` + one `FRSQRTS` Newton step (the same idiom P4.5 uses to normalize). Hand-assembled in
+  `scripts/shader_quad.s` (75 words) and embedded via `asm {}` — the compiler emits the prologue/epilogue, so
+  the block has no `ret`. Ref: Arm ARM ASIMD `FRSQRTE`/`FRSQRTS`.
+- **Derivatives are a lane permutation, not a separate pass.** With the quad laid out
+  `0=(x,y) 1=(x+1,y) 2=(x,y+1) 3=(x+1,y+1)`, `dFdx` is `(v1−v0, v1−v0, v3−v2, v3−v2)` and `dFdy` is
+  `(v2−v0, v3−v1, v2−v0, v3−v1)` — the hardware's own 2×2 finite difference, so no extra helper lanes.
+- **Execution masking with a predicate stack.** `if r[a]` builds a 4-bit predicate (`r[a] > 0` per lane) and
+  intersects it with the active mask; every op writes only active lanes; `else` recomputes from the saved mask
+  and `~pred`; `endif` restores. The masked `mandel` program is the proof: escaped lanes stop iterating while
+  the rest continue. This is a software analogue of GPU predication.
+- **Library first, VM second.** The heavy, reusable kernels (Perlin gradient noise, multi-octave fBm, the
+  Mandelbulb DE with hand-rolled `atan2`/`acos`/`log`, SDF primitives) are native functions exposed as VM
+  opcodes — fast and correct — and the generic VM composes them for custom shaders (a small text assembler:
+  `mnemonic a, b, c`, `label:`, `//` comments, two-pass label resolution). This matches how real engines ship
+  a shader stdlib and a compiler.
+- **Raymarch in 4-lane NEON via composition.** `ShaderField4` evaluates the scene SDF for four lanes by
+  chaining `ShaderOp4` calls, so the ray *field* is 4 px/iteration even though the per-lane ray parameter
+  update is scalar. Normals are finite differences of the field (6 more `ShaderField4` calls), then Blinn-Phong
+  + gamma. The demo renders a sphere+torus+plane (`shadervm`).
+- **Two compiler root bugs surfaced and were fixed (D13).** (1) A **local array's element floatness** was never
+  set on the local-array path, so it inherited the *previous* declaration's type and `F64 a[3]; a[0]=1.0`
+  stored/loaded raw integer bits. (2) Indexing a **pointer local** (`F64 *p; p[i]`) used the pointer's own
+  floatness (always 0) instead of the **pointee**. Fixed by tracking element/pointee floatness separately
+  (`g_hc_decl_elem_float` → `g_hc_local_elem_float`) and consulting it on subscript. Lesson (again): local
+  aggregate type tracking is a landmine — a VM's scratch arrays are the perfect probe for it.
 
 ---
 

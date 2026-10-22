@@ -505,6 +505,41 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
 - **Texture + shading is not combined yet** (a textured span still uses the flat modulate colour); documented
   as a follow-up. `gmode` is forced 0 whenever `tex_ptr != 0`.
 
+### D13. P4.6 fragment-shader VM architecture — DECIDED: register bytecode VM over a 2×2 NEON quad
+- **Where it lives.** A new `apps/ShaderVM.HC` (Stage 5, after `HolyGL.HC`). It is deliberately NOT inside the
+  rasterizer: the rasterizer keeps its fixed-function solid/Gouraud/Phong stages, and the VM is the programmable
+  path for `$SHADER$` nodes. DolDoc (Stage 6) routes the procedural types to it by direct call (the SIC cell
+  binds it, since ShaderVM loads first) — no `symbols_lookup` added, so the census is unchanged.
+- **Machine model.** A **register** bytecode machine: 16 shader registers, each holding **four lanes** (a 2×2
+  fragment quad, SoA: lane 0=(x,y), 1=(x+sx,y), 2=(x,y+sy), 3=(x+sx,y+sy)). One instruction word is 4×I64
+  `[op, a, b, c]`. The ISA covers mov/movi, add/sub/mul/div/min/max, sqrt/rsq/abs/neg/floor/fract, sin/cos,
+  len2/len3/dot2, mix/clamp/smooth, fragx/fragy/time, dfdx/dfdy, if/else/endif, jmp/jnz/jz, the library ops
+  (perlin/fbm/mandel/sdfsphere/sdfbox/sdftorus) and out.
+- **The arithmetic core is 128-bit NEON** (`ShaderOp4`, hand-encoded in `scripts/shader_quad.s`, 75 words): one
+  instruction applies to all four lanes at once with 2× `.2d` ops (`fadd`/`fsub`/`fmul`/`fdiv`/`fmin`/`fmax`/
+  `fsqrt`/`fabs`/`fneg`/`frintm`, and `frsqrte`+`frsqrts` for `rsq`). "4 px/iteration in NEON lanes" is this op core; the
+  interpreter only does the per-lane masked blend of the result.
+- **Derivatives via lane permutation.** `dFdx` = `(v1−v0, v1−v0, v3−v2, v3−v2)`, `dFdy` =
+  `(v2−v0, v3−v1, v2−v0, v3−v1)` — the standard 2×2 screen-space derivative, exactly the quad's lane layout.
+- **Execution masking.** `if r[a]` computes a 4-bit per-lane predicate and intersects it with the current mask;
+  masked ops write only active lanes; `else`/`endif` restore via a mask stack. The built-in `mandel` program
+  uses it as a real divergence loop (escaped lanes stop iterating).
+- **Built-in library first, generic VM for custom shaders.** Native fast paths for Perlin gradient noise
+  (`ShaderPerlin3`), multi-octave fBm (`ShaderFbm3`), the Mandelbulb distance estimator (`ShaderMandelbulbDE`,
+  with `atan2`/`acos`/`log` implementations), and SDF primitives; a text assembler (`ShaderVMAssemble`,
+  `mnemonic a, b, c` lines + labels) compiles custom shaders into the same bytecode. Built-in programs:
+  animated gradient, shaded 2-D SDF disc (uses `dfdx/dfdy`), Perlin fBm, masked Mandelbrot.
+- **Native 4-lane raymarcher.** `ShaderRaymarchQuad` marches a 2×2 quad (4 px/iteration) against a
+  sphere+torus+ground-plane scene whose field (`ShaderField4`) is evaluated **4 lanes at a time through
+  `ShaderOp4`**, shaded with a finite-difference normal + Blinn-Phong + gamma. Exposed as `shadervm`.
+- **Root fix it depended on.** The VM's `F64 tmp[4]`/library arrays surfaced two latent `Compiler.HC` bugs:
+  (a) a **local array's element floatness** was inherited from the *previous* declaration (never set on the
+  local-array path), so `F64 a[3]; a[0]=1.0;` stored/loaded raw integer bits; (b) indexing a **pointer local**
+  (`F64 *p; p[i]`) used the pointer's own floatness (always 0) instead of the **pointee** type. Both are fixed
+  at the root (`g_hc_decl_float`/`g_hc_decl_elem_float` + `g_hc_local_elem_float`); regression
+  `f64_local_array_assign`.
+- **Golden invariant:** the VM is a separate path; `RENDER: PASS (0xD28836F)` is untouched (bit-exact).
+
 ### Open questions
 - **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
   (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +
@@ -519,4 +554,14 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   interpolated shade) — deferred; today a bound texture forces `gmode 0`.
 - **P4.4 font blit:** the bilinear coverage read is scalar (per-pixel F64). It is a font subsystem, NOT the
   rasterizer (which stays fully NEON), so the NEON mandate is not violated; vectorizing the glyph blit (8 px/
-  iteration) is a possible follow-up. Per-fragment SDF text also awaits the P4.6 fragment VM.
+  iteration) is a possible follow-up. Per-fragment SDF text can now use the P4.6 VM (see D13).
+- **P4.6 follow-ups (not blocking):** (a) the VM's `ShaderOp4` op core is NEON, but the per-lane ray-march
+  parameter update and the trig-heavy library ops (Mandelbulb) are scalar per lane — a full SoA library is a
+  possible follow-up; (b) the built-in library and the bytecode VM are separate paths (native fast paths + a
+  generic interpreter) — folding the library into bytecode is optional; (c) the raymarch demo presents in
+  16-row bands because the per-lane march dominates; a tile-parallel version across the 4 cores (P9) is the
+  natural scaling path. **P4.6 is ✅ DONE** (D13); the fragment-VM open question is resolved.
+- **Compiler `*p` F64 deref (latent, not on the P4.6 path):** `HcParsePrimary`'s `*p` path always emits an
+  integer-sized load and sets `g_hc_expr_float = 0`, so dereferencing an `F64 *` yields the raw bits as an
+  integer. The VM uses `p[i]` (now correct via D13), not `*p`, so this is not exercised today; it should be
+  fixed the same way (`g_hc_local_elem_float`) with a regression before any code relies on it.
