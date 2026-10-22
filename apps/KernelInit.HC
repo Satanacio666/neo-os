@@ -88,6 +88,7 @@ U0 KernelInitMain() {
     KInitLoad("RasterTile.HC");
     KInitLoad("HolyGL.HC");
     KInitLoad("ShaderVM.HC");
+    KInitLoad("Mesh.HC");
     KInitLoad("Physics3D.HC");
     KInitLoad("Gears3D.HC");
 
@@ -107,7 +108,7 @@ U0 KernelInitMain() {
     KInitLoad("HolyBenchmark.HC");
 
     KInitLog("======================================================");
-    KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
+    KInitLog("✦ ALL 35 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum

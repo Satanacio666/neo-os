@@ -219,6 +219,35 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
   (`g_hc_decl_elem_float` → `g_hc_local_elem_float`) and consulting it on subscript. Lesson (again): local
   aggregate type tracking is a landmine — a VM's scratch arrays are the perfect probe for it.
 
+#### 3.1.3 P4.7 OBJ mesh implementation notes (2026-10)
+- **Streaming, one pass, no allocator.** `MeshParseOBJ` walks the source line by line, tokenizes with a tiny
+  whitespace splitter, and writes into fixed-capacity `CMesh` globals. No `kmalloc`, so the `.HC`→C census
+  stays at 181. Hand-rolled `MeshAtoiTok`/`MeshAtofTok` (the runtime has no `strtod`), including exponent
+  handling. Negative indices resolve against the *current* vertex/normal/texcoord counts (`count + v`), which
+  is exactly the OBJ relative-index rule. `MeshParseCorner` splits `v/t/n`, `v//n`, `v/t`, `v` by '/' into three
+  fixed fields — the normal is field **2**, the texcoord field **1** (getting this backwards makes every face
+  fall into the "compute a normal" path).
+- **Render through the ONE pipeline.** `MeshRender` uses HolyGL immediate mode exactly like `Gears3DRenderMesh`,
+  so the mesh inherits real per-pixel Z, perspective, and P4.5 per-fragment Blinn-Phong for free — no second
+  rasterizer, no new gate machinery. DolDoc's `$SP,type="mesh"` binds the node to `MeshRenderViewport` by
+  direct call (Stage 5 loads Mesh before DolDoc), keeping the census flat.
+- **Debugging: the bug was in the compiler, not the parser.** The parser was provably correct (`v=8 n=6 f=12`);
+  the fault was a wild read in the post-parse normal-fill loop. The decisive move was to reproduce the *exact*
+  shape in the live REPL: `struct PQ{I64 a[4];}; I64 pqg(PQ*p){F64 b=1.5; I64 b=1; return p->a[b];}` panicked
+  identically. Every earlier probe had passed because it used a **uniquely-named** local or a **literal** array
+  dimension — the one thing they never did was **redeclare a name with a different type** (D14) or use a
+  **compound member-array dimension** (D15). Lesson: when a "geometry" fault survives a dozen correct-looking
+  probes, enumerate what all the probes *share* and violate it deliberately.
+- **The two root fixes were in the compiler, and one was in both compilers.** D14 (`HcAddLocalTyped` must
+  refresh a redeclared local's type flags) is self-hosted-only; D15 (member-array `N*M` dimensions) existed
+  identically in `apps/Compiler.HC` **and** `boot/seed/jit_arm64.c`, and the in-guest **parity** gate caught the
+  seed half immediately (`PARITY … 1 diff`) — a nice demonstration that the twin-engine parity check is doing
+  real work, not ceremony. Fix both, keep the gate at 0 diff.
+- **Self-consistency can hide a layout bug.** D15 changed `sizeof(CMesh)` from 28704 to 53280 and moved `fni`/
+  `ft`, yet nothing broke *before* the fix because the definition and every use shared the same (wrong) offsets.
+  The tell is `sizeof`/cross-engine layout, not a render diff — worth remembering for any struct with computed
+  member dimensions.
+
 ---
 
 ## 4. Compiler research (beyond self-hosting)

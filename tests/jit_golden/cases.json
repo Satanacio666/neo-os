@@ -633,6 +633,22 @@
       "expect": "0x4010000000000000"
     },
     {
+      "name": "redecl_float_int_index",
+      "note": "D14 root fix: a local name redeclared with a different type (F64 then I64) must update its type flags; used as an index it used to compute &b*elem (wild ~18GB read).",
+      "cmds": [
+        "struct RBI { I64 a[4]; }; I64 rbif(RBI *p) { F64 b = 1.5; I64 b = 2; return p->a[b]; } RBI rb; rb.a[2] = 30; rbif(&rb);"
+      ],
+      "expect": "0x1E"
+    },
+    {
+      "name": "member_arr_compound_dim",
+      "note": "D15 root fix: a struct member array dimension may be a constant expression N*M / N+M, like local and global arrays.",
+      "cmds": [
+        "struct CL { I64 m[12]; I64 n; }; struct CC { I64 m[4 * 3]; I64 n; }; CL cl; CC *cc = (CC*)&cl; cc->n = 5; cl.n;"
+      ],
+      "expect": "0x5"
+    },
+    {
       "name": "known_over8_args",
       "known": true,
       "cmds": [

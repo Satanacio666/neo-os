@@ -59,7 +59,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
 | **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
 | **P3** | Kernel correctness | ✅ **DONE** — timer IRQ, preemptive scheduler, SMP, BSOD, sovereign handover (doc 2 §P3) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
-| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes); P4.7–P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM |
+| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes) + **P4.7 ✅** (OBJ mesh ingestion: streaming parser + quad triangulation rendering through the one pipeline; + **D14** redeclared-local type-flag root fix, **D15** struct-member array `N*M` dimension root fix in both `Compiler.HC` and the C seed); P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM + one mesh path |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
 | **P6** | Shell (action executor over a CDoc) | ⬜ | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | ⬜ | one real 40-phase suite; profilers merged |
@@ -261,6 +261,13 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
   `SELFTEST 85/85`, `RENDER 0xD28836F` untouched, census 181 unchanged. On the way, **two `Compiler.HC` root
   bugs** were fixed: local-array element floatness (inherited from the previous declaration) and pointer-local
   indexing (`F64 *p; p[i]`) using the pointer's own floatness instead of the pointee (D13).
-- Remaining near-term ladder: **P4.7 OBJ** → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell
+- **P4.7 (OBJ mesh ingestion) DONE** — `apps/Mesh.HC`: a streaming Wavefront OBJ parser (`v/vn/vt/f`, relative
+  indices, n-gon fan triangulation) rendering through the ONE pipeline (HolyGL → `RasterTriangleZ`), fixed-cap
+  globals (census neutral), `mesh` demo + `$SP,type="mesh"`; `MESH: PASS (v=8 tris=12 nrm=6 ink=28177)`. On the
+  way, **two more `Compiler.HC` root bugs** were fixed: **D14** — a local redeclared with a different type kept
+  the FIRST type (`F64 b` then `I64 b` → the index loaded as a double and `&b × elem` became a wild ~18 GB
+  read); **D15** — the struct-member array parser ignored `N*M`/`N+M` (fixed in both `Compiler.HC` and the C
+  seed, so the parity gate stays at 0 diff). `SELFTEST 87/87`, `PARITY 56/56`, `RENDER 0xD28836F` untouched.
+- Remaining near-term ladder: **P4.8 delete+verify**; then **P5** DolDoc 3.0 → **P6** reactive shell
   → **P7** bench → **P8** self-host-all → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into
   their owning priorities.

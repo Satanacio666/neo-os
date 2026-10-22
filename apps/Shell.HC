@@ -141,7 +141,7 @@ U0 ShellNavHistory(I64 dir) {
 U0 ShellAutocomplete() {
     if (g_shell_len <= 0) return;
 
-    U8 *builtins[32];
+    U8 *builtins[34];
     builtins[0]  = "help";
     builtins[1]  = "ls";
     builtins[2]  = "dir";
@@ -173,7 +173,9 @@ U0 ShellAutocomplete() {
     builtins[28] = "save ";
     builtins[29] = "renderbench";
     builtins[30] = "shadervm";
-    builtins[31] = 0;
+    builtins[31] = "mesh";
+    builtins[32] = "obj ";
+    builtins[33] = 0;
 
     U8 entries[3072];
     I64 file_count = redsea_get_entries(entries, 48);
@@ -600,6 +602,16 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         return;
     } else if (strcmp(cmd, "shadervm") == 0) {
         ShaderVMDemo();
+        return;
+    } else if (strcmp(cmd, "mesh") == 0) {
+        MeshDemo();
+        return;
+    } else if (strncmp(cmd, "obj ", 4) == 0) {
+        U8 *oarg = cmd + 4;
+        while (*oarg == ' ') oarg++;
+        I64 ores = MeshLoadFile(oarg);
+        if (ores < 0) doldoc_printf("$FG,RED$obj: cannot read %s (see `ls`)$FG$\n", oarg);
+        else doldoc_printf("$FG,GREEN$obj: %s -> v=%lld tris=%lld$FG$\n", oarg, MeshGetVertexCount(), MeshGetTriCount());
         return;
     } else if (strcmp(cmd, "bench") == 0) {
         ShellRunCommand("run HolyBenchmark.HC");

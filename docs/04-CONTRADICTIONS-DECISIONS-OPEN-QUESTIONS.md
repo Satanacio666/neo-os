@@ -540,6 +540,35 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `f64_local_array_assign`.
 - **Golden invariant:** the VM is a separate path; `RENDER: PASS (0xD28836F)` is untouched (bit-exact).
 
+### D14. P4.7 OBJ blocker — **ROOT-FIXED**: a local redeclared with a different type kept the FIRST type
+- **Symptom.** `MeshSelfTest` faulted with `EC 0x25 (Data Abort)`, `ESR_EL1 0x96000005`, `FAR_EL1 ≈ 0x433A5BD60`
+  (~18 GB, unmapped) inside `MeshParseOBJ`'s post-parse "fill missing normals" loop, evaluating `m->fni[b]`.
+- **Root cause.** `HcAddLocalTyped` (`apps/Compiler.HC`) returned the existing slot on a redeclaration **without
+  updating the local's type flags**. `MeshParseOBJ` declares `F64 b` in the `vn`/`v` branches and later `I64 b`
+  in the fan/fill loops, so `b` kept `is_float = 1`. Using a float-typed local as an array index emits
+  `ldr d0, [x0]` (which leaves **x0 = &b**) and the index code then does `mul x0, x0, #elem` → `&b × elem`, a
+  wild address. Arithmetic confirms it: `(FAR − (m + off)) ÷ 8 = 0x77738150`, a kernel-stack address (`&b`).
+- **Fix.** On redeclaration, update `g_hc_local_scales / is_ptr / is_float / elem_float / st_idx`. Safe because
+  the compiler is **single-pass**: code already emitted for earlier uses keeps the old type; only later uses see
+  the new one. The branches are mutually exclusive at run time, so the shared 8-byte slot is correct.
+  Regression `redecl_float_int_index` (expect 30).
+- **Why the earlier REPL probes all passed:** they used uniquely-named locals (`probe`, `k`) or literal array
+  dimensions — never a name redeclared with a different type. The dead `#define HC_MAX_LOCALS 64` (unused; the
+  real local table is 256 entries and overflows hard-error) was removed to stop it misleading future audits.
+
+### D15. Struct-member array dimensions did not accept `N*M` / `N+M` — **ROOT-FIXED** (Compiler.HC + C seed)
+- **Symptom (latent until P4.7).** `CMesh` declares `I64 fv[MESH_MAX_T * 3]` (and `fni`, `ft`). Both compilers'
+  struct-member array parsers accepted only a **single number**, so `fv` recorded 512 elements (not 1536) and
+  left `* 3]` for the member loop to skip. Every following member's offset was then wrong: `fni` @20512 (true
+  28704), `ft` @24608 (true 40928), `sizeof(CMesh)` = 28704 (true 53280). The local-array and global-array
+  parsers in both compilers already handled `*`/`+`; only the member path did not.
+- **Fix.** Added the same `while (TOK_STAR || TOK_PLUS)` dimension fold to the member-array parser in **both**
+  `apps/Compiler.HC` (self-hosted) and `boot/seed/jit_arm64.c` (C seed), so the two engines agree — the parity
+  gate caught the seed's identical omission (it would otherwise have reported `1 diff`). Regression
+  `member_arr_compound_dim` (expect 5).
+- **Note:** in pure-HC the bug was self-consistent (definition and every use shared the wrong offsets), so it
+  never surfaced as a render error — but it corrupted `sizeof` and any cross-engine layout. Fixed at the root.
+
 ### Open questions
 - **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
   (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +

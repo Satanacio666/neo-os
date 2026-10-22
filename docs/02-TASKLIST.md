@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix, P4.6 ✅ fragment-shader VM; next P4.7 OBJ; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix, P4.6 ✅ fragment-shader VM, P4.7 ✅ OBJ mesh ingestion + D14/D15 root fixes; next P4.8 delete+verify; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -844,9 +844,33 @@ execution masking; a built-in shader library first (SDF/noise/Mandelbulb) and a 
       `3D-GEARS: PASS`, `SHADING: PASS`, `SHADERVM: PASS (14/14)`, `TEXTURE: PASS`, `FONTS: PASS`,
       `CENSUS: PASS (181)`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`.
 
-### P4.7 — Mesh ingestion — ⬜
-- [ ] Streaming **Wavefront OBJ** parser in HolyC: `v/vn/vt/f`, negative (relative) indices, n-gon
-      triangulation. *(Refs: nullprogram "Robust Wavefront OBJ parsing in C"; rapidobj/tinyobjloader.)*
+### P4.7 — Mesh ingestion — ✅ **DONE**
+**Goal (met):** a streaming Wavefront OBJ parser in HolyC + a renderer that goes through the ONE pipeline
+(HolyGL immediate mode → `HolyGLSubmitTriangle` → `RasterTriangleZ`), with the two compiler root bugs it
+surfaced (D14, D15) fixed at the root.
+
+- [x] **`apps/Mesh.HC`** — streaming OBJ parser: `v/vn/vt/f`, negative (relative) indices, `v/vt/vn`, `v//vn`,
+      `v/vt`, `v` corner forms, n-gon fan triangulation (quad → 2 tris), `#/o/g/s/mtllib/usemtl/l/p` ignored;
+      faces without normals get a computed face normal so the mesh is always lit.
+- [x] **No new allocator sites:** fixed-capacity `CMesh g_mesh` globals → the `.HC`→C census is unchanged
+      (181). Embedded unit cube (top face uses negative indices) so `$SP,type="mesh"` works with no file;
+      `obj <file>` loads one from RedSea (`redsea_read_file`, auto-packed from `apps/`).
+- [x] **Render through the ONE path** (`MeshRender` → `HolyGL*`), `MeshRenderViewport` (perspective + modelview),
+      `MeshDemo` (`mesh` command), DolDoc `$SP,type="mesh"` route (direct call, census-neutral).
+- [x] **Root fix D14 (`Compiler.HC`):** a local **redeclared with a different type** kept the FIRST type, so
+      `F64 b` (in the `vn`/`v` branches) made the later `I64 b` index load as a double → `&b × elem` → wild
+      ~18 GB read. `HcAddLocalTyped` now updates the local's type flags on redeclaration. Regression
+      `redecl_float_int_index`.
+- [x] **Root fix D15 (`Compiler.HC` + `boot/seed/jit_arm64.c`):** the struct-member array parser accepted only a
+      single number, so `I64 fv[MESH_MAX_T * 3]` recorded 512 elements and corrupted every following offset
+      (`fni`/`ft`) and `sizeof(CMesh)`. Both engines now fold `N*M` / `N+M` like the local/global array parsers.
+      Regression `member_arr_compound_dim`.
+- [x] **`MESH: PASS (v=8 tris=12 nrm=6 ink=28177)`** gate (`MeshSelfTest`): parse the embedded cube (8 v, 6 vn,
+      12 tris incl. a negative-index face), submit through HolyGL, count rendered pixels. Visual: `mesh` demo
+      screendump (`screenshots/mesh_cube_live.png`).
+- [x] **Exit — MET:** `SELFTEST 87/87`, `PARITY 56/56 (0 diff)`, `RENDER: PASS (0xD28836F)`, `SHADERVM: PASS`,
+      `3D`/`3D-GEARS`/`SHADING`/`TEXTURE`/`FONTS: PASS`, `MESH: PASS`, `CENSUS: PASS (181)`, `SELF-HOST: PASS`,
+      `GOLDEN BOOT: PASS`.
 
 ### P4.8 — Merge, delete, verify — ⬜
 - [ ] Delete ~60 dead fns + write-only state; retire duplicate Z-buffers/paths; delete Compositor's

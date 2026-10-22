@@ -5,13 +5,14 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD P4.6, `main` tree clean** — updated 2026-10):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 85/85` · `PARITY 54/54`
+Current verified baseline (**HEAD P4.7, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 87/87` · `PARITY 56/56`
 (0 diff, 6 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
 `3D-GEARS: PASS (tris=800 ink=71410)` · `SHADING: PASS (phong=30 lum_max=182 gouraud=218)` ·
 `SHADERVM: PASS (14/14)` (fragment-shader VM: NEON quad, derivatives, masking) ·
+`MESH: PASS (v=8 tris=12 nrm=6 ink=28177)` (OBJ parse + quad triangulation + render) ·
 `PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
-`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1533, 0 unresolved`.
+`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1555, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
@@ -272,6 +273,28 @@ stored/loaded raw integer bits; (b) indexing a **pointer local** (`F64 *p; p[i]`
 floatness (always 0) instead of the **pointee**. Both are fixed at the root via `g_hc_decl_float` /
 `g_hc_decl_elem_float` / `g_hc_local_elem_float`; regression `f64_local_array_assign` (`0x4010000000000000`).
 `RENDER 0xD28836F` untouched (bit-exact); census unchanged (181).
+
+### P4.7 — OBJ mesh ingestion — **[REAL]**
+
+`apps/Mesh.HC` is a **streaming Wavefront OBJ parser** + renderer. It handles `v`/`vn`/`vt`/`f`, negative
+(relative) face indices, the `v/vt/vn`, `v//vn`, `v/vt`, `v` corner forms, and n-gon fan triangulation (a quad
+→ 2 tris); `#`/`o`/`g`/`s`/`mtllib`/`usemtl`/`l`/`p` are ignored. Faces without normals get a computed face
+normal so the mesh is always lit. Rendering goes through the **ONE pipeline** — HolyGL immediate mode →
+`HolyGLSubmitTriangle` → `RasterTriangleZ` (P4.5 per-fragment Blinn-Phong when `GL_LIGHTING` is on); there is
+no second rasterizer. Storage is fixed-capacity `CMesh g_mesh` globals (no `kmalloc` sites → census unchanged,
+181). The embedded unit cube (top face uses negative indices) makes `$SP,type="mesh"` work with no file;
+`obj <file>` loads one from RedSea (`redsea_read_file`; `.obj` files in `apps/` are auto-packed by `mkredsea`).
+`MeshSelfTest` → **`MESH: PASS (v=8 tris=12 nrm=6 ink=28177)`**; visually confirmed by the `mesh` screendump.
+
+**Root fixes it surfaced (compiler, D14 + D15).** (D14) `HcAddLocalTyped` returned the existing slot on a
+**redeclaration without updating its type flags**, so `F64 b` in the `vn`/`v` branches made the later `I64 b`
+index load as a double — leaving `x0 = &b` — and the index code multiplied that **address** by the element
+size, a wild ~18 GB read (`EC 0x25`, `ESR 0x96000005`). Now the type metadata is refreshed on redeclaration
+(single-pass, so earlier uses keep the old type); regression `redecl_float_int_index`. (D15) the
+**struct-member array parser** accepted only a single number, so `I64 fv[MESH_MAX_T * 3]` recorded 512 elements
+and corrupted every following offset (`fni`/`ft`) and `sizeof(CMesh)`; both `Compiler.HC` and the C seed
+(`boot/seed/jit_arm64.c`) now fold `N*M`/`N+M` like the local/global array parsers; regression
+`member_arr_compound_dim`. See doc 04 D14/D15.
 
 ### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
 `FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only

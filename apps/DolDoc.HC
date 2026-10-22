@@ -1423,6 +1423,15 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
             gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
             return;
         }
+    } else if (strcmp(stype, "mesh") == 0) {
+        // P4.7: Wavefront OBJ mesh through the ONE pipeline. Mesh.HC loads in
+        // Stage 5, before DolDoc (Stage 6), so this is a direct call.
+        MeshRenderViewport(vx + 2, vy + 2, vw - 4, vh - 4, (F64)ang * 0.6);
+        gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
+        gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
+        gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
+        gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
+        return;
     }
 
     gfx_draw_rounded_rect(vx, vy, vw, vh, 4, DolDocResolveColor(SEM_COLOR_CRUST));

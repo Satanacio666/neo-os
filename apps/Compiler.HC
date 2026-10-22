@@ -100,7 +100,9 @@
 #define TOK_SEMI         47
 
 #define HC_CODE_CAPACITY 1048576
-#define HC_MAX_LOCALS    64
+// NOTE: there is no HC_MAX_LOCALS macro. The per-function local table is sized 256
+// (see g_hc_local_* below) and HcAddLocalTyped hard-errors (g_hc_error = 1) rather
+// than silently dropping a local if that ceiling is ever reached.
 #define HC_MAX_FUNCS     128
 // P0.7: source / include-expansion ceilings. A module larger than the load
 // buffer used to be silently truncated (see KernelInit.HC HC_MODULE_MAX); these
@@ -589,6 +591,21 @@ I64 HcFindLocal(U8 *name) {
 I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
     I64 ex = HcFindLocalIdx(name);
     if (ex >= 0) {
+        // D14 ROOT FIX: redeclaring an existing local name must UPDATE its type
+        // metadata. The compiler is single-pass and reads these flags at each point
+        // of use, so code already emitted for earlier uses keeps the old type while
+        // every later use sees the new one. Previously the FIRST declaration's type
+        // stuck forever: MeshParseOBJ declares `F64 b` in the `vn`/`v` branches and
+        // later `I64 b` in the fan/fill loops, so `b` stayed F64. Using a float-typed
+        // local as an array index emits `ldr d0, [x0]` (which leaves x0 = &b) and the
+        // index code then does `mul x0, x0, #elem` -> &b * elem, a wild ~18 GB read
+        // (Data Abort, ESR 0x96000005). Sharing the slot is correct: the branches are
+        // mutually exclusive at run time, so one 8-byte cell serves both.
+        g_hc_local_scales[ex]     = scale;
+        g_hc_local_is_ptr[ex]     = is_ptr;
+        g_hc_local_is_float[ex]   = g_hc_decl_float;
+        g_hc_local_elem_float[ex] = g_hc_decl_elem_float;
+        g_hc_local_st_idx[ex]     = st_idx;
         return g_hc_local_offsets[ex];
     }
     I64 offset = g_hc_frame_offset;
@@ -2382,6 +2399,22 @@ U0 HcParseStructDef() {
                     if (g_hc_tok == TOK_NUMBER) {
                         acnt = g_hc_tok_val;
                         HcLexNext();
+                    }
+                    // D15 ROOT FIX: a member array dimension may be a constant
+                    // expression of the form N, N*M or N+M (macros are already
+                    // substituted by the lexer), exactly like the local-array
+                    // (HcParseLocalDecl) and global-array parsers. Before this,
+                    // `I64 fv[MESH_MAX_T * 3]` recorded only MESH_MAX_T elements and
+                    // left `* 3]` for the outer member loop to skip, so every
+                    // FOLLOWING member's offset (fni, ft) and the struct's total size
+                    // were wrong (CMesh: 28704 instead of 53280 bytes).
+                    while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
+                        I64 m_dim_op = g_hc_tok;
+                        HcLexNext();
+                        I64 m_dim_f = 1;
+                        if (g_hc_tok == TOK_NUMBER) { m_dim_f = g_hc_tok_val; HcLexNext(); }
+                        if (m_dim_op == TOK_STAR) acnt = acnt * m_dim_f;
+                        else                      acnt = acnt + m_dim_f;
                     }
                     if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     field_bytes = elem_sz * acnt;

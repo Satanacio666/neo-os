@@ -947,6 +947,16 @@ U0 SelfTestRun() {
     // inherited from the PREVIOUS declaration, so `a[0] = 1.0` was stored/loaded as
     // raw integer bits. 1.0 + 1.5 + 1.5 == 4.0.
     SelfTestCheck("f64_local_array_assign", "F64 a[3]; a[0] = 1.0; a[1] = 1.5; a[2] = 1.5; a[0] + a[1] + a[2];", 4616189618054758400);
+    // Regression (D14 root fix): a local name redeclared with a DIFFERENT type must
+    // update its type flags. `b` is F64 in one branch and I64 in another; the stale
+    // F64 flag made `p->a[b]` load b as a double (which leaves x0 = &b) and then
+    // multiply that ADDRESS by the element size -> a wild ~18 GB read (Data Abort).
+    // Expect 30 (rb.a[2]).
+    SelfTestCheck("redecl_float_int_index", "struct RBI { I64 a[4]; }; I64 rbif(RBI *p) { F64 b = 1.5; I64 b = 2; return p->a[b]; } RBI rb; rb.a[2] = 30; rbif(&rb);", 30);
+    // Regression (D15 root fix): a struct member array dimension may be a constant
+    // expression (N*M / N+M), like local and global arrays. Before the fix `[4 * 3]`
+    // recorded only 4 elements, so CC.n sat at offset 32 instead of 96 and this read 0.
+    SelfTestCheck("member_arr_compound_dim", "struct CL { I64 m[12]; I64 n; }; struct CC { I64 m[4 * 3]; I64 n; }; CL cl; CC *cc = (CC*)&cl; cc->n = 5; cl.n;", 5);
     SelfTestCheck2("macro_define_add", 42, "#define MAC21 21", "MAC21 + MAC21;");
     SelfTestCheck2("macro_define_expr", 42, "#define MACEXPR 6 * 7", "MACEXPR;");
     SelfTestCheck("addr_of_array_elem", "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;", 20);
@@ -990,6 +1000,7 @@ U0 SelfTestRun() {
     SelfTest3D();
     SelfTestShading();
     ShaderVMSelfTest();
+    MeshSelfTest();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

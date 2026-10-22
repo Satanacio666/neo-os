@@ -2023,6 +2023,27 @@ static void parse_struct_def(lexer_t *l, code_buffer_t *cb) {
                                 }
                                 lexer_next(l);
                             }
+                            // D15 (seed): a member array dimension may be a constant
+                            // expression N*M / N+M, exactly like the local/global array
+                            // parser below and the self-hosted Compiler.HC. Without this
+                            // `I64 fv[MESH_MAX_T * 3]` recorded only the first factor and
+                            // left `* 3]` to desync the following members.
+                            while (lexer_peek(l).type == TOK_STAR || lexer_peek(l).type == TOK_PLUS) {
+                                token_type_t m_op = lexer_peek(l).type;
+                                lexer_next(l);
+                                int m_factor = 1;
+                                token_t mf_tok = lexer_peek(l);
+                                if (mf_tok.type == TOK_NUMBER) {
+                                    m_factor = (int)mf_tok.int_value;
+                                    lexer_next(l);
+                                } else if (mf_tok.type == TOK_IDENT) {
+                                    symbol_t *m_sym = symbols_lookup_entry(mf_tok.str_value);
+                                    if (m_sym && m_sym->type == SYM_VAR && m_sym->address) m_factor = *(int*)m_sym->address;
+                                    lexer_next(l);
+                                }
+                                if (m_op == TOK_STAR) arr_count *= m_factor;
+                                else arr_count += m_factor;
+                            }
                             if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
                             if (arr_count > 1) {
                                 cur_offset -= m_size;
