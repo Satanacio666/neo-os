@@ -736,6 +736,9 @@ I64 RenderHashBuffer(U32 *buf, I64 w, I64 h, I64 pitch) {
 // canvas paths (rect, line, AA circle, rounded rect, gradient, text) and the
 // filled-triangle path that P4.2 folds into the unified tile rasterizer.
 U0 RenderGoldenScene() {
+  // P4.3: the 2D golden path is untextured — force the unified span onto the
+  // NEON solid path so the golden hash 0xD28836F is bit-exact.
+  RasterDisableTexture();
   RenderResetClip();
   gfx_clear(0xFF101018);
   gfx_draw_rect(10, 10, 100, 60, 0xFFE056FD);

@@ -59,6 +59,194 @@ U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
 U0 RasterSetDepthTest(I64 en) { g_raster_depth_test = en ? 1 : 0; }
 I64 RasterGetDepthTest() { return g_raster_depth_test; }
 
+// ==============================================================================
+// P4.3: unified texture span state. The ONE rasterizer (RasterRow) reads
+// `g_raster_tex_active`; when a texture is bound it runs the textured span, when
+// not it runs the byte-identical NEON solid span (golden hash 0xD28836F). The
+// per-texel work is scalar because AArch64 NEON has no gather; everything else
+// (coverage, blending) stays in the unified pipeline. Wrap/filter codes match the
+// GL constants HolyGL.HC passes.
+// ==============================================================================
+// Canonical OpenGL enum values (HolyGL passes these straight through; RasterTile
+// is compiled before HolyGL, so it defines the same numeric values locally).
+#define WRAP_REPEAT   0x2901
+#define WRAP_CLAMP    0x812F
+#define FILT_NEAREST  0x2600
+#define FILT_LINEAR   0x2601
+
+class CRasterTex {
+  U32 *data;     // texels (ARGB); must be a typed pointer so data[i] scales by 4
+  I64 w;
+  I64 h;
+  I64 wmask;     // w-1 (power-of-two mask for REPEAT)
+  I64 hmask;     // h-1
+  I64 wrap_s;
+  I64 wrap_t;
+  I64 filter;
+  I64 blend_en;
+};
+
+CRasterTex g_rtex;
+I64 g_raster_tex_active = 0;
+
+// Per-vertex perspective attributes (fixed 16.16): u/W, v/W, 1/W. Set by HolyGL
+// before each triangle via RasterSetTexUV.
+I64 g_rt_uow0 = 0; I64 g_rt_uow1 = 0; I64 g_rt_uow2 = 0;
+I64 g_rt_vow0 = 0; I64 g_rt_vow1 = 0; I64 g_rt_vow2 = 0;
+I64 g_rt_iw0  = 0; I64 g_rt_iw1  = 0; I64 g_rt_iw2  = 0;
+
+U0 RasterSetTexture(U32 *data, I64 w, I64 h, I64 wrap_s, I64 wrap_t, I64 filter) {
+  g_rtex.data = data;
+  g_rtex.w = w;
+  g_rtex.h = h;
+  g_rtex.wmask = w - 1;
+  g_rtex.hmask = h - 1;
+  g_rtex.wrap_s = wrap_s;
+  g_rtex.wrap_t = wrap_t;
+  g_rtex.filter = filter;
+  g_raster_tex_active = 1;
+}
+
+U0 RasterSetBlend(I64 en) { g_rtex.blend_en = en ? 1 : 0; }
+
+// Unbind: the unified span returns to the NEON solid path (used by the 2D golden
+// scene so its hash is bit-exact).
+U0 RasterDisableTexture() { g_raster_tex_active = 0; }
+I64 RasterTextureActive() { return g_raster_tex_active; }
+
+// idx: 0/1/2 -> vertex A/B/C. Values are F64 u/W, v/W, 1/W; stored as 16.16.
+U0 RasterSetTexUV(I64 idx, F64 uow, F64 vow, F64 iw) {
+  I64 a = (I64)(uow * 65536.0);
+  I64 b = (I64)(vow * 65536.0);
+  I64 c = (I64)(iw  * 65536.0);
+  if (idx == 0) { g_rt_uow0 = a; g_rt_vow0 = b; g_rt_iw0 = c; }
+  else if (idx == 1) { g_rt_uow1 = a; g_rt_vow1 = b; g_rt_iw1 = c; }
+  else { g_rt_uow2 = a; g_rt_vow2 = b; g_rt_iw2 = c; }
+}
+
+// Called by RasterTriangleZ when it swaps B<->C to normalise winding, so the
+// per-vertex attributes stay attached to the right vertex.
+U0 RasterSwapTexUV12() {
+  I64 t = g_rt_uow1; g_rt_uow1 = g_rt_uow2; g_rt_uow2 = t;
+  t = g_rt_vow1; g_rt_vow1 = g_rt_vow2; g_rt_vow2 = t;
+  t = g_rt_iw1;  g_rt_iw1  = g_rt_iw2;  g_rt_iw2  = t;
+}
+
+I64 RasterFloorF(F64 x) {
+  I64 i = (I64)x;
+  if ((F64)i > x) i = i - 1;
+  return i;
+}
+
+// Wrap a signed texel coordinate and fetch one ARGB texel.
+U32 RasterTexFetch(I64 tx, I64 ty) {
+  if (g_rtex.wrap_s == WRAP_CLAMP) {
+    if (tx < 0) tx = 0;
+    if (tx > g_rtex.w - 1) tx = g_rtex.w - 1;
+  } else {
+    tx = tx & g_rtex.wmask;          // REPEAT (power-of-two mask handles negatives)
+  }
+  if (g_rtex.wrap_t == WRAP_CLAMP) {
+    if (ty < 0) ty = 0;
+    if (ty > g_rtex.h - 1) ty = g_rtex.h - 1;
+  } else {
+    ty = ty & g_rtex.hmask;
+  }
+  // NOTE: indexing a struct-member pointer (g_rtex.data[k]) uses stride 8 in the
+  // self-hosted compiler; route through a typed local pointer so the stride is
+  // sizeof(U32)=4.
+  U32 *td = g_rtex.data;
+  return td[ty * g_rtex.w + tx];
+}
+
+// Bilinear tap of 4 texels. fx,fy in [0,1).
+U32 RasterTexBilerp(U32 c00, U32 c10, U32 c01, U32 c11, F64 fx, F64 fy) {
+  I64 w00 = (I64)((1.0 - fx) * (1.0 - fy) * 256.0);
+  I64 w10 = (I64)(fx * (1.0 - fy) * 256.0);
+  I64 w01 = (I64)((1.0 - fx) * fy * 256.0);
+  I64 w11 = (I64)(fx * fy * 256.0);
+  I64 r = ((((c00 >> 16) & 255) * w00 + ((c10 >> 16) & 255) * w10 +
+            ((c01 >> 16) & 255) * w01 + ((c11 >> 16) & 255) * w11) >> 8);
+  I64 g = ((((c00 >> 8) & 255) * w00 + ((c10 >> 8) & 255) * w10 +
+            ((c01 >> 8) & 255) * w01 + ((c11 >> 8) & 255) * w11) >> 8);
+  I64 b = ((((c00) & 255) * w00 + ((c10) & 255) * w10 +
+            ((c01) & 255) * w01 + ((c11) & 255) * w11) >> 8);
+  I64 a = ((((c00 >> 24) & 255) * w00 + ((c10 >> 24) & 255) * w10 +
+            ((c01 >> 24) & 255) * w01 + ((c11 >> 24) & 255) * w11) >> 8);
+  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255; if (a > 255) a = 255;
+  return ((U32)a << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+// Sample the bound texture at (u,v) with the active filter.
+U32 RasterTexSample(F64 u, F64 v) {
+  if (g_rtex.filter == FILT_NEAREST) {
+    I64 tx = (I64)(u * (F64)g_rtex.w);
+    I64 ty = (I64)(v * (F64)g_rtex.h);
+    return RasterTexFetch(tx, ty);
+  }
+  F64 x = u * (F64)g_rtex.w - 0.5;
+  F64 y = v * (F64)g_rtex.h - 0.5;
+  I64 x0 = RasterFloorF(x);
+  I64 y0 = RasterFloorF(y);
+  F64 fx = x - (F64)x0;
+  F64 fy = y - (F64)y0;
+  U32 c00 = RasterTexFetch(x0,     y0);
+  U32 c10 = RasterTexFetch(x0 + 1, y0);
+  U32 c01 = RasterTexFetch(x0,     y0 + 1);
+  U32 c11 = RasterTexFetch(x0 + 1, y0 + 1);
+  return RasterTexBilerp(c00, c10, c01, c11, fx, fy);
+}
+
+// GL_MODULATE: texel * vertex colour (alpha stays the texel's).
+U32 RasterTexModulate(U32 texel, U32 color) {
+  I64 r = (((texel >> 16) & 255) * ((color >> 16) & 255)) / 255;
+  I64 g = (((texel >> 8)  & 255) * ((color >> 8)  & 255)) / 255;
+  I64 b = (((texel)       & 255) * ((color)       & 255)) / 255;
+  return ((texel >> 24) << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+// GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA over the framebuffer pixel.
+U32 RasterBlendSrcAlpha(U32 src, U32 dst) {
+  if (g_rtex.blend_en == 0) return src;
+  I64 sa = (src >> 24) & 255;
+  I64 ia = 255 - sa;
+  I64 r = ((((src >> 16) & 255) * sa + ((dst >> 16) & 255) * ia) + 127) / 255;
+  I64 g = ((((src >> 8)  & 255) * sa + ((dst >> 8)  & 255) * ia) + 127) / 255;
+  I64 b = ((((src)       & 255) * sa + ((dst)       & 255) * ia) + 127) / 255;
+  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+  return 0xFF000000 | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+// One textured pixel of the unified span. Perspective-correct: interpolate
+// (u/W, v/W, 1/W) barycentrically, recover (u,v) = (u/W)/(1/W).
+I64 RasterPixelTextured(I64 xx, I64 yy) {
+  I64 w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
+  I64 w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
+  I64 w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
+  if ((w0 + g_rj_b0) < 0 || (w1 + g_rj_b1) < 0 || (w2 + g_rj_b2) < 0) return 0;
+  I64 pz = (w0 * g_rj_az + w1 * g_rj_bz + w2 * g_rj_cz) / g_rj_area;
+  if (pz < 0) pz = 0;
+  if (pz > 65534) pz = 65534;
+  I64 zi = yy * g_raster_cw + xx;
+  if (g_raster_depth_test != 0 && pz >= g_zbuf[zi]) return 0;
+
+  F64 l0 = (F64)w0 / (F64)g_rj_area;
+  F64 l1 = (F64)w1 / (F64)g_rj_area;
+  F64 l2 = (F64)w2 / (F64)g_rj_area;
+  F64 cw = l0 * (F64)g_rt_iw0  + l1 * (F64)g_rt_iw1  + l2 * (F64)g_rt_iw2;
+  F64 uu = l0 * (F64)g_rt_uow0 + l1 * (F64)g_rt_uow1 + l2 * (F64)g_rt_uow2;
+  F64 vv = l0 * (F64)g_rt_vow0 + l1 * (F64)g_rt_vow1 + l2 * (F64)g_rt_vow2;
+  F64 u = uu; F64 v = vv;
+  if (cw > 0.0000001 || cw < -0.0000001) { u = uu / cw; v = vv / cw; }
+  U32 texel = RasterTexSample(u, v);
+  U32 src = RasterTexModulate(texel, g_rj_color);
+  U32 dst = g_raster_fb[yy * g_raster_pitch + xx];
+  U32 out = RasterBlendSrcAlpha(src, dst);
+  if (g_raster_depth_test != 0) g_zbuf[zi] = pz;
+  g_raster_fb[yy * g_raster_pitch + xx] = out;
+  return 1;
+}
+
 U0 RasterInit() {
   I64 w = gfx_get_canvas_width();
   I64 h = gfx_get_canvas_height();
@@ -172,8 +360,19 @@ I64 RasterPixelScalar(I64 xx, I64 yy) {
   return 0;
 }
 
-// Fill one scanline of the current triangle: scalar head | NEON body | scalar tail.
+// Fill one scanline of the current triangle. ONE pipeline: when a texture is
+// bound the span runs the textured (perspective-correct) path; otherwise the
+// byte-identical NEON solid span runs, preserving the golden hash.
 I64 RasterRow(I64 yy) {
+  if (g_raster_tex_active) {
+    I64 tx = g_raster_min_x;
+    I64 tdrawn = 0;
+    while (tx < g_raster_max_x) {
+      tdrawn = tdrawn + RasterPixelTextured(tx, yy);
+      tx = tx + 1;
+    }
+    return tdrawn;
+  }
   I64 xx = g_raster_min_x;
   I64 drawn = 0;
   while (xx < g_raster_max_x && (xx & 7) != 0) {
@@ -234,6 +433,7 @@ I64 RasterTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
     sw = by; by = cy; cy = sw;
     sw = bz; bz = cz; cz = sw;
     area = 0 - area;
+    RasterSwapTexUV12();   // keep per-vertex texture attributes attached to B/C
   }
 
   I64 min_x = ax; if (bx < min_x) min_x = bx; if (cx < min_x) min_x = cx;

@@ -14,6 +14,31 @@
 // (1 additional case is `known` and reported separately, not counted).
 // ==============================================================================
 
+// P4.3: GL enum values used by SelfTestTexture. SelfTest.HC is compiled at Stage 1,
+// before HolyGL.HC (Stage 5), so it cannot see HolyGL's #defines — define the
+// canonical values locally (HcDefine updates an existing macro idempotently).
+#define GL_POINTS               0x0000
+#define GL_LINES                0x0001
+#define GL_TRIANGLES            0x0004
+#define GL_QUADS                0x0007
+#define GL_MODELVIEW            0x1700
+#define GL_PROJECTION           0x1701
+#define GL_DEPTH_TEST           0x0B71
+#define GL_BLEND                0x0BE2
+#define GL_CULL_FACE            0x0B44
+#define GL_LIGHTING             0x0B50
+#define GL_TEXTURE_2D           0x0DE1
+#define GL_REPEAT               0x2901
+#define GL_CLAMP_TO_EDGE        0x812F
+#define GL_NEAREST              0x2600
+#define GL_LINEAR               0x2601
+#define GL_TEXTURE_WRAP_S       0x2802
+#define GL_TEXTURE_WRAP_T       0x2803
+#define GL_TEXTURE_MIN_FILTER   0x2801
+#define GL_TEXTURE_MAG_FILTER   0x2800
+#define GL_SRC_ALPHA            0x0302
+#define GL_ONE_MINUS_SRC_ALPHA  0x0303
+
 I64 g_selftest_pass = 0;
 I64 g_selftest_total = 0;
 I64 g_selftest_fail = 0;
@@ -469,6 +494,163 @@ U0 SelfTestHeap() {
     else doldoc_printf("KHEAP: FAIL\n");
 }
 
+// P4.3: texture pipeline regression. Four sub-tests through the ONE rasterizer:
+//   1. NEAREST, screen-aligned 2x2 quad -> the 4 quadrant colours.
+//   2. LINEAR  -> the centre is the bilinear average of the 4 texels.
+//   3. Perspective (w varies 2..6) -> the texel row boundary is at the
+//      perspective-correct screen position (v = 3t/(1+2t)), not the affine one.
+//   4. Alpha 50% blend over a known background.
+U0 SelfTestTexture() {
+    I64 ok = 1;
+    I64 W = gfx_get_canvas_width();
+    I64 H = gfx_get_canvas_height();
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
+    if (!fb || W <= 0 || H <= 0) { doldoc_print("TEXTURE: FAIL (no framebuffer)\n"); return; }
+
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_BLEND);
+    glEnable(GL_TEXTURE_2D);
+
+    // ---------- Test 1 & 2 & 4: screen-aligned quad ----------
+    I64 qx0 = W / 4; I64 qx1 = (3 * W) / 4;
+    I64 qy0 = H / 4; I64 qy1 = (3 * H) / 4;
+    I64 qw = qx1 - qx0; I64 qh = qy1 - qy0;
+    I64 sxL = qx0 + qw / 4; I64 sxR = qx0 + (3 * qw) / 4;
+    I64 syT = qy0 + qh / 4; I64 syB = qy0 + (3 * qh) / 4;
+
+    U32 t22[4];
+    t22[0] = 0xFFFF0000;  // (0,0) red
+    t22[1] = 0xFF00FF00;  // (1,0) green
+    t22[2] = 0xFF0000FF;  // (0,1) blue
+    t22[3] = 0xFFFFFFFF;  // (1,1) white
+    I64 texA = glGenTextures();
+    glBindTexture(GL_TEXTURE_2D, texA);
+    glTexImage2D(GL_TEXTURE_2D, 0, 2, 2, t22);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glViewport(0, 0, W, H);
+
+    // --- Test 1: NEAREST quadrants ---
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gfx_clear(0xFF101018);
+    RasterClearZ();
+    glBegin(GL_QUADS);
+    glColor3ub(255, 255, 255);
+    glTexCoord2f(0.0, 0.0); glVertex3f(-0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 0.0); glVertex3f( 0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 1.0); glVertex3f( 0.5, -0.5, 0.0);
+    glTexCoord2f(0.0, 1.0); glVertex3f(-0.5, -0.5, 0.0);
+    glEnd();
+    if (fb[syT * pit + sxL] != 0xFFFF0000) ok = 0;   // TL red
+    if (fb[syT * pit + sxR] != 0xFF00FF00) ok = 0;   // TR green
+    if (fb[syB * pit + sxL] != 0xFF0000FF) ok = 0;   // BL blue
+    if (fb[syB * pit + sxR] != 0xFFFFFFFF) ok = 0;   // BR white
+
+    // --- Test 2: LINEAR centre = average of the 4 texels (0x7F7F7F) ---
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gfx_clear(0xFF101018);
+    RasterClearZ();
+    glBegin(GL_QUADS);
+    glColor3ub(255, 255, 255);
+    glTexCoord2f(0.0, 0.0); glVertex3f(-0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 0.0); glVertex3f( 0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 1.0); glVertex3f( 0.5, -0.5, 0.0);
+    glTexCoord2f(0.0, 1.0); glVertex3f(-0.5, -0.5, 0.0);
+    glEnd();
+    U32 cc = fb[(H / 2) * pit + (W / 2)];
+    I64 cr = (cc >> 16) & 255;
+    I64 cg = (cc >> 8) & 255;
+    I64 cb = cc & 255;
+    if (cr < 126 || cr > 128 || cg < 126 || cg > 128 || cb < 126 || cb > 128) ok = 0;
+
+    // --- Test 4: alpha 50% red over black -> ~0xFF800000 ---
+    U32 ta[4];
+    ta[0] = 0x80FF0000; ta[1] = 0x80FF0000; ta[2] = 0x80FF0000; ta[3] = 0x80FF0000;
+    I64 texC = glGenTextures();
+    glBindTexture(GL_TEXTURE_2D, texC);
+    glTexImage2D(GL_TEXTURE_2D, 0, 2, 2, ta);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    glBegin(GL_QUADS);
+    glColor3ub(255, 255, 255);
+    glTexCoord2f(0.0, 0.0); glVertex3f(-0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 0.0); glVertex3f( 0.5,  0.5, 0.0);
+    glTexCoord2f(1.0, 1.0); glVertex3f( 0.5, -0.5, 0.0);
+    glTexCoord2f(0.0, 1.0); glVertex3f(-0.5, -0.5, 0.0);
+    glEnd();
+    U32 ba = fb[(H / 2) * pit + (W / 2)];
+    I64 br = (ba >> 16) & 255;
+    if (br < 127 || br > 129) ok = 0;
+    glDisable(GL_BLEND);
+
+    // --- Test 3: perspective (w: 2 near .. 6 far) ---
+    U32 t44[16];
+    I64 r4 = 0;
+    while (r4 < 16) {
+        if (r4 < 4) t44[r4] = 0xFFFF0000;        // row0 red
+        else if (r4 < 8) t44[r4] = 0xFF00FF00;   // row1 green
+        else if (r4 < 12) t44[r4] = 0xFF0000FF;  // row2 blue
+        else t44[r4] = 0xFFFFFF00;               // row3 yellow
+        r4++;
+    }
+    I64 texB = glGenTextures();
+    glBindTexture(GL_TEXTURE_2D, texB);
+    glTexImage2D(GL_TEXTURE_2D, 0, 4, 4, t44);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    gluPerspective(90.0, (F64)W / (F64)H, 1.0, 100.0);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glViewport(0, 0, W, H);
+    gfx_clear(0xFF101018);
+    RasterClearZ();
+    glBegin(GL_QUADS);
+    glColor3ub(255, 255, 255);
+    glTexCoord2f(0.0, 1.0); glVertex3f(-1.0, -1.0, -2.0);
+    glTexCoord2f(1.0, 1.0); glVertex3f( 1.0, -1.0, -2.0);
+    glTexCoord2f(1.0, 0.0); glVertex3f( 1.0,  1.0, -6.0);
+    glTexCoord2f(0.0, 0.0); glVertex3f(-1.0,  1.0, -6.0);
+    glEnd();
+    // top edge (far, w=6) projects to y = 5H/12; bottom (near, w=2) to y = 3H/4.
+    I64 ytop = (5 * H) / 12;
+    I64 ybot = (3 * H) / 4;
+    I64 yp = ytop + (30 * (ybot - ytop)) / 100;   // screen t = 0.30
+    U32 pc = fb[yp * pit + (W / 2)];
+    // perspective: v = 3t/(1+2t) = 0.5625 -> row 2 (blue). affine would be row 1.
+    if (pc != 0xFF0000FF) ok = 0;
+
+    // --- restore state ---
+    glDisable(GL_TEXTURE_2D);
+    RasterDisableTexture();
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    RasterSetDepthTest(1);
+    gfx_clear(0xFF000000);
+    doldoc_mark_all_dirty();
+
+    if (ok != 0) doldoc_print("TEXTURE: PASS\n");
+    else doldoc_print("TEXTURE: FAIL\n");
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -589,6 +771,7 @@ U0 SelfTestRun() {
     SelfTestPtrScale();
     SelfTest2DArray();
     SelfTestHeap();
+    SelfTestTexture();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

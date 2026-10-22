@@ -1926,6 +1926,28 @@ U0 HcParseUnary() {
     HcParsePrimary();
 }
 
+// P4.3 ROOT FIX: when a binary op has one F64 and one integer operand, the
+// integer must be converted to F64 (SCVTF) before the float op. Previously the
+// float path blindly did `fmov d0,x0`/`fmov d1,x1`, reinterpreting the integer
+// bit pattern as a double — e.g. `g_hgl.vp_w * 0.5` produced a denormal ~0, so
+// every HolyGL triangle collapsed to (0,0). Left bits/int are on the stack top;
+// the right result is in d0 (rf) or x0 (integer).
+U0 HcEmitPromoteFloat(I64 lf, I64 rf) {
+    if (rf) {
+        HcEmit(0x9E660001);   // fmov x1, d0   (right is F64 bits)
+    } else {
+        HcEmit(0x9E620000);   // scvtf d0, x0  (right int -> double)
+        HcEmit(0x9E660001);   // fmov x1, d0
+    }
+    HcEmitPop(0);             // x0 = left
+    if (lf) {
+        HcEmit(0x9E670000);   // fmov d0, x0   (left is F64 bits)
+    } else {
+        HcEmit(0x9E620000);   // scvtf d0, x0  (left int -> double)
+    }
+    HcEmit(0x9E670021);       // fmov d1, x1   (right -> d1)
+}
+
 U0 HcParseMultiplicative() {
     HcParseUnary();
     I64 lf = g_hc_expr_float;
@@ -1938,10 +1960,7 @@ U0 HcParseMultiplicative() {
         I64 rf = g_hc_expr_float;
         I64 isf = (lf || rf);
         if (isf) {
-            HcEmit(0x9E660001); // fmov x1, d0 (right)
-            HcEmitPop(0);
-            HcEmit(0x9E670000); // fmov d0, x0 (left)
-            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            HcEmitPromoteFloat(lf, rf);
             I64 op = HcOpPop();
             if (op == TOK_SLASH) HcEmit(0x1E611800); // fdiv d0,d0,d1
             else HcEmit(0x1E610800);                 // fmul d0,d0,d1
@@ -1975,10 +1994,7 @@ U0 HcParseAdditive() {
         I64 rf = g_hc_expr_float;
         I64 isf = (lf || rf);
         if (isf) {
-            HcEmit(0x9E660001); // fmov x1, d0 (right)
-            HcEmitPop(0);
-            HcEmit(0x9E670000); // fmov d0, x0 (left)
-            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            HcEmitPromoteFloat(lf, rf);
             I64 op = HcOpPop();
             if (op == TOK_MINUS) HcEmit(0x1E613800); // fsub d0,d0,d1
             else HcEmit(0x1E612800);                 // fadd d0,d0,d1
@@ -2028,10 +2044,7 @@ U0 HcParseRelational() {
         I64 rf = g_hc_expr_float;
         I64 isf = (lf || rf);
         if (isf) {
-            HcEmit(0x9E660001); // fmov x1, d0 (right)
-            HcEmitPop(0);
-            HcEmit(0x9E670000); // fmov d0, x0 (left)
-            HcEmit(0x9E670021); // fmov d1, x1 (right)
+            HcEmitPromoteFloat(lf, rf);
             HcEmit(0x1E612000); // fcmp d0, d1
         } else {
             HcEmit(0xAA0003E1); // mov x1, x0
@@ -2060,10 +2073,7 @@ U0 HcParseEquality() {
         I64 rf = g_hc_expr_float;
         I64 isf = (lf || rf);
         if (isf) {
-            HcEmit(0x9E660001); // fmov x1, d0
-            HcEmitPop(0);
-            HcEmit(0x9E670000); // fmov d0, x0
-            HcEmit(0x9E670021); // fmov d1, x1
+            HcEmitPromoteFloat(lf, rf);
             HcEmit(0x1E612000); // fcmp d0, d1
         } else {
             HcEmit(0xAA0003E1); // mov x1, x0

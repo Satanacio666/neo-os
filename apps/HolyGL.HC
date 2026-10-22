@@ -66,6 +66,42 @@ class HolyGLContext {
 
 HolyGLContext g_hgl;
 
+// ==============================================================================
+// P4.3: texture objects & GL texture/blend state. The ONE rasterizer consumes
+// this via RasterTile's accessors — HolyGL never touches RasterTile internals.
+// ==============================================================================
+#define GL_TEXTURE_2D           0x0DE1
+#define GL_REPEAT               0x2901
+#define GL_CLAMP_TO_EDGE        0x812F
+#define GL_NEAREST              0x2600
+#define GL_LINEAR               0x2601
+#define GL_TEXTURE_WRAP_S       0x2802
+#define GL_TEXTURE_WRAP_T       0x2803
+#define GL_TEXTURE_MIN_FILTER   0x2801
+#define GL_TEXTURE_MAG_FILTER   0x2800
+#define GL_SRC_ALPHA            0x0302
+#define GL_ONE_MINUS_SRC_ALPHA  0x0303
+#define GL_MAX_TEXTURES         16
+
+class CTexture2D {
+  I64 in_use;
+  I64 width;
+  I64 height;
+  I64 wrap_s;
+  I64 wrap_t;
+  I64 min_filter;
+  I64 mag_filter;
+  U32 *data;
+};
+
+CTexture2D g_tex_pool[GL_MAX_TEXTURES];
+I64 g_tex_bound = 0;       // bound texture id (1..N); 0 = none
+I64 g_tex_enabled = 0;     // GL_TEXTURE_2D
+I64 g_tex_blend = 0;       // GL_BLEND
+I64 g_tex_blend_src = GL_SRC_ALPHA;
+I64 g_tex_blend_dst = GL_ONE_MINUS_SRC_ALPHA;
+I64 g_tex_ok = 0;          // texture bound to the rasterizer for the next tri
+
 U0 HolyGLTransformVertex(CMat4 *mat, F64 x, F64 y, F64 z, F64 w, GLVertex *out) {
   out->x = mat->m[0]  * x + mat->m[1]  * y + mat->m[2]  * z + mat->m[3]  * w;
   out->y = mat->m[4]  * x + mat->m[5]  * y + mat->m[6]  * z + mat->m[7]  * w;
@@ -109,6 +145,15 @@ U0 HolyGLInit() {
   g_hgl.vp_h = gfx_get_canvas_height();
   g_hgl.tris_rendered = 0;
   g_hgl.verts_processed = 0;
+
+  g_tex_bound = 0;
+  g_tex_enabled = 0;
+  g_tex_blend = 0;
+  g_tex_blend_src = GL_SRC_ALPHA;
+  g_tex_blend_dst = GL_ONE_MINUS_SRC_ALPHA;
+  g_tex_ok = 0;
+  RasterDisableTexture();
+
   HolyGLClearDepth();
 }
 
@@ -120,12 +165,16 @@ U0 HolyGLEnable(I64 cap) {
   if (cap == GL_DEPTH_TEST) g_hgl.depth_test = 1;
   else if (cap == GL_CULL_FACE) g_hgl.cull_face = 1;
   else if (cap == GL_LIGHTING) g_hgl.lighting = 1;
+  else if (cap == GL_TEXTURE_2D) g_tex_enabled = 1;
+  else if (cap == GL_BLEND) g_tex_blend = 1;
 }
 
 U0 HolyGLDisable(I64 cap) {
   if (cap == GL_DEPTH_TEST) g_hgl.depth_test = 0;
   else if (cap == GL_CULL_FACE) g_hgl.cull_face = 0;
   else if (cap == GL_LIGHTING) g_hgl.lighting = 0;
+  else if (cap == GL_TEXTURE_2D) { g_tex_enabled = 0; RasterDisableTexture(); }
+  else if (cap == GL_BLEND) g_tex_blend = 0;
 }
 
 U0 HolyGLSetWireframe(I64 en) {
@@ -304,6 +353,15 @@ U0 HolyGLSubmitTriangle(GLVertex *v0, GLVertex *v1, GLVertex *v2) {
   I64 z16_0 = (I64)((ndc_z0 + 1.0) * 32767.0);
   I64 z16_1 = (I64)((ndc_z1 + 1.0) * 32767.0);
   I64 z16_2 = (I64)((ndc_z2 + 1.0) * 32767.0);
+  // P4.3: if a texture is bound, hand the ONE rasterizer the per-vertex
+  // perspective attributes (u/W, v/W, 1/W) and the texture state.
+  HolyGLBindRasterTexture();
+  if (g_tex_ok) {
+    RasterSetTexUV(0, v0->u * inv_w0, v0->v * inv_w0, inv_w0);
+    RasterSetTexUV(1, v1->u * inv_w1, v1->v * inv_w1, inv_w1);
+    RasterSetTexUV(2, v2->u * inv_w2, v2->v * inv_w2, inv_w2);
+  }
+
   RasterSetDepthTest(g_hgl.depth_test);
   RasterSetZ(z16_0, z16_1, z16_2);
   RasterTriangleZ(sx0, sy0, sx1, sy1, sx2, sy2, col);
@@ -413,6 +471,89 @@ U0 glVertex2f(F64 x, F64 y) { HolyGLVertex2f(x, y); }
 U0 glEnd() { HolyGLEnd(); }
 U0 glEnable(I64 cap) { HolyGLEnable(cap); }
 U0 glDisable(I64 cap) { HolyGLDisable(cap); }
+
+// ------------------------------------------------------------------------------
+// P4.3: Texture object API
+// ------------------------------------------------------------------------------
+I64 glGenTextures() {
+  I64 i = 0;
+  while (i < GL_MAX_TEXTURES) {
+    if (g_tex_pool[i].in_use == 0) {
+      g_tex_pool[i].in_use = 1;
+      g_tex_pool[i].width = 0;
+      g_tex_pool[i].height = 0;
+      g_tex_pool[i].wrap_s = GL_REPEAT;
+      g_tex_pool[i].wrap_t = GL_REPEAT;
+      g_tex_pool[i].min_filter = GL_NEAREST;
+      g_tex_pool[i].mag_filter = GL_NEAREST;
+      g_tex_pool[i].data = 0;
+      return i + 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+U0 glBindTexture(I64 target, I64 tex) {
+  if (tex < 0 || tex > GL_MAX_TEXTURES) return;
+  g_tex_bound = tex;
+}
+
+// Power-of-two dimensions only (the REPEAT path uses a bitwise mask).
+U0 glTexImage2D(I64 target, I64 level, I64 width, I64 height, U32 *pixels) {
+  if (g_tex_bound <= 0) return;
+  if (width <= 0 || height <= 0) return;
+  if ((width & (width - 1)) != 0 || (height & (height - 1)) != 0) return;
+  CTexture2D *t = &g_tex_pool[g_tex_bound - 1];
+  if (t->data) { kfree(t->data); t->data = 0; }
+  I64 n = width * height;
+  U32 *buf = (U32*)kmalloc(n * 4);
+  if (!buf) return;
+  I64 i = 0;
+  while (i < n) { buf[i] = pixels[i]; i = i + 1; }
+  t->data = buf;
+  t->width = width;
+  t->height = height;
+}
+
+U0 glTexParameteri(I64 target, I64 pname, I64 param) {
+  if (g_tex_bound <= 0) return;
+  CTexture2D *t = &g_tex_pool[g_tex_bound - 1];
+  if (pname == GL_TEXTURE_WRAP_S) t->wrap_s = param;
+  else if (pname == GL_TEXTURE_WRAP_T) t->wrap_t = param;
+  else if (pname == GL_TEXTURE_MIN_FILTER) t->min_filter = param;
+  else if (pname == GL_TEXTURE_MAG_FILTER) t->mag_filter = param;
+}
+
+U0 glBlendFunc(I64 src, I64 dst) {
+  g_tex_blend_src = src;
+  g_tex_blend_dst = dst;
+}
+
+// Push the bound texture into the ONE rasterizer (or disable texturing).
+U0 HolyGLBindRasterTexture() {
+  g_tex_ok = 0;
+  if (g_tex_enabled && g_tex_bound > 0) {
+    CTexture2D *t = &g_tex_pool[g_tex_bound - 1];
+    if (t->data != 0 && t->width > 0 && t->height > 0) {
+      RasterSetTexture(t->data, t->width, t->height, t->wrap_s, t->wrap_t, t->mag_filter);
+      RasterSetBlend(g_tex_blend);
+      g_tex_ok = 1;
+      return;
+    }
+  }
+  RasterDisableTexture();
+}
+
+// --- cross-module accessors (no direct g_hgl access from other modules) ---
+I64 HolyGLGetTrisRendered() { return g_hgl.tris_rendered; }
+I64 HolyGLGetViewportW() { return g_hgl.vp_w; }
+I64 HolyGLGetViewportH() { return g_hgl.vp_h; }
+I64 HolyGLTextureEnabled() { return g_tex_enabled; }
+I64 HolyGLGetBound() { return g_tex_bound; }
+I64 HolyGLGetBoundW() { return (g_tex_bound > 0) ? g_tex_pool[g_tex_bound - 1].width : 0; }
+I64 HolyGLGetBoundData() { return (g_tex_bound > 0) ? (I64)g_tex_pool[g_tex_bound - 1].data : 0; }
+I64 HolyGLTexOK() { return g_tex_ok; }
 
 // ------------------------------------------------------------------------------
 // 3D Polyhedral Rotating Cube Demonstrator

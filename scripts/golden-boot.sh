@@ -159,6 +159,13 @@ else
         echo "  [FAIL] heap stress: ${hcline:-<none>} (want KHEAP: PASS)"
         fail=1
     fi
+    txline="$(printf '%s\n' "$out" | grep -a 'TEXTURE: ' | tail -1)"
+    if printf '%s' "$txline" | grep -aq 'PASS'; then
+        echo "  [PASS] $txline (textures: nearest/linear/perspective/blend)"
+    else
+        echo "  [FAIL] texture pipeline: ${txline:-<none>} (want TEXTURE: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="
