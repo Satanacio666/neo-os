@@ -170,3 +170,71 @@ Mandelbulb, Perlin); Wavefront OBJ loader; `$EQ$` math typography; `$GRAPH$` tel
 (virtio-net + lwIP); USB xHCI; class inheritance/vtables; optimizing JIT (SSA + regalloc); incremental
 recompile cache; Ring-0 INT8 embeddings "semantic dispatch"; physical mobile SoC bring-up; game ports
 (Quake/Half-Life), N64Recomp, Android NDK; `HolyPort`; MCU cluster.
+
+---
+
+## 9. Sovereign algorithm integration — best-in-class external designs, re-created in HolyC
+
+Every entry is a **root fix/upgrade** of a real subsystem, not a shim. Code-level detail, pseudocode and
+citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
+`docs/research/holyc-aarch64-sasos-engineering-brief.md` (added 2026-10).
+
+### 9.1 Compiler & symbols (`apps/Compiler.HC`, `apps/Symbols.HC`) — inspiration: chibicc / SubC
+- **Lexer with no per-token heap**: POD token (`CToken`), interned identifier strings, a single string arena
+  (already landed in P0.7: `HcStrAlloc`, 256 KiB chunks, BSS-first). Keep it.
+- **O(1) symbol resolution**: the SIC cell *is* the GOT/PLT slot (`ldr x16,[&sym->address]; blr x16`). Upgrade
+  the hash from DJB2 to **FNV-1a 64-bit** (`0xcbf29ce484222325` / `0x100000001b3`) and make the
+  canonical-name (case/underscore-insensitive) lookup O(1) by storing a normalized key at registration.
+- **Self-hosting safety**: never let self-compilation clobber a live function (`HcPublishFunc` guard); publish
+  a function's entry **before** its body so recursion/forward calls resolve. Implement stack-arg spill for
+  >8 args (today it hard-errors) or document the limit.
+- **Backpatch ranges**: `CBZ/CBNZ` are ±1 MiB; add range-extension thunks (invert cond + `B`).
+
+### 9.2 RedSea FS (`apps/RedSea.HC`, `apps/KHeap.HC`) — inspiration: ZFS CoW + littlefs CRC
+- **CRC32C (Castagnoli)** 256-entry table (`0x82F63B78` reflected), self-test vector `0xE3069283`; optional
+  `CRC32CB/CH/CW/CX` hardware path. Every block carries a CRC.
+- **Atomic commit**: littlefs metadata-pair + ZFS **uberblock ring** (monotonic `txg`, highest valid wins);
+  durability via `DC CVAC` + `DSB SY`. Torn writes fall back to the previous slot — no corruption on power loss.
+
+### 9.3 Concurrency & SMP (`apps/Sched.HC`, `apps/Smp.HC`) — inspiration: Linux arm64 + Vyukov
+- Replace the SPSC mailbox with **Vyukov bounded MPMC** (per-cell sequence, ABA-free) plus **MPSC per-core
+  inboxes**; load balancing via a global queue. `LDAXR/STLXR` (acquire/release), `LDAR/STLR`, `WFE`/`SEV`
+  idle with re-check. No libatomic (use `__atomic_*` builtins / inline asm).
+
+### 9.4 Unified NEON rasterizer (`apps/RasterTile.HC`, `apps/HolyGL.HC`, `scripts/raster_span.s`)
+- **Perspective-correct texturing**: interpolate `u/W, v/W, 1/W` (the `area` factor cancels), recover
+  `u,v = (u/W)/(1/W)`; keep coverage exact `I64`, attributes `16.16`. Bilinear weights sum to **exactly 256**;
+  `REPEAT` via bitwise mask (power-of-two), `CLAMP` via `SMIN/SMAX`; exact `div255` blend.
+- **NEON has no gather**: the 8-texel fetch is scalar `LDR` + `INS` lane-pack; SIMD the coordinate math, the
+  filter and the blend. **One pipeline only** (`RasterTriangleZ → RasterRow → RasterSpanNEON | textured
+  span`) — no parallel/`permanent scalar rasterizer`. The 2D golden path forces the NEON solid span so
+  `RENDER 0xD28836F` stays bit-exact.
+
+### 9.5 Fonts & typography (`apps/Fonts.HC` merge, `apps/DolDoc.HC`) — inspiration: stb_truetype
+- **stb_truetype v2 signed-area AA rasterizer** + `GetGlyphSDF` (or rasterize-then-EDT). Bake a **SDF atlas**
+  at boot; composite glyphs as textured quads through the unified rasterizer → resolution-independent,
+  anti-aliased text with real weights.
+
+### 9.6 DolDoc 3.0 (`apps/DolDoc.HC`, `apps/Compositor.HC`) — inspiration: React/Smalltalk/Figma
+- Flat **index-based `CDNode` tree** (relocatable, serializable to RedSea), **React O(n) keyed
+  reconciliation**, **memory-watch bindings** (`$DA`). The document IS the window, the shell and the editor;
+  Morton dirty tiles; draw through the one rasterizer.
+
+### 9.7 Reactive shell (`apps/Shell.HC`, `apps/Symbols.HC`) — inspiration: Lisp-machines/PowerShell
+- Replace the `if/strcmp` ladder with **symbol-table O(1) dispatch**; command output is a mounted `CDoc`
+  subtree (interactive, linkable, live-updating); `WFE` idle with a lost-wakeup-safe re-check.
+
+---
+
+## 10. Current execution state (2026-10)
+
+- **P0.6** (`f0a407c`) DONE — BSOD panic-halt + fault telemetry + `crash-decode.py v2`.
+- **P0.7** (`0a53886`) DONE — silent 128 KB module-truncation root-fix + lexer string arena + allocator hardening.
+- **P0.7b** (`77d407f`) DONE — `KHEAP: PASS` split/coalesce regression + pointer-arithmetic audit.
+- **`main` is green.** P0.7's blocker diagnosis: the *failing* allocator was the C seed heap; the *root* cause
+  was module truncation, not exhaustion.
+- **P4.3 (textures) IN PROGRESS** on branch `p4.3-wip` (`eeb2910`) — a WIP that BSODs; see docs 01/02/04 for the
+  exact root cause and the one-shot remediation. It is **not** on `main`.
+- Remaining near-term ladder: finish **P4.3** → P4.4 Fonts/SDF → P4.5 lighting → P4.6 fragment VM → P4.7 OBJ
+  → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell → **P7** bench → **P8** self-host-all
+  → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into their owning priorities.

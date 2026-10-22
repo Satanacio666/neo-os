@@ -358,3 +358,55 @@ Still **open** (deliberately not fixed):
 - **Shell:** dead `shell_register_cmd`; if/else ladder; cycles — P6.
 - **Typing:** `%d`×~40; fnptr as `U64`; colors as `I64`; `int` truncation; signature mismatches — sweep.
 - **Security/environment:** hardcoded host paths (fixed historically via `NEO_ROOT`); QMP socket single-client — historical.
+
+---
+
+## Part C — Decisions & resolutions (2026-10)
+
+### D1. "Allocator anomaly `free=8388560 used=48`" — RESOLVED (not an allocator bug)
+- **Claim (hypothesis):** `kmalloc(36)` failed with 8 MB free → the KHeap block-split corrupts the remainder
+  (pointer arithmetic scaled by `sizeof(CHeapBlock)`), or the sovereign handover is mis-timed.
+- **Reality:** the `[HCLX]` diagnostic was printing the **idle** HolyC pool (`used=48` = one header); the
+  failing allocator was the **C seed heap** (`boot/runtime/kheap.c`), which had ~43 MB free → **not exhaustion**.
+  The split is **correct**: `HcParseAdditive` emits a raw `add x0,x0,x1`, so HolyC pointer arithmetic is
+  **byte-based** (only `[]` scales, via `HcGlobalScale`/strides). **Causa 2 ruled out.**
+- **Verdict:** the real root cause was a **silent 128 KB module truncation** in `KInitLoad` (`Compiler.HC` was
+  already truncated past `CompilerCompileAndRun`; growth pushed it past the cutoff → dangling functions).
+  Fixed in P0.7 (`HC_MODULE_MAX` 1 MB, `HC_SRC_MAX`, C-JIT `INCLUDE_BUF_SIZE` 2 MB). Decision: **any module
+  read must have a ceiling ≥ the largest source, and truncation must never be silent.**
+
+### D2. Lexer string allocation — DECIDED: dedicated bump arena, never per-literal `kmalloc`
+Per-literal `kmalloc(slen+1)` (never freed) leaked ~2000 small blocks/boot and fragmented the heap. Decision:
+a dedicated **string arena** (`HcStrAlloc`, chained 256 KiB chunks, **BSS-first** chunk so lexing has no
+allocator dependency during the boot window, bounds-checked). String literals must **persist** because emitted
+code embeds their addresses. *(Landed P0.7.)*
+
+### D3. P4.3 architecture — DECIDED: one unified rasterizer; texel gather is scalar (hardware)
+- **Rejected:** a permanent **separate scalar rasterizer** (fragments the engine, violates the P4 mandate).
+- **Decided:** `RasterRow` is the single span driver; when `g_raster_tex_active` it runs the textured span,
+  otherwise the byte-identical `RasterSpanNEON`. AArch64 NEON has **no gather**, so the 8-texel fetch is
+  **scalar `LDR`+`INS` by hardware necessity**; the coordinate/filter/blend math is NEON-able. The definitive
+  NEON extension of the textured span is **p4.3b**, validated against the scalar math. The 2D golden path
+  forces `RasterDisableTexture()` so `RENDER 0xD28836F` stays bit-exact.
+
+### D4. Compiler hard limits that constrain all P4+ code — ENCODE IN THE PLAN
+- **Max 8 arguments per call** (C JIT `jit_arm64.c:978`, self-hosted `Compiler.HC:1724`). Violating it fails
+  the unit → since functions are **published before body-parse**, a mid-body error leaves **dangling symbols**
+  (the p4.3-wip BSOD: a 9-arg debug `doldoc_printf` at `RasterTile.HC:425`). **Never exceed 8 args; never
+  print from inside the rasterizer; diagnostics are globals read after the draw.**
+- Max `print`-statement args 7 (C JIT); local arrays supported (≤256 locals, frame ≤4080 B); `#define` persists
+  across modules (idempotent redefine); unresolved symbols are a **safe no-op trap** (return 0), but a symbol
+  published to a **rolled-back** address is **not** safe.
+
+### D5. Research method — DECIDED
+For any non-trivial root fix, first spawn **read-only** research agents (codebase forensics + external
+best-in-class) and persist their briefs under `docs/research/`, **then** implement in one shot. Agents must
+**not** edit the project. *(This session: the BSOD root cause and the §9 algorithm map came from those briefs.)*
+
+### Open questions
+- **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere.
+- **SDF atlas:** bake from the built-in vector glyphs first (bootstrap) vs implement the full TTF parser first.
+- **Handover timing:** keep the sovereign handover at the end of `KernelInit` (8 MB HolyC pool) or enlarge the
+  sovereign pool to absorb Stages 2–6? (Current: unchanged; the 8 MB pool is idle during boot, so this is a
+  memory-efficiency question, not a correctness one.)
+- **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.

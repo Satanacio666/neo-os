@@ -413,3 +413,52 @@ The *chosen* implementations for the P3 steps (doc 2 §P3), with sources.
 legacy C GUI `gui/*.c`, `drivers/gpu/*.c`, `drivers/input/*.c`, `kernel/arch/aarch64/{exceptions,gic,smp,timer}.c`,
 `kernel/bench/*`, `kernel/math/*`, `kernel/physics/*`, `kernel/sched/sched.c`, non-AArch64 CRTs + linker scripts.
 **Lua** (`compiler/lua*`) — **[GONE]** (excised Phase 5; see doc 04).
+
+---
+
+## 11. Consolidated research briefs (2026-10) — external best-in-class, mapped to NeoOS
+
+Two read-only research briefs were produced (agents that only read the tree + the web; they did **not** edit
+`neo-os`) and are persisted at:
+- `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` — graphics / NEON / SMP / FS / fonts / compiler.
+- `docs/research/holyc-aarch64-sasos-engineering-brief.md` — JIT/SIC / single-pass compiler / HolyC idioms /
+  DolDoc 3.0 / reactive shell / SDF.
+
+They give, per topic, the algorithm/pseudocode, the exact ARM64/NEON or C reference, pitfalls, and the SASOS
+structure, with ~80 cited primary sources. The highest-value extracts:
+
+**Rendering (P4.3/P4.4).**
+- Perspective-correct attributes: `u = Σ wᵢ(uᵢ/Wᵢ) / Σ wᵢ(1/Wᵢ)`; the `area` factor **cancels** with the
+  un-normalized edge functions, so the perspective divide is a single scalar `SDIV` per pixel (no per-pixel
+  `area` divide). Keep coverage exact `I64`; attributes `16.16`. *(Scratchapixel; Andrew Chan.)*
+- Bilinear weights **must sum to exactly 256** (compute 3, derive the 4th) or gradients "pump".
+- `REPEAT` = `(u>>16) & (w-1)` (power-of-two; two's-complement handles negatives via `ASR`); `CLAMP` =
+  `SMIN/SMAX` per tap. Alpha blend exact `/255`: `t=x+128; out=(t+(t>>8))>>8`.
+- **NEON has no gather** (`TBL`/`TBX` are 64-byte register lookups, not memory). Fetch 8 texels with scalar
+  `LDR`+`INS`; SIMD only the coordinate math (`SCVTF/FRINTM/FCVTZS`), the filter and the blend. Prefer the
+  integer 16.16 path (matches the existing exact-Z kernel). *(ARM ARM C7.2.397; corsix.)*
+- Fonts: **stb_truetype v2** signed-area AA rasterizer + `GetGlyphSDF` (or rasterize-then-**Felzenszwalb EDT**);
+  SDF texel = `128 + 127*clamp(d/range,-1,1)`; reconstruct with `screenPxRange = range*(screen_h/tex_h)`.
+  *(nothings.org; Valve 2007; redblobgames.)*
+
+**Concurrency (P3.9).** Vyukov bounded **MPMC** (per-cell sequence ⇒ ABA-free) + MPSC per-core inboxes;
+`LDAXR/STLXR` (acquire/release) vs `LDXR/STXR` (+`DMB`); `STLR`/`LDAR` for the handoff; `WFE`/`SEV` idle.
+Cortex-A72 is Armv8.0 ⇒ no LSE `CAS`; probe `ID_AA64ISAR0_EL1`. *(ARM sync guide; Linux arm64 memory model.)*
+
+**File system (P2.8).** **CRC32C** reflected `0x82F63B78`, check vector `0xE3069283`; optional
+`CRC32CB/CH/CW/CX`. littlefs metadata-pair + ZFS **uberblock ring** (monotonic `txg`, highest valid wins) for
+power-loss-atomic commits; `DC CVAC`+`DSB SY` durability. *(mazzo.li; littlefs SPEC; ZFS case study.)*
+
+**Compiler (P1.3).** The **SIC cell is the GOT/PLT slot** (`ldr x16,[&sym->address]; blr x16`) — indirect
+call through data, not self-modifying code; no I-cache hazard. Hash: **FNV-1a 64-bit**. Single-pass: publish
+a function **before** its body; arena + interned strings (P0.7 already did this for literals); fixup lists;
+`CBZ/CBNZ` range = ±1 MiB (thunks for far). *(chibicc; SubC; MaskRay PLT.)*
+
+**DolDoc 3.0 / shell (P5/P6).** Flat index-based `CDNode`; React **O(n) keyed reconciliation** (diff same-level
+children only; keys from content/binding, never index); **memory-watch bindings** (`$DA`) replace an event bus;
+symbol-table **O(1)** shell dispatch; command output is a mounted `CDoc`; `WFE` idle with `SEVL;WFE`.
+*(React reconciliation; Smalltalk/LOOM SASOS; TempleOS DolDoc grammar.)*
+
+**HolyC idioms (cross-cutting).** Pointer arithmetic is **byte-based** (only `[]` scales) — the P0.7b audit;
+`#define` persists across modules; `class` (no `typedef`); no headers (whole-file compile + `#include` splice);
+all values widened to 64-bit. *(TempleOS HolyC doc; Harrison Totty analysis.)*

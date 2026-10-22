@@ -5,9 +5,11 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (HEAD `efc6b81`, tree clean):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · battery **65/65** · `p1-parity` **PASS**
-(34 modules, engines agree) · `check-token-parity` **71 identical**.
+Current verified baseline (**HEAD `77d407f`, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 80/80` · `PARITY 54/54`
+(0 diff, 4 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `PTRSCALE`/`ARRAY2D`/`KHEAP` **PASS** ·
+`PANIC GATE: PASS` · `CENSUS: PASS` (179 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1371, 0 unresolved`.
+(The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
 C in build = **6** (`boot/main.c`, `boot/seed/{lexer,table,jit_arm64,seed_fs}.c`,
@@ -196,3 +198,36 @@ global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in
   **Benchmark:** 16 phases vs 6 configs; 3.0 s vs 15.0 s phases. **Core count:** single-core baseline vs 2C/4C.
   **FPS:** "43+ FPS" vs measured 5.4–13.5 FPS under TCG. **File/LOC counts:** 179/71,440 vs 215/75,143.
 - **Stage-2 blob:** task.md/FUTURE require it; master plan removes it. **[SUPERSEDED]**.
+
+---
+
+## K. P0.6 / P0.7 / P0.7b / P4.3 — verified state (2026-10)
+
+### P0.6 — BSOD panic-halt + fault telemetry — **[REAL]** (`f0a407c`)
+A kernel panic used to re-execute the faulting instruction forever (`vectors.S` ignored the handler's X0
+return and always `eret`). Fixed: `vectors.S` branches on X0 and spins in `panic_halt` on a kernel panic;
+`Exceptions.HC` latches `halted`, keeps `in_fault=1`, emits `<<<BSOD:KERNEL>>>`/`<<<BSOD:DOUBLE>>>`/
+`<<<EXC:RECOVERED>>>`; `Compiler.HC` keeps an on-demand JIT symbol map (`jitmap`); `crash-decode.py v2`
+decodes ESR/ISS, symbolises `ELR_EL1`, supports `--gate`. Verified `PANIC GATE: PASS`.
+
+### P0.7 — module truncation + lexer arena + allocator hardening — **[REAL]** (`0a53886`)
+**Root cause of the boot failure unmasked by P0.6:** `KInitLoad` read every module into a **128 KB** buffer
+with a `131071`-byte limit, **silently truncating** any module larger than 128 KB. Baseline `Compiler.HC`
+(134 KB) was already truncated past `CompilerCompileAndRun` (offset 127483); module growth pushed that
+function past the cutoff so it never compiled → unresolved forward refs → dead shell. The `[HCLX]`
+diagnostic had been printing the *idle* HolyC pool (`used=48`), not the failing C seed heap (21 MB used).
+Fixed: 1 MB module ceiling everywhere (`HC_MODULE_MAX`, `Shell.HC`, `HC_SRC_MAX`, C-JIT `INCLUDE_BUF_SIZE`);
+dedicated lexer string arena (`HcStrAlloc`, chained 256 KiB chunks, BSS-first, bounds-checked); bounds-checked
+the unchecked `g_hc_code` backpatch writes; null-checked global-array alloc; exact failure diagnostics in both
+allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-based** (Causa-2 ruled out).
+
+### P4.3 — textures / perspective / filtering / blend — **[PARTIAL, WIP, BSOD]**
+Branch `p4.3-wip` (`eeb2910`) adds `CTexture2D` + GL texture API, per-vertex `u/W,v/W,1/W`, a scalar
+`RasterPixelTextured` span dispatched from the unified `RasterRow`, `RasterDisableTexture()` on the 2D golden
+path, and `SelfTestTexture`. **It BSODs.** Exact root cause (Agent-1 forensics): a **debug `doldoc_printf`
+with 9 arguments** at `RasterTile.HC:425` exceeds the compiler's **8-argument limit** → `RasterTile.HC` fails
+to compile at Stage 5 → its function symbols are left **dangling** (published before body-parse) →
+`HolyGLInit()` jumps into overwritten code → panic. The 2D golden hash is preserved throughout
+(`RENDER 0xD28836F`). One-shot remediation in doc 02 / doc 04.
+
+**Research briefs** (read-only, external best-in-class) added: `docs/research/*.md` (see doc 03 §11).

@@ -667,15 +667,53 @@ is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_s
 - [x] **Tiling/determinism:** row-major scan is order-independent and byte-identical on 1 vs N cores (the
       `RENDER` golden hash covers this). Per-tile SMP job binning is deferred to a later parallel-render step.
 
-### P4.3 — Textures, filtering & blend modes — ⬜
-- [ ] `glTexImage2D`/`glBindTexture`, texture objects, sampler state (wrap repeat/clamp, filter nearest/
-      bilinear, mipmaps → trilinear).
-- [ ] **Perspective-correct interpolation:** carry `1/w, z/w, u/w, v/w` across the triangle, divide per-pixel
-      (replaces `z_avg`). *(Ref: scratchapixel perspective-correct.)*
-- [ ] **Color space (decision):** shade in **linear light**, present **sRGB**; store **premultiplied alpha**
-      for correct blending, with an sRGB blend path as fallback. *(Refs: Søren Sandmann "Gamma vs premultiplied";
-      HN thread 33301471.)*
-- [ ] Blend modes: opaque / alpha / additive / multiply (replaces the ad-hoc `RenderBlendColor`).
+### P4.3 — Textures, filtering & blend modes — 🔄 **WIP on `p4.3-wip` (`eeb2910`), BSOD; one-shot plan below**
+
+**Goal (unchanged):** one unified rasterizer that absorbs textures — no parallel scalar rasterizer.
+**Reference algorithms:** `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` §1–§2.
+
+**Status & exact root cause of the WIP BSOD.** The WIP adds `CTexture2D` + the GL texture API
+(`glGenTextures/glBindTexture/glTexImage2D/glTexParameteri/glBlendFunc`), per-vertex `u/W,v/W,1/W`, a
+`RasterPixelTextured` span dispatched from the unified `RasterRow`, `RasterDisableTexture()` on the 2D golden
+path, and `SelfTestTexture`. It **BSODs** because a **debug `doldoc_printf` with 9 arguments** (`RasterTile.HC:425`)
+exceeds the compiler's **8-argument limit** (`Compiler.HC:1724`, `jit_arm64.c:978`) → `RasterTile.HC` fails to
+compile at Stage 5 → its functions were already **published** (publish-before-body, `Compiler.HC:2958`) so the
+symbols dangle into the rolled-back region → `HolyGLInit()` jumps into overwritten code → panic. Golden hash is
+unaffected (`RENDER 0xD28836F`). *(This is the exact "fix the fire escape first" lesson: never print from inside
+the rasterizer.)*
+
+**One-shot remediation (do these in order, gate after each):**
+- [ ] **Remove ALL `doldoc_printf` from the rasterizer** (`RasterTriangleZ`/`RasterRow`/`RasterPixel*`). Keep
+      `RasterBootCheck`'s own prints. Never exceed **8 args** in any call; never call the print path while a
+      DolDoc redraw/animate tick is iterating (re-entrancy: `DolDocRedraw → widget → HolyGL → RasterTriangleZ`).
+      Diagnostics must be a global counter/flag read **after** the draw, not printed inside it.
+- [ ] **Perspective-correct interpolation (exact, area-free).** `numU = w0*U0 + w1*U1 + w2*U2`,
+      `numV = w0*V0 + w1*V1 + w2*V2`, `den = w0*I0 + w1*I1 + w2*I2` (all exact `I64`, attributes `16.16`);
+      `u = (numU<<16)/den`, `v = (numV<<16)/den` (scalar `SDIV`, `den>0` guaranteed by the near-plane reject
+      `w<=0.05`). `area` cancels — do **not** divide by `area` *and* `den`. *(Ref: brief §1.2–1.3.)*
+- [ ] **Nearest sampling first** (validate interpolation against a checker), then **bilinear** (8.8 weights
+      forced to sum to **exactly 256**: compute 3, derive the 4th), then **wrap** (`REPEAT` = `& (w-1)`
+      power-of-two mask incl. negatives; `CLAMP` = `SMIN/SMAX` per tap, never clamp the coordinate once), then
+      **alpha blend** (`GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA`, exact `div255` = `t=x+128; (t+(t>>8))>>8`).
+- [ ] **Unified pipeline, not a second rasterizer.** `RasterRow` dispatches to the textured span when
+      `g_raster_tex_active`; otherwise the byte-identical `RasterSpanNEON`. The texel gather is scalar by
+      necessity (AArch64 NEON has no gather); the coordinate/filter/blend math may be NEON. NEON extension of
+      the textured span is **p4.3b** (the definitive goal), validated against the scalar math.
+- [ ] **`RasterDisableTexture()`** is called by the 2D path (`RenderGoldenScene`) so the golden hash stays
+      bit-exact; `glDisable(GL_TEXTURE_2D)` unbinds.
+- [ ] **`SelfTestTexture`** (gate `TEXTURE: PASS`): (1) screen-aligned 2×2 NEAREST quad → 4 quadrant colours;
+      (2) LINEAR → centre = bilinear average; (3) perspective (w 2→6) → the texel row boundary at the
+      perspective-correct screen position `v=3t/(1+2t)`, not the affine midpoint; (4) alpha 50% over a known
+      background. Restore GL state; add `TEXTURE: PASS` to `scripts/golden-boot.sh`.
+- [ ] **Decision (color space):** shade in **linear light**, present **sRGB**; store **premultiplied alpha**
+      for correct blending. *(Refs: Søren Sandmann "Gamma vs premultiplied".)*
+- [ ] Blend modes: opaque / alpha / additive / multiply.
+- [ ] **Exit — MET when:** `SELFTEST 80/80`, `RASTER: PASS`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
+      `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`; commit P4.3 + refresh the bundle.
+
+**Cross-module accessors (sovereign rule):** `HolyGLGetTrisRendered()`, `HolyGLGetViewportW/H()`,
+`HolyGLGetBound()`, `RasterTextureActive()` — never read `g_hgl.*`/`g_rtex.*` from another module. (Existing
+violations to fix: `Gears3D.HC`, `Physics3D.HC` write `g_hgl.v_curr.color` directly.)
 
 ### P4.4 — `Fonts.HC` (merge + SDF) — ⬜
 - [ ] **Merge** `FontMono` + `FontVector` + Render's `gfx_draw_char` into one `Fonts.HC`. Drop the **mock
@@ -830,3 +868,33 @@ single_core…_audit §4, complete_render_stack… §6, neo_os_consolidated_defe
 `FUTURE…ROADMAP` Task 5.4, `P1-DELEGATION` §0 item 6) — removed by master plan §4; the `scripts/compile-parity.sh`
 name (does not exist; the real tool is `scripts/p1-parity.sh`); the 6-config/16-phase benchmark matrices
 (superseded by one 40-phase suite). See doc 04.
+
+---
+
+## Cross-cutting sovereign upgrades (2026-10) — external best-in-class → subsystem
+
+Folded into their owning priorities. Code-level detail + citations in `docs/research/*.md`. Each is a **root
+upgrade**, gated by the existing harness, and must not increase the `.HC`→C census except where noted.
+
+- [ ] **P1.3 — Symbol resolution O(1) & FNV-1a** (`apps/Symbols.HC`, `apps/Compiler.HC`). Upgrade the symbol
+      hash DJB2→**FNV-1a 64-bit**; store a **normalized key** so the canonical (case/underscore-insensitive)
+      lookup is O(1) instead of a 1024-bucket linear scan; add **>8-arg stack spill** (today it hard-errors);
+      add range-extension thunks for far `CBZ/CBNZ`. Gate: `SYMS 0 unresolved`, `SELF-HOST PASS`, census flat.
+- [ ] **P2.8 — RedSea integrity & atomic commit** (`apps/RedSea.HC`, `apps/KHeap.HC`). **CRC32C** table
+      (`0x82F63B78`), self-test vector `0xE3069283`, per-block CRC; **uberblock ring** + monotonic `txg`
+      (highest valid wins); durability `DC CVAC`+`DSB SY`. Gate: `FSRT: PASS` + a new `CRC32C: PASS`.
+- [ ] **P3.9 — Lock-free MPMC & MPSC run-queues** (`apps/Sched.HC`, `apps/Smp.HC`, `kernel/`). Replace the
+      SPSC mailbox with **Vyukov bounded MPMC** (per-cell sequence, ABA-free) + per-core MPSC inboxes;
+      `LDAXR/STLXR`/`LDAR/STLR`; `WFE/SEV` idle with re-check. Gate: `SMP: PASS`, `SCHED: PASS`, 1-vs-N parity.
+- [ ] **P4.4 — `Fonts.HC` merge + SDF** (`apps/Fonts.HC`, `apps/DolDoc.HC`). Merge `FontMono`+`FontVector`+
+      `gfx_draw_char`; add the **stb_truetype v2 signed-area AA rasterizer** + `GetGlyphSDF` (or
+      rasterize-then-EDT); bake an **SDF atlas** at boot; composite as textured quads through the one rasterizer.
+      Gate: `FONTS: PASS` (AA glyph hash) + `RENDER` unchanged.
+- [ ] **P5.0 — DolDoc 3.0** (`apps/DolDoc.HC`, `apps/Compositor.HC`). Flat index-based `CDNode` tree; React
+      O(n) keyed reconciliation; memory-watch bindings (`$DA`); document = window/shell/editor; Morton dirty
+      tiles; draw through the one rasterizer. Gate: `DOLDOC: PASS` + golden hash unchanged.
+- [ ] **P6.0 — Reactive shell** (`apps/Shell.HC`, `apps/Symbols.HC`). Symbol-table O(1) dispatch; command
+      output as a mounted `CDoc` subtree; `WFE` idle with a lost-wakeup-safe re-check. Gate: all builtins
+      dispatch + `WFE` idle verified.
+- [ ] **Sweep — cross-module accessor rule.** Purge direct `g_hgl.*` writes (`Gears3D.HC`, `Physics3D.HC`) and
+      any other cross-module struct-member access; route through exported accessors. Add a static check.
