@@ -210,12 +210,17 @@ missing tail.
 4. **Exact failure diagnostics.** The seed `kmalloc` OOM path now prints the real reason with
    total/used/free/largest-free-block; `KHeap.HC`'s `KMalloc` no longer returns 0 silently; the `[HCLX]`
    diagnostic reports both heaps.
-5. **`SelfTestHeapChurn`** — 2500 small (32–64 B) allocations interleaved with medium alloc/free traffic,
-   every byte written and verified before release (`HEAPCHURN: PASS`), gated in `golden-boot.sh`.
+5. **`SelfTestHeap`** — Phase A: 100 alloc/write/verify/free iterations across 16/36/128/4096 B; Phase B:
+   2500 small (32–64 B) allocations interleaved with medium alloc/free traffic; every byte written and
+   verified (`KHEAP: PASS`), gated in `golden-boot.sh`.
+**Pointer-arithmetic audit (Causa-2 ruled out).** `HcParseAdditive` emits a raw `add x0,x0,x1`, i.e. HolyC
+pointer arithmetic is **byte-wise** (only `[]` indexing scales, via `HcGlobalScale`/`g_hc_global_strides`).
+So `curr + HEAP_BLOCK_HEADER_SIZE` in `KHeap.KMalloc` is a 48-byte offset — the block split is correct and
+does **not** corrupt the remainder (confirmed by `KHEAP: PASS` + the existing 5-block `KHeapSelfTest`).
 **Gate:** `GOLDEN BOOT: PASS`, `SELFTEST 80/80`, `PARITY 54/54`, `RENDER 0xD28836F`, `SELF-HOST: PASS`,
-`HEAPCHURN: PASS`, `CENSUS: PASS`. The census baseline moved `kmalloc 50→53` / `kfree 47→50` **solely**
-because of the new heap-churn test (the lexer's `kmalloc` was *replaced* by the arena, so `Compiler.HC` is
-net-neutral).
+`KHEAP: PASS`, `PANIC GATE: PASS`, `CENSUS: PASS`. The census baseline moved `kmalloc 50→54` / `kfree 47→51`
+**solely** because of the new heap-stress test (the lexer's `kmalloc` was *replaced* by the arena, so
+`Compiler.HC` is net-neutral).
 
 ---
 

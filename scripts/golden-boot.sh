@@ -152,11 +152,11 @@ else
         echo "  [FAIL] 2D array indexing: ${a2line:-<none>} (want ARRAY2D: PASS)"
         fail=1
     fi
-    hcline="$(printf '%s\n' "$out" | grep -a 'HEAPCHURN: ' | tail -1)"
+    hcline="$(printf '%s\n' "$out" | grep -a 'KHEAP: ' | tail -1)"
     if printf '%s' "$hcline" | grep -aq 'PASS'; then
-        echo "  [PASS] $hcline (heap churn: 2500 allocs, no overlap)"
+        echo "  [PASS] $hcline (heap: split/coalesce, no overlap)"
     else
-        echo "  [FAIL] heap churn: ${hcline:-<none>} (want HEAPCHURN: PASS)"
+        echo "  [FAIL] heap stress: ${hcline:-<none>} (want KHEAP: PASS)"
         fail=1
     fi
 fi

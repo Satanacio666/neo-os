@@ -381,21 +381,47 @@ U0 SelfTestRender() {
     doldoc_mark_all_dirty();
 }
 
-// P0.7: heap-churn stress. 2500 small (32-64 B) allocations interleaved with
-// medium (512-1536 B) alloc/free traffic, every byte written and verified before
-// release. This exercises the freelist split/coalesce paths far harder than the
-// existing 5-block KHeap self-test and proves the allocator neither overlaps
-// live blocks nor corrupts them. Runs against the sovereign KHeap.HC post-handover.
+// P0.7: sovereign heap stress. Two phases:
+//  A. 100 alloc/write/verify/free iterations across the four canonical sizes
+//     (16, 36, 128, 4096 B) — every byte written and re-read to prove a block is
+//     neither overlapped by a neighbour nor corrupted by the split/coalesce path.
+//  B. 2500 small (32-64 B) allocations interleaved with medium (512-1536 B)
+//     alloc/free traffic, every byte verified before release.
+// Runs against the sovereign KHeap.HC post-handover. Prints KHEAP: PASS.
 #define HEAPCHURN_N 2500
 U8  *g_heapchurn_ptrs[HEAPCHURN_N];
 I64  g_heapchurn_sizes[HEAPCHURN_N];
 
-U0 SelfTestHeapChurn() {
+U0 SelfTestHeap() {
     I64 ok = 1;
+    // --- Phase A: fixed sizes, immediate free (split + coalesce churn) ---
+    I64 sizes[4];
+    sizes[0] = 16; sizes[1] = 36; sizes[2] = 128; sizes[3] = 4096;
+    I64 si = 0;
+    while (si < 4 && ok != 0) {
+        I64 sz = sizes[si];
+        I64 it = 0;
+        while (it < 100) {
+            U8 *p = kmalloc(sz);
+            if (!p) { ok = 0; break; }
+            if (((U64)p & 15) != 0) { ok = 0; break; }
+            I64 b = 0;
+            while (b < sz) { p[b] = (U8)((it + b) & 255); b++; }
+            b = 0;
+            while (b < sz) {
+                if (p[b] != (U8)((it + b) & 255)) { ok = 0; break; }
+                b++;
+            }
+            kfree(p);
+            if (ok == 0) break;
+            it++;
+        }
+        si++;
+    }
+    // --- Phase B: interleaved small + medium, verified before release ---
     I64 live = 0;
     I64 i = 0;
-    // Phase 1: interleave small + medium allocations, touching every byte.
-    while (i < HEAPCHURN_N) {
+    while (i < HEAPCHURN_N && ok != 0) {
         I64 sz = 32 + ((i * 7) % 33);            // 32..64 bytes
         U8 *p = kmalloc(sz);
         if (!p) { ok = 0; break; }
@@ -439,8 +465,8 @@ U0 SelfTestHeapChurn() {
         if (z[0] != 0x5A || z[63] != 0x5A) ok = 0;
         kfree(z);
     }
-    if (ok != 0) doldoc_printf("HEAPCHURN: PASS (%lld small allocs + interleaved medium)\n", live);
-    else doldoc_printf("HEAPCHURN: FAIL\n");
+    if (ok != 0) doldoc_printf("KHEAP: PASS (4 sizes x100 + %lld churn allocs)\n", live);
+    else doldoc_printf("KHEAP: FAIL\n");
 }
 
 U0 SelfTestRun() {
@@ -562,7 +588,7 @@ U0 SelfTestRun() {
     SelfTestKernel();
     SelfTestPtrScale();
     SelfTest2DArray();
-    SelfTestHeapChurn();
+    SelfTestHeap();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
