@@ -385,6 +385,50 @@ U0 SelfTest2DArray() {
     else doldoc_print("ARRAY2D: FAIL\n");
 }
 
+// D7 root-fix regression: indexing a struct-member POINTER must stride by the
+// pointee width (1/2/4), NOT the 8-byte pointer field width. The old bug made
+// `box.p8[i]`/`box.p16[i]`/`box.p32[i]` advance 8 bytes and clobber neighbours.
+// Covers direct (`.`) and arrow (`->`) member access in reads and writes.
+struct SPtrBox { U8 *p8; U16 *p16; U32 *p32; };
+U8 g_sptr_raw[64];
+U0 SelfTestStructPtrScale() {
+    I64 ok = 1;
+    U8 *raw = g_sptr_raw;
+    I64 i = 0;
+    while (i < 64) { raw[i] = 0; i = i + 1; }
+
+    SPtrBox box;
+    box.p8 = raw;
+    box.p16 = (U16*)raw;
+    box.p32 = (U32*)raw;
+
+    // U8 member: p8[5] writes exactly 1 byte at offset 5.
+    box.p8[5] = 0xAB;
+    if (raw[4] != 0 || raw[6] != 0) ok = 0;
+    if (box.p8[5] != 0xAB) ok = 0;
+
+    // U16 member: p16[3] writes exactly 2 bytes at offset 6.
+    box.p16[3] = 0xBEEF;
+    if (raw[6] != 0xEF || raw[7] != 0xBE) ok = 0;
+    if (raw[5] != 0xAB || raw[8] != 0) ok = 0;
+    if (box.p16[3] != 0xBEEF) ok = 0;
+
+    // U32 member: p32[2] writes exactly 4 bytes at offset 8.
+    box.p32[2] = 0xDEADBEEF;
+    if (raw[8] != 0xEF || raw[9] != 0xBE || raw[10] != 0xAD || raw[11] != 0xDE) ok = 0;
+    if (raw[7] != 0xBE || raw[12] != 0) ok = 0;
+    if (box.p32[2] != 0xDEADBEEF) ok = 0;
+
+    // Arrow path: `pb->p8[i]` must behave identically to `box.p8[i]`.
+    SPtrBox *pb = &box;
+    pb->p8[9] = 0x5A;
+    if (raw[9] != 0x5A) ok = 0;
+    if (raw[8] != 0xEF || raw[10] != 0xAD) ok = 0;
+
+    if (ok != 0) doldoc_print("PTRSCALE2: PASS\n");
+    else doldoc_print("PTRSCALE2: FAIL\n");
+}
+
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
@@ -750,6 +794,9 @@ U0 SelfTestRun() {
     SelfTestCheck("array_init_f64", "F64 af2[2] = {1.5, 2.5}; af2[0] + af2[1];", 4616189618054758400);
     SelfTestCheck3("fnptr_indirect_call", 42, "I64 fci(I64 x) { return x + 1; }", "I64 fcp = &fci;", "fcp(41);");
     SelfTestCheck("forward_struct_ptr", "I64 gfsp(F2 *p) { return p->x; } struct F2 { I64 x; }; F2 ff2; ff2.x = 9; gfsp(&ff2);", 9);
+    // D7: struct-member pointer indexing must stride by the pointee width, not 8.
+    // 0xAB + 0xBEEF + 0xDEADBEEF = 3735977609; a stride-8 bug reads garbage.
+    SelfTestCheck("struct_member_ptr_scale", "struct SPB { U8 *p8; U16 *p16; U32 *p32; }; SPB b; U8 buf[16]; b.p8 = &buf[0]; b.p16 = (U16*)&buf[0]; b.p32 = (U32*)&buf[0]; b.p8[3] = 0xAB; b.p16[2] = 0xBEEF; b.p32[1] = 0xDEADBEEF; b.p8[3] + b.p16[2] + b.p32[1];", 3735977609);
     // --- coverage expansion (P0.5) ---
     SelfTestReject("neg_bad_expr", "2 + ;");
     SelfTestCheck("lex_block_comment", "I64 bc = 7; /* c */ bc + 1;", 8);
@@ -770,6 +817,7 @@ U0 SelfTestRun() {
     SelfTestKernel();
     SelfTestPtrScale();
     SelfTest2DArray();
+    SelfTestStructPtrScale();
     SelfTestHeap();
     SelfTestTexture();
     SelfTestRender();

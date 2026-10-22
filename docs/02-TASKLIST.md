@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -682,29 +682,60 @@ mask)/CLAMP, exact `div255` alpha blend, `RasterDisableTexture()` on the 2D gold
 1. **Mixed I64/F64 arithmetic** (`Compiler.HC`): the float binary path reinterpreted the integer operand's
    bits as a double (`fmov` instead of `scvtf`) → `g_hgl.vp_w * 0.5` ≈ 0 → **all HolyGL geometry collapsed to
    (0,0)**. Fixed with `HcEmitPromoteFloat` in Multiplicative/Additive/Relational/Equality.
-2. **Struct-member pointer stride = 8**: `g_rtex.data[k]` (`U32 *` member) advanced 8 bytes. Routed through a
-   typed local pointer. *(Also: `CRasterTex.data` had to be `U32 *`, not `U64`.)*
+2. **Struct-member pointer stride = 8** — **ROOT-FIXED in p4.3b (D7)**; see below.
 
 **Lesson (kept):** never `doldoc_printf` from inside the rasterizer and never exceed **8 args** — a 9-arg debug
 print failed `RasterTile.HC` to compile and left **dangling** function symbols (publish-before-body) → BSOD.
 
-**p4.3b (next):** vectorize the textured span's coordinate/filter/blend math in NEON (the gather stays scalar).
+### p4.3b — NEON textured span + D7 root fix — ✅ **DONE**
+
+**Goal (met):** the textured span runs through the **same** `RasterSpanNEON` kernel; no scalar rasterizer, no
+scalar fallback. The texel gather stays scalar (AArch64 NEON has no gather) inside a compact 8-lane loop.
+
+**FASE 1 — D7 root fix (`Compiler.HC`), no workaround.** The self-hosted compiler lost the pointee width of a
+struct-member pointer: `s.data[k]` (`U32 *`) advanced **8** bytes and emitted `LDR X`, not `LDR W`.
+- Added `g_hc_member_elem_bytes[8192]` (element/pointee width), filled by `HcParseStructDef` with `base_sz`
+  (mirrors `struct_member_t.elem_size` in `boot/seed/jit_arm64.c`). Exposed via the global
+  `g_hc_found_member_elem` set by `HcFindMember` (the C JIT caps calls at **8 args**, so a 9th out-param is
+  illegal). In `HcResolveLValue`, indexing a `m_ptr`/`m_arr` member uses `cur_scale = elem` instead of the
+  8-byte field width. The `U32 *td = g_rtex.data;` workaround in `RasterTile.HC` was **deleted** — `g_rtex.data[k]`
+  now strides by 4 and emits `LDR W`.
+- Regression: `SelfTestStructPtrScale` (`PTRSCALE2: PASS`) with `U8 *p8/U16 *p16/U32 *p32`, direct (`.`) and
+  arrow (`->`) access, verifying **no adjacent-byte corruption**; golden case `struct_member_ptr_scale` in
+  `tests/jit_golden/cases.json`; `PTRSCALE2` added to `golden-boot.sh`.
+
+**FASE 2 — NEON textured span (`scripts/raster_span.s` → `RasterSpanNEON`).** `CRasterSpan` gained `tex_ptr`
+(0x90) + the 9 per-vertex 16.16 attributes + 3 per-pixel deltas; when `tex_ptr != 0` the kernel branches to the
+textured path (otherwise the **byte-identical** solid path runs → `0xD28836F` untouched):
+- Coverage + 8-lane depth (`CMHI.8H`) → active mask `V31`, exactly as the solid path.
+- Compact 8-lane loop (mask-skip via `TST`): perspective-correct `u,v` with **exact 64-bit `SDIV`**
+  (`u = (numU<<16)/den`; `numU = Σ wₖ·uowₖ` recomputed per block from the block's `w0,w1,w2`), scalar gather,
+  **NEON bilinear** (`UXTL`/`UMULL`/`UMLAL`/`SHRN`, weights `(ifx·ify)>>24`), packed to a 32-byte stack buffer.
+- NEON **modulate** (`UMULL`+`(P+(P>>8)+1)>>8` = exact `/255`, alpha forced 255) and **alpha blend**
+  (`UMULL`/`UMLAL` with `+127` then `/255`) across 8 pixels; masked `BSL` store. `REPEAT` (PoT mask) / `CLAMP`
+  wrap via `TBNZ` bit-15 test; `NEAREST`/`LINEAR` branch per lane.
+- Bug found & fixed during bring-up: `w19` (colour) was clobbered by the per-lane loop's `x19` temp, so the
+  modulate colour vector was rebuilt from garbage → dimmed texels. Fixed by building `v8`/`v9` **once** in the
+  prologue. (Also fixed: overlapping 8-byte stack slots for `fx/fy`, `tx0/tx1`, `ty0/ty1` → 4-byte slots.)
+
+**FASE 3 — parity + benchmark.** All 4 `SelfTestTexture` sub-tests pass through the NEON span
+(`NEAREST` quadrants, `LINEAR` centre `0x7F7F7F`, perspective row, alpha `0xFF800000`). `renderbench` gained a
+`Textured` line (measured ~3493 tri/s, ~277 Kpix/s on QEMU TCG — the NEON path with per-lane `SDIV` + gather).
 
 - [x] Remove ALL `doldoc_printf` from the rasterizer; diagnostics are globals read after the draw.
 - [x] Perspective-correct interpolation (area-free).
 - [x] NEAREST → LINEAR (256-sum weights) → REPEAT/CLAMP → alpha blend (exact `div255`).
-- [x] Unified pipeline, not a second rasterizer. `RasterRow` dispatches to the textured span when
-      necessity (AArch64 NEON has no gather); the coordinate/filter/blend math may be NEON. NEON extension of
-      the textured span is **p4.3b** (the definitive goal), validated against the scalar math.
-- [ ] **`RasterDisableTexture()`** is called by the 2D path (`RenderGoldenScene`) so the golden hash stays
+- [x] **NEON textured span** — one kernel, mask-skip, exact-integer perspective, NEON bilerp/modulate/blend.
+- [x] **D7 root fix** — struct-member pointer indexing strides by the pointee width (no typed-local workaround).
+- [x] **`RasterDisableTexture()`** is called by the 2D path (`RenderGoldenScene`) so the golden hash stays
       bit-exact; `glDisable(GL_TEXTURE_2D)` unbinds.
 - [x] **`SelfTestTexture`** (gate `TEXTURE: PASS`): (1) NEAREST quadrants; (2) LINEAR centre; (3) perspective
-      row boundary at `v=3t/(1+2t)`; (4) alpha 50% blend. `TEXTURE: PASS` added to `golden-boot.sh`.
+      row boundary at `v=3t/(1+2t)`; (4) alpha 50% blend. `TEXTURE: PASS` + `PTRSCALE2` in `golden-boot.sh`.
 - [ ] **Decision (color space) — DEFERRED to P4.4+:** shade in linear light / present sRGB / premultiplied
       alpha (current path is straight alpha + sRGB-ish 0xAARRGGBB).
 - [ ] Blend modes additive/multiply — DEFERRED (opaque + src-alpha landed).
-- [x] **Exit — MET:** `SELFTEST 80/80`, `RASTER: PASS`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
-      `KHEAP: PASS`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`; committed `51a9c68` + bundle refreshed.
+- [x] **Exit — MET:** `SELFTEST 81/81`, `PARITY 54/54 (0 diff)`, `RASTER: PASS`, `RENDER: PASS (0xD28836F)`,
+      `TEXTURE: PASS`, `PTRSCALE2: PASS`, `KHEAP: PASS`, `SELF-HOST: PASS`, `CENSUS: PASS`, `GOLDEN BOOT: PASS`.
 
 **Cross-module accessors (sovereign rule):** `HolyGLGetTrisRendered()`, `HolyGLGetViewportW/H()`,
 `HolyGLGetBound()`, `RasterTextureActive()` — never read `g_hgl.*`/`g_rtex.*` from another module. (Existing

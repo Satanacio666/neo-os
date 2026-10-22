@@ -437,6 +437,9 @@ structure, with ~80 cited primary sources. The highest-value extracts:
 - **NEON has no gather** (`TBL`/`TBX` are 64-byte register lookups, not memory). Fetch 8 texels with scalar
   `LDR`+`INS`; SIMD only the coordinate math (`SCVTF/FRINTM/FCVTZS`), the filter and the blend. Prefer the
   integer 16.16 path (matches the existing exact-Z kernel). *(ARM ARM C7.2.397; corsix.)*
+  **Implemented in p4.3b:** a compact mask-skipped 8-lane loop, exact 64-bit `SDIV` for `u,v`, scalar gather
+  packed to a stack buffer, and NEON bilinear (`UXTL`/`UMULL`/`UMLAL`/`SHRN`), modulate and alpha blend — all
+  in the one `RasterSpanNEON` kernel. See doc 02 §p4.3b and doc 04 §D8.
 - Fonts: **stb_truetype v2** signed-area AA rasterizer + `GetGlyphSDF` (or rasterize-then-**Felzenszwalb EDT**);
   SDF texel = `128 + 127*clamp(d/range,-1,1)`; reconstruct with `screenPxRange = range*(screen_h/tex_h)`.
   *(nothings.org; Valve 2007; redblobgames.)*

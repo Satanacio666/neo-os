@@ -211,6 +211,11 @@ I64   g_hc_member_is_arr[8192];  // 1 if inline array member
 I64   g_hc_member_is_ptr[8192];  // 1 if pointer member
 I64   g_hc_member_st_idx[8192];  // nested struct index or -1
 I64   g_hc_member_is_float[8192];// 1 if this member is an F64 scalar/element
+// D7 root fix: the element/pointee byte width used to INDEX a member. For a
+// scalar pointer member `U32 *data` this is 4 (NOT the 8-byte pointer field
+// width); for an inline array it is the element width; for a nested struct it is
+// the struct size. Mirrors struct_member_t.elem_size in boot/seed/jit_arm64.c.
+I64   g_hc_member_elem_bytes[8192];
 I64   g_hc_struct_count;
 
 // Loop & Switch Break/Continue Patching Stacks (16 levels, 32 patches per level)
@@ -494,7 +499,12 @@ I64 HcAddStruct(U8 *name) {
     return ns_idx;
 }
 
+// D7 root fix: element/pointee width of the most recently matched member, set by
+// HcFindMember. Exposed as a global because the C JIT (which compiles this file)
+// caps function calls at 8 arguments — HcFindMember already takes 8 out-params.
+I64 g_hc_found_member_elem = 8;
 I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_arr, I64 *out_is_ptr, I64 *out_sub_st, I64 *out_is_float) {
+    g_hc_found_member_elem = 8;
     I64 s_start = 0;
     I64 s_end = g_hc_struct_count;
     if (st_idx >= 0 && st_idx < g_hc_struct_count) {
@@ -514,6 +524,8 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
                 *out_is_ptr = g_hc_member_is_ptr[slot];
                 *out_sub_st = g_hc_member_st_idx[slot];
                 *out_is_float = g_hc_member_is_float[slot];
+                g_hc_found_member_elem = g_hc_member_elem_bytes[slot];
+                if (g_hc_found_member_elem <= 0) g_hc_found_member_elem = *out_sz;
                 return 1;
             }
         }
@@ -531,6 +543,8 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
                     *out_is_ptr = g_hc_member_is_ptr[slot2];
                     *out_sub_st = g_hc_member_st_idx[slot2];
                     *out_is_float = g_hc_member_is_float[slot2];
+                    g_hc_found_member_elem = g_hc_member_elem_bytes[slot2];
+                    if (g_hc_found_member_elem <= 0) g_hc_found_member_elem = *out_sz;
                     return 1;
                 }
             }
@@ -1557,7 +1571,9 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                 I64 m_ptr = 0;
                 I64 m_sub = -1;
                 I64 m_flt = 0;
+                I64 m_elem = 8;
                 if (HcFindMember(cur_st_idx, mname, &m_off, &m_sz, &m_arr, &m_ptr, &m_sub, &m_flt)) {
+                    m_elem = g_hc_found_member_elem;
                     if (m_off != 0) {
                         HcEmitImm64(1, m_off);
                         HcEmit(0x8B010000); // add x0, x0, x1
@@ -1569,6 +1585,12 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                     else if (m_ptr) cur_mode = 1;
                     else if (m_sub >= 0) cur_mode = 3;
                     else cur_mode = 0;
+                    // D7 ROOT FIX: indexing a pointer (or inline array) member must
+                    // stride by the pointee/element width, not the 8-byte pointer
+                    // field width. `s.data[k]` (U32 *) strides by 4 and loads LDR W.
+                    // The C JIT already did this via struct_member_t.elem_size; the
+                    // self-hosted compiler lost it, forcing a typed-local workaround.
+                    if ((m_ptr || m_arr) && g_hc_tok == TOK_LBRACKET) cur_scale = m_elem;
                 }
             }
         } else if (g_hc_tok == TOK_LBRACKET) {
@@ -2280,6 +2302,7 @@ U0 HcParseStructDef() {
                 g_hc_member_is_ptr[fp_slot] = 1;
                 g_hc_member_st_idx[fp_slot] = -1;
                 g_hc_member_is_float[fp_slot] = 0;
+                g_hc_member_elem_bytes[fp_slot] = 8;
                 m_cnt++;
             }
             cur_off += 8;
@@ -2323,6 +2346,10 @@ U0 HcParseStructDef() {
                     g_hc_member_is_ptr[m_slot] = is_p;
                     g_hc_member_st_idx[m_slot] = sub_st;
                     g_hc_member_is_float[m_slot] = (base_flt && !is_p && sub_st < 0) ? 1 : 0;
+                    // Element/pointee width for indexing: base_sz is the declared
+                    // base type width (or nested struct size), independent of the
+                    // 8-byte pointer field width. This is what D7 was losing.
+                    g_hc_member_elem_bytes[m_slot] = base_sz;
                     m_cnt++;
                 }
                 cur_off += field_bytes;

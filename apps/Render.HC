@@ -758,6 +758,7 @@ U0 RenderGoldenScene() {
 
 // In-guest render benchmark (shell command `renderbench`). Reports the current
 // tile Z-rasterizer triangle + pixel throughput and the full-canvas clear rate.
+U32 g_bench_tex[64];   // p4.3b: 8x8 benchmark texture (populated in RenderBench)
 U0 RenderBench() {
   doldoc_print("\n$FG,CYAN$=== NeoOS Render Benchmark ===$FG$\n");
   U64 freq = __mrs_cntfrq();
@@ -791,6 +792,46 @@ U0 RenderBench() {
   I64 kpix_sec = (total_px * freq) / (cycles * 1000);
   doldoc_printf("  Z-raster : %lld tris / %lld cycles -> $FG,GREEN$%lld tri/s$FG$, %lld Kpix/s\n",
                 tris, cycles, tris_sec, kpix_sec);
+
+  // p4.3b: textured throughput through the SAME one rasterizer (NEON textured
+  // span). An 8x8 LINEAR/CLAMP texture with alpha blend exercises the whole
+  // per-lane perspective + bilinear + blend pipeline.
+  I64 bi = 0;
+  while (bi < 64) { g_bench_tex[bi] = 0xFF000000 | ((bi * 2654435761) & 0x00FFFFFF); bi = bi + 1; }
+  RasterSetTexture(g_bench_tex, 8, 8, 0x812F, 0x812F, 0x2601);
+  RasterSetBlend(1);
+  RasterClearZ();
+  RasterSetDepthTest(1);
+  I64 tpx = 0;
+  I64 zt = 60000;
+  U64 e0 = __mrs_cntvct();
+  I64 j = 0;
+  while (j < iters) {
+    I64 ox = j % 40;
+    I64 oy = (j * 7) % 40;
+    zt = zt - 1;
+    RasterSetZ(zt, zt, zt);
+    RasterSetTexUV(0, 0.0, 0.0, 1.0);
+    RasterSetTexUV(1, 1.0, 0.0, 1.0);
+    RasterSetTexUV(2, 0.0, 1.0, 1.0);
+    tpx = tpx + RasterTriangleZ(5 + ox, 5 + oy, 50, 15, 30, 55, 0xFFFFFFFF);
+    zt = zt - 1;
+    RasterSetZ(zt, zt, zt);
+    RasterSetTexUV(0, 1.0, 1.0, 1.0);
+    RasterSetTexUV(1, 0.0, 1.0, 1.0);
+    RasterSetTexUV(2, 1.0, 0.0, 1.0);
+    tpx = tpx + RasterTriangleZ(2, 45, 55, 35, 25, 5, 0xFFFFFFFF);
+    j++;
+  }
+  U64 e1 = __mrs_cntvct();
+  U64 tcyc = e1 - e0;
+  if (tcyc == 0) tcyc = 1;
+  I64 ttri_sec = (tris * freq) / tcyc;
+  I64 tkpix_sec = (tpx * freq) / (tcyc * 1000);
+  doldoc_printf("  Textured : %lld tris / %lld cycles -> $FG,GREEN$%lld tri/s$FG$, %lld Kpix/s\n",
+                tris, tcyc, ttri_sec, tkpix_sec);
+  RasterDisableTexture();
+  RasterSetBlend(0);
 
   I64 w = gfx_get_canvas_width();
   I64 h = gfx_get_canvas_height();

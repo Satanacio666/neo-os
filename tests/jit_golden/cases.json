@@ -598,6 +598,14 @@
       "expect": "0x2A"
     },
     {
+      "name": "struct_member_ptr_scale",
+      "note": "D7: struct-member POINTER indexing must stride by pointee width (U8=1,U16=2,U32=4), not 8.",
+      "cmds": [
+        "struct SPB { U8 *p8; U16 *p16; U32 *p32; }; SPB b; U8 buf[16]; b.p8 = &buf[0]; b.p16 = (U16*)&buf[0]; b.p32 = (U32*)&buf[0]; b.p8[3] = 0xAB; b.p16[2] = 0xBEEF; b.p32[1] = 0xDEADBEEF; b.p8[3] + b.p16[2] + b.p32[1];"
+      ],
+      "expect": "0xDEAE7E89"
+    },
+    {
       "name": "known_over8_args",
       "known": true,
       "cmds": [

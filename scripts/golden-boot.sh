@@ -152,6 +152,13 @@ else
         echo "  [FAIL] 2D array indexing: ${a2line:-<none>} (want ARRAY2D: PASS)"
         fail=1
     fi
+    ps2line="$(printf '%s\n' "$out" | grep -a 'PTRSCALE2: ' | tail -1)"
+    if printf '%s' "$ps2line" | grep -aq 'PASS'; then
+        echo "  [PASS] $ps2line (struct-member pointer element width)"
+    else
+        echo "  [FAIL] struct-member pointer width: ${ps2line:-<none>} (want PTRSCALE2: PASS)"
+        fail=1
+    fi
     hcline="$(printf '%s\n' "$out" | grep -a 'KHEAP: ' | tail -1)"
     if printf '%s' "$hcline" | grep -aq 'PASS'; then
         echo "  [PASS] $hcline (heap: split/coalesce, no overlap)"

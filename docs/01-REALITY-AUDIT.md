@@ -5,10 +5,11 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD `77d407f`, `main` tree clean** — updated 2026-10):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 80/80` · `PARITY 54/54`
-(0 diff, 4 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `PTRSCALE`/`ARRAY2D`/`KHEAP` **PASS** ·
-`PANIC GATE: PASS` · `CENSUS: PASS` (179 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1371, 0 unresolved`.
+Current verified baseline (**HEAD p4.3b, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 81/81` · `PARITY 54/54`
+(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` ·
+`PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
+`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1427, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
@@ -201,7 +202,7 @@ global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in
 
 ---
 
-## K. P0.6 / P0.7 / P0.7b / P4.3 — verified state (2026-10)
+## K. P0.6 / P0.7 / P0.7b / P4.3 / p4.3b — verified state (2026-10)
 
 ### P0.6 — BSOD panic-halt + fault telemetry — **[REAL]** (`f0a407c`)
 A kernel panic used to re-execute the faulting instruction forever (`vectors.S` ignored the handler's X0
@@ -227,8 +228,21 @@ allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-ba
 `RasterRow` (no parallel scalar rasterizer), NEAREST/LINEAR (bilinear, weights sum to 256), REPEAT/CLAMP,
 exact `div255` alpha blend, and `RasterDisableTexture()` on the 2D golden path. `SelfTestTexture`
 (nearest quadrants / bilinear centre / perspective row / alpha blend) → **`TEXTURE: PASS`**;
-**`RENDER 0xD28836F`** bit-exact. The texel gather is scalar because **AArch64 NEON has no gather**; the NEON
-extension is p4.3b.
+**`RENDER 0xD28836F`** bit-exact.
+
+### p4.3b — NEON textured span + D7 root fix — **[REAL]**
+The textured span now runs through the **same** `RasterSpanNEON` kernel (branch on `CRasterSpan.tex_ptr`); the
+solid path is byte-identical so **`RENDER 0xD28836F` is unchanged**. Per active 8-pixel block: NEON coverage +
+`CMHI.8H` depth → active mask; a compact mask-skipped 8-lane loop computes perspective-correct `u,v` with
+**exact 64-bit `SDIV`** (per-block `numU/numV/den` from that block's `w0,w1,w2`), gathers texels (scalar, since
+**AArch64 NEON has no gather**), and does **NEON** bilinear (`UXTL`/`UMULL`/`UMLAL`/`SHRN`), modulate (exact
+`/255`) and alpha blend (exact `+127` then `/255`). `SelfTestTexture` 4/4 → **`TEXTURE: PASS`**. `renderbench`
+adds a `Textured` throughput line (~3493 tri/s, ~277 Kpix/s under QEMU TCG).
+
+**D7 root fix (no workaround).** `Compiler.HC` now carries each struct member's **pointee/element width**
+(`g_hc_member_elem_bytes`, published via `g_hc_found_member_elem` to respect the 8-arg cap). Indexing a pointer
+member (`g_rtex.data[k]`, `U32 *`) strides by 4 and emits `LDR W`; the typed-local workaround in `RasterTile.HC`
+was deleted. Regression `SelfTestStructPtrScale` → **`PTRSCALE2: PASS`** + golden case `struct_member_ptr_scale`.
 
 **Two compiler root bugs were found and fixed on the way (the real blockers):**
 1. **Mixed I64/F64 arithmetic** (`apps/Compiler.HC`): the float path did `fmov d0,x0`/`fmov d1,x1`,
@@ -236,8 +250,7 @@ extension is p4.3b.
    ~0 → **every HolyGL triangle collapsed to (0,0)**; 3D rendering was silently broken (the 2D golden scene
    uses `RasterTriangleZ` directly, masking the bug). Fixed with `HcEmitPromoteFloat` (SCVTF the integer
    operand), applied to `HcParseMultiplicative/Additive/Relational/Equality`.
-2. **Struct-member pointer indexing uses stride 8**: `g_rtex.data[k]` (a `U32 *` member) advanced by 8 bytes,
-   not 4. Worked around by routing through a typed local pointer; the compiler limitation is noted.
+2. **Struct-member pointer indexing stride 8** — **root-fixed in p4.3b** (see above; was a typed-local workaround).
 The earlier WIP **BSOD** was self-inflicted: a 9-argument `doldoc_printf` inside the rasterizer exceeded the
 8-arg limit → `RasterTile.HC` failed to compile → **dangling** function symbols (published before body-parse)
 → `HolyGLInit()` jumped into overwritten code. Rule: **never print from inside the rasterizer, never exceed

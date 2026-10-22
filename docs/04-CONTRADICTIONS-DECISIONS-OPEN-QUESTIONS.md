@@ -413,12 +413,32 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
 - **Verdict:** root-fixed. Any int↔float arithmetic now promotes correctly. *(This was the single biggest
   hidden defect; it is why the cube/3D demos never really rendered.)*
 
-### D7. Struct-member pointer indexing stride — WORKED AROUND
-- **Bug:** indexing a pointer **struct member** (`g_rtex.data[k]`, a `U32 *`) advances by **8** bytes, not
-  `sizeof(U32)=4` (global pointers get their scale via `HcRegisterGlobalScale`; struct members do not).
-- **Workaround:** route through a **typed local pointer** (`U32 *td = g_rtex.data; td[i]`). Also, the texture
-  pointer must be declared `U32 *` (not `U64`), or indexing is byte-wise.
-- **Open:** teach the compiler to carry the pointee scale for struct-member pointers (P1.3).
+### D7. Struct-member pointer indexing stride — **ROOT-FIXED** (p4.3b)
+- **Bug:** indexing a pointer **struct member** (`g_rtex.data[k]`, a `U32 *`) advanced by **8** bytes, not
+  `sizeof(U32)=4` (global pointers get their scale via `HcRegisterGlobalScale`; struct members did not). The
+  typed-local workaround (`U32 *td = g_rtex.data; td[i]`) was **technical debt** that would have broken the P4.4
+  SDF font atlas and the P5 DolDoc `CDoc` nodes.
+- **Fix (root, `Compiler.HC`):** new `g_hc_member_elem_bytes[8192]` carries each member's element/pointee width
+  (mirrors `struct_member_t.elem_size` in the C JIT). `HcFindMember` publishes it via the global
+  `g_hc_found_member_elem` (a 9th out-param would violate the **8-arg** cap, D4). In `HcResolveLValue`, an
+  indexed `m_ptr`/`m_arr` member uses `cur_scale = elem`, so `s.data[k]` strides by 4 and emits `LDR W`.
+- **Workaround removed** in `RasterTile.HC`; `g_rtex.data[...]` is used directly. Regression `PTRSCALE2: PASS`
+  (`U8 *p8/U16 *p16/U32 *p32`, direct + arrow, no adjacent-byte corruption) + golden case `struct_member_ptr_scale`.
+
+### D8. p4.3b textured span — DECIDED: one kernel, NEON, integer-exact
+- **One kernel.** `RasterSpanNEON` branches on `CRasterSpan.tex_ptr`; the solid path is byte-identical (golden
+  hash `0xD28836F` unchanged). No second rasterizer, no scalar fallback for the aligned body (head/tail < 8 px
+  still use `RasterPixelTextured`).
+- **Hardware split.** Coverage + 8-lane depth = NEON (`CMHI.8H`). Per-lane perspective = **exact 64-bit `SDIV`**
+  (`u=(numU<<16)/den`, `numU=Σwₖ·uowₖ` recomputed per block from that block's `w0,w1,w2`); texel **gather is
+  scalar** (AArch64 NEON has no gather). Bilinear / modulate / blend are **NEON** (`UXTL`/`UMULL`/`UMLAL`/`SHRN`,
+  exact `/255` via `(P+(P>>8)+1)>>8`, blend `+127` then `/255`). Mask-skip via `TST` on the active mask.
+- **Not bit-identical to the old scalar F64 path** by construction (16.16 integer vs F64), but `SelfTestTexture`'s
+  4 sub-tests pass (tolerances cover the difference). The **golden 2D hash** path is untouched, so it stays exact.
+- **Bring-up bugs (both fixed):** (a) `w19` (colour) clobbered by the loop's `x19` temp → modulate colour rebuilt
+  from garbage → dimmed texels; build `v8`/`v9` once in the prologue. (b) overlapping 8-byte stack slots for
+  `fx/fy`/`tx0/tx1`/`ty0/ty1` → 4-byte slots. (c) affine `numU/numV/den` must be recomputed **per block** (a
+  single descriptor `numU0` is only valid for the first block).
 
 ### Open questions
 - **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere
@@ -428,4 +448,4 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   sovereign pool to absorb Stages 2–6? (Current: unchanged; the 8 MB pool is idle during boot, so this is a
   memory-efficiency question, not a correctness one.)
 - **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.
-- **p4.3b:** vectorize the textured span (coordinate/filter/blend in NEON; gather stays scalar).
+- **p4.3b:** ✅ DONE (see D8).
