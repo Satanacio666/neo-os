@@ -64,10 +64,9 @@ U0 KernelInitMain() {
     KInitLoad("SelfTest.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography
-    KInitLog("Stage 2: 2D Graphics Canvas & Scalable Vector Typography...");
+    KInitLog("Stage 2: 2D Graphics Canvas & Scalable Typography...");
     KInitLoad("Render.HC");
-    KInitLoad("FontMono.HC");
-    KInitLoad("FontVector.HC");
+    KInitLoad("Fonts.HC");
 
     // Stage 3: Scheduling & Multiprocessing
     KInitLog("Stage 3: Cooperative Scheduler & SMP Multiprocessing...");

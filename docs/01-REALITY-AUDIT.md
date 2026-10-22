@@ -7,7 +7,7 @@
 
 Current verified baseline (**HEAD p4.3b, `main` tree clean** — updated 2026-10):
 `GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 81/81` · `PARITY 54/54`
-(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` ·
+(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` ·
 `PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
 `PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1427, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
@@ -221,6 +221,15 @@ Fixed: 1 MB module ceiling everywhere (`HC_MODULE_MAX`, `Shell.HC`, `HC_SRC_MAX`
 dedicated lexer string arena (`HcStrAlloc`, chained 256 KiB chunks, BSS-first, bounds-checked); bounds-checked
 the unchecked `g_hc_code` backpatch writes; null-checked global-array alloc; exact failure diagnostics in both
 allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-based** (Causa-2 ruled out).
+
+### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
+`FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only
+`Fonts.HC`). The **bitmap** 8x16 path is kept (delegates to Render's unchanged `gfx_draw_char`, so the golden
+hash is preserved). The **95-glyph quadratic-Bezier outline** engine bakes, at boot, a **4x-supersampled
+24x24 coverage** per glyph, packed into one **256x256** power-of-two ARGB atlas (alpha = coverage). Text is
+composited by a **bilinear coverage read** straight into the framebuffer (clip-safe) — smooth anti-aliased
+scalable glyphs. `FontsSelfTest` → **`FONTS: PASS`** (atlas baked, metrics, a real 80-px AA composite).
+Legacy `FontVectorDrawString`/`MeasureString` names are kept (DolDoc late-binds to them).
 
 ### P4.3 — textures / perspective / filtering / blend — **[REAL]** (`51a9c68`)
 `CTexture2D` pool + `glGenTextures/glBindTexture/glTexImage2D/glTexParameteri/glBlendFunc` (+

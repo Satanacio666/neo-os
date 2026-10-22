@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -741,14 +741,27 @@ textured path (otherwise the **byte-identical** solid path runs → `0xD28836F` 
 `HolyGLGetBound()`, `RasterTextureActive()` — never read `g_hgl.*`/`g_rtex.*` from another module. (Existing
 violations to fix: `Gears3D.HC`, `Physics3D.HC` write `g_hgl.v_curr.color` directly.)
 
-### P4.4 — `Fonts.HC` (merge + SDF) — ⬜
-- [ ] **Merge** `FontMono` + `FontVector` + Render's `gfx_draw_char` into one `Fonts.HC`. Drop the **mock
-      SFNT** parser (`FontParseTableDirectory`).
-- [ ] **Keep the bitmap font** for crisp small text; add **analytical SDF glyphs** for scalable/AA text:
-      rasterize the existing bezier outlines (FontVector) into a distance field at init, sample with
-      `smoothstep`. *(Refs: Chlumsky MSDF / FreeType SDF renderer; stb_truetype SDF; redblobgames SDF guide.)*
-- [ ] **Glyph atlas** with shelf/rect packing (stb_rect_pack style); cache per size. Real metrics from the
-      atlas (kill the hardcoded advances).
+### P4.4 — `Fonts.HC` (merge + AA atlas) — ✅ **DONE**
+**Goal (met):** one font module; crisp bitmap for small text, smooth AA scalable text, real metrics.
+- [x] **Merged** `FontMono` + `FontVector` into one `apps/Fonts.HC`; **deleted** `FontMono.HC` / `FontVector.HC`;
+      `KernelInit` now loads only `Fonts.HC` (Stage 2). The **mock SFNT** parser (`FontParseTableDirectory`),
+      the redundant `g_mono_glyphs` copy, and the dead `VectorDrawGlyph`/`VectorDrawString` shims are gone.
+- [x] **Bitmap font** kept for crisp small text (`FontsDrawBitmapChar/Text` → Render's `gfx_draw_char`,
+      unchanged so the golden hash is preserved).
+- [x] **Boot-baked AA atlas:** each glyph's analytical quadratic-Bézier outlines are rasterised at **4×**
+      supersample into a 96×96 buffer, box-downsampled to a **24×24 coverage** cell (17 alpha levels), and packed
+      into one **256×256** power-of-two ARGB atlas (alpha = coverage, RGB = white). 95 glyphs, 10×10 cells.
+- [x] **AA composite:** each glyph is sampled from the atlas with a **bilinear coverage read** and
+      alpha-composited straight into the framebuffer (clip-safe). *(`smoothstep` is baked into the coverage at
+      bake time — a fixed-function composite cannot evaluate an SDF per fragment; the per-fragment SDF variant
+      lands with the P4.6 fragment VM.)* The earlier rasterizer-quad composite was abandoned: the packed
+      atlas's sub-texel UV is fragile at the 16.16 precision of the NEON span.
+- [x] **Real metrics:** `g_font_metrics` (8×16 bitmap, UPM 1000) + `FontVectorCharAdvance/MeasureString` from
+      the vector grid; `FontsDrawText(x,y,str,px_height,color)` pixel-height convenience.
+- [x] **`FontsSelfTest`** (gate **`FONTS: PASS`**): (1) atlas baked ('A' coverage); (2) metrics; (3) a real
+      80-px AA composite through the framebuffer (ink + intermediate coverage + peak). Added to `golden-boot.sh`.
+- [x] **Exit — MET:** `SELFTEST 81/81`, `PARITY 54/54 (0 diff)`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
+      `FONTS: PASS`, `PTRSCALE2: PASS`, `KHEAP: PASS`, `SELF-HOST: PASS`, `CENSUS: PASS`, `GOLDEN BOOT: PASS`.
 
 ### P4.5 — Lighting & shading — ⬜
 - [ ] Move `HolyGLApplyLighting` from per-vertex-at-v0 to **per-fragment**; interpolate normals (Gouraud →

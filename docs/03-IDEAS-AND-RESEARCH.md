@@ -443,6 +443,10 @@ structure, with ~80 cited primary sources. The highest-value extracts:
 - Fonts: **stb_truetype v2** signed-area AA rasterizer + `GetGlyphSDF` (or rasterize-then-**Felzenszwalb EDT**);
   SDF texel = `128 + 127*clamp(d/range,-1,1)`; reconstruct with `screenPxRange = range*(screen_h/tex_h)`.
   *(nothings.org; Valve 2007; redblobgames.)*
+  **Implemented in P4.4:** a stroke font has no closed contours, so instead of a signed field the outlines are
+  rasterised at 4x supersample and box-downsampled to a 24x24 **coverage** cell baked into a PoT atlas;
+  `smoothstep` is folded into that coverage (a fixed-function composite can't evaluate SDF per fragment — that
+  waits for P4.6). Composited by a bilinear coverage read into the framebuffer. See doc 02 §P4.4, doc 04 §D9.
 
 **Concurrency (P3.9).** Vyukov bounded **MPMC** (per-cell sequence ⇒ ABA-free) + MPSC per-core inboxes;
 `LDAXR/STLXR` (acquire/release) vs `LDXR/STXR` (+`DMB`); `STLR`/`LDAR` for the handoff; `WFE`/`SEV` idle.

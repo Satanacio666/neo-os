@@ -820,6 +820,7 @@ U0 SelfTestRun() {
     SelfTestStructPtrScale();
     SelfTestHeap();
     SelfTestTexture();
+    FontsSelfTest();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

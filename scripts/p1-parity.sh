@@ -98,7 +98,7 @@ KEY_GLOBALS=(
     "g_font_metrics.char_width"
     "g_hgl_zbuf_w"
     "g_shell_cmd_count"
-    "g_mono_glyphs[0]"
+    "g_fonts_baked"
     "doldoc_get_widget_count()"
 )
 
@@ -117,10 +117,10 @@ declare -A GLOBAL_MODULE=(
     ["g_wm.count"]="WM.HC"
     ["g_wm.screen_w"]="WM.HC"
     ["g_comp.tiles_x"]="Compositor.HC"
-    ["g_font_metrics.char_width"]="FontMono.HC"
+    ["g_font_metrics.char_width"]="Fonts.HC"
     ["g_hgl_zbuf_w"]="HolyGL.HC"
     ["g_shell_cmd_count"]="Shell.HC"
-    ["g_mono_glyphs[0]"]="FontMono.HC"
+    ["g_fonts_baked"]="Fonts.HC"
     ["doldoc_get_widget_count()"]="DolDoc.HC"
 )
 

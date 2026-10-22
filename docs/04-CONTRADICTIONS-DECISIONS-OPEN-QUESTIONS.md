@@ -440,6 +440,19 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `fx/fy`/`tx0/tx1`/`ty0/ty1` → 4-byte slots. (c) affine `numU/numV/den` must be recomputed **per block** (a
   single descriptor `numU0` is only valid for the first block).
 
+### D9. P4.4 font architecture — DECIDED: merged module + boot-baked AA coverage atlas
+- **One module.** `FontMono` + `FontVector` merged into `apps/Fonts.HC`; the mock SFNT parser and the
+  redundant bitmap copy are deleted; `KernelInit` Stage 2 loads only `Fonts.HC`. The bitmap path stays
+  (crisp small text, golden-hash-safe); the vector outline table stays (scalable source).
+- **AA via a baked coverage atlas, not a live SDF.** A fixed-function composite cannot evaluate an SDF per
+  fragment, so `smoothstep` is applied at **bake** time: outlines are rasterised at 4x supersample and
+  box-downsampled to a 24x24 coverage cell (17 alpha levels) in a 256x256 PoT atlas. Per-fragment SDF is a
+  **P4.6 fragment-VM** follow-up.
+- **Composite = direct bilinear coverage read into the framebuffer**, NOT a rasterizer textured quad. The
+  packed atlas's sub-texel UV is fragile at the NEON span's 16.16 precision (verified: a rasterizer-quad
+  composite produced malformed glyphs); the direct read is clip-safe and exact.
+- **Keep the `FontVectorDrawString`/`MeasureString` names** (DolDoc late-binds via `symbols_lookup`).
+
 ### Open questions
 - **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere
   (current path is straight alpha). DEFERRED to P4.4+.

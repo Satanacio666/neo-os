@@ -59,7 +59,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P1** | Compiler (self-host) | ✅ **DONE** — self-hosts; REPL/`run` on Compiler.HC; parity PASS | both engines agree on all 34 modules + Compiler.HC compiles itself |
 | **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
 | **P3** | Kernel correctness | ✅ **DONE** — timer IRQ, preemptive scheduler, SMP, BSOD, sovereign handover (doc 2 §P3) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
-| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**); P4.4–P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font |
+| **P4** | Rendering unification (merges) | 🔄 **IN PROGRESS** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas); P4.5–P4.8 planned (doc 2 §P4, doc 3 §3.1) | one `GfxDevice` + one tiled rasterizer + one font |
 | **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
 | **P6** | Shell (action executor over a CDoc) | ⬜ | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | ⬜ | one real 40-phase suite; profilers merged |
@@ -240,7 +240,7 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
   kernel (mask-skip, exact 64-bit `SDIV` perspective, scalar gather, NEON bilerp/modulate/blend); `RENDER
   0xD28836F` unchanged; `TEXTURE: PASS`; `PTRSCALE2: PASS`. **D7 is now root-fixed** (no typed-local workaround):
   `Compiler.HC` carries each struct member's pointee element width. `renderbench` reports textured throughput.
-- Remaining near-term ladder: **P4.4 Fonts/SDF** → P4.5 lighting → P4.6 fragment VM
+- Remaining near-term ladder: **P4.5 lighting** → P4.6 fragment VM
   → P4.7 OBJ → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell → **P7** bench
   → **P8** self-host-all → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into their
   owning priorities.

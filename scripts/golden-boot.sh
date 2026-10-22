@@ -173,6 +173,13 @@ else
         echo "  [FAIL] texture pipeline: ${txline:-<none>} (want TEXTURE: PASS)"
         fail=1
     fi
+    fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
+    if printf '%s' "$fntline" | grep -aq 'PASS'; then
+        echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"
+    else
+        echo "  [FAIL] fonts: ${fntline:-<none>} (want FONTS: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="
