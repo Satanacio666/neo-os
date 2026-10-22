@@ -557,6 +557,30 @@ U64 HcFindFunc(U8 *name) {
 // itself), overwriting that symbol would redirect the compiler's own late-bound
 // calls into not-yet-emitted code. Forward references (still pointing at the
 // unresolved trap) are resolved normally.
+// P0.6: cumulative JIT symbol map (name -> addr). Stored, not printed, so the
+// boot log is not flooded; dumped on demand by the `jitmap` shell command so
+// scripts/crash-decode.py can symbolicate a faulting ELR_EL1 to function+offset.
+#define HC_MAP_MAX 1024
+U8  g_hc_map_names[HC_MAP_MAX * 24];
+U64 g_hc_map_addrs[HC_MAP_MAX];
+I64 g_hc_map_count = 0;
+
+U0 HcMapAdd(U8 *name, U64 addr) {
+    if (g_hc_map_count >= HC_MAP_MAX) return;
+    HcSafeCopy(&g_hc_map_names[g_hc_map_count * 24], name, 24);
+    g_hc_map_addrs[g_hc_map_count] = addr;
+    g_hc_map_count = g_hc_map_count + 1;
+}
+
+U0 HcMapDump() {
+    I64 i = 0;
+    while (i < g_hc_map_count) {
+        doldoc_printf("[HCF] %s 0x%016llX\n", &g_hc_map_names[i * 24], g_hc_map_addrs[i]);
+        i = i + 1;
+    }
+    doldoc_print("<<<NEO-DONE:jitmap>>>\n");
+}
+
 U0 HcPublishFunc(U8 *name, U64 addr) {
     if (!symbols_is_defined(name) || !symbols_is_func(name)) {
         symbols_register(name, addr, 1);
@@ -577,6 +601,10 @@ U0 HcAddFunc(U8 *name, U64 addr) {
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
         g_hc_func_count++;
+        // P0.6: record the symbol map (dumped on demand via the `jitmap`
+        // command) so scripts/crash-decode.py can turn a faulting ELR_EL1 into
+        // "function + offset". Stored, not printed, to avoid flooding DolDoc.
+        HcMapAdd(name, addr);
     } else {
         g_hc_error = 1;
     }
@@ -1005,6 +1033,13 @@ U0 HcLexNext() {
         }
         I64 slen = g_hc_pos - start;
         U8 *buf = kmalloc(slen + 1);
+        if (!buf) {
+            doldoc_printf("[HCLX] STRING ALLOC FAILED slen=%lld pos=%lld len=%lld free=%lld used=%lld\n",
+                          slen, g_hc_pos, g_hc_len, KHeapFreeBytes(), KHeapUsedBytes());
+            g_hc_error = 1;
+            g_hc_tok = TOK_EOF;
+            return;
+        }
         I64 dst_i = 0;
         I64 src_i = start;
         while (src_i < g_hc_pos) {

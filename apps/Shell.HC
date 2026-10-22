@@ -710,6 +710,15 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         }
     } else if (strcmp(cmd, "selftest") == 0) {
         SelfTestRun();
+    } else if (strcmp(cmd, "jitmap") == 0) {
+        HcMapDump();
+    } else if (strcmp(cmd, "kpanic") == 0) {
+        // P0.6 debug hook: force an UNRECOVERABLE kernel fault to exercise the
+        // BSOD + panic_halt path. Clearing the user-ok guard reclassifies the
+        // fault as a kernel panic, so vectors.S halts the core (reboot to clear).
+        g_exc_user_ok = 0;
+        doldoc_print("$FG,RED$[KPANIC] forcing kernel null write...$FG$\n");
+        *(U64*)0 = 0xDEADBEEF;
     } else if (strncmp(cmd, "hcrun ", 6) == 0) {
         U8 *fname = cmd + 6;
         while (*fname == ' ') fname++;

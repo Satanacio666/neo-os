@@ -231,14 +231,19 @@ U0 SelfTestBsod() {
     f.sp_el0 = 0;
     g_exc_user_ok = 0;
     I64 r_panic = ExceptionsHandleSync(&f, 0x96000007, 0x29, 0);
+    I64 latched = g_exc.halted;   // P0.6: a panic must latch halted=1
+    // Reset the latch for the synthetic recovery sub-test. A real panic halts
+    // the core in vectors.S, so clearing it is only valid inside this harness.
+    g_exc.in_fault = 0;
+    g_exc.halted = 0;
     g_exc_user_ok = 1;
     I64 r_recover = ExceptionsHandleSync(&f, 0x96000007, 0x29, 0);
     g_exc_user_ok = 0;
     g_exc_selftest_active = 0;
-    if (r_panic == 0 && r_recover == 1) {
+    if (r_panic == 0 && latched == 1 && r_recover == 1) {
         doldoc_print("BSOD: PASS\n");
     } else {
-        doldoc_printf("BSOD: FAIL (panic=%lld recover=%lld)\n", r_panic, r_recover);
+        doldoc_printf("BSOD: FAIL (panic=%lld latch=%lld recover=%lld)\n", r_panic, latched, r_recover);
     }
 }
 

@@ -182,6 +182,7 @@ handle_curr_el_sp0_sync:
     ldr  x16, [x16, #0]
     cbz  x16, 1f
     blr  x16
+    cbz  x0, panic_halt     // X0==0 => kernel panic: halt, never eret to the fault
 1:  RESTORE_ALL
     eret
 
@@ -209,6 +210,7 @@ handle_curr_el_spx_sync:
     ldr  x16, [x16, #0]
     cbz  x16, 1f
     blr  x16
+    cbz  x0, panic_halt     // X0==0 => kernel panic: halt, never eret to the fault
 1:  RESTORE_ALL
     eret
 
@@ -239,6 +241,15 @@ handle_unhandled_exception:
     cbz  x16, 1f
     blr  x16
 1:  b . // Halt if unhandled
+
+// P0.6: terminal halt for an unrecoverable kernel panic. The synchronous
+// handler returns X0==0 to request a halt; we must NEVER eret back to the
+// faulting instruction (that re-faults forever and floods the serial log).
+.balign 4
+panic_halt:
+    msr  daifset, #0xf      // mask D/A/I/F
+1:  wfe
+    b    1b
 
 .section .data
 .balign 64

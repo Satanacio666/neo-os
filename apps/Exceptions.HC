@@ -22,6 +22,7 @@ class CExceptionState {
   U64 recovered_exceptions;
   U64 panic_count;
   I64 in_fault;
+  I64 halted;          // P0.6: latched once an unrecoverable panic is entered
   I64 last_ec;
   U64 last_fault_pc;
   U64 last_fault_addr;
@@ -158,6 +159,8 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
   // banner and halt.
   if (g_exc.in_fault != 0) {
     g_exc.panic_count = g_exc.panic_count + 1;
+    g_exc.halted = 1;
+    doldoc_print("<<<BSOD:DOUBLE>>>\n");
     doldoc_printf("$FG,RED$[EXC FATAL] DOUBLE FAULT (in_fault=%lld) EC=0x%02X ELR=0x%016llX FAR=0x%016llX. HALTED.$FG$\n",
                   g_exc.in_fault, (esr >> 26) & 0x3F, f->elr_el1, far);
     while (1) {
@@ -189,6 +192,7 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
   // unrecoverable and reaches the BSOD.
   if (is_user_jit || g_exc_user_ok) {
     g_exc.recovered_exceptions = g_exc.recovered_exceptions + 1;
+    doldoc_print("<<<EXC:RECOVERED>>>\n");
     if (!g_exc_selftest_active) {
       doldoc_print("\n$CARD,title=\"Sovereign Ring-0 Fault Recovery (JIT Task Unwound)\",w=96,h=6,bg=0xFF1E1E2E,border=0xFFF38BA8$\n");
       doldoc_printf("  $FG,RED$[EXC #%lld]$FG$ EC=0x%02X ($FG,YELLOW$%s$FG$) | Insn=0x%08X\n",
@@ -214,8 +218,12 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
 
   // Core Kernel Panic (Unrecoverable Substrate Crash -> Royal Blue BSOD)
   g_exc.panic_count = g_exc.panic_count + 1;
+  g_exc.halted = 1;
+  doldoc_print("<<<BSOD:KERNEL>>>\n");
   ExceptionsRenderBsod(f, esr, far);
-  g_exc.in_fault = 0;
+  // P0.6: do NOT clear in_fault. vectors.S branches to panic_halt on X0==0 and
+  // never erets back to the faulting instruction; if the BSOD render itself
+  // faults, in_fault is still 1 so the double-fault path latches (no loop).
   return 0; // PANIC
 }
 
@@ -224,6 +232,7 @@ U0 ExceptionsInit() {
   g_exc.recovered_exceptions = 0;
   g_exc.panic_count = 0;
   g_exc.in_fault = 0;
+  g_exc.halted = 0;
   g_exc.last_ec = -1;
   g_exc.last_fault_pc = 0;
   g_exc.last_fault_addr = 0;
@@ -289,15 +298,17 @@ I64 ExceptionsSelfTest() {
   }
   doldoc_printf("$FG,GREEN$[PASS] Test 3: Sovereign HolyC JIT fault unwound to shell without kernel panic.$FG$\n");
 
-  // Test 4: Unrecoverable substrate crash handling (2nd exception, verifying in_fault guard resets!)
+  // Test 4: Unrecoverable substrate crash handling. P0.6: a panic latches
+  // halted=1 and intentionally KEEPS in_fault=1, so any nested fault hits the
+  // double-fault path (and vectors.S halts on X0==0) instead of looping.
   tf.elr_el1 = 0x00001000; // Outside JIT pool
   I64 panic_res = ExceptionsHandleSync(&tf, esr_val, far_val, 0);
-  if (panic_res != 0 || g_exc.panic_count != 1 || g_exc.in_fault != 0) {
+  if (panic_res != 0 || g_exc.panic_count != 1 || g_exc.halted != 1 || g_exc.in_fault != 1) {
     g_exc_selftest_active = 0;
     doldoc_printf("$FG,RED$[FAIL] Test 4: Kernel panic handling failed!$FG$\n");
     return 0;
   }
-  doldoc_printf("$FG,GREEN$[PASS] Test 4: Kernel panic trigger & re-entrancy guard (in_fault=0) validated.$FG$\n");
+  doldoc_printf("$FG,GREEN$[PASS] Test 4: Kernel panic trigger & latch (halted=1) validated.$FG$\n");
 
   // Test 5: Telemetry dump & total count
   g_exc_selftest_active = 0;
