@@ -187,6 +187,13 @@ else
         echo "  [FAIL] 3D pipeline: ${d3line:-<none>} (want 3D: PASS)"
         fail=1
     fi
+    gline="$(printf '%s\n' "$out" | grep -a '3D-GEARS: ' | tail -1)"
+    if printf '%s' "$gline" | grep -aq 'PASS'; then
+        echo "  [PASS] $gline (procedural involute gears mesh)"
+    else
+        echo "  [FAIL] 3D gears: ${gline:-<none>} (want 3D-GEARS: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

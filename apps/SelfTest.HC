@@ -478,7 +478,10 @@ U0 SelfTest3D() {
         }
         y++;
     }
-    doldoc_printf("3D-GEARS: tris=%lld ink=%lld\n", gt1 - gt0, gink);
+    // P4.5 root-fix gate: the gears mesh must actually fill its viewport. Before the
+    // cross-unit F64 return-float fix this was 366 tris / 644 px (collapsed).
+    if ((gt1 - gt0) >= 700 && gink > 15000) doldoc_printf("3D-GEARS: PASS (tris=%lld ink=%lld)\n", gt1 - gt0, gink);
+    else doldoc_printf("3D-GEARS: FAIL (tris=%lld ink=%lld)\n", gt1 - gt0, gink);
     gfx_clear(0xFF000000);
     doldoc_mark_all_dirty();
 }
@@ -835,6 +838,15 @@ U0 SelfTestRun() {
     SelfTestCheck("f64_to_int_cast", "F64 fx = 3.9; I64 n = (I64)fx; n;", 3);
     SelfTestCheck2("f64_cross_chain", 4607182418800017408, "struct V3 { F64 x; F64 y; F64 z; }", "V3 va; V3 vb; va.x=0.0; va.y=1.0; va.z=0.0; vb.x=0.0; vb.y=0.0; vb.z=1.0; va.y*vb.z - va.z*vb.y;");
     SelfTestCheck2("f64_struct_param", 4612811918334230528, "struct DV { F64 x; }", "F64 getdv(DV *p) { return p->x; } DV dd; dd.x = 2.5; getdv(&dd);");
+    // Regression: F64 LHS multiplied by a function call on the RHS (the gears
+    // pattern `r * MathCos(a)`). 4.0 * half(1.0) == 2.0.
+    SelfTestCheck2("f64_lhs_mul_fn_call", 4611686018427387904, "F64 hf(F64 x) { return x * 0.5; }", "F64 r = 4.0; r * hf(1.0);");
+    // Regression: storing an F64 expression with a function call into a struct
+    // array member (`g->vertices[k].x = r * MathCos(a)`).
+    SelfTestCheck2("f64_struct_arr_member_assign", 4611686018427387904, "struct GVA { F64 x; }; F64 hg(F64 x) { return x * 0.5; }", "GVA gv[2]; gv[0].x = 4.0 * hg(1.0); gv[0].x;");
+    // Regression: a 7-arg function with mixed int/F64 args called with an F64
+    // function-call expression in a middle argument (the GearAddVertex pattern).
+    SelfTestCheck2("f64_seven_arg_mixed", 4611686018427387904, "F64 h7(I64 a, F64 b, F64 c, F64 d, F64 e, F64 f, F64 g) { return b + c + d + e + f + g; }", "h7(1, 4.0 * 0.5, 0.0, 0.0, 0.0, 0.0, 0.0);");
     SelfTestCheck2("macro_define_add", 42, "#define MAC21 21", "MAC21 + MAC21;");
     SelfTestCheck2("macro_define_expr", 42, "#define MACEXPR 6 * 7", "MACEXPR;");
     SelfTestCheck("addr_of_array_elem", "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;", 20);

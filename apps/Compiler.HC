@@ -171,6 +171,20 @@ I64   g_hc_func_ret_float[128];  // 1 if the function returns F64 (result in D0)
 I64   g_hc_fn_ret_float;         // transient: current function return type is F64
 I64   g_hc_arg_float[32];        // transient: which call args are F64
 
+// P4.5 ROOT FIX: function return-floatness must PERSIST across compilation units.
+// HcReset() clears the per-unit g_hc_func_* table at the start of every unit, so a
+// call to an F64-returning function defined in an EARLIER unit (Gears3D.HC calling
+// MathCos from Math3D.HC) was treated as returning an INTEGER: HcFuncIsFloat
+// returned 0, HcEmitPromoteFloat then emitted `scvtf d0, x0` on the double's raw
+// bit pattern, and `r * MathCos(a)` produced garbage — the gears mesh collapsed.
+// This table records name -> returns-F64 and is NEVER reset; HcFuncIsFloat consults
+// it when the per-unit table has no entry. It is also filled by HcPrescanFuncs so
+// intra-unit forward references resolve too.
+#define HC_FNF_MAX 2048
+U8    g_hc_fnf_names[HC_FNF_MAX * 24];
+I64   g_hc_fnf_flags[HC_FNF_MAX];
+I64   g_hc_fnf_count;
+
 // Global variable struct-type registry (scoped member lookup for globals).
 #define HC_MAX_GLOBALS 512
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
@@ -394,6 +408,7 @@ U0 HcInit() {
         g_hc_func_count = 0;
         g_hc_struct_count = 0;
         g_hc_def_count = 0;
+        g_hc_fnf_count = 0;   // P4.5: persistent cross-unit function-float table
         HcStrReset();
     }
 }
@@ -671,7 +686,33 @@ U0 HcPublishFunc(U8 *name, U64 addr) {
     }
 }
 
+// P4.5: persist a function's return-floatness (see g_hc_fnf_* above).
+U0 HcFnFloatSet(U8 *name, I64 isf) {
+    I64 i = 0;
+    while (i < g_hc_fnf_count) {
+        if (strcmp(&g_hc_fnf_names[i * 24], name) == 0) { g_hc_fnf_flags[i] = isf; return; }
+        i++;
+    }
+    if (g_hc_fnf_count < HC_FNF_MAX) {
+        HcSafeCopy(&g_hc_fnf_names[g_hc_fnf_count * 24], name, 24);
+        g_hc_fnf_flags[g_hc_fnf_count] = isf;
+        g_hc_fnf_count++;
+    } else {
+        g_hc_error = 1;
+    }
+}
+
+I64 HcFnFloatGet(U8 *name) {
+    I64 i = 0;
+    while (i < g_hc_fnf_count) {
+        if (strcmp(&g_hc_fnf_names[i * 24], name) == 0) return g_hc_fnf_flags[i];
+        i++;
+    }
+    return -1; // unknown
+}
+
 U0 HcAddFunc(U8 *name, U64 addr) {
+    HcFnFloatSet(name, g_hc_fn_ret_float); // P4.5: persist across units
     I64 af_i = 0;
     for (af_i = 0; af_i < g_hc_func_count; af_i++) {
         if (strcmp(&g_hc_func_names[af_i * 32], name) == 0) {
@@ -699,6 +740,11 @@ I64 HcFuncIsFloat(U8 *name) {
     for (I64 i = 0; i < g_hc_func_count; i++) {
         if (strcmp(&g_hc_func_names[i * 32], name) == 0) return g_hc_func_ret_float[i];
     }
+    // P4.5: the per-unit table only holds THIS unit's functions. Fall back to the
+    // persistent cross-unit table so a call to an F64 function defined earlier
+    // (e.g. MathCos) is not mis-promoted from integer.
+    I64 pf = HcFnFloatGet(name);
+    if (pf >= 0) return pf;
     return 0;
 }
 
@@ -3398,6 +3444,47 @@ U0 HcPrescanStructs() {
     HcSafeCopy(g_hc_tok_str, ss, 256);
 }
 
+// P4.5: pre-register every top-level function's return-floatness BEFORE parsing, so
+// a call that appears before its definition in the same unit (and every later unit)
+// knows whether the result is an F64 in D0. Scans only at brace-depth 0 so member
+// declarations inside class/struct bodies and statements inside function bodies are
+// ignored. Lexer state is saved/restored, mirroring HcPrescanStructs.
+U0 HcPrescanFuncs() {
+    I64 sp = g_hc_pos;
+    I64 st = g_hc_tok;
+    I64 sv = g_hc_tok_val;
+    I64 stp = g_hc_tok_pos;
+    U8  ss[256];
+    HcSafeCopy(ss, g_hc_tok_str, 256);
+
+    g_hc_pos = 0;
+    HcLexNext();
+    I64 depth = 0;
+    while (g_hc_tok != TOK_EOF) {
+        if (g_hc_tok == TOK_LBRACE) { depth++; HcLexNext(); continue; }
+        if (g_hc_tok == TOK_RBRACE) { if (depth > 0) depth--; HcLexNext(); continue; }
+        if (depth == 0 && HcIsTypeToken(g_hc_tok)) {
+            I64 rt_float = (g_hc_tok == TOK_TYPE_F64);
+            HcLexNext();
+            while (g_hc_tok == TOK_STAR) HcLexNext();
+            if (g_hc_tok == TOK_IDENT) {
+                U8 pfn[64];
+                HcSafeCopy(pfn, g_hc_tok_str, 64);
+                HcLexNext();
+                if (g_hc_tok == TOK_LPAREN) HcFnFloatSet(pfn, rt_float);
+            }
+            continue;
+        }
+        HcLexNext();
+    }
+
+    g_hc_pos = sp;
+    g_hc_tok = st;
+    g_hc_tok_val = sv;
+    g_hc_tok_pos = stp;
+    HcSafeCopy(g_hc_tok_str, ss, 256);
+}
+
 // #include preprocessor expansion. Recursively splices `#include "file"` targets
 // (read from the RedSea VFS) into one flat source buffer before lexing, matching
 // the C JIT's expand_includes. Returns the expanded length.
@@ -3504,6 +3591,7 @@ I64 CompilerCompileAndRun(U8 *src) {
     HcLexNext(); // Prime lexer
 
     HcPrescanStructs(); // register forward struct/class definitions first
+    HcPrescanFuncs();   // P4.5: register function return-floatness before parsing
 
     HcParseProgram();
 

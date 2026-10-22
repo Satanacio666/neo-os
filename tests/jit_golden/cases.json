@@ -442,6 +442,25 @@
       "expect": "0x4004000000000000"
     },
     {
+      "name": "f64_lhs_mul_fn_call",
+      "note": "P4.5 root fix: an F64 LHS multiplied by a function call (defined in an EARLIER unit) must promote as a double, not scvtf the raw bits. The gears bug: 4.0 * half(1.0) == 2.0.",
+      "cmds": [
+        "F64 hf(F64 x) { return x * 0.5; }",
+        "F64 r = 4.0; r * hf(1.0);"
+      ],
+      "expect": "0x4000000000000000"
+    },
+    {
+      "name": "f64_struct_arr_member_assign",
+      "note": "P4.5 root fix: store an F64 function-call expression into a struct array member (g->vertices[k].x = r * MathCos(a)).",
+      "cmds": [
+        "struct GVA { F64 x; }",
+        "F64 hg(F64 x) { return x * 0.5; }",
+        "GVA gv[2]; gv[0].x = 4.0 * hg(1.0); gv[0].x;"
+      ],
+      "expect": "0x4000000000000000"
+    },
+    {
       "name": "macro_define_add",
       "cmds": [
         "#define MAC21 21",
