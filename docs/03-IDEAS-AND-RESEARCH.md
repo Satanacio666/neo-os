@@ -248,6 +248,26 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
   The tell is `sizeof`/cross-engine layout, not a render diff — worth remembering for any struct with computed
   member dimensions.
 
+#### 3.1.4 P4.8 unification & determinism notes (2026-10)
+- **One damage rect is the right invariant.** The renderer already knows which pixels it touched (Render's
+  `g_canv.dirty`, expanded on every `gfx_*` draw). A compositor-side bounding box is a *second* source of truth
+  that can drift from the draws; P4.8 makes the present path read the renderer's own rect
+  (`RenderDirtyActive`/`RenderDirtyBounds`) and present exactly that. Net effect: the compositor keeps only the
+  effects it actually owns (shadow/glass), and the present rect can never disagree with what was drawn.
+- **Determinism is a property you must test, not assume.** The rasterizer is single-core and the golden scene is
+  rendered with IRQs masked, so the result *should* be core-count independent — but "should" is not a gate. The
+  new `scripts/determinism-gate.sh` boots the whole OS at `-smp 1` and `-smp N` (the launcher now honours
+  `NEO_SMP`) and compares the FNV-1a golden-frame hash. It also doubles as a cheap SMP-regression canary: any
+  future tile-parallel rasterizer (P9) must keep this at 0 diff.
+- **Move state before you dissolve its module.** P5 will dissolve `Compositor.HC`/`WM.HC`; the theme palette is
+  the one piece with lasting value, so P4.8 lifts `g_theme`/`ThemeApply`/`ThemeSetByName` into `apps/Theme.HC`
+  first. A new module is honest (the subsystem count becomes 36) and cheap: the palette is a plain global, so
+  every existing `g_theme.field` reader keeps working unchanged.
+- **Purge with a call-site census, then let the gate confirm.** Every deleted function was first proven to have
+  0 call sites (token count across `apps/ boot/ kernel/`); the boot-time "unresolved forward references = 0" and
+  the golden battery then confirm nothing indirect broke. The `.HC`→C census stayed at 181 because no allocator
+  sites were touched — the purge is behaviour-neutral by construction.
+
 ---
 
 ## 4. Compiler research (beyond self-hosting)

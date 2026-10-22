@@ -81,11 +81,6 @@ U0 RenderSetZeroRamMode(I64 en) {
   g_gfx_cfg.buffer_mode = en ? 1 : 0;
 }
 
-I64 RenderIsZeroRamMode() {
-  if (g_gfx_cfg.buffer_mode == 1 || g_canv.zero_ram_mode == 1) return 1;
-  return 0;
-}
-
 U32* RenderGetTargetBuffer() {
   if (g_canv.width == 0) RenderInit();
   if ((g_gfx_cfg.buffer_mode == 1 || g_canv.zero_ram_mode == 1) && g_canv.front_buffer) {
@@ -139,6 +134,19 @@ U0 RenderDirtyExpand(I64 dx, I64 dy, I64 dw, I64 dh) {
 
 U0 RenderDirtyReset() {
   g_canv.dirty.active = 0;
+}
+
+// P4.8: the ONE damage rect is now also the present rect. The compositor reads it
+// through these accessors instead of keeping a duplicate bounding box.
+I64 RenderDirtyActive() {
+  return g_canv.dirty.active;
+}
+
+U0 RenderDirtyBounds(I64 *ox, I64 *oy, I64 *ow, I64 *oh) {
+  *ox = g_canv.dirty.x0;
+  *oy = g_canv.dirty.y0;
+  *ow = g_canv.dirty.x1 - g_canv.dirty.x0;
+  *oh = g_canv.dirty.y1 - g_canv.dirty.y0;
 }
 
 U32 RenderBlendColor(U32 dst, U32 src_rgba) {
@@ -450,9 +458,6 @@ U0 gfx_reset_clip() {
 U0 gfx_dirty_expand(I64 dx, I64 dy, I64 dw, I64 dh) {
   RenderDirtyExpand(dx, dy, dw, dh);
 }
-U0 gfx_mark_dirty(I64 dx, I64 dy, I64 dw, I64 dh) {
-  RenderDirtyExpand(dx, dy, dw, dh);
-}
 U0 gfx_dirty_reset() {
   RenderDirtyReset();
 }
@@ -654,31 +659,6 @@ U32 gfx_lerp_color(U32 c1, U32 c2, I64 factor_256) {
 
 U0 gfx_draw_circle_filled(I64 cx, I64 cy, I64 r, U32 col) {
   RenderFillCircleAA(cx, cy, r, col);
-}
-
-U0 gfx_draw_circle(I64 cx, I64 cy, I64 r, U32 col) {
-  if (r <= 0) return;
-  RenderDirtyExpand(cx - r, cy - r, 2 * r + 1, 2 * r + 1);
-  I64 cc_x = 0;
-  I64 cc_y = r;
-  I64 cc_d = 3 - 2 * r;
-  while (cc_y >= cc_x) {
-    RenderPutPixel(cx + cc_x, cy + cc_y, col);
-    RenderPutPixel(cx - cc_x, cy + cc_y, col);
-    RenderPutPixel(cx + cc_x, cy - cc_y, col);
-    RenderPutPixel(cx - cc_x, cy - cc_y, col);
-    RenderPutPixel(cx + cc_y, cy + cc_x, col);
-    RenderPutPixel(cx - cc_y, cy + cc_x, col);
-    RenderPutPixel(cx + cc_y, cy - cc_x, col);
-    RenderPutPixel(cx - cc_y, cy - cc_x, col);
-    cc_x++;
-    if (cc_d > 0) {
-      cc_y--;
-      cc_d = cc_d + 4 * (cc_x - cc_y) + 10;
-    } else {
-      cc_d = cc_d + 4 * cc_x + 6;
-    }
-  }
 }
 
 U0 gfx_draw_gradient_v(I64 gx, I64 gy, I64 gw, I64 gh, U32 col_top, U32 col_bot) {

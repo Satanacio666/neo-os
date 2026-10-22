@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix, P4.6 ✅ fragment-shader VM, P4.7 ✅ OBJ mesh ingestion + D14/D15 root fixes; next P4.8 delete+verify; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — ✅ **DONE** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix, P4.6 ✅ fragment-shader VM, P4.7 ✅ OBJ mesh ingestion + D14/D15 root fixes, P4.8 ✅ merge/delete/verify + determinism gate; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -872,13 +872,31 @@ surfaced (D14, D15) fixed at the root.
       `3D`/`3D-GEARS`/`SHADING`/`TEXTURE`/`FONTS: PASS`, `MESH: PASS`, `CENSUS: PASS (181)`, `SELF-HOST: PASS`,
       `GOLDEN BOOT: PASS`.
 
-### P4.8 — Merge, delete, verify — ⬜
-- [ ] Delete ~60 dead fns + write-only state; retire duplicate Z-buffers/paths; delete Compositor's
-      damage/present (keep `g_theme`, move ownership out of Compositor).
-- [ ] Determinism test (1 core vs N) + the P4.0 golden-frame hash.
-- [ ] **Exit — MET when:** a flat triangle, a perspective-correct textured quad, an SDF glyph, and a lit
-      Gouraud mesh all render through **one** path with **real per-pixel Z**, and the image is byte-identical
-      on 1 and N cores.
+### P4.8 — Merge, delete, verify — ✅ **DONE**
+**Goal (met):** one damage tracker, one present, one theme owner, and a determinism gate proving the ONE
+renderer is byte-identical on 1 vs N cores.
+
+- [x] **Duplicate damage/present collapsed.** `Compositor.HC` no longer keeps a second bounding box
+      (`g_comp.dmg_*`) or the write-only KolibriOS tile maps (`tile_dirty_map`/`win_tile_map`).
+      `CompositorDamage{All,Rect,Window}` now forward to the ONE tracker (`GfxDeviceDamage` → Render's
+      `g_canv.dirty`; `gfx_dirty_all`) and `CompositorPresent` reads that same rect via new
+      `RenderDirtyActive()`/`RenderDirtyBounds()`. WM's redraw predicate now uses `RenderDirtyActive()`.
+      Two Z-buffers were already retired in P4.2 (one `g_zbuf` in `RasterTile.HC`); verified.
+- [x] **Theme ownership moved out of Compositor.** New `apps/Theme.HC` owns `CThemePalette g_theme` +
+      `ThemeApply`/`ThemeSetByName` + the `THEME_*` ids; loaded in Stage 6 before Compositor (36 subsystems).
+      Verified live: `theme latte` recolours the desktop.
+- [x] **Dead-code purge.** Deleted `CompositorMain`, `CompositorDrawBox` + `CBoxStyle`,
+      `CompositorQueryTileOwner`, `CompositorStampWindowTiles`, `CompositorClearDamage`; Render's
+      `RenderIsZeroRamMode`, `gfx_mark_dirty`, `gfx_draw_circle`; HolyGL's `HolyGLApplyLighting` + 7 dead
+      getters + 6 dead `gl*` aliases; Raster's `RasterGetDepthTest`/`RasterShadeMode`/`RasterTextureActive`.
+      All verified 0 call sites (symbol count drops; census stays 181 — no allocator sites touched).
+- [x] **Determinism gate.** New `scripts/determinism-gate.sh`: boots the OS on 1 core and on N cores
+      (`run-viewer-vm.sh` now honours `NEO_SMP`), runs the battery, and asserts the golden-frame hash matches.
+      Wired into `golden-boot.sh`. Result: **`DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)`**.
+- [x] **Exit — MET:** `SELFTEST 87/87`, `PARITY 56/56 (0 diff)`, `RENDER: PASS (0xD28836F)` **bit-exact on 1
+      and 4 cores**, `3D`/`3D-GEARS`/`SHADING`/`TEXTURE`/`FONTS`/`SHADERVM`/`MESH: PASS`, `CENSUS: PASS (181)`,
+      `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`. A flat triangle, a textured quad, an SDF glyph and a lit
+      Gouraud mesh all render through the one NEON path with real per-pixel Z.
 
 ---
 

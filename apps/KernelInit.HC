@@ -98,6 +98,7 @@ U0 KernelInitMain() {
     KInitLoad("PerfOverlay.HC");
     KInitLoad("BenchCpu.HC");
     KInitLoad("BenchReport.HC");
+    KInitLoad("Theme.HC");
     KInitLoad("Compositor.HC");
     KInitLoad("DolDoc.HC");
     // WM.HC defines g_wm/StudioWin* which Shell.HC references. Load WM first;
@@ -108,7 +109,7 @@ U0 KernelInitMain() {
     KInitLoad("HolyBenchmark.HC");
 
     KInitLog("======================================================");
-    KInitLog("✦ ALL 35 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
+    KInitLog("✦ ALL 36 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum

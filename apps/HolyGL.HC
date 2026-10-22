@@ -244,51 +244,6 @@ U0 HolyGLPerspective(F64 fovy, F64 aspect, F64 z_near, F64 z_far) {
 // ------------------------------------------------------------------------------
 // Vertex & Attribute Specifications
 // ------------------------------------------------------------------------------
-U32 HolyGLApplyLighting(U32 base_col, F64 nx, F64 ny, F64 nz) {
-  // Rotate normal by upper-left 3x3 of modelview, then normalize.
-  CMat4 *mv = &g_hgl.modelview;
-  F64 rnx = mv->m[0] * nx + mv->m[1] * ny + mv->m[2]  * nz;
-  F64 rny = mv->m[4] * nx + mv->m[5] * ny + mv->m[6]  * nz;
-  F64 rnz = mv->m[8] * nx + mv->m[9] * ny + mv->m[10] * nz;
-  F64 nlen = MathSqrt(rnx * rnx + rny * rny + rnz * rnz);
-  if (nlen > 0.0001) { rnx = rnx / nlen; rny = rny / nlen; rnz = rnz / nlen; }
-
-  // Diffuse: N . L
-  F64 ndotl = rnx * g_hgl.light_x + rny * g_hgl.light_y + rnz * g_hgl.light_z;
-  if (ndotl < 0.0) ndotl = 0.0;
-
-  // Blinn-Phong specular: N . H, H = normalize(L + V), V = (0,0,1) in view space.
-  F64 hx = g_hgl.light_x, hy = g_hgl.light_y, hz = g_hgl.light_z + 1.0;
-  F64 hlen = MathSqrt(hx * hx + hy * hy + hz * hz);
-  if (hlen > 0.0001) { hx = hx / hlen; hy = hy / hlen; hz = hz / hlen; }
-  F64 ndoth = rnx * hx + rny * hy + rnz * hz;
-  if (ndoth < 0.0) ndoth = 0.0;
-  F64 s2 = ndoth * ndoth;
-  F64 s4 = s2 * s2;
-  F64 s8 = s4 * s4;
-  F64 spec = s8 * s8;                       // ndoth^16
-  F64 spec_amt = 0.60 * spec;
-
-  // Gamma-correct (sRGB -> linear ~ x^2), light, then linear -> sRGB (~ sqrt).
-  F64 br = (F64)((base_col >> 16) & 0xFF) / 255.0;
-  F64 bg = (F64)((base_col >> 8)  & 0xFF) / 255.0;
-  F64 bb = (F64)(base_col & 0xFF) / 255.0;
-  F64 lambert = 0.24 + 0.76 * ndotl;        // ambient + diffuse
-  F64 ir = br * br * lambert + spec_amt;
-  F64 ig = bg * bg * lambert + spec_amt;
-  F64 ib = bb * bb * lambert + spec_amt;
-  if (ir > 1.0) ir = 1.0;
-  if (ig > 1.0) ig = 1.0;
-  if (ib > 1.0) ib = 1.0;
-  I64 r = (I64)(MathSqrt(ir) * 255.0 + 0.5);
-  I64 g = (I64)(MathSqrt(ig) * 255.0 + 0.5);
-  I64 b = (I64)(MathSqrt(ib) * 255.0 + 0.5);
-  if (r > 255) r = 255;
-  if (g > 255) g = 255;
-  if (b > 255) b = 255;
-  return 0xFF000000 | (r << 16) | (g << 8) | b;
-}
-
 // P4.5: rotate a model-space normal into view space by the upper-left 3x3 of the
 // modelview (no lighting). Used to feed per-vertex normals to the per-fragment
 // Blinn-Phong stage in the ONE rasterizer.
@@ -496,19 +451,13 @@ U0 HolyGLViewport(I64 vx, I64 vy, I64 vw, I64 vh) {
 U0 glViewport(I64 vx, I64 vy, I64 vw, I64 vh) { HolyGLViewport(vx, vy, vw, vh); }
 U0 glMatrixMode(I64 mode) { HolyGLMatrixMode(mode); }
 U0 glLoadIdentity() { HolyGLLoadIdentity(); }
-U0 glPushMatrix() { HolyGLPushMatrix(); }
-U0 glPopMatrix() { HolyGLPopMatrix(); }
 U0 glTranslatef(F64 tx, F64 ty, F64 tz) { HolyGLTranslatef(tx, ty, tz); }
-U0 glRotatef(F64 angle_deg, F64 x, F64 y, F64 z) { HolyGLRotatef(angle_deg, x, y, z); }
-U0 glScalef(F64 sx, F64 sy, F64 sz) { HolyGLScalef(sx, sy, sz); }
 U0 gluPerspective(F64 fovy, F64 aspect, F64 z_near, F64 z_far) { HolyGLPerspective(fovy, aspect, z_near, z_far); }
-U0 glColor3f(F64 r, F64 g, F64 b) { HolyGLColor3f(r, g, b); }
 U0 glColor3ub(U32 r, U32 g, U32 b) { HolyGLColor3ub(r, g, b); }
 U0 glTexCoord2f(F64 u, F64 v) { HolyGLTexCoord2f(u, v); }
 U0 glNormal3f(F64 nx, F64 ny, F64 nz) { HolyGLNormal3f(nx, ny, nz); }
 U0 glBegin(I64 mode) { HolyGLBegin(mode); }
 U0 glVertex3f(F64 x, F64 y, F64 z) { HolyGLVertex3f(x, y, z); }
-U0 glVertex2f(F64 x, F64 y) { HolyGLVertex2f(x, y); }
 U0 glEnd() { HolyGLEnd(); }
 U0 glEnable(I64 cap) { HolyGLEnable(cap); }
 U0 glDisable(I64 cap) { HolyGLDisable(cap); }
@@ -588,13 +537,6 @@ U0 HolyGLBindRasterTexture() {
 
 // --- cross-module accessors (no direct g_hgl access from other modules) ---
 I64 HolyGLGetTrisRendered() { return g_hgl.tris_rendered; }
-I64 HolyGLGetViewportW() { return g_hgl.vp_w; }
-I64 HolyGLGetViewportH() { return g_hgl.vp_h; }
-I64 HolyGLTextureEnabled() { return g_tex_enabled; }
-I64 HolyGLGetBound() { return g_tex_bound; }
-I64 HolyGLGetBoundW() { return (g_tex_bound > 0) ? g_tex_pool[g_tex_bound - 1].width : 0; }
-I64 HolyGLGetBoundData() { return (g_tex_bound > 0) ? (I64)g_tex_pool[g_tex_bound - 1].data : 0; }
-I64 HolyGLTexOK() { return g_tex_ok; }
 
 // ------------------------------------------------------------------------------
 // 3D Polyhedral Rotating Cube Demonstrator

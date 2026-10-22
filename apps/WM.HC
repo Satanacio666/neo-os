@@ -430,9 +430,6 @@ U0 WMDrawWindow(CWindow *win) {
         gfx_draw_line(gx - 4, gy - 4,  gx - 4,  gy - 4, g_theme.text_muted);
     }
 
-    // Stamp KolibriOS tile map
-    CompositorStampWindowTiles(win->id, win->x, win->y, win->w, win->h);
-
     // 5. Client Content Area with Hardware Scissor Clipping
     I64 cx = win->x + 2;
     I64 cy = win->y + tb_h;
@@ -460,9 +457,6 @@ U0 WMDrawWindows() {
 }
 
 U0 WMDrawDesktop() {
-    // Clear KolibriOS tile map to 0 (desktop background)
-    CompositorStampWindowTiles(0, 0, 0, g_wm.screen_w, g_wm.screen_h);
-
     // Theme-driven desktop background + subtle grid accent
     gfx_draw_rect(0, 0, g_wm.screen_w, g_wm.screen_h - 40, g_theme.bg_crust);
 
@@ -1053,7 +1047,7 @@ U0 WMEventLoop() {
         if (bench_unified_is_active()) {
             wm_draw_animating_windows();
             gfx_vsync_wait();
-        } else if (g_wm.is_dirty || g_comp.dmg_active) {
+        } else if (g_wm.is_dirty || RenderDirtyActive()) {
             gfx_dirty_all();
             WMDrawDesktop();
             WMDrawWindows();

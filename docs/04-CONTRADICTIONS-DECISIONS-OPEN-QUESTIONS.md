@@ -569,6 +569,31 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
 - **Note:** in pure-HC the bug was self-consistent (definition and every use shared the wrong offsets), so it
   never surfaced as a render error — but it corrupted `sizeof` and any cross-engine layout. Fixed at the root.
 
+### D16. P4.8 — one damage tracker, one present, one theme owner — **DECIDED**
+- **The duplicate is gone.** P4.1 merged `GfxBackendPresent` into `GfxDevice`; P4.8 removes the *last*
+  duplicate: the compositor's own damage bounding box (`g_comp.dmg_*`) and its write-only KolibriOS tile maps
+  (`tile_dirty_map`, `win_tile_map`). `CompositorDamage{All,Rect,Window}` now forward to the ONE tracker
+  (`GfxDeviceDamage` → `gfx_dirty_expand` → Render's `g_canv.dirty`; `gfx_dirty_all` for the full screen) and
+  `CompositorPresent` reads that same rect through new `RenderDirtyActive()`/`RenderDirtyBounds()` before
+  calling `GfxPresent`. WM's redraw predicate now tests `RenderDirtyActive()` instead of `g_comp.dmg_active`.
+  Rationale: a second tracker can silently diverge from the draws that actually happened; the rasterizer's own
+  dirty rect is the ground truth. Present semantics are unchanged (partial blit of the dirty rect, full blit
+  when nothing is dirty, then reset).
+- **Theme ownership moved.** `CThemePalette g_theme` + `ThemeApply` + `ThemeSetByName` + the `THEME_*` ids
+  moved from `Compositor.HC` into a new `apps/Theme.HC` (Stage 6, before Compositor; **36** subsystems). WM,
+  DolDoc and Compositor all read the same global. This de-risks P5 (which dissolves Compositor) — the palette
+  survives on its own. Verified live with `theme latte`.
+- **Dead-code purge (P4.8).** Deleted, all verified 0 call sites: `CompositorMain`, `CompositorDrawBox` (+
+  `CBoxStyle`), `CompositorQueryTileOwner`, `CompositorStampWindowTiles`, `CompositorClearDamage`;
+  `RenderIsZeroRamMode`, `gfx_mark_dirty`, `gfx_draw_circle`; `HolyGLApplyLighting` + `HolyGLGetViewportW/H`,
+  `HolyGLTextureEnabled`, `HolyGLGetBound{,W,Data}`, `HolyGLTexOK` + the dead `gl*` aliases
+  (`glPushMatrix/PopMatrix/Rotatef/Scalef/Color3f/Vertex2f`); `RasterGetDepthTest`, `RasterShadeMode`,
+  `RasterTextureActive`. Census unchanged (181 — no allocator sites touched); symbol count drops.
+- **Determinism gate (the exit criterion).** `scripts/determinism-gate.sh` boots the OS on 1 core and on N
+  cores (`run-viewer-vm.sh` now honours `NEO_SMP`), runs the battery, and asserts the golden-frame hash is
+  identical. Wired into `golden-boot.sh`. Result: `DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)` —
+  the rasterizer is single-core and IRQ-masked during the golden render, so SMP scheduling cannot perturb it.
+
 ### Open questions
 - **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
   (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +

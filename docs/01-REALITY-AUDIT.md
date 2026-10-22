@@ -5,14 +5,15 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD P4.7, `main` tree clean** — updated 2026-10):
+Current verified baseline (**HEAD P4.8, `main` tree clean** — updated 2026-10):
 `GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 87/87` · `PARITY 56/56`
-(0 diff, 6 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
+(0 diff, 6 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `DETERMINISM: PASS (1 vs 4 cores identical:
+0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
 `3D-GEARS: PASS (tris=800 ink=71410)` · `SHADING: PASS (phong=30 lum_max=182 gouraud=218)` ·
 `SHADERVM: PASS (14/14)` (fragment-shader VM: NEON quad, derivatives, masking) ·
 `MESH: PASS (v=8 tris=12 nrm=6 ink=28177)` (OBJ parse + quad triangulation + render) ·
-`PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
-`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1555, 0 unresolved`.
+`PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** · **36** `.HC` subsystems ·
+`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1532, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
@@ -295,6 +296,20 @@ size, a wild ~18 GB read (`EC 0x25`, `ESR 0x96000005`). Now the type metadata is
 and corrupted every following offset (`fni`/`ft`) and `sizeof(CMesh)`; both `Compiler.HC` and the C seed
 (`boot/seed/jit_arm64.c`) now fold `N*M`/`N+M` like the local/global array parsers; regression
 `member_arr_compound_dim`. See doc 04 D14/D15.
+
+### P4.8 — merge, delete, verify — **[REAL]**
+
+The rendering stack is now a single path with **one damage tracker, one present, one theme owner**. The
+compositor's duplicate bounding box (`g_comp.dmg_*`) and its write-only KolibriOS tile maps
+(`tile_dirty_map`/`win_tile_map`) are gone: `CompositorDamage{All,Rect,Window}` forward to `GfxDeviceDamage`
+(Render's `g_canv.dirty`), and `CompositorPresent` reads that same rect via `RenderDirtyActive()` /
+`RenderDirtyBounds()` before `GfxPresent`; WM's redraw predicate uses `RenderDirtyActive()`. The theme palette
+moved out of `Compositor.HC` into a new `apps/Theme.HC` (Stage 6, before Compositor; **36** subsystems) so it
+survives P5's dissolution of the compositor. A batch of verified-dead functions was removed across
+`Compositor.HC`/`Render.HC`/`HolyGL.HC`/`RasterTile.HC` (see doc 04 D16); the `.HC`→C census stays 181. The
+new **`scripts/determinism-gate.sh`** boots the OS on 1 core and on N cores and asserts the golden-frame hash
+matches — `DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)` — wired into `golden-boot.sh`. Visually
+confirmed: the desktop renders and `theme latte` recolours it live.
 
 ### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
 `FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only

@@ -18,7 +18,7 @@ QEMU_ARGS=(
   -M virt,gic-version=2
   -accel tcg,thread=single,tb-size=512
   -cpu cortex-a72
-  -smp 4
+  -smp "${NEO_SMP:-4}"
   -m 1024
   -bios "$QEMU_BIOS"
   -device ramfb

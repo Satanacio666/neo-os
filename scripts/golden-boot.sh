@@ -22,7 +22,7 @@ for i in $(seq 1 40); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && brea
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"
-check "all 35 subsystems"   1 "$(count 'ALL 35 HOLYC SUBSYSTEMS')"
+check "all 36 subsystems"   1 "$(count 'ALL 36 HOLYC SUBSYSTEMS')"
 check "exceptions"          0 "$(count 'Synchronous Exception')"
 check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
@@ -222,6 +222,17 @@ echo "== .HC -> C runtime census =="
 
 echo "== compiler self-host =="
 "$ROOT/scripts/self-host-test.sh" || fail=1
+
+echo "== determinism (1 vs N cores) =="
+detout="$("$ROOT/scripts/determinism-gate.sh" 2>&1)"; detrc=$?
+printf '%s\n' "$detout" | grep -aE 'RENDER hash|DETERMINISM' || true
+if [ "$detrc" -eq 0 ]; then
+    echo "  [PASS] golden-frame hash is byte-identical on 1 vs N cores"
+else
+    echo "  [FAIL] determinism gate (rc=$detrc)"
+    printf '%s\n' "$detout" | tail -3
+    fail=1
+fi
 
 echo "== screenshot =="
 curl -sN --max-time 12 http://localhost:4000/api/neo-os/stream 2>/dev/null | python3 -c "

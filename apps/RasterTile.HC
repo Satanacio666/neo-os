@@ -57,7 +57,6 @@ U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
 }
 
 U0 RasterSetDepthTest(I64 en) { g_raster_depth_test = en ? 1 : 0; }
-I64 RasterGetDepthTest() { return g_raster_depth_test; }
 
 // ==============================================================================
 // P4.3: unified texture span state. The ONE rasterizer (RasterRow) reads
@@ -112,7 +111,6 @@ U0 RasterSetBlend(I64 en) { g_rtex.blend_en = en ? 1 : 0; }
 // Unbind: the unified span returns to the NEON solid path (used by the 2D golden
 // scene so its hash is bit-exact).
 U0 RasterDisableTexture() { g_raster_tex_active = 0; }
-I64 RasterTextureActive() { return g_raster_tex_active; }
 
 // idx: 0/1/2 -> vertex A/B/C. Values are F64 u/W, v/W, 1/W; stored as 16.16.
 U0 RasterSetTexUV(I64 idx, F64 uow, F64 vow, F64 iw) {
@@ -163,7 +161,6 @@ U0 RasterSetLight(F64 lx, F64 ly, F64 lz) { g_rj_lx = lx; g_rj_ly = ly; g_rj_lz 
 U0 RasterSetShading(F64 amb, F64 diff, F64 spec) { g_rj_amb = amb; g_rj_diff = diff; g_rj_spec = spec; }
 U0 RasterEnablePhong() { g_rj_shade_mode = 2; }
 U0 RasterDisableGouraud() { g_rj_shade_mode = 0; }
-I64 RasterShadeMode() { return g_rj_shade_mode; }
 U0 RasterSwapColor12() {
   U32 t = g_rj_c1; g_rj_c1 = g_rj_c2; g_rj_c2 = t;
   F64 f = g_rj_n1x; g_rj_n1x = g_rj_n2x; g_rj_n2x = f;
