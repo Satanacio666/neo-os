@@ -462,3 +462,6 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   memory-efficiency question, not a correctness one.)
 - **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.
 - **p4.3b:** ✅ DONE (see D8).
+- **P4.4 font blit:** the bilinear coverage read is scalar (per-pixel F64). It is a font subsystem, NOT the
+  rasterizer (which stays fully NEON), so the NEON mandate is not violated; vectorizing the glyph blit (8 px/
+  iteration) is a possible follow-up. Per-fragment SDF text also awaits the P4.6 fragment VM.
