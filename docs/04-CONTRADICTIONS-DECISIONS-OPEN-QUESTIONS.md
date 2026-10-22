@@ -453,6 +453,18 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   composite produced malformed glyphs); the direct read is clip-safe and exact.
 - **Keep the `FontVectorDrawString`/`MeasureString` names** (DolDoc late-binds via `symbols_lookup`).
 
+### D10. 3D transform matrix order — **ROOT-FIXED** (P4.5 prerequisite)
+- **Bug:** `Mat4Translate`/`Mat4Scale`/`Mat4RotateX/Y/Z` (`Math3D.HC`) **pre-multiplied**
+  (`out = T * out`) instead of GL's post-multiply (`out = out * T`). Any translate/rotate/scale
+  sequence therefore composed in the wrong order, so **every 3D object collapsed** (gears -> an 8-px strip;
+  the cube filled/blanked the viewport). The 2D golden scene and the identity-projection texture tests never
+  exercised a sequence, so they passed and hid it.
+- **Fix:** post-multiply in all five helpers. Verified: a lit HolyGL cube now renders
+  (`3D: PASS, ink=109078`, correct face colours) through the one rasterizer; `RENDER 0xD28836F` unchanged;
+  a new `3D` gate added to `golden-boot.sh`.
+- **Open:** the procedural **gears** still render only ~644 px (a separate pre-existing gear-geometry issue,
+  independent of the matrix fix); tracked below.
+
 ### Open questions
 - **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere
   (current path is straight alpha). DEFERRED to P4.4+.
@@ -462,6 +474,8 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   memory-efficiency question, not a correctness one.)
 - **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.
 - **p4.3b:** ✅ DONE (see D8).
+- **Gears geometry:** `Gears3DRenderViewport` submits ~366 tris but draws ~644 px (the gear mesh
+  collapses after transform) while the equivalent cube renders fully — a gear-generation bug to root-fix.
 - **P4.4 font blit:** the bilinear coverage read is scalar (per-pixel F64). It is a font subsystem, NOT the
   rasterizer (which stays fully NEON), so the NEON mandate is not violated; vectorizing the glyph blit (8 px/
   iteration) is a possible follow-up. Per-fragment SDF text also awaits the P4.6 fragment VM.

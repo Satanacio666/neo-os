@@ -314,7 +314,7 @@ U0 Mat4Translate(CMat4 *out, F64 tx, F64 ty, F64 tz) {
   mt_tr.m[3]  = tx;
   mt_tr.m[7]  = ty;
   mt_tr.m[11] = tz;
-  Mat4Mul(out, &mt_tr, out);
+  Mat4Mul(out, out, &mt_tr);
 }
 
 U0 Mat4Scale(CMat4 *out, F64 sx, F64 sy, F64 sz) {
@@ -323,7 +323,7 @@ U0 Mat4Scale(CMat4 *out, F64 sx, F64 sy, F64 sz) {
   ms_sc.m[0]  = sx;
   ms_sc.m[5]  = sy;
   ms_sc.m[10] = sz;
-  Mat4Mul(out, &ms_sc, out);
+  Mat4Mul(out, out, &ms_sc);
 }
 
 U0 Mat4RotateX(CMat4 *out, F64 deg) {
@@ -335,7 +335,7 @@ U0 Mat4RotateX(CMat4 *out, F64 deg) {
   mrx_rot.m[6]  = -s;
   mrx_rot.m[9]  = s;
   mrx_rot.m[10] = c;
-  Mat4Mul(out, &mrx_rot, out);
+  Mat4Mul(out, out, &mrx_rot);
 }
 
 U0 Mat4RotateY(CMat4 *out, F64 deg) {
@@ -347,7 +347,7 @@ U0 Mat4RotateY(CMat4 *out, F64 deg) {
   mry_rot.m[2]  = s;
   mry_rot.m[8]  = -s;
   mry_rot.m[10] = c;
-  Mat4Mul(out, &mry_rot, out);
+  Mat4Mul(out, out, &mry_rot);
 }
 
 U0 Mat4RotateZ(CMat4 *out, F64 deg) {
@@ -359,7 +359,7 @@ U0 Mat4RotateZ(CMat4 *out, F64 deg) {
   mrz_rot.m[1] = -s;
   mrz_rot.m[4] = s;
   mrz_rot.m[5] = c;
-  Mat4Mul(out, &mrz_rot, out);
+  Mat4Mul(out, out, &mrz_rot);
 }
 
 // Aliasing-safe 4x4 matrix * Vec4 multiplication using temporaries tx, ty, tz, tw

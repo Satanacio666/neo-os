@@ -222,6 +222,13 @@ dedicated lexer string arena (`HcStrAlloc`, chained 256 KiB chunks, BSS-first, b
 the unchecked `g_hc_code` backpatch writes; null-checked global-array alloc; exact failure diagnostics in both
 allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-based** (Causa-2 ruled out).
 
+### P4.5 (prerequisite) — 3D transform matrix order — **[REAL] ROOT-FIXED**
+`Mat4Translate/Scale/RotateX/Y/Z` pre-multiplied, so all 3D transform sequences were composed wrong and
+**every 3D object collapsed** (the 2D golden scene and identity-projection texture tests never exercised a
+sequence, hiding it). Fixed to post-multiply (GL semantics): a lit HolyGL cube now renders through the one
+rasterizer (`3D: PASS`, `ink=109078`), `RENDER 0xD28836F` unchanged, and a `3D` gate was added to
+`golden-boot.sh`. The procedural gears still collapse (a separate gear-geometry bug, tracked in doc 04).
+
 ### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
 `FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only
 `Fonts.HC`). The **bitmap** 8x16 path is kept (delegates to Render's unchanged `gfx_draw_char`, so the golden

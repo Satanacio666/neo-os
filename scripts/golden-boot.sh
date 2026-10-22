@@ -180,6 +180,13 @@ else
         echo "  [FAIL] fonts: ${fntline:-<none>} (want FONTS: PASS)"
         fail=1
     fi
+    d3line="$(printf '%s\n' "$out" | grep -a '3D: ' | tail -1)"
+    if printf '%s' "$d3line" | grep -aq 'PASS'; then
+        echo "  [PASS] $d3line (3D transform + perspective + Z + lighting)"
+    else
+        echo "  [FAIL] 3D pipeline: ${d3line:-<none>} (want 3D: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

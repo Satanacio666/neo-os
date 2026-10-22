@@ -429,6 +429,60 @@ U0 SelfTestStructPtrScale() {
     else doldoc_print("PTRSCALE2: FAIL\n");
 }
 
+// P4.5 baseline: the 3D path (translate/rotate/scale transform, perspective
+// projection, per-pixel Z, lighting) must render through the ONE rasterizer.
+U0 SelfTest3D() {
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_CULL_FACE);
+    gfx_clear(0xFF202020);
+    RasterClearZ();
+    HolyGLViewport(50, 50, 400, 400);
+    HolyGLMatrixMode(GL_PROJECTION);
+    HolyGLLoadIdentity();
+    HolyGLPerspective(38.0, 1.0, 2.0, 60.0);
+    HolyGLMatrixMode(GL_MODELVIEW);
+    HolyGLLoadIdentity();
+    HolyGLTranslatef(0.0, 0.0, -18.5);
+    HolyGLRenderCubeAt(0.0, 0.0, 0.0, 4.0, 30.0);
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
+    I64 ink = 0;
+    I64 y = 50;
+    while (y < 450) {
+        I64 x = 50;
+        while (x < 450) {
+            if ((fb[y * pit + x] & 0xFFFFFF) != 0x202020) ink++;
+            x++;
+        }
+        y++;
+    }
+    if (ink > 20000) doldoc_printf("3D: PASS (lit cube ink=%lld)\n", ink);
+    else doldoc_printf("3D: FAIL (lit cube ink=%lld)\n", ink);
+    gfx_clear(0xFF202020);
+    RasterClearZ();
+    I64 gt0 = HolyGLGetTrisRendered();
+    Gears3DRenderViewport(50, 50, 400, 400, 30.0);
+    I64 gt1 = HolyGLGetTrisRendered();
+    I64 gink = 0;
+    y = 50;
+    while (y < 450) {
+        I64 x = 50;
+        while (x < 450) {
+            U32 c = fb[y * pit + x] & 0xFFFFFF;
+            if (c != 0x11111B && c != 0x202020) gink++;
+            x++;
+        }
+        y++;
+    }
+    doldoc_printf("3D-GEARS: tris=%lld ink=%lld\n", gt1 - gt0, gink);
+    gfx_clear(0xFF000000);
+    doldoc_mark_all_dirty();
+}
+
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
@@ -821,6 +875,7 @@ U0 SelfTestRun() {
     SelfTestHeap();
     SelfTestTexture();
     FontsSelfTest();
+    SelfTest3D();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
