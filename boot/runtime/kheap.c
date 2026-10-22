@@ -122,7 +122,23 @@ void* kmalloc(size_t size) {
         curr = curr->next;
     }
 
-    printf("[HEAP] Out of memory! Requested: %llu bytes\n", (unsigned long long)size);
+    // P0.7: report the exact reason with real telemetry: no free block large
+    // enough (OOM) vs. the request being out of range. Includes the largest free
+    // block and free-block count so a fragmented-vs-exhausted heap is obvious.
+    size_t largest_free = 0;
+    uint64_t free_blocks = 0;
+    for (heap_block_t *fb = head; fb; fb = fb->next) {
+        if (fb->canary_head != HEAP_CANARY) break;
+        if (fb->is_free) {
+            free_blocks++;
+            if (fb->size > largest_free) largest_free = fb->size;
+        }
+    }
+    printf("[HEAP] OOM: kmalloc(%llu) failed (aligned %llu). total=%llu used=%llu free=%llu free_blocks=%llu largest_free=%llu\n",
+           (unsigned long long)size, (unsigned long long)aligned_size,
+           (unsigned long long)stats.total_memory, (unsigned long long)stats.used_memory,
+           (unsigned long long)stats.free_memory, (unsigned long long)free_blocks,
+           (unsigned long long)largest_free);
     smp_spin_unlock(&s_heap_spinlock);
     kheap_irq_restore(__f);
     return NULL;

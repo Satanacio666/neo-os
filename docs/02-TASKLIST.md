@@ -174,6 +174,51 @@ list (twin-liveness, census, allocator/symbol/FS stress, determinism), which is 
 
 ---
 
+## P0.6 — BSOD panic-halt + fault telemetry — ✅ DONE (`f0a407c`)
+
+**Problem.** A kernel panic re-executed the faulting instruction forever: `kernel/arch/aarch64/vectors.S`
+called `ExceptionsHandleSync` and ignored its X0 return, then always `eret`. `g_exc.in_fault` never latched,
+so a fault inside the compiler looked like a hang with no telemetry.
+**Fix.** `vectors.S` branches on the handler's X0: on a kernel panic it latches `halted` and spins in
+`panic_halt` instead of returning; `Exceptions.HC` keeps `in_fault=1` and emits `<<<BSOD:KERNEL>>>` /
+`<<<BSOD:DOUBLE>>>` / `<<<EXC:RECOVERED>>>`; `Compiler.HC` keeps an on-demand JIT symbol map (`jitmap`,
+`HcMapAdd`/`HcMapDump`); `Shell.HC` gains `kpanic`/`jitmap`; `scripts/crash-decode.py` v2 decodes
+ESR/ISS, symbolises `ELR_EL1`, and supports `--gate`. Gate: `PANIC GATE: PASS`, `GOLDEN BOOT: PASS`.
+
+## P0.7 — Allocator / lexer / module-load hardening — ✅ DONE (this step)
+
+**Problem (unmasked by P0.6).** Boot died in `HcLexNext` (`Compiler.HC`) when a string literal's
+allocation returned NULL. The `[HCLX]` diagnostic printed `free=8388560 used=48` — but that is the *idle*
+HolyC 8 MB pool, not the heap in use. **The failing allocator was the C seed heap (`boot/runtime/kheap.c`)**
+(21 MB used / 43 MB free / 5192 blocks post-boot), so the failure was **not exhaustion**.
+**Root cause.** `KInitLoad` read every module into a **128 KB** buffer with a `131071`-byte limit, silently
+truncating any module larger than 128 KB. Baseline `Compiler.HC` (134 KB) was already truncated past
+`CompilerCompileAndRun` (offset 127483); the P4.3 texture edits added ~4.6 KB, pushing that function past
+the cutoff so it never compiled → unresolved forward references → dead shell. This is exactly the
+"module growth crosses a threshold" failure. The truncation is silent: the module "compiles" (res=0) with a
+missing tail.
+**Fixes.**
+1. **Module-load ceiling raised to 1 MB** everywhere a `.HC` source is read — `KernelInit.HC` (`HC_MODULE_MAX`),
+   `Shell.HC` (`run`/`cat`/`src`), `Compiler.HC` (`#include` read), and the C JIT's `INCLUDE_BUF_SIZE`
+   (256 KB → 2 MB). Source growth can no longer truncate silently.
+2. **Dedicated lexer string arena** (`HcStrAlloc`): literals used to be `kmalloc(slen+1)`'d individually and
+   never freed (~2000 leaked small blocks per boot, fragmenting the heap). They now bump-allocate from
+   chained 256 KB chunks; the first chunk is static BSS, so lexing has **no allocator dependency** during the
+   fragile boot window. Bounds-checked: an over-long literal fails the unit cleanly.
+3. **Corruption vectors closed.** `HcBackpatchCbz` and the inline CBNZ patch wrote `g_hc_code[patch_idx]`
+   with no bounds check; global-array `kmalloc`/`memset` were unchecked (a write through NULL). All guarded.
+4. **Exact failure diagnostics.** The seed `kmalloc` OOM path now prints the real reason with
+   total/used/free/largest-free-block; `KHeap.HC`'s `KMalloc` no longer returns 0 silently; the `[HCLX]`
+   diagnostic reports both heaps.
+5. **`SelfTestHeapChurn`** — 2500 small (32–64 B) allocations interleaved with medium alloc/free traffic,
+   every byte written and verified before release (`HEAPCHURN: PASS`), gated in `golden-boot.sh`.
+**Gate:** `GOLDEN BOOT: PASS`, `SELFTEST 80/80`, `PARITY 54/54`, `RENDER 0xD28836F`, `SELF-HOST: PASS`,
+`HEAPCHURN: PASS`, `CENSUS: PASS`. The census baseline moved `kmalloc 50→53` / `kfree 47→50` **solely**
+because of the new heap-churn test (the lexer's `kmalloc` was *replaced* by the arena, so `Compiler.HC` is
+net-neutral).
+
+---
+
 ## P1 — Compiler (self-hosting) — ✅ **COMPLETE** (self-hosts; REPL/`run` on Compiler.HC; battery 65/65; parity PASS)
 
 **Goal:** `apps/Compiler.HC` compiles every `.HC` module *and itself*; C JIT only seeds it.

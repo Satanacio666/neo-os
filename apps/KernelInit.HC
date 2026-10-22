@@ -12,15 +12,23 @@ U0 KInitLog(U8 *msg) {
     doldoc_printf("[KERNEL-INIT] %s\n", msg);
 }
 
+// P0.7: module load buffer. This used to be 128 KB, which SILENTLY TRUNCATED any
+// module larger than 131071 bytes — Compiler.HC (now ~139 KB) lost its tail,
+// including CompilerCompileAndRun, whenever edits grew it past the boundary. A
+// truncated module compiles "successfully" but its later functions never exist,
+// producing unresolved forward references and a dead shell. Size it generously
+// (1 MB) so source growth can never truncate silently again.
+#define HC_MODULE_MAX 1048576
+
 U0 KInitLoad(U8 *fname) {
-    U8 *kinit_load_buf = kmalloc(131072);
+    U8 *kinit_load_buf = kmalloc(HC_MODULE_MAX);
     if (!kinit_load_buf) {
         doldoc_printf("[KERNEL-INIT] FATAL: Out of memory loading %s\n", fname);
         return;
     }
     // P2.2: boot modules come from the FAT32 ESP via the UEFI firmware's file
     // reader (seed_read_file), not from the C RedSea filesystem.
-    I64 fsize = seed_read_file(fname, kinit_load_buf, 131071);
+    I64 fsize = seed_read_file(fname, kinit_load_buf, HC_MODULE_MAX - 1);
     if (fsize > 0) {
         kinit_load_buf[fsize] = 0;
         doldoc_printf("[KERNEL-INIT] Compiling %s (%lld bytes)...\n", fname, fsize);

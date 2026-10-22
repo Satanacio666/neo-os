@@ -152,6 +152,13 @@ else
         echo "  [FAIL] 2D array indexing: ${a2line:-<none>} (want ARRAY2D: PASS)"
         fail=1
     fi
+    hcline="$(printf '%s\n' "$out" | grep -a 'HEAPCHURN: ' | tail -1)"
+    if printf '%s' "$hcline" | grep -aq 'PASS'; then
+        echo "  [PASS] $hcline (heap churn: 2500 allocs, no overlap)"
+    else
+        echo "  [FAIL] heap churn: ${hcline:-<none>} (want HEAPCHURN: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

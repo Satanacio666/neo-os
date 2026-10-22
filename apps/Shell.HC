@@ -7,6 +7,9 @@
 
 #define SHELL_MAX_LINE    256
 #define SHELL_HISTORY_MAX 16
+// P0.7: module source buffer. 128 KB silently truncated large modules (see
+// KernelInit.HC HC_MODULE_MAX); 1 MB never truncates a .HC source.
+#define SHELL_MODULE_MAX  1048576
 #define KEY_UP            0x101
 #define KEY_DOWN          0x102
 #define KEY_RIGHT         0x103
@@ -407,9 +410,9 @@ U0 ShellInspectSource(U8 *target) {
             strcat(fname, ".HC");
         }
     }
-    U8 *src_buf = kmalloc(131072);
+    U8 *src_buf = kmalloc(SHELL_MODULE_MAX);
     I64 fsize = 0;
-    if (redsea_read_file(fname, src_buf, 131071, &fsize) == 0) {
+    if (redsea_read_file(fname, src_buf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
         src_buf[fsize] = 0;
         doldoc_printf("\n$CARD,title=\"HolyC Source Inspector: %s (%lld bytes)\",w=108,h=2$\n", fname, fsize);
         doldoc_print("$HR$\n");
@@ -722,9 +725,9 @@ U0 ShellRunCommand(U8 *raw_cmd) {
     } else if (strncmp(cmd, "hcrun ", 6) == 0) {
         U8 *fname = cmd + 6;
         while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(131072);
+        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
         I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, 131071, &fsize) == 0) {
+        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
             fbuf[fsize] = 0;
             I64 hcrun_save_boot = g_kernel_booting;
             g_kernel_booting = 1;
@@ -739,9 +742,9 @@ U0 ShellRunCommand(U8 *raw_cmd) {
     } else if (strncmp(cmd, "run ", 4) == 0) {
         U8 *fname = cmd + 4;
         while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(131072);
+        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
         I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, 131071, &fsize) == 0) {
+        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
             fbuf[fsize] = 0;
             doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%lld bytes)...\n", fname, fsize);
             I64 res;
@@ -754,9 +757,9 @@ U0 ShellRunCommand(U8 *raw_cmd) {
     } else if (strncmp(cmd, "cat ", 4) == 0) {
         U8 *fname = cmd + 4;
         while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(131072);
+        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
         I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, 131071, &fsize) == 0) {
+        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
             fbuf[fsize] = 0;
             doldoc_printf("\n$CARD,title=\"RedSea File Content: %s (%lld bytes)\",w=108,h=2$\n", fname, fsize);
             doldoc_print("$HR$\n");

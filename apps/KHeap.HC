@@ -171,6 +171,11 @@ U8* KMalloc(I64 p_req_sz) {
     curr = curr->next;
   }
 
+  // P0.7: no free block fits — report the exact reason with real telemetry so a
+  // failure is never silent and never ambiguous about which heap it came from.
+  doldoc_printf("$FG,RED$[KHEAP] OOM: KMalloc(%lld) failed. used=%lld free=%lld total=%lld allocs=%lld$FG$\n",
+                p_req_sz, g_kheap.used_memory, g_kheap.free_memory,
+                g_kheap.total_memory, g_kheap.allocation_count);
   smp_spin_unlock(&g_kheap_lock);
   __msr_daif(__daif);
   return 0;

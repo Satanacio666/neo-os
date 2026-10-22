@@ -102,6 +102,11 @@
 #define HC_CODE_CAPACITY 1048576
 #define HC_MAX_LOCALS    64
 #define HC_MAX_FUNCS     128
+// P0.7: source / include-expansion ceilings. A module larger than the load
+// buffer used to be silently truncated (see KernelInit.HC HC_MODULE_MAX); these
+// match that 1 MB source cap, with a 2 MB expansion buffer for #include splicing.
+#define HC_SRC_MAX       1048576
+#define HC_EXPAND_MAX    2097152
 
 // P3.5 guardrail 1: non-zero while a compilation is in progress. The scheduler
 // (SchedOnTick) defers preemption while this is set, because the compiler uses
@@ -117,6 +122,23 @@ I64   g_hc_tok;
 I64   g_hc_tok_val;
 I64   g_hc_tok_pos;   // source position where the current token starts
 U8    g_hc_tok_str[256];
+
+// P0.7: dedicated lexer string arena. Every string literal used to be kmalloc'd
+// (slen+1) individually and never freed, leaking thousands of 32-64 byte blocks
+// into the general heap (the C seed heap during boot, KHeap.HC after handover)
+// and fragmenting it. String literals must persist (emitted code holds pointers
+// to them), so instead we bump-allocate them from chained fixed-size chunks. The
+// first chunk is a static BSS array, so lexing has NO allocator dependency during
+// the fragile boot window; further chunks come from kmalloc only once a session
+// compiles enough literals to fill one. Bounds-checked: an over-long literal
+// fails the compile cleanly (g_hc_error) instead of corrupting memory.
+#define HC_STR_CHUNK      262144
+#define HC_STR_MAX_CHUNKS 64
+U8    g_hc_str_arena0[HC_STR_CHUNK];
+U8   *g_hc_str_chunks[HC_STR_MAX_CHUNKS];
+I64   g_hc_str_nchunks;
+I64   g_hc_str_off;
+I64   g_hc_str_bytes;   // total bytes handed out (telemetry)
 
 // Persistent Monotonic Executable Code Pool
 U32  *g_hc_code;
@@ -313,6 +335,53 @@ I64 HcTypeTokenScale(I64 tok) {
 // ------------------------------------------------------------------------------
 // Compiler Initialization, Cache Coherency & Reset
 // ------------------------------------------------------------------------------
+// P0.7: reset the string arena. Called only on cold init (never per compile):
+// strings must persist across compilation units because emitted code stores raw
+// pointers to them.
+U0 HcStrReset() {
+    g_hc_str_nchunks = 0;
+    g_hc_str_off = 0;
+    g_hc_str_bytes = 0;
+    g_hc_str_chunks[0] = g_hc_str_arena0;
+    g_hc_str_nchunks = 1;
+}
+
+// Bump-allocate n bytes (8-byte aligned) from the lexer string arena. Always
+// returns a writable pointer on success; returns 0 only on genuine exhaustion
+// (all chunks full, or a chunk allocation failed), in which case g_hc_error is
+// set so the caller aborts the unit instead of writing through NULL.
+U8* HcStrAlloc(I64 n) {
+    if (n <= 0) n = 1;
+    n = (n + 7) & ~7;
+    if (n > HC_STR_CHUNK) { g_hc_error = 1; return 0; }   // one literal must fit a chunk
+    if (g_hc_str_nchunks <= 0) HcStrReset();
+    if (g_hc_str_off + n > HC_STR_CHUNK) {
+        if (g_hc_str_nchunks >= HC_STR_MAX_CHUNKS) {
+            doldoc_printf("[HCLX] STRING ARENA FULL (%lld chunks, %lld bytes); literal too large\n",
+                          g_hc_str_nchunks, g_hc_str_bytes);
+            g_hc_error = 1;
+            return 0;
+        }
+        U8 *chunk = kmalloc(HC_STR_CHUNK);
+        if (!chunk) {
+            doldoc_printf("[HCLX] STRING ARENA chunk alloc failed (chunks=%lld bytes=%lld)\n",
+                          g_hc_str_nchunks, g_hc_str_bytes);
+            g_hc_error = 1;
+            return 0;
+        }
+        g_hc_str_chunks[g_hc_str_nchunks] = chunk;
+        g_hc_str_nchunks = g_hc_str_nchunks + 1;
+        g_hc_str_off = 0;
+    }
+    U8 *p = g_hc_str_chunks[g_hc_str_nchunks - 1] + g_hc_str_off;
+    g_hc_str_off = g_hc_str_off + n;
+    g_hc_str_bytes = g_hc_str_bytes + n;
+    return p;
+}
+
+I64 HcStrBytes() { return g_hc_str_bytes; }
+I64 HcStrChunks() { return g_hc_str_nchunks; }
+
 U0 HcInit() {
     if (!g_hc_code) {
         g_hc_code = kmalloc(HC_CODE_CAPACITY * 4);
@@ -320,6 +389,7 @@ U0 HcInit() {
         g_hc_func_count = 0;
         g_hc_struct_count = 0;
         g_hc_def_count = 0;
+        HcStrReset();
     }
 }
 
@@ -741,6 +811,10 @@ U0 HcFinalizeFrame() {
 }
 
 U0 HcBackpatchCbz(I64 patch_idx, I64 target_idx) {
+    // P0.7: bounds-check. An out-of-range patch index here used to write past the
+    // code pool into adjacent heap memory, corrupting a block header (a latent
+    // heap-corruption vector). Fail the unit cleanly instead.
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
     I64 diff = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0xB4000000 | ((diff & 0x7FFFF) << 5);
 }
@@ -1032,10 +1106,17 @@ U0 HcLexNext() {
             g_hc_pos++;
         }
         I64 slen = g_hc_pos - start;
-        U8 *buf = kmalloc(slen + 1);
+        // P0.7: strings come from the dedicated arena, not the general heap. This
+        // removes ~2000 small leaked kmalloc blocks per full boot (and their
+        // fragmentation) and makes lexing independent of the general allocator.
+        U8 *buf = HcStrAlloc(slen + 1);
         if (!buf) {
-            doldoc_printf("[HCLX] STRING ALLOC FAILED slen=%lld pos=%lld len=%lld free=%lld used=%lld\n",
-                          slen, g_hc_pos, g_hc_len, KHeapFreeBytes(), KHeapUsedBytes());
+            // NOTE: the C JIT (which compiles Compiler.HC itself) supports at most
+            // 8 arguments per call, so keep this diagnostic within that budget.
+            U64 sd_tot = 0; U64 sd_used = 0; U64 sd_free = 0; U64 sd_cnt = 0;
+            kheap_get_stats(&sd_tot, &sd_used, &sd_free, &sd_cnt);
+            doldoc_printf("[HCLX] STRING ARENA FAILED slen=%lld pos=%lld len=%lld arena=%lld/%lld seed_free=%lld\n",
+                          slen, g_hc_pos, g_hc_len, HcStrBytes(), HcStrChunks(), sd_free);
             g_hc_error = 1;
             g_hc_tok = TOK_EOF;
             return;
@@ -2066,6 +2147,7 @@ U0 HcParseLogOr() {
         I64 p_b = HcOpPop();
         I64 patch_idx = HcOpPop();
         I64 rel = (g_hc_code_len - patch_idx) & 0x7FFFF;
+        if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; } // P0.7: bounds guard
         g_hc_code[patch_idx] = 0xB5000000 | (rel << 5) | 0; // Preserve CBNZ!
         HcEmit(0xD2800020); // movz x0, #1
         HcBackpatchB(p_b, g_hc_code_len);
@@ -3063,12 +3145,26 @@ U0 HcParseProgram() {
                         // Arrays live behind an 8-byte cell holding the base address,
                         // exactly as the C JIT registers them.
                         U64 g_arr_buf = kmalloc(g_alloc);
-                        memset((U8*)g_arr_buf, 0, g_alloc);
                         U64 g_arr_cell = kmalloc(8);
+                        if (!g_arr_buf || !g_arr_cell) {
+                            // P0.7: never memset through NULL (that was a write to
+                            // address 0). Fail the unit cleanly instead.
+                            doldoc_printf("[HCLX] GLOBAL ARRAY ALLOC FAILED %s bytes=%lld\n", fname, g_alloc);
+                            g_hc_error = 1;
+                            g_hc_tok = TOK_EOF;
+                            return;
+                        }
+                        memset((U8*)g_arr_buf, 0, g_alloc);
                         *(U64*)g_arr_cell = g_arr_buf;
                         g_slot = g_arr_cell;
                     } else {
                         g_slot = kmalloc(g_alloc);
+                        if (!g_slot) {
+                            doldoc_printf("[HCLX] GLOBAL ALLOC FAILED %s bytes=%lld\n", fname, g_alloc);
+                            g_hc_error = 1;
+                            g_hc_tok = TOK_EOF;
+                            return;
+                        }
                         memset((U8*)g_slot, 0, g_alloc);
                     }
                     symbols_register(fname, g_slot, 2);
@@ -3304,10 +3400,10 @@ I64 HcExpandIncludes(U8 *src, U8 *out, I64 cap, I64 depth) {
                     }
                     ifn[fi] = 0;
                     if (src[after] == 34) after++;
-                    U8 *ibuf = kmalloc(131072);
+                    U8 *ibuf = kmalloc(HC_SRC_MAX);
                     if (ibuf) {
                         I64 isz = 0;
-                        if (redsea_read_file(ifn, ibuf, 131071, &isz) == 0) {
+                        if (redsea_read_file(ifn, ibuf, HC_SRC_MAX - 1, &isz) == 0) {
                             ibuf[isz] = 0;
                             oi = oi + HcExpandIncludes(ibuf, out + oi, cap - oi, depth + 1);
                             // Separate the spliced content from whatever follows on the
@@ -3358,9 +3454,9 @@ I64 CompilerCompileAndRun(U8 *src) {
     U8 *use_src = src;
     U8 *exp_buf = 0;
     if (strstr(src, "#include") != 0) {
-        exp_buf = kmalloc(262144);
+        exp_buf = kmalloc(HC_EXPAND_MAX);
         if (exp_buf) {
-            HcExpandIncludes(src, exp_buf, 262143, 0);
+            HcExpandIncludes(src, exp_buf, HC_EXPAND_MAX - 1, 0);
             use_src = exp_buf;
         }
     }

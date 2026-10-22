@@ -3647,7 +3647,9 @@ static void prescan_struct_defs(const char *source) {
 extern int64_t seed_read_file(const char *name, void *buf, size_t max_bytes);
 
 #define INCLUDE_MAX_DEPTH 8
-#define INCLUDE_BUF_SIZE  (256 * 1024)
+// P0.7: was 256 KB, which silently truncated a module whose #include expansion
+// exceeded it. Matches the .HC compiler's 2 MB expansion ceiling.
+#define INCLUDE_BUF_SIZE  (2 * 1024 * 1024)
 
 // Expand `#include "file"` directives recursively by splicing file contents
 // (read from RedSea). Returns the number of bytes written to `out`.

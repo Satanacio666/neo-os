@@ -381,6 +381,68 @@ U0 SelfTestRender() {
     doldoc_mark_all_dirty();
 }
 
+// P0.7: heap-churn stress. 2500 small (32-64 B) allocations interleaved with
+// medium (512-1536 B) alloc/free traffic, every byte written and verified before
+// release. This exercises the freelist split/coalesce paths far harder than the
+// existing 5-block KHeap self-test and proves the allocator neither overlaps
+// live blocks nor corrupts them. Runs against the sovereign KHeap.HC post-handover.
+#define HEAPCHURN_N 2500
+U8  *g_heapchurn_ptrs[HEAPCHURN_N];
+I64  g_heapchurn_sizes[HEAPCHURN_N];
+
+U0 SelfTestHeapChurn() {
+    I64 ok = 1;
+    I64 live = 0;
+    I64 i = 0;
+    // Phase 1: interleave small + medium allocations, touching every byte.
+    while (i < HEAPCHURN_N) {
+        I64 sz = 32 + ((i * 7) % 33);            // 32..64 bytes
+        U8 *p = kmalloc(sz);
+        if (!p) { ok = 0; break; }
+        if (((U64)p & 15) != 0) ok = 0;          // 16-byte alignment contract
+        I64 b = 0;
+        while (b < sz) { p[b] = (U8)((i + b) & 255); b++; }
+        g_heapchurn_ptrs[i] = p;
+        g_heapchurn_sizes[i] = sz;
+        live = live + 1;
+        if ((i % 5) == 0) {
+            I64 msz = 512 + ((i * 13) % 1024);
+            U8 *m = kmalloc(msz);
+            if (!m) { ok = 0; break; }
+            I64 mb = 0;
+            while (mb < 256) { m[mb] = 0xAB; mb++; }
+            kfree(m);                            // must coalesce without touching p
+        }
+        i = i + 1;
+    }
+    // Phase 2: verify every live block still holds its pattern (no overlap/corruption).
+    i = 0;
+    while (i < live && ok != 0) {
+        U8 *p = g_heapchurn_ptrs[i];
+        I64 sz = g_heapchurn_sizes[i];
+        I64 b = 0;
+        while (b < sz) {
+            if (p[b] != (U8)((i + b) & 255)) { ok = 0; break; }
+            b++;
+        }
+        i = i + 1;
+    }
+    // Phase 3: release everything.
+    i = 0;
+    while (i < live) { kfree(g_heapchurn_ptrs[i]); i = i + 1; }
+    // Phase 4: a fresh allocation must still succeed, be aligned and writable.
+    U8 *z = kmalloc(64);
+    if (!z) { ok = 0; }
+    else {
+        I64 zb = 0;
+        while (zb < 64) { z[zb] = 0x5A; zb++; }
+        if (z[0] != 0x5A || z[63] != 0x5A) ok = 0;
+        kfree(z);
+    }
+    if (ok != 0) doldoc_printf("HEAPCHURN: PASS (%lld small allocs + interleaved medium)\n", live);
+    else doldoc_printf("HEAPCHURN: FAIL\n");
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -500,6 +562,7 @@ U0 SelfTestRun() {
     SelfTestKernel();
     SelfTestPtrScale();
     SelfTest2DArray();
+    SelfTestHeapChurn();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
