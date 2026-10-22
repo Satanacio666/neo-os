@@ -546,7 +546,7 @@ single **handover point**, `KHeap.HC` and `Symbols.HC` take ownership via SIC ho
 
 ---
 
-## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅; see doc 03 §3.1 for research/refs)
+## P4 — Rendering unification (one pipeline) — 🔄 **IN PROGRESS** (P4.0 ✅, P4.1 ✅, P4.2 ✅, P4.3 ✅, p4.3b ✅, P4.4 ✅, P4.5 ✅ incl. gears root fix; see doc 03 §3.1 for research/refs)
 
 **Goal.** One renderer. One target resolver, one damage tracker, one present, **one tiled rasterizer** with
 real per-pixel Z, and **one font**. Everything 2D and 3D goes through the same tile job model. No `z_avg`
@@ -763,9 +763,48 @@ violations to fix: `Gears3D.HC`, `Physics3D.HC` write `g_hgl.v_curr.color` direc
 - [x] **Exit — MET:** `SELFTEST 81/81`, `PARITY 54/54 (0 diff)`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
       `FONTS: PASS`, `PTRSCALE2: PASS`, `KHEAP: PASS`, `SELF-HOST: PASS`, `CENSUS: PASS`, `GOLDEN BOOT: PASS`.
 
-### P4.5 — Lighting & shading — ⬜
-- [ ] Move `HolyGLApplyLighting` from per-vertex-at-v0 to **per-fragment**; interpolate normals (Gouraud →
-      per-pixel); add **Blinn-Phong specular**. Gamma-correct shading.
+### P4.5 — Lighting & shading — ✅ **DONE** (P4.5a gears root fix + P4.5b shading)
+**Goal (met):** per-fragment Blinn-Phong + Gouraud, inside the ONE NEON rasterizer, with the golden solid
+path byte-identical; plus the gears-geometry root fix that was blocking all 3D.
+
+**P4.5a — Gears geometry ROOT FIX (`Compiler.HC`) — DONE.** The gears rendered 366 tris / 644 px (collapsed)
+while `z = w*0.5` stayed correct. Root cause: `HcReset()` clears the per-unit function table every unit, so a
+call to an **F64-returning function defined in an earlier unit** (`Gears3D` → `MathCos` from `Math3D`) was
+treated as returning an **integer**; `HcEmitPromoteFloat` then emitted `scvtf d0, x0` on the double's raw
+bits, and `r * MathCos(a)` produced garbage. Fix: a **persistent** `name → returns-F64` table
+(`g_hc_fnf_*`, never reset) that `HcFuncIsFloat` falls back to, plus `HcPrescanFuncs` (a brace-depth-0
+pre-scan registering top-level function floatness so intra-unit forward refs resolve too). Gears now render
+**800 tris / 71410 px** (`3D-GEARS: PASS`); regressions `f64_lhs_mul_fn_call`, `f64_struct_arr_member_assign`,
+`f64_seven_arg_mixed` added to `SelfTest.HC` + `cases.json`.
+
+**P4.5b — Smooth shading in the ONE kernel (`scripts/raster_span.s`) — DONE.** `CRasterSpan` gained `gmode`
+(0xF8) + the shading state (0x100..0x1B8: affine colour/normal at `x_start`, per-pixel deltas, L/H, base²,
+amb/diff/spec). After the shared coverage/depth stage the kernel dispatches:
+- **gmode 0 — flat:** the *byte-identical* solid path → `RENDER 0xD28836F` untouched.
+- **gmode 1 — Gouraud:** per-vertex lit colours are carried as affine `f32` accumulators, advanced `8*delta`
+  per block, fanned over 8 lanes with `FMLA v.4s, v.4s, [0..7]`, `FCVTZS`, clamped, packed ARGB and masked
+  `BSL`-stored.
+- **gmode 2 — per-fragment Blinn-Phong:** per-vertex view-space normals are interpolated per pixel
+  (`PHONG_HALF` macro, 4 lanes ×2), **normalized with `FRSQRTE` + one `FRSQRTS` Newton step**, then
+  `N·L` (diffuse), `N·H` (Blinn half-vector), `(N·H)^16` (four `FMUL` squarings), `amb + diff·N·L`, and a
+  **gamma-corrected** `sqrt(base²·lambert + spec)` → sRGB. All NEON; no scalar fallback in the span body.
+- Head/tail (<8 px/row) use a scalar mirror (`RasterPixelShaded`/`RasterShadeColorAt`) exactly as p4.2b.
+
+**Integration (`HolyGL.HC`):** `HolyGLSubmitTriangle` now rotates each vertex normal into view space
+(`HolyGLViewNormal`) and calls `RasterSetNormal(0/1/2, …)` + `RasterSetLight` + `RasterSetShading` +
+`RasterEnablePhong()` when `GL_LIGHTING` is on, else `RasterDisableGouraud()`. `RenderGoldenScene` /
+`RenderBench` force `RasterDisableGouraud()` so 2D stays on the flat golden path.
+
+- [x] Per-fragment (not per-vertex) lighting; normals interpolated + normalized per pixel (`FRSQRTE`/`FRSQRTS`).
+- [x] Blinn-Phong specular (`N·H`, exponent 16) + ambient + diffuse; gamma-corrected output.
+- [x] Gouraud (affine per-vertex colour) mode in the same kernel.
+- [x] `SHADING: PASS` gate (`SelfTestShading`): a normal-swept quad yields ≥8 distinct per-fragment shades
+      with a specular peak (measured `phong=30 lum_max=182`), and a 3-colour Gouraud triangle yields a
+      gradient (`gouraud=218`). Visual: smooth quad gradient + specular highlight captured via screendump.
+- [x] **Golden invariant:** gmode 0 + tex 0 executes the unchanged solid path → `RENDER: PASS (0xD28836F)`.
+- [x] **Exit — MET:** `SELFTEST 84/84`, `PARITY 54/54 (0 diff)`, `RENDER: PASS (0xD28836F)`, `3D: PASS`,
+      `3D-GEARS: PASS`, `SHADING: PASS`, `TEXTURE: PASS`, `FONTS: PASS`, `SELF-HOST: PASS`, `CENSUS: PASS`,
+      `GOLDEN BOOT: PASS`.
 
 ### P4.6 — Fragment-shader VM (stretch; enables SDF/noise/raymarch) — ⬜
 - [ ] Small **bytecode/stack VM** evaluated per **2×2 quad**: fixed op set, `dFdx`/`dFdy` via lane

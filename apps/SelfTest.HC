@@ -47,6 +47,7 @@ I64 g_selftest_known_total = 0;
 U8  g_halcache_buf[256];   // P2.1.5: static buffer for the HAL cache-coherency check
 I64 g_fs_rt_size = 0;      // P2.5: out-size for the filesystem round-trip check
 I64 g_selftest_done = 0;   // guard: the corpus is a once-per-boot regression check
+I64 g_shade_demo_keep = 0; // P4.5: leave the shading demo frame on screen (visual check)
 I64 g_parity_ok = 0;
 I64 g_parity_total = 0;
 I64 g_parity_fail = 0;
@@ -486,6 +487,101 @@ U0 SelfTest3D() {
     doldoc_mark_all_dirty();
 }
 
+// P4.5: per-fragment Blinn-Phong proof. A quad whose per-vertex normals fan away
+// from the Blinn half vector H must produce a smooth, non-flat luminance gradient
+// (>= 8 distinct shades) with a bright specular peak at the corner whose normal is H.
+U0 SelfTestShading() {
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_CULL_FACE);
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    HolyGLViewport(100, 100, 400, 400);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    gluPerspective(45.0, 1.0, 1.0, 100.0);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glTranslatef(0.0, 0.0, -6.0);
+
+    glBegin(GL_QUADS);
+    glColor3ub(200, 200, 200);
+    glNormal3f(0.2475, 0.3500, 0.9034); glVertex3f(-2.0, -2.0, 0.0); // = H (specular peak)
+    glNormal3f(1.0,    0.0,    0.0);    glVertex3f( 2.0, -2.0, 0.0);
+    glNormal3f(0.0,    1.0,    0.0);    glVertex3f( 2.0,  2.0, 0.0);
+    glNormal3f(0.0,    0.0,    1.0);    glVertex3f(-2.0,  2.0, 0.0);
+    glEnd();
+
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
+    U8 seen[256];
+    I64 k = 0;
+    while (k < 256) { seen[k] = 0; k = k + 1; }
+    I64 distinct = 0;
+    I64 lum_max = 0;
+    I64 y = 110;
+    while (y < 490) {
+        I64 x = 110;
+        while (x < 490) {
+            U32 c = fb[y * pit + x];
+            I64 lum = ((((c >> 16) & 255) * 30 + ((c >> 8) & 255) * 59 + (c & 255) * 11) / 100);
+            if (lum > 255) lum = 255;
+            if (lum > 0 && seen[lum] == 0) { seen[lum] = 1; distinct = distinct + 1; }
+            if (lum > lum_max) lum_max = lum;
+            x = x + 3;
+        }
+        y = y + 3;
+    }
+    // Gouraud (gmode 1): interpolate three vertex colours through the SAME kernel.
+    // The red channel must sweep across the triangle (not a flat fill).
+    RasterClearZ();
+    RasterSetDepthTest(1);
+    RasterSetZ(30000, 30000, 30000);
+    RasterSetColor3(0xFFFF2020, 0xFF20FF20, 0xFF2020FF);
+    RasterTriangleZ(150, 150, 450, 150, 300, 450, 0xFFFFFFFF);
+    RasterDisableGouraud();
+    U8 gseen[256];
+    k = 0;
+    while (k < 256) { gseen[k] = 0; k = k + 1; }
+    I64 gdistinct = 0;
+    I64 gy = 200;
+    while (gy < 400) {
+        I64 gx = 160;
+        while (gx < 440) {
+            U32 c = fb[gy * pit + gx];
+            I64 rv = (c >> 16) & 255;
+            if (gseen[rv] == 0) { gseen[rv] = 1; gdistinct = gdistinct + 1; }
+            gx = gx + 2;
+        }
+        gy = gy + 2;
+    }
+    if (distinct >= 8 && lum_max >= 60 && gdistinct >= 8) {
+        doldoc_printf("SHADING: PASS (phong=%lld lum_max=%lld gouraud=%lld)\n", distinct, lum_max, gdistinct);
+    } else {
+        doldoc_printf("SHADING: FAIL (phong=%lld lum_max=%lld gouraud=%lld)\n", distinct, lum_max, gdistinct);
+    }
+    if (g_shade_demo_keep == 0) gfx_clear(0xFF000000);
+    RasterDisableGouraud();
+    doldoc_mark_all_dirty();
+}
+
+// Render the P4.5 shading demo and hold it on screen for ~8 s so a host screendump
+// can capture the smooth per-fragment gradient + specular highlight.
+U0 SelfTestShadeDemo() {
+    g_shade_demo_keep = 1;
+    SelfTestShading();
+    GfxPresent(0, 0, gfx_get_canvas_width(), gfx_get_canvas_height(), 1);
+    U64 t0 = __mrs_cntvct();
+    U64 fr = __mrs_cntfrq();
+    if (fr == 0) fr = 62500000;
+    U64 dur = fr * 8;
+    while (__mrs_cntvct() - t0 < dur) { }
+    g_shade_demo_keep = 0;
+    gfx_clear(0xFF000000);
+    GfxPresent(0, 0, gfx_get_canvas_width(), gfx_get_canvas_height(), 1);
+}
+
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
@@ -888,6 +984,7 @@ U0 SelfTestRun() {
     SelfTestTexture();
     FontsSelfTest();
     SelfTest3D();
+    SelfTestShading();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

@@ -194,6 +194,13 @@ else
         echo "  [FAIL] 3D gears: ${gline:-<none>} (want 3D-GEARS: PASS)"
         fail=1
     fi
+    shline="$(printf '%s\n' "$out" | grep -a 'SHADING: ' | tail -1)"
+    if printf '%s' "$shline" | grep -aq 'PASS'; then
+        echo "  [PASS] $shline (per-fragment Blinn-Phong)"
+    else
+        echo "  [FAIL] shading: ${shline:-<none>} (want SHADING: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

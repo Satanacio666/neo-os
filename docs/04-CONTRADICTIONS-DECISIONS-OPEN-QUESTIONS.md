@@ -462,20 +462,61 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
 - **Fix:** post-multiply in all five helpers. Verified: a lit HolyGL cube now renders
   (`3D: PASS, ink=109078`, correct face colours) through the one rasterizer; `RENDER 0xD28836F` unchanged;
   a new `3D` gate added to `golden-boot.sh`.
-- **Open:** the procedural **gears** still render only ~644 px (a separate pre-existing gear-geometry issue,
-  independent of the matrix fix); tracked below.
+- **Superseded by D11:** the "gears collapse" was NOT a gear-geometry bug at all — it was the compiler F64
+  codegen bug fixed in D11. See D11.
+
+### D11. Gears geometry "collapse" — **ROOT-FIXED** (P4.5a): cross-unit F64 function return type
+- **Symptom:** `Gears3DRenderViewport` drew 366 tris / 644 px (an ~8-px strip) while the equivalent cube
+  rendered fully; the gear vertices' `x`/`y` were garbage (huge/NaN bit patterns) but `z` (`-width*0.5`, a
+  constant expression) was correct.
+- **Root cause (compiler, not geometry):** `HcReset()` clears `g_hc_func_*` at the start of EVERY unit, so the
+  per-unit function table only ever holds the current unit's functions. When `Gears3D.HC` (a later unit) called
+  `MathCos` (defined in `Math3D.HC`, an earlier unit), `HcFuncIsFloat("MathCos")` returned **0** — the call was
+  treated as returning an **integer**. `HcEmitPromoteFloat` then emitted `scvtf d0, x0`, reinterpreting the
+  double's raw IEEE-754 bits as an integer: `r * MathCos(a)` produced garbage, `z = w*0.5` (no call) stayed
+  correct. This is a landmine under all F64 math (P4.5 lighting, P4.6 VM, P4.7 OBJ).
+- **Fix (root):** a **persistent** `name → returns-F64` table (`g_hc_fnf_names/flags/count`, `HC_FNF_MAX`
+  2048, never reset) written by `HcAddFunc`; `HcFuncIsFloat` consults the per-unit table first, then the
+  persistent one. Plus `HcPrescanFuncs` — a brace-depth-0 pre-scan (mirroring `HcPrescanStructs`) that
+  registers every top-level function's floatness before parsing, so intra-unit forward references resolve too.
+- **Verified:** gears now render **800 tris / 71410 px** (`3D-GEARS: PASS`), visually correct in the WM
+  desktop. Regressions: `f64_lhs_mul_fn_call`, `f64_struct_arr_member_assign`, `f64_seven_arg_mixed`
+  (`SelfTest.HC`) and the first two in `tests/jit_golden/cases.json` (expect `0x4000000000000000`).
+- **Note:** the C seed JIT does not track cross-unit F64 return types either, but it only compiles
+  `Compiler.HC` at bootstrap and the in-guest parity corpus, so it is not on the runtime path.
+
+### D12. P4.5 shading architecture — DECIDED: three colour stages in the ONE NEON kernel
+- **One kernel, mode dispatch.** `CRasterSpan.gmode` (0xF8): **0 flat** (byte-identical solid path → the
+  golden `0xD28836F` is untouched), **1 Gouraud** (affine per-vertex lit colour), **2 per-fragment
+  Blinn-Phong**. The shared coverage/depth stage is computed exactly as before; only the colour stage differs,
+  so there is no duplicated Pineda/top-left/depth code.
+- **Affine accumulators, not per-pixel division.** Colour and normal are linear in `x`, so the C side passes
+  the value at the block's `x_start` plus a per-pixel delta; the kernel advances the accumulator by `8*delta`
+  per block and fans the 8 lanes with `FMLA v.4s, v.4s, [0..7]`. No per-pixel `SDIV` for shading.
+- **Per-fragment normal normalize = `FRSQRTE` + one `FRSQRTS` Newton step** (the ARM64 SIMD rsqrt made for
+  vector normalization), then `N·L` diffuse, `N·H` Blinn specular (`^16` via four `FMUL` squarings),
+  `amb + diff·N·L`, and a **gamma-corrected** `sqrt(base²·lambert + spec)` → sRGB.
+- **Head/tail (<8 px/row) scalar mirror** (`RasterPixelShaded`/`RasterShadeColorAt`) — the same split p4.2b
+  uses; the span body (the bulk of every row) is fully NEON.
+- **Lighting is computed per fragment, not per vertex.** `HolyGLApplyLighting` (the old flat-at-v0 path) is no
+  longer used by `HolyGLSubmitTriangle`; the triangle rotates its per-vertex normals into view space
+  (`HolyGLViewNormal`) and hands them to the rasterizer. `RenderGoldenScene`/`RenderBench` force
+  `RasterDisableGouraud()` so 2D never inherits a stale shade mode.
+- **Texture + shading is not combined yet** (a textured span still uses the flat modulate colour); documented
+  as a follow-up. `gmode` is forced 0 whenever `tex_ptr != 0`.
 
 ### Open questions
-- **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere
-  (current path is straight alpha). DEFERRED to P4.4+.
+- **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
+  (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +
+  premultiplied alpha everywhere) is still open; the golden hash pins the 2D path.
 - **SDF atlas:** bake from the built-in vector glyphs first (bootstrap) vs implement the full TTF parser first.
 - **Handover timing:** keep the sovereign handover at the end of `KernelInit` (8 MB HolyC pool) or enlarge the
   sovereign pool to absorb Stages 2–6? (Current: unchanged; the 8 MB pool is idle during boot, so this is a
   memory-efficiency question, not a correctness one.)
 - **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.
-- **p4.3b:** ✅ DONE (see D8).
-- **Gears geometry:** `Gears3DRenderViewport` submits ~366 tris but draws ~644 px (the gear mesh
-  collapses after transform) while the equivalent cube renders fully — a gear-generation bug to root-fix.
+- **p4.3b:** ✅ DONE (see D8). **Gears geometry:** ✅ ROOT-FIXED (see D11).
+- **P4.5 texture+shading:** combine the textured span with Gouraud/Phong (per-lane perspective `(u,v)` ×
+  interpolated shade) — deferred; today a bound texture forces `gmode 0`.
 - **P4.4 font blit:** the bilinear coverage read is scalar (per-pixel F64). It is a font subsystem, NOT the
   rasterizer (which stays fully NEON), so the NEON mandate is not violated; vectorizing the glyph blit (8 px/
   iteration) is a possible follow-up. Per-fragment SDF text also awaits the P4.6 fragment VM.

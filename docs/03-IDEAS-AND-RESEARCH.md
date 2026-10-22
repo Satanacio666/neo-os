@@ -163,6 +163,27 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
   and are still landing upstream. Refs: Collabora "Venus on QEMU"; Mesa virtio-gpu Venus docs; QEMU virtio-gpu
   docs (`-device virtio-gpu-gl,hostmem=8G,blob=true,venus=true`).
 
+#### 3.1.1 P4.5 shading implementation notes (2026-10)
+- **Smooth shading in one kernel via a mode dispatch, not a second rasterizer.** `CRasterSpan.gmode` selects
+  the colour stage *after* the shared coverage/depth mask, so Pineda/top-left/exact-64-bit-Z are written once.
+  gmode 0 is the original solid store (byte-identical → the golden hash is a live invariant, not a snapshot).
+- **Affine accumulators instead of per-pixel division.** A perspective divide per pixel for colour/normal is
+  wasteful when the quantity is linear in `x`; the C side precomputes the value at `x_start` and the per-pixel
+  delta, and the kernel steps the accumulator by `8*delta` per block. This is the classic incremental-shading
+  trick (Gouraud 1971), done in NEON (`FMLA v.4s, v.4s, [0..7]`).
+- **Per-fragment normal normalize = `FRSQRTE` + one `FRSQRTS` Newton–Raphson step.** Arm's `FRSQRTE` gives a
+  ~8-bit reciprocal-sqrt estimate and `FRSQRTS` supplies the `(3 - x·y²)/2` term of the Newton iteration —
+  exactly the "normalize a vector in a shader" idiom. One step is enough for 8-bit output. Ref: Arm ARM
+  `FRSQRTE`/`FRSQRTS`; "Fast Inverse Square Root" (Lomont). No scalar fallback in the span body.
+- **Blinn-Phong, exponent 16, gamma-corrected.** `N·H` (Blinn 1977) avoids the reflect-vector; `(N·H)^16` via
+  four `FMUL` squarings; ambient+diffuse+specular summed in **linear light** and presented with `sqrt`
+  (≈ sRGB). Base colour is linearised at the C side (`(c/255)²`). Refs: Blinn 1977; Sandmann gamma/premul.
+- **Root cause of the gears "geometry" bug was the compiler, not the mesh.** Cross-unit F64 function return
+  types were dropped because `HcReset()` cleared the per-unit function table every unit — so `r * MathCos(a)`
+  emitted `scvtf` on the double's raw bits. Fixed with a persistent name→returns-F64 table + a brace-depth-0
+  `HcPrescanFuncs` pre-pass. Lesson: a codegen type-loss bug can masquerade as a geometry/math bug for a long
+  time; always dump raw vertex *bits* before blaming the algorithm.
+
 ---
 
 ## 4. Compiler research (beyond self-hosting)

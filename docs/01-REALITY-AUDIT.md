@@ -5,11 +5,12 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD p4.3b, `main` tree clean** — updated 2026-10):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 81/81` · `PARITY 54/54`
-(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` ·
+Current verified baseline (**HEAD P4.5, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 84/84` · `PARITY 54/54`
+(0 diff, 5 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
+`3D-GEARS: PASS (tris=800 ink=71410)` · `SHADING: PASS (phong=30 lum_max=182 gouraud=218)` ·
 `PTRSCALE`/`PTRSCALE2`/`ARRAY2D`/`KHEAP` **PASS** ·
-`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1427, 0 unresolved`.
+`PANIC GATE: PASS` · `CENSUS: PASS` (181 `.HC`→C calls) · `TWINS 5/5` · `SYMS 1466, 0 unresolved`.
 (The older `65/65` / `p1-parity` / `71 identical` figures are historical — the P0.5 battery was expanded.)
 
 **Repo inventory today (after P2):** `apps/*.HC` = **37** (36 loaded by `KernelInit.HC`, plus `SelfTest.HC`);
@@ -222,12 +223,30 @@ dedicated lexer string arena (`HcStrAlloc`, chained 256 KiB chunks, BSS-first, b
 the unchecked `g_hc_code` backpatch writes; null-checked global-array alloc; exact failure diagnostics in both
 allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-based** (Causa-2 ruled out).
 
-### P4.5 (prerequisite) — 3D transform matrix order — **[REAL] ROOT-FIXED**
-`Mat4Translate/Scale/RotateX/Y/Z` pre-multiplied, so all 3D transform sequences were composed wrong and
-**every 3D object collapsed** (the 2D golden scene and identity-projection texture tests never exercised a
-sequence, hiding it). Fixed to post-multiply (GL semantics): a lit HolyGL cube now renders through the one
-rasterizer (`3D: PASS`, `ink=109078`), `RENDER 0xD28836F` unchanged, and a `3D` gate was added to
-`golden-boot.sh`. The procedural gears still collapse (a separate gear-geometry bug, tracked in doc 04).
+### P4.5 — lighting & shading (per-fragment Blinn-Phong + Gouraud) — **[REAL]**
+
+**Prerequisite — 3D transform matrix order — ROOT-FIXED.** `Mat4Translate/Scale/RotateX/Y/Z` pre-multiplied,
+so all 3D transform sequences were composed wrong and **every 3D object collapsed** (the 2D golden scene and
+identity-projection texture tests never exercised a sequence, hiding it). Fixed to post-multiply (GL
+semantics): a lit HolyGL cube now renders through the one rasterizer (`3D: PASS`, `ink=109078`),
+`RENDER 0xD28836F` unchanged, and a `3D` gate was added to `golden-boot.sh`.
+
+**Gears geometry — ROOT-FIXED (compiler, not geometry).** The gears drew 366 tris / 644 px while `z=w*0.5`
+stayed correct. Root cause: `HcReset()` cleared the per-unit function table every unit, so a call to an
+**F64-returning function defined in an earlier unit** (`Gears3D` → `MathCos`) was treated as returning an
+integer; `HcEmitPromoteFloat` emitted `scvtf d0, x0` on the double's raw bits, so `r * MathCos(a)` was
+garbage. Fixed with a **persistent `name → returns-F64` table** + `HcPrescanFuncs` (see doc 04 D11). Gears now
+render **800 tris / 71410 px** (`3D-GEARS: PASS`), visually confirmed in the WM desktop.
+
+**Smooth shading — REAL, in the ONE kernel.** `CRasterSpan.gmode` (0xF8) selects flat (0, byte-identical
+solid path → golden hash untouched), **Gouraud** (1, affine per-vertex colour), or **per-fragment Blinn-Phong**
+(2). After the shared coverage/depth stage, the kernel interpolates colour/normal from affine `f32`
+accumulators (advanced `8*delta` per block, fanned over 8 lanes with `FMLA`), normalizes per fragment with
+**`FRSQRTE` + one `FRSQRTS` Newton step**, evaluates `N·L` + `N·H^16` + `amb+diff·N·L`, and gamma-corrects
+(`sqrt` → sRGB). All NEON in the span body; head/tail (<8 px/row) use a scalar mirror. `HolyGLSubmitTriangle`
+rotates per-vertex normals into view space (`HolyGLViewNormal`) and feeds the rasterizer; `RenderGoldenScene`
+forces flat. `SelfTestShading` → **`SHADING: PASS (phong=30 lum_max=182 gouraud=218)`**; a normal-swept quad
+renders a smooth gradient with a specular highlight (verified by screendump).
 
 ### P4.4 — unified `Fonts.HC` + boot-baked AA atlas — **[REAL]**
 `FontMono.HC` + `FontVector.HC` merged into one `apps/Fonts.HC` (both deleted; `KernelInit` Stage 2 loads only

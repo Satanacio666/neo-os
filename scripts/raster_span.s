@@ -72,6 +72,160 @@
 6:
 .endm
 
+// P4.5: load CRasterSpan.\off (an F64) and convert to f32 in \w.
+.macro LD32 off, w
+    ldr  x11, [x9, #\off]
+    fmov d0, x11
+    fcvt s0, d0
+    fmov \w, s0
+.endm
+
+// P4.5: advance an affine accumulator (f32) at sp+\ao by 8*delta at sp+\do8.
+.macro GADV ao, do8
+    ldr  w11, [sp, #\ao]
+    ldr  w12, [sp, #\do8]
+    fmov s0, w11
+    fmov s1, w12
+    fadd s0, s0, s1
+    fmov w11, s0
+    str  w11, [sp, #\ao]
+.endm
+
+// P4.5: one 4-pixel half of the per-fragment Blinn-Phong stage.
+// Interpolates the normal (affine), normalizes with FRSQRTE + one FRSQRTS
+// Newton step, evaluates diffuse + specular, gamma-corrects, and returns
+// 4x32 integer R/G/B in [0,255] (registers must carry the .4s suffix).
+// Stack: 0/4/8 n@x0, 24/28/32 dn, 36/40/44 L, 48/52/56 H, 60/64/68 base^2,
+//        72 amb, 76 diff, 80 spec, 84 255.0, 92 1.0, 96 1e-6 floor.
+.macro PHONG_HALF iota, cr, cg, cb
+    // n = n0 + iota*dn
+    ldr  w11, [sp, #0]
+    ldr  w12, [sp, #24]
+    dup  v2.4s, w11
+    dup  v5.4s, w12
+    fmla v2.4s, v5.4s, \iota
+    ldr  w11, [sp, #4]
+    ldr  w12, [sp, #28]
+    dup  v3.4s, w11
+    dup  v5.4s, w12
+    fmla v3.4s, v5.4s, \iota
+    ldr  w11, [sp, #8]
+    ldr  w12, [sp, #32]
+    dup  v4.4s, w11
+    dup  v5.4s, w12
+    fmla v4.4s, v5.4s, \iota
+    // len2 = nx^2+ny^2+nz^2
+    fmul v6.4s, v2.4s, v2.4s
+    fmul v7.4s, v3.4s, v3.4s
+    fadd v6.4s, v6.4s, v7.4s
+    fmul v7.4s, v4.4s, v4.4s
+    fadd v6.4s, v6.4s, v7.4s
+    ldr  w11, [sp, #96]
+    dup  v7.4s, w11
+    fmax v6.4s, v6.4s, v7.4s
+    // inv = rsqrt(len2): FRSQRTE + 1 Newton-Raphson (FRSQRTS)
+    frsqrte v7.4s, v6.4s
+    fmul v9.4s, v7.4s, v7.4s
+    frsqrts v9.4s, v6.4s, v9.4s
+    fmul v7.4s, v7.4s, v9.4s
+    // normalize
+    fmul v2.4s, v2.4s, v7.4s
+    fmul v3.4s, v3.4s, v7.4s
+    fmul v4.4s, v4.4s, v7.4s
+    // ndotl = dot(n,L)
+    ldr  w11, [sp, #36]
+    dup  v5.4s, w11
+    fmul v6.4s, v2.4s, v5.4s
+    ldr  w11, [sp, #40]
+    dup  v5.4s, w11
+    fmul v7.4s, v3.4s, v5.4s
+    fadd v6.4s, v6.4s, v7.4s
+    ldr  w11, [sp, #44]
+    dup  v5.4s, w11
+    fmul v7.4s, v4.4s, v5.4s
+    fadd v6.4s, v6.4s, v7.4s
+    movi v5.4s, #0
+    fmax v6.4s, v6.4s, v5.4s
+    // ndoth = dot(n,H)
+    ldr  w11, [sp, #48]
+    dup  v5.4s, w11
+    fmul v7.4s, v2.4s, v5.4s
+    ldr  w11, [sp, #52]
+    dup  v5.4s, w11
+    fmul v9.4s, v3.4s, v5.4s
+    fadd v7.4s, v7.4s, v9.4s
+    ldr  w11, [sp, #56]
+    dup  v5.4s, w11
+    fmul v9.4s, v4.4s, v5.4s
+    fadd v7.4s, v7.4s, v9.4s
+    movi v5.4s, #0
+    fmax v7.4s, v7.4s, v5.4s
+    // spec16 = ndoth^16
+    fmul v7.4s, v7.4s, v7.4s
+    fmul v7.4s, v7.4s, v7.4s
+    fmul v7.4s, v7.4s, v7.4s
+    fmul v7.4s, v7.4s, v7.4s
+    // lam = amb + diff*ndotl
+    ldr  w11, [sp, #76]
+    dup  v5.4s, w11
+    fmul v5.4s, v5.4s, v6.4s
+    ldr  w11, [sp, #72]
+    dup  v9.4s, w11
+    fadd v5.4s, v5.4s, v9.4s
+    // spec_amt = spec * spec16
+    ldr  w11, [sp, #80]
+    dup  v9.4s, w11
+    fmul v7.4s, v7.4s, v9.4s
+    // R = sqrt(br2*lam + spec_amt)
+    ldr  w11, [sp, #60]
+    dup  v9.4s, w11
+    fmul v9.4s, v9.4s, v5.4s
+    fadd v9.4s, v9.4s, v7.4s
+    ldr  w11, [sp, #92]
+    dup  v28.4s, w11
+    fmin v9.4s, v9.4s, v28.4s
+    fsqrt v9.4s, v9.4s
+    ldr  w11, [sp, #84]
+    dup  v28.4s, w11
+    fmul v9.4s, v9.4s, v28.4s
+    fcvtzs \cr, v9.4s
+    // G
+    ldr  w11, [sp, #64]
+    dup  v9.4s, w11
+    fmul v9.4s, v9.4s, v5.4s
+    fadd v9.4s, v9.4s, v7.4s
+    ldr  w11, [sp, #92]
+    dup  v28.4s, w11
+    fmin v9.4s, v9.4s, v28.4s
+    fsqrt v9.4s, v9.4s
+    ldr  w11, [sp, #84]
+    dup  v28.4s, w11
+    fmul v9.4s, v9.4s, v28.4s
+    fcvtzs \cg, v9.4s
+    // B
+    ldr  w11, [sp, #68]
+    dup  v9.4s, w11
+    fmul v9.4s, v9.4s, v5.4s
+    fadd v9.4s, v9.4s, v7.4s
+    ldr  w11, [sp, #92]
+    dup  v28.4s, w11
+    fmin v9.4s, v9.4s, v28.4s
+    fsqrt v9.4s, v9.4s
+    ldr  w11, [sp, #84]
+    dup  v28.4s, w11
+    fmul v9.4s, v9.4s, v28.4s
+    fcvtzs \cb, v9.4s
+    // clamp 0..255
+    movi v28.4s, #0
+    movi v29.4s, #255
+    smax \cr, \cr, v28.4s
+    smin \cr, \cr, v29.4s
+    smax \cg, \cg, v28.4s
+    smin \cg, \cg, v29.4s
+    smax \cb, \cb, v28.4s
+    smin \cb, \cb, v29.4s
+.endm
+
 // X0 = &CRasterSpan  (returns drawn pixel count in X0)
 RasterSpanNEON:
     stp   x19, x20, [sp, #-16]!
@@ -131,6 +285,92 @@ RasterSpanNEON:
     movi  v8.4s, #0xff, lsl #24  // alpha force mask
     dup   v9.4s, w19             // modulate colour (alpha forced to 255)
     orr   v9.16b, v9.16b, v8.16b
+    // ---- P4.5 smooth-shading setup (skipped entirely for gmode 0) ----
+    ldr   x12, [x9, #0xF8]
+    cbz   x12, span_loop
+    cmp   x12, #2
+    b.eq  span_setup_phong
+    // Gouraud: affine lit colour (0..255). A -> sp+0/4/8, D -> sp+24/28/32
+    LD32  0x100, w11
+    str   w11, [sp, #0]
+    LD32  0x108, w11
+    str   w11, [sp, #4]
+    LD32  0x110, w11
+    str   w11, [sp, #8]
+    LD32  0x118, w11
+    str   w11, [sp, #24]
+    LD32  0x120, w11
+    str   w11, [sp, #28]
+    LD32  0x128, w11
+    str   w11, [sp, #32]
+    b     span_setup_common
+span_setup_phong:
+    // Phong: per-vertex normals. A -> sp+0/4/8, D -> sp+24/28/32
+    LD32  0x130, w11
+    str   w11, [sp, #0]
+    LD32  0x138, w11
+    str   w11, [sp, #4]
+    LD32  0x140, w11
+    str   w11, [sp, #8]
+    LD32  0x148, w11
+    str   w11, [sp, #24]
+    LD32  0x150, w11
+    str   w11, [sp, #28]
+    LD32  0x158, w11
+    str   w11, [sp, #32]
+span_setup_common:
+    ldr   w11, [sp, #24]
+    fmov  s1, w11
+    fmov  s2, #8.0
+    fmul  s1, s1, s2
+    fmov  w11, s1
+    str   w11, [sp, #12]
+    ldr   w11, [sp, #28]
+    fmov  s1, w11
+    fmov  s2, #8.0
+    fmul  s1, s1, s2
+    fmov  w11, s1
+    str   w11, [sp, #16]
+    ldr   w11, [sp, #32]
+    fmov  s1, w11
+    fmov  s2, #8.0
+    fmul  s1, s1, s2
+    fmov  w11, s1
+    str   w11, [sp, #20]
+    // lighting constants (f32): L 36/40/44, H 48/52/56, base^2 60/64/68,
+    // amb/diff/spec 72/76/80
+    LD32  0x160, w11
+    str   w11, [sp, #36]
+    LD32  0x168, w11
+    str   w11, [sp, #40]
+    LD32  0x170, w11
+    str   w11, [sp, #44]
+    LD32  0x178, w11
+    str   w11, [sp, #48]
+    LD32  0x180, w11
+    str   w11, [sp, #52]
+    LD32  0x188, w11
+    str   w11, [sp, #56]
+    LD32  0x190, w11
+    str   w11, [sp, #60]
+    LD32  0x198, w11
+    str   w11, [sp, #64]
+    LD32  0x1A0, w11
+    str   w11, [sp, #68]
+    LD32  0x1A8, w11
+    str   w11, [sp, #72]
+    LD32  0x1B0, w11
+    str   w11, [sp, #76]
+    LD32  0x1B8, w11
+    str   w11, [sp, #80]
+    mov   w11, #0x437F0000       // 255.0f
+    str   w11, [sp, #84]
+    mov   w11, #0                // 0.0f
+    str   w11, [sp, #88]
+    mov   w11, #0x3F800000       // 1.0f
+    str   w11, [sp, #92]
+    mov   w11, #0x35860000       // ~1e-6 floor
+    str   w11, [sp, #96]
 span_loop:
     cbz   x3, span_done
     dup   v2.4s, w4
@@ -203,9 +443,11 @@ span_nodepth:
     umov  w0, v2.b[0]
     lsr   w0, w0, #4
     add   x21, x21, x0
-    // --- dispatch: textured span or byte-identical solid span ---
+    // --- dispatch: textured span, smooth-shaded span, or byte-identical solid span ---
     ldr   x26, [x9, #0x90]
     cbnz  x26, span_tex
+    ldr   x12, [x9, #0xF8]       // gmode (0 = flat golden path)
+    cbnz  x12, span_shaded
     zip1  v2.8h, v31.8h, v31.8h
     zip2  v3.8h, v31.8h, v31.8h
     ldr   q10, [x1]
@@ -447,6 +689,99 @@ tex_next:
     mov   v11.d[1], v5.d[0]
     orr   v11.16b, v11.16b, v8.16b
 tex_store:
+    zip1  v2.8h, v31.8h, v31.8h
+    zip2  v3.8h, v31.8h, v31.8h
+    ldr   q12, [x1]
+    bsl   v2.16b, v10.16b, v12.16b
+    str   q2, [x1]
+    ldr   q13, [x1, #16]
+    bsl   v3.16b, v11.16b, v13.16b
+    str   q3, [x1, #16]
+    b     span_advance
+
+// ------------------------------------------------------------------------------
+// P4.5 smooth-shaded span. The coverage/depth mask (v31) is already computed and
+// Z written; only the colour stage differs. gmode 1 = Gouraud (affine lit colour),
+// gmode 2 = per-fragment Blinn-Phong. Accumulators (f32) live on the stack and are
+// advanced by 8*delta per block. Live across blocks: v0/v1 (iota), v8 (alpha),
+// v19-v27 (coverage). Everything else is free here.
+// ------------------------------------------------------------------------------
+span_shaded:
+    cmp   x12, #1
+    b.ne  span_phong
+    // ---- Gouraud: affine R/G/B (0..255) for lanes 0-3 (v10/v12/v14) and 4-7 (v11/v13/v15)
+    ldr   w11, [sp, #0]
+    ldr   w12, [sp, #24]
+    dup   v10.4s, w11
+    dup   v16.4s, w12
+    fmla  v10.4s, v16.4s, v0.4s
+    dup   v11.4s, w11
+    fmla  v11.4s, v16.4s, v1.4s
+    ldr   w11, [sp, #4]
+    ldr   w12, [sp, #28]
+    dup   v12.4s, w11
+    dup   v16.4s, w12
+    fmla  v12.4s, v16.4s, v0.4s
+    dup   v13.4s, w11
+    fmla  v13.4s, v16.4s, v1.4s
+    ldr   w11, [sp, #8]
+    ldr   w12, [sp, #32]
+    dup   v14.4s, w11
+    dup   v16.4s, w12
+    fmla  v14.4s, v16.4s, v0.4s
+    dup   v15.4s, w11
+    fmla  v15.4s, v16.4s, v1.4s
+    fcvtzs v10.4s, v10.4s
+    fcvtzs v11.4s, v11.4s
+    fcvtzs v12.4s, v12.4s
+    fcvtzs v13.4s, v13.4s
+    fcvtzs v14.4s, v14.4s
+    fcvtzs v15.4s, v15.4s
+    movi  v16.4s, #0
+    movi  v17.4s, #255
+    smax  v10.4s, v10.4s, v16.4s
+    smin  v10.4s, v10.4s, v17.4s
+    smax  v11.4s, v11.4s, v16.4s
+    smin  v11.4s, v11.4s, v17.4s
+    smax  v12.4s, v12.4s, v16.4s
+    smin  v12.4s, v12.4s, v17.4s
+    smax  v13.4s, v13.4s, v16.4s
+    smin  v13.4s, v13.4s, v17.4s
+    smax  v14.4s, v14.4s, v16.4s
+    smin  v14.4s, v14.4s, v17.4s
+    smax  v15.4s, v15.4s, v16.4s
+    smin  v15.4s, v15.4s, v17.4s
+    shl   v10.4s, v10.4s, #16
+    shl   v12.4s, v12.4s, #8
+    orr   v10.16b, v10.16b, v12.16b
+    orr   v10.16b, v10.16b, v14.16b
+    orr   v10.16b, v10.16b, v8.16b
+    shl   v11.4s, v11.4s, #16
+    shl   v13.4s, v13.4s, #8
+    orr   v11.16b, v11.16b, v13.16b
+    orr   v11.16b, v11.16b, v15.16b
+    orr   v11.16b, v11.16b, v8.16b
+    GADV  0, 12
+    GADV  4, 16
+    GADV  8, 20
+    b     span_shaded_store
+span_phong:
+    PHONG_HALF v0.4s, v10.4s, v12.4s, v14.4s
+    PHONG_HALF v1.4s, v11.4s, v13.4s, v15.4s
+    shl   v10.4s, v10.4s, #16
+    shl   v12.4s, v12.4s, #8
+    orr   v10.16b, v10.16b, v12.16b
+    orr   v10.16b, v10.16b, v14.16b
+    orr   v10.16b, v10.16b, v8.16b
+    shl   v11.4s, v11.4s, #16
+    shl   v13.4s, v13.4s, #8
+    orr   v11.16b, v11.16b, v13.16b
+    orr   v11.16b, v11.16b, v15.16b
+    orr   v11.16b, v11.16b, v8.16b
+    GADV  0, 12
+    GADV  4, 16
+    GADV  8, 20
+span_shaded_store:
     zip1  v2.8h, v31.8h, v31.8h
     zip2  v3.8h, v31.8h, v31.8h
     ldr   q12, [x1]

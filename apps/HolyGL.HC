@@ -245,30 +245,58 @@ U0 HolyGLPerspective(F64 fovy, F64 aspect, F64 z_near, F64 z_far) {
 // Vertex & Attribute Specifications
 // ------------------------------------------------------------------------------
 U32 HolyGLApplyLighting(U32 base_col, F64 nx, F64 ny, F64 nz) {
-  // Rotate normal by upper-left 3x3 of modelview
+  // Rotate normal by upper-left 3x3 of modelview, then normalize.
   CMat4 *mv = &g_hgl.modelview;
   F64 rnx = mv->m[0] * nx + mv->m[1] * ny + mv->m[2]  * nz;
   F64 rny = mv->m[4] * nx + mv->m[5] * ny + mv->m[6]  * nz;
   F64 rnz = mv->m[8] * nx + mv->m[9] * ny + mv->m[10] * nz;
   F64 nlen = MathSqrt(rnx * rnx + rny * rny + rnz * rnz);
-  if (nlen > 0.0001) {
-    rnx = rnx / nlen;
-    rny = rny / nlen;
-    rnz = rnz / nlen;
-  }
-  F64 ndotl = rnx * g_hgl.light_x + rny * g_hgl.light_y + rnz * g_hgl.light_z;
-  if (ndotl < 0.0) ndotl = -ndotl * 0.25;
-  F64 intensity = 0.32 + 0.68 * ndotl;
-  if (intensity > 1.0) intensity = 1.0;
+  if (nlen > 0.0001) { rnx = rnx / nlen; rny = rny / nlen; rnz = rnz / nlen; }
 
-  I64 scale256 = (I64)(intensity * 256.0);
-  U32 r = (((base_col >> 16) & 0xFF) * scale256) >> 8;
-  U32 g = (((base_col >> 8)  & 0xFF) * scale256) >> 8;
-  U32 b = (((base_col)       & 0xFF) * scale256) >> 8;
+  // Diffuse: N . L
+  F64 ndotl = rnx * g_hgl.light_x + rny * g_hgl.light_y + rnz * g_hgl.light_z;
+  if (ndotl < 0.0) ndotl = 0.0;
+
+  // Blinn-Phong specular: N . H, H = normalize(L + V), V = (0,0,1) in view space.
+  F64 hx = g_hgl.light_x, hy = g_hgl.light_y, hz = g_hgl.light_z + 1.0;
+  F64 hlen = MathSqrt(hx * hx + hy * hy + hz * hz);
+  if (hlen > 0.0001) { hx = hx / hlen; hy = hy / hlen; hz = hz / hlen; }
+  F64 ndoth = rnx * hx + rny * hy + rnz * hz;
+  if (ndoth < 0.0) ndoth = 0.0;
+  F64 s2 = ndoth * ndoth;
+  F64 s4 = s2 * s2;
+  F64 s8 = s4 * s4;
+  F64 spec = s8 * s8;                       // ndoth^16
+  F64 spec_amt = 0.60 * spec;
+
+  // Gamma-correct (sRGB -> linear ~ x^2), light, then linear -> sRGB (~ sqrt).
+  F64 br = (F64)((base_col >> 16) & 0xFF) / 255.0;
+  F64 bg = (F64)((base_col >> 8)  & 0xFF) / 255.0;
+  F64 bb = (F64)(base_col & 0xFF) / 255.0;
+  F64 lambert = 0.24 + 0.76 * ndotl;        // ambient + diffuse
+  F64 ir = br * br * lambert + spec_amt;
+  F64 ig = bg * bg * lambert + spec_amt;
+  F64 ib = bb * bb * lambert + spec_amt;
+  if (ir > 1.0) ir = 1.0;
+  if (ig > 1.0) ig = 1.0;
+  if (ib > 1.0) ib = 1.0;
+  I64 r = (I64)(MathSqrt(ir) * 255.0 + 0.5);
+  I64 g = (I64)(MathSqrt(ig) * 255.0 + 0.5);
+  I64 b = (I64)(MathSqrt(ib) * 255.0 + 0.5);
   if (r > 255) r = 255;
   if (g > 255) g = 255;
   if (b > 255) b = 255;
   return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
+// P4.5: rotate a model-space normal into view space by the upper-left 3x3 of the
+// modelview (no lighting). Used to feed per-vertex normals to the per-fragment
+// Blinn-Phong stage in the ONE rasterizer.
+U0 HolyGLViewNormal(F64 nx, F64 ny, F64 nz, F64 *ox, F64 *oy, F64 *oz) {
+  CMat4 *mv = &g_hgl.modelview;
+  *ox = mv->m[0] * nx + mv->m[1] * ny + mv->m[2]  * nz;
+  *oy = mv->m[4] * nx + mv->m[5] * ny + mv->m[6]  * nz;
+  *oz = mv->m[8] * nx + mv->m[9] * ny + mv->m[10] * nz;
 }
 
 U0 HolyGLColor3f(F64 r, F64 g, F64 b) {
@@ -337,7 +365,20 @@ U0 HolyGLSubmitTriangle(GLVertex *v0, GLVertex *v1, GLVertex *v2) {
 
   U32 col = v0->color;
   if (g_hgl.lighting) {
-    col = HolyGLApplyLighting(col, v0->nx, v0->ny, v0->nz);
+    // P4.5: per-fragment Blinn-Phong. Rotate the per-vertex normals into view
+    // space; the ONE rasterizer interpolates + normalizes + shades them per pixel.
+    F64 n0x = 0.0, n0y = 0.0, n0z = 0.0, n1x = 0.0, n1y = 0.0, n1z = 0.0, n2x = 0.0, n2y = 0.0, n2z = 0.0;
+    HolyGLViewNormal(v0->nx, v0->ny, v0->nz, &n0x, &n0y, &n0z);
+    HolyGLViewNormal(v1->nx, v1->ny, v1->nz, &n1x, &n1y, &n1z);
+    HolyGLViewNormal(v2->nx, v2->ny, v2->nz, &n2x, &n2y, &n2z);
+    RasterSetNormal(0, n0x, n0y, n0z);
+    RasterSetNormal(1, n1x, n1y, n1z);
+    RasterSetNormal(2, n2x, n2y, n2z);
+    RasterSetLight(g_hgl.light_x, g_hgl.light_y, g_hgl.light_z);
+    RasterSetShading(0.24, 0.76, 0.60);
+    RasterEnablePhong();
+  } else {
+    RasterDisableGouraud();
   }
 
   // Wireframe: outline with lines instead of filling.
