@@ -68,7 +68,10 @@ against any new `.HC`→C runtime call. `make check/selftest/census/parity` wrap
 **Known limitation:** the corpus assumes fresh compiler state — a second `selftest` in one boot is guarded
 (warns, does not run) because recompiling the battery trips a pre-existing `Compiler.HC` re-entrancy bug.
 
-**Bugs surfaced by the expansion (documented, not yet fixed — see doc 04):** 2-D arrays fault (Data Abort);
+**Bugs surfaced by the expansion (see doc 04):** ~~2-D arrays fault (Data Abort)~~ **FIXED** — the compiler
+now registers per-dimension row strides in `apps/Compiler.HC`, so `arr[i][j]` resolves to
+`base + i*row_stride + j*elem` with no intermediate dereference; locked in by `SelfTest2DArray`
+(`ARRAY2D: PASS`) and the `array2d_*` / `array3d_global` JIT-battery cases.
 `enum` and function-like `#define` are unsupported (return -1); an unterminated `struct {` is silently
 accepted (returns 0, not rejected); a global-`F64` subtraction (`F64 r = 0.0 - q;`) returned 0.
 
@@ -132,7 +135,7 @@ list (twin-liveness, census, allocator/symbol/FS stress, determinism), which is 
       silently accepted (bug, see doc 04), so only one reject case is asserted.
 - [ ] **Diagnostics** — assert the reported line number is correct for a multi-line fault.
 - [x] **F64 depth** — `(F64)`/`(I64)` round-trips, F64 global if-branch. Partial: NaN/Inf not yet covered.
-- [x] **Types** — nested structs, `typedef`. Partial: 2-D arrays **fault** (bug), `enum` unsupported.
+- [x] **Types** — nested structs, `typedef`, and **multi-dimensional arrays** (`SelfTest2DArray` → `ARRAY2D: PASS`). `enum` still unsupported.
 - [x] **Lexer edges** — block comments. Partial: line comments / string escapes / arg-macros not yet.
 - [ ] **Stress** — allocator churn + double-free (canary), 4096-symbol register/lookup, FS
       create/read/overwrite/delete + sector-boundary reads.

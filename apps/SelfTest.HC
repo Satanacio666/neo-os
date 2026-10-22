@@ -324,6 +324,37 @@ U0 SelfTestPtrScale() {
     else doldoc_print("PTRSCALE: FAIL\n");
 }
 
+// Compiler regression (P4.3/P5 prereq): multidimensional array indexing must
+// resolve to base + i*row_stride + j*elem with NO intermediate dereference.
+// A global 2D array used to Data Abort (it loaded element[i] as a pointer) and a
+// local 2D array failed to parse. Covers I64 and width-aware U16, plus a row
+// separation check (row i must not alias row i-1).
+I64 g_m2d[3][4];
+U0 SelfTest2DArray() {
+    I64 ok = 1;
+    // 1) global 2D I64: write/read corners + center, then prove rows don't overlap.
+    g_m2d[0][0] = 11; g_m2d[0][3] = 14; g_m2d[1][1] = 22;
+    g_m2d[2][0] = 31; g_m2d[2][3] = 34;
+    if (g_m2d[0][0] != 11) ok = 0;
+    if (g_m2d[0][3] != 14) ok = 0;
+    if (g_m2d[1][1] != 22) ok = 0;
+    if (g_m2d[2][0] != 31) ok = 0;
+    if (g_m2d[2][3] != 34) ok = 0;
+    g_m2d[1][0] = 77;
+    if (g_m2d[0][3] != 14) ok = 0;      // row 1 write must not touch row 0
+    // 2) local 2D I64, nested-loop fill, compiled+run by Compiler.HC.
+    I64 r2 = CompilerCompileAndRun("I64 lf() { I64 a[3][4]; I64 i; I64 j; for (i=0;i<3;i++) { for (j=0;j<4;j++) { a[i][j] = i*10+j; } } return a[0][0] + a[2][3] + a[1][2]; } lf();");
+    if (r2 != 35) ok = 0;               // 0 + 23 + 12
+    // 3) width-aware local U16 2D: a 2-byte store/load, not the 8-byte default.
+    I64 r3 = CompilerCompileAndRun("I64 uf() { U16 u[2][3]; u[1][2] = 65535; return u[1][2]; } uf();");
+    if (r3 != 65535) ok = 0;
+    // 4) global U16 2D through Compiler.HC.
+    I64 r4 = CompilerCompileAndRun("U16 gu[2][3]; gu[1][2] = 40000; gu[1][2];");
+    if (r4 != 40000) ok = 0;
+    if (ok != 0) doldoc_print("ARRAY2D: PASS\n");
+    else doldoc_print("ARRAY2D: FAIL\n");
+}
+
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
@@ -463,6 +494,7 @@ U0 SelfTestRun() {
     SelfTestSovereign();
     SelfTestKernel();
     SelfTestPtrScale();
+    SelfTest2DArray();
     SelfTestRender();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

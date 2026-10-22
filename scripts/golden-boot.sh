@@ -145,6 +145,13 @@ else
         echo "  [FAIL] pointer element width: ${psline:-<none>} (want PTRSCALE: PASS)"
         fail=1
     fi
+    a2line="$(printf '%s\n' "$out" | grep -a 'ARRAY2D: ' | tail -1)"
+    if printf '%s' "$a2line" | grep -aq 'PASS'; then
+        echo "  [PASS] $a2line (multidimensional array indexing)"
+    else
+        echo "  [FAIL] 2D array indexing: ${a2line:-<none>} (want ARRAY2D: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

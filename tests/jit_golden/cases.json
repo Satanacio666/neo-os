@@ -558,6 +558,46 @@
       "expect": "0x7"
     },
     {
+      "name": "array2d_global",
+      "note": "Global 2D array: row stride must be registered (was a Data Abort).",
+      "cmds": [
+        "I64 g2d[2][3]; g2d[0][1] = 7; g2d[1][2] = 9; g2d[0][1] + g2d[1][2];"
+      ],
+      "expect": "0x10"
+    },
+    {
+      "name": "array2d_local",
+      "note": "Local 2D array: multi-dim declaration must parse (was an internal error).",
+      "cmds": [
+        "I64 l2f() { I64 a[2][3]; a[1][2] = 9; return a[1][2]; } l2f();"
+      ],
+      "expect": "0x9"
+    },
+    {
+      "name": "array2d_row_sep",
+      "note": "Rows must not alias: g[0][3] and g[1][0] are distinct cells.",
+      "cmds": [
+        "I64 g2r[3][4]; g2r[0][3] = 1; g2r[1][0] = 2; g2r[0][3] * 100 + g2r[1][0];"
+      ],
+      "expect": "0x66"
+    },
+    {
+      "name": "array2d_u16",
+      "note": "Width-aware 2D element: a U16 store/load must be 2 bytes, not 8.",
+      "cmds": [
+        "U16 g2u[2][3]; g2u[1][2] = 65535; g2u[1][2];"
+      ],
+      "expect": "0xFFFF"
+    },
+    {
+      "name": "array3d_global",
+      "note": "3D array indexing generalizes (per-dimension strides).",
+      "cmds": [
+        "I64 g3[2][3][4]; g3[1][2][3] = 42; g3[1][2][3];"
+      ],
+      "expect": "0x2A"
+    },
+    {
       "name": "known_over8_args",
       "known": true,
       "cmds": [

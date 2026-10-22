@@ -136,6 +136,7 @@ I64   g_hc_local_scales[256];    // 1, 2, 4, 8, or struct size
 I64   g_hc_local_is_ptr[256];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
 I64   g_hc_local_is_float[256];  // 1 if this local is an F64
 I64   g_hc_local_st_idx[256];    // struct index or -1
+I64   g_hc_local_strides[256 * 4]; // per-dim byte strides for local arrays (0 = none)
 I64   g_hc_local_count;
 I64   g_hc_decl_float;          // transient: current declaration is F64
 I64   g_hc_frame_offset;
@@ -156,6 +157,7 @@ I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
 I64   g_hc_global_is_ptr[HC_MAX_GLOBALS]; // 1 if the global is a pointer (e.g. FBox *p)
 I64   g_hc_global_is_float[HC_MAX_GLOBALS];
 I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
+I64   g_hc_global_strides[HC_MAX_GLOBALS * 4]; // per-dim byte strides for arrays (0 = none)
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
@@ -509,6 +511,10 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         g_hc_local_is_ptr[g_hc_local_count] = is_ptr;
         g_hc_local_is_float[g_hc_local_count] = g_hc_decl_float;
         g_hc_local_st_idx[g_hc_local_count] = st_idx;
+        g_hc_local_strides[g_hc_local_count * 4 + 0] = 0;
+        g_hc_local_strides[g_hc_local_count * 4 + 1] = 0;
+        g_hc_local_strides[g_hc_local_count * 4 + 2] = 0;
+        g_hc_local_strides[g_hc_local_count * 4 + 3] = 0;
         g_hc_local_count++;
     } else {
         g_hc_error = 1;
@@ -518,6 +524,21 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
 
 I64 HcAddLocal(U8 *name) {
     return HcAddLocalTyped(name, 8, 0, -1, 1);
+}
+
+// Per-dimension byte strides for a local array (parallel to the local table).
+U0 HcSetLocalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
+    I64 idx = HcFindLocalIdx(name);
+    if (idx < 0) return;
+    g_hc_local_strides[idx * 4 + 0] = s0;
+    g_hc_local_strides[idx * 4 + 1] = s1;
+    g_hc_local_strides[idx * 4 + 2] = s2;
+    g_hc_local_strides[idx * 4 + 3] = s3;
+}
+
+I64 HcLocalStride(I64 loc, I64 k) {
+    if (loc < 0 || k < 0 || k > 3) return 0;
+    return g_hc_local_strides[loc * 4 + k];
 }
 
 U64 HcFindFunc(U8 *name) {
@@ -1248,6 +1269,39 @@ I64 HcGlobalScale(U8 *name) {
     return 0;
 }
 
+// Register the per-dimension byte strides of a global array. strides[k] is the
+// byte step applied to subscript k: for `I64 m[N][M]` that is [M*8, 8]. 0 marks
+// "no such dimension". This is what lets `m[i][j]` resolve to base + i*M*8 + j*8
+// with no intermediate dereference (the old code had no row stride at all).
+U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
+            g_hc_global_strides[i * 4 + 0] = s0;
+            g_hc_global_strides[i * 4 + 1] = s1;
+            g_hc_global_strides[i * 4 + 2] = s2;
+            g_hc_global_strides[i * 4 + 3] = s3;
+            return;
+        }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_strides[g_hc_global_count * 4 + 0] = s0;
+        g_hc_global_strides[g_hc_global_count * 4 + 1] = s1;
+        g_hc_global_strides[g_hc_global_count * 4 + 2] = s2;
+        g_hc_global_strides[g_hc_global_count * 4 + 3] = s3;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGlobalStride(U8 *name, I64 k) {
+    if (k < 0 || k > 3) return 0;
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_strides[i * 4 + k];
+    }
+    return 0;
+}
+
 I64 HcGlobalStructIdx(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
@@ -1267,6 +1321,10 @@ U0 HcResetGlobalType(U8 *name) {
             g_hc_global_is_ptr[i] = 0;
             g_hc_global_is_float[i] = 0;
             g_hc_global_elem_scale[i] = 0;
+            g_hc_global_strides[i * 4 + 0] = 0;
+            g_hc_global_strides[i * 4 + 1] = 0;
+            g_hc_global_strides[i * 4 + 2] = 0;
+            g_hc_global_strides[i * 4 + 3] = 0;
             return;
         }
     }
@@ -1282,6 +1340,8 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
     I64 cur_st_idx = -1;
     I64 cur_mode = 0; // 0=scalar, 1=ptr, 2=inline_arr, 3=inline_struct
     I64 cur_is_float = 0;
+    I64 arr_sym = 0;  // 1 while indexing the base array symbol's own subscripts
+    I64 sub_k = 0;    // current subscript depth (0 = first dimension)
 
     if (loc_idx >= 0) {
         I64 rlv_off = g_hc_local_offsets[loc_idx];
@@ -1289,6 +1349,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
         cur_st_idx = g_hc_local_st_idx[loc_idx];
         cur_mode = g_hc_local_is_ptr[loc_idx];
         cur_is_float = g_hc_local_is_float[loc_idx];
+        if (cur_mode == 2) arr_sym = 1;
 
         if (cur_mode == 2 || cur_mode == 3) {
             HcEmitAddrLocal(0, rlv_off);
@@ -1324,6 +1385,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             if (HcGlobalIsArray(ident_name)) {
                 HcEmit(0xF9400000); // ldr x0, [x0] : array cell -> base address
                 cur_mode = 2;
+                arr_sym = 1;
             } else if (HcGlobalIsPtr(ident_name)) {
                 // Global pointer (possibly to a struct). Dereference the cell once
                 // before indexing / -> member access; leave cur_mode = 0 so the
@@ -1363,6 +1425,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
     while (g_hc_tok == TOK_DOT || g_hc_tok == TOK_ARROW || g_hc_tok == TOK_LBRACKET) {
         if (g_hc_tok == TOK_DOT || g_hc_tok == TOK_ARROW) {
             I64 is_arrow = (g_hc_tok == TOK_ARROW);
+            arr_sym = 0; // member access ends the base array's subscript chain
             if (is_arrow && cur_mode == 1) {
                 HcEmit(0xF9400000); // ldr x0, [x0]
             }
@@ -1408,12 +1471,21 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             if (g_hc_tok == TOK_RBRACKET) HcLexNext(); // eat ']'
             HcEmitPop(1); // base address in x1
 
-            // Element stride: prefer a registered element width (set for global
-            // arrays, incl. pointer arrays). Only fall back to the pointee struct
-            // size for an array of inline struct values (no registered width) —
-            // e.g. `CBox boxes[10]` or an inline struct-array member.
+            // Element stride for THIS subscript. For a registered array symbol
+            // (global or local) use its per-dimension byte stride: the row stride
+            // for [i], the element width for [j]. This is what makes arr[i][j]
+            // resolve to base + i*row_stride + j*elem with NO intermediate
+            // dereference. Otherwise fall back to the element width, or the
+            // pointee struct size for an array of inline struct values.
             I64 elem_sz = cur_scale;
-            if (cur_st_idx >= 0 && cur_mode != 1 && HcGlobalScale(ident_name) <= 0) {
+            I64 stride_k = 0;
+            if (arr_sym) {
+                if (loc_idx >= 0) stride_k = HcLocalStride(loc_idx, sub_k);
+                else stride_k = HcGlobalStride(ident_name, sub_k);
+            }
+            if (stride_k > 0) {
+                elem_sz = stride_k;
+            } else if (cur_st_idx >= 0 && cur_mode != 1 && HcGlobalScale(ident_name) <= 0) {
                 elem_sz = g_hc_struct_sizes[cur_st_idx];
             }
             if (elem_sz > 1) {
@@ -1421,12 +1493,21 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                 HcEmit(0x9B027C00); // mul x0, x0, x2
             }
             HcEmit(0x8B000020); // add x0, x1, x0
+            sub_k = sub_k + 1;
 
             if (g_hc_tok == TOK_LBRACKET) {
-                // Chained multidimensional array indexing (e.g. matrix[i][j])
-                cur_mode = 1;
-                cur_scale = 8;
-                cur_is_float = 0;
+                // Chained multidimensional array indexing (e.g. matrix[i][j]).
+                // X0 now holds the sub-array base address, so do NOT dereference
+                // it (the old cur_mode=1 here emitted an LDR that loaded element
+                // [i] as a pointer -> Data Abort). Advance to the next stride.
+                cur_mode = 0;
+                I64 nk = 0;
+                if (arr_sym) {
+                    if (loc_idx >= 0) nk = HcLocalStride(loc_idx, sub_k);
+                    else nk = HcGlobalStride(ident_name, sub_k);
+                }
+                if (nk > 0) cur_scale = nk;
+                cur_is_float = (loc_idx >= 0) ? g_hc_local_is_float[loc_idx] : HcGlobalIsFloat(ident_name);
             } else {
                 cur_mode = 0;
             }
@@ -2292,15 +2373,40 @@ U0 HcParseStatement() {
                 HcLexNext();
 
                 if (g_hc_tok == TOK_LBRACKET) {
-                    HcLexNext();
+                    I64 l_dims[4];
+                    I64 l_ndim = 0;
                     I64 arr_cnt = 1;
-                    if (g_hc_tok == TOK_NUMBER) {
-                        arr_cnt = g_hc_tok_val;
+                    while (g_hc_tok == TOK_LBRACKET) {
                         HcLexNext();
+                        I64 dim = 1;
+                        if (g_hc_tok == TOK_NUMBER) { dim = g_hc_tok_val; HcLexNext(); }
+                        while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
+                            I64 dim_op = g_hc_tok;
+                            HcLexNext();
+                            I64 dim_f = 1;
+                            if (g_hc_tok == TOK_NUMBER) { dim_f = g_hc_tok_val; HcLexNext(); }
+                            if (dim_op == TOK_STAR) dim = dim * dim_f; else dim = dim + dim_f;
+                        }
+                        arr_cnt = arr_cnt * dim;
+                        if (l_ndim < 4) l_dims[l_ndim] = dim;
+                        l_ndim = l_ndim + 1;
+                        if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     }
-                    if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     I64 arr_elem_sz = (is_p > 0) ? 8 : base_scale;
                     I64 arr_off = HcAddLocalTyped(vname, arr_elem_sz, 2, (is_p > 0) ? -1 : st_idx, arr_cnt);
+                    // Per-dimension strides: stride[last] = elem width,
+                    // stride[d] = dims[d+1]*stride[d+1]  (row stride for [i]).
+                    I64 l_acc = arr_elem_sz;
+                    I64 l_nd = l_ndim; if (l_nd > 4) l_nd = 4;
+                    I64 l_s0 = 0; I64 l_s1 = 0; I64 l_s2 = 0; I64 l_s3 = 0;
+                    for (I64 ld = l_nd - 1; ld >= 0; ld--) {
+                        if (ld == 0) l_s0 = l_acc;
+                        else if (ld == 1) l_s1 = l_acc;
+                        else if (ld == 2) l_s2 = l_acc;
+                        else l_s3 = l_acc;
+                        if (ld > 0) l_acc = l_acc * l_dims[ld];
+                    }
+                    HcSetLocalStrides(vname, l_s0, l_s1, l_s2, l_s3);
                     // Local array initializer list: Type a[N] = { e0, e1, ... };
                     if (g_hc_tok == TOK_EQUAL) {
                         HcLexNext(); // eat '='
@@ -2891,6 +2997,8 @@ U0 HcParseProgram() {
                 // substituted by the lexer), e.g. `[HC_MAX_GLOBALS * 32]`.
                 I64 g_count = 1;
                 I64 g_has_bracket = 0;
+                I64 g_dims[4];
+                I64 g_ndim = 0;
                 while (g_hc_tok == TOK_LBRACKET) {
                     g_has_bracket = 1;
                     HcLexNext();
@@ -2904,6 +3012,8 @@ U0 HcParseProgram() {
                         if (dim_op == TOK_STAR) dim = dim * dim_f; else dim = dim + dim_f;
                     }
                     g_count *= dim;
+                    if (g_ndim < 4) g_dims[g_ndim] = dim;
+                    g_ndim = g_ndim + 1;
                     if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                 }
                 // Top-level global variable declaration: Type g_var [= val];
@@ -2949,6 +3059,21 @@ U0 HcParseProgram() {
                 // struct size — register 8 so the index path below does not fall
                 // back to the struct size. Value arrays stride by element width.
                 if (g_is_arr) HcRegisterGlobalScale(fname, g_is_ptr ? 8 : g_elem_bytes);
+                // Register per-dimension strides so arr[i][j] indexes correctly:
+                // stride[last] = element width, stride[d] = dims[d+1]*stride[d+1].
+                if (g_is_arr) {
+                    I64 g_acc = g_is_ptr ? 8 : g_elem_bytes;
+                    I64 g_nd = g_ndim; if (g_nd > 4) g_nd = 4;
+                    I64 g_s0 = 0; I64 g_s1 = 0; I64 g_s2 = 0; I64 g_s3 = 0;
+                    for (I64 gd = g_nd - 1; gd >= 0; gd--) {
+                        if (gd == 0) g_s0 = g_acc;
+                        else if (gd == 1) g_s1 = g_acc;
+                        else if (gd == 2) g_s2 = g_acc;
+                        else g_s3 = g_acc;
+                        if (gd > 0) g_acc = g_acc * g_dims[gd];
+                    }
+                    HcRegisterGlobalStrides(fname, g_s0, g_s1, g_s2, g_s3);
+                }
                 // A global POINTER also needs its pointee width registered so that
                 // `p[i]` strides by sizeof(pointee) and loads/stores the pointee
                 // width (e.g. `U16 *zb; zb[i]` must be a 2-byte LDRH, not an 8-byte
