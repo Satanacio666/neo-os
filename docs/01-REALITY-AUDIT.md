@@ -221,13 +221,26 @@ dedicated lexer string arena (`HcStrAlloc`, chained 256 KiB chunks, BSS-first, b
 the unchecked `g_hc_code` backpatch writes; null-checked global-array alloc; exact failure diagnostics in both
 allocators; `SelfTestHeap`. `KHEAP: PASS`. Pointer arithmetic verified **byte-based** (Causa-2 ruled out).
 
-### P4.3 — textures / perspective / filtering / blend — **[PARTIAL, WIP, BSOD]**
-Branch `p4.3-wip` (`eeb2910`) adds `CTexture2D` + GL texture API, per-vertex `u/W,v/W,1/W`, a scalar
-`RasterPixelTextured` span dispatched from the unified `RasterRow`, `RasterDisableTexture()` on the 2D golden
-path, and `SelfTestTexture`. **It BSODs.** Exact root cause (Agent-1 forensics): a **debug `doldoc_printf`
-with 9 arguments** at `RasterTile.HC:425` exceeds the compiler's **8-argument limit** → `RasterTile.HC` fails
-to compile at Stage 5 → its function symbols are left **dangling** (published before body-parse) →
-`HolyGLInit()` jumps into overwritten code → panic. The 2D golden hash is preserved throughout
-(`RENDER 0xD28836F`). One-shot remediation in doc 02 / doc 04.
+### P4.3 — textures / perspective / filtering / blend — **[REAL]** (`51a9c68`)
+`CTexture2D` pool + `glGenTextures/glBindTexture/glTexImage2D/glTexParameteri/glBlendFunc` (+
+`GL_TEXTURE_2D`/`GL_BLEND`), per-vertex `u/W,v/W,1/W`, a `RasterPixelTextured` span dispatched from the **one**
+`RasterRow` (no parallel scalar rasterizer), NEAREST/LINEAR (bilinear, weights sum to 256), REPEAT/CLAMP,
+exact `div255` alpha blend, and `RasterDisableTexture()` on the 2D golden path. `SelfTestTexture`
+(nearest quadrants / bilinear centre / perspective row / alpha blend) → **`TEXTURE: PASS`**;
+**`RENDER 0xD28836F`** bit-exact. The texel gather is scalar because **AArch64 NEON has no gather**; the NEON
+extension is p4.3b.
+
+**Two compiler root bugs were found and fixed on the way (the real blockers):**
+1. **Mixed I64/F64 arithmetic** (`apps/Compiler.HC`): the float path did `fmov d0,x0`/`fmov d1,x1`,
+   reinterpreting an integer operand's bits as a double. So `F64 half_w = g_hgl.vp_w * 0.5` was a denormal
+   ~0 → **every HolyGL triangle collapsed to (0,0)**; 3D rendering was silently broken (the 2D golden scene
+   uses `RasterTriangleZ` directly, masking the bug). Fixed with `HcEmitPromoteFloat` (SCVTF the integer
+   operand), applied to `HcParseMultiplicative/Additive/Relational/Equality`.
+2. **Struct-member pointer indexing uses stride 8**: `g_rtex.data[k]` (a `U32 *` member) advanced by 8 bytes,
+   not 4. Worked around by routing through a typed local pointer; the compiler limitation is noted.
+The earlier WIP **BSOD** was self-inflicted: a 9-argument `doldoc_printf` inside the rasterizer exceeded the
+8-arg limit → `RasterTile.HC` failed to compile → **dangling** function symbols (published before body-parse)
+→ `HolyGLInit()` jumped into overwritten code. Rule: **never print from inside the rasterizer, never exceed
+8 args.**
 
 **Research briefs** (read-only, external best-in-class) added: `docs/research/*.md` (see doc 03 §11).

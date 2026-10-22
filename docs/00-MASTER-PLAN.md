@@ -233,8 +233,10 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 - **P0.7b** (`77d407f`) DONE — `KHEAP: PASS` split/coalesce regression + pointer-arithmetic audit.
 - **`main` is green.** P0.7's blocker diagnosis: the *failing* allocator was the C seed heap; the *root* cause
   was module truncation, not exhaustion.
-- **P4.3 (textures) IN PROGRESS** on branch `p4.3-wip` (`eeb2910`) — a WIP that BSODs; see docs 01/02/04 for the
-  exact root cause and the one-shot remediation. It is **not** on `main`.
-- Remaining near-term ladder: finish **P4.3** → P4.4 Fonts/SDF → P4.5 lighting → P4.6 fragment VM → P4.7 OBJ
-  → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell → **P7** bench → **P8** self-host-all
-  → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into their owning priorities.
+- **P4.3 (textures / perspective / filters / blend) DONE** (`51a9c68`) — one unified rasterizer, golden hash
+  preserved (`RENDER 0xD28836F`), `TEXTURE: PASS`. Two **compiler root bugs** fixed on the way: mixed I64/F64
+  arithmetic (all HolyGL geometry had collapsed to (0,0)) and struct-member pointer stride (8 vs 4).
+- Remaining near-term ladder: **p4.3b** NEON textured span → P4.4 Fonts/SDF → P4.5 lighting → P4.6 fragment VM
+  → P4.7 OBJ → P4.8 delete+verify; then **P5** DolDoc 3.0 → **P6** reactive shell → **P7** bench
+  → **P8** self-host-all → **P9** GPU → **P10** MCU cluster. The §9 integrations are folded into their
+  owning priorities.

@@ -403,10 +403,29 @@ For any non-trivial root fix, first spawn **read-only** research agents (codebas
 best-in-class) and persist their briefs under `docs/research/`, **then** implement in one shot. Agents must
 **not** edit the project. *(This session: the BSOD root cause and the §9 algorithm map came from those briefs.)*
 
+### D6. Mixed I64/F64 arithmetic — FIXED (root) in the compiler
+- **Bug:** the float binary path (`HcParseMultiplicative/Additive/Relational/Equality`) moved operands with
+  `fmov d0,x0`/`fmov d1,x1`, assuming **both** were F64. When one was an integer, its bit pattern was
+  reinterpreted as a double. `F64 half_w = g_hgl.vp_w * 0.5` therefore produced a denormal ≈0, so **every
+  HolyGL triangle collapsed to (0,0)** — 3D rendering had been silently broken (the 2D golden scene calls
+  `RasterTriangleZ` directly, masking it).
+- **Fix:** `HcEmitPromoteFloat(lf, rf)` converts the integer operand with **`scvtf d, x`** before the float op.
+- **Verdict:** root-fixed. Any int↔float arithmetic now promotes correctly. *(This was the single biggest
+  hidden defect; it is why the cube/3D demos never really rendered.)*
+
+### D7. Struct-member pointer indexing stride — WORKED AROUND
+- **Bug:** indexing a pointer **struct member** (`g_rtex.data[k]`, a `U32 *`) advances by **8** bytes, not
+  `sizeof(U32)=4` (global pointers get their scale via `HcRegisterGlobalScale`; struct members do not).
+- **Workaround:** route through a **typed local pointer** (`U32 *td = g_rtex.data; td[i]`). Also, the texture
+  pointer must be declared `U32 *` (not `U64`), or indexing is byte-wise.
+- **Open:** teach the compiler to carry the pointee scale for struct-member pointers (P1.3).
+
 ### Open questions
-- **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere.
+- **P4.3 color space:** linear-light shading + sRGB present + premultiplied alpha (proposed) vs sRGB-everywhere
+  (current path is straight alpha). DEFERRED to P4.4+.
 - **SDF atlas:** bake from the built-in vector glyphs first (bootstrap) vs implement the full TTF parser first.
 - **Handover timing:** keep the sovereign handover at the end of `KernelInit` (8 MB HolyC pool) or enlarge the
   sovereign pool to absorb Stages 2–6? (Current: unchanged; the 8 MB pool is idle during boot, so this is a
   memory-efficiency question, not a correctness one.)
 - **>8-arg calls:** implement stack-arg spill vs keep the hard error and document the limit.
+- **p4.3b:** vectorize the textured span (coordinate/filter/blend in NEON; gather stays scalar).

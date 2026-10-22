@@ -667,49 +667,44 @@ is procedural beziers. ~60 dead fns / write-only state (`raster_engine`, `tile_s
 - [x] **Tiling/determinism:** row-major scan is order-independent and byte-identical on 1 vs N cores (the
       `RENDER` golden hash covers this). Per-tile SMP job binning is deferred to a later parallel-render step.
 
-### P4.3 — Textures, filtering & blend modes — 🔄 **WIP on `p4.3-wip` (`eeb2910`), BSOD; one-shot plan below**
+### P4.3 — Textures, filtering & blend modes — ✅ **DONE** (`51a9c68`)
 
-**Goal (unchanged):** one unified rasterizer that absorbs textures — no parallel scalar rasterizer.
+**Goal (met):** one unified rasterizer that absorbs textures — no parallel scalar rasterizer.
 **Reference algorithms:** `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` §1–§2.
 
-**Status & exact root cause of the WIP BSOD.** The WIP adds `CTexture2D` + the GL texture API
-(`glGenTextures/glBindTexture/glTexImage2D/glTexParameteri/glBlendFunc`), per-vertex `u/W,v/W,1/W`, a
-`RasterPixelTextured` span dispatched from the unified `RasterRow`, `RasterDisableTexture()` on the 2D golden
-path, and `SelfTestTexture`. It **BSODs** because a **debug `doldoc_printf` with 9 arguments** (`RasterTile.HC:425`)
-exceeds the compiler's **8-argument limit** (`Compiler.HC:1724`, `jit_arm64.c:978`) → `RasterTile.HC` fails to
-compile at Stage 5 → its functions were already **published** (publish-before-body, `Compiler.HC:2958`) so the
-symbols dangle into the rolled-back region → `HolyGLInit()` jumps into overwritten code → panic. Golden hash is
-unaffected (`RENDER 0xD28836F`). *(This is the exact "fix the fire escape first" lesson: never print from inside
-the rasterizer.)*
+**Delivered.** `CTexture2D` pool + `glGenTextures/glBindTexture/glTexImage2D/glTexParameteri/glBlendFunc` (+
+`GL_TEXTURE_2D`/`GL_BLEND`), per-vertex `u/W,v/W,1/W`, `RasterPixelTextured` dispatched from the **one**
+`RasterRow`, perspective-correct (area cancels), NEAREST/LINEAR (bilinear, weights sum to 256), REPEAT (PoT
+mask)/CLAMP, exact `div255` alpha blend, `RasterDisableTexture()` on the 2D golden path. `SelfTestTexture`
+(4 sub-tests) → `TEXTURE: PASS`; `RENDER 0xD28836F` bit-exact. Texel gather is scalar (NEON has no gather).
 
-**One-shot remediation (do these in order, gate after each):**
-- [ ] **Remove ALL `doldoc_printf` from the rasterizer** (`RasterTriangleZ`/`RasterRow`/`RasterPixel*`). Keep
-      `RasterBootCheck`'s own prints. Never exceed **8 args** in any call; never call the print path while a
-      DolDoc redraw/animate tick is iterating (re-entrancy: `DolDocRedraw → widget → HolyGL → RasterTriangleZ`).
-      Diagnostics must be a global counter/flag read **after** the draw, not printed inside it.
-- [ ] **Perspective-correct interpolation (exact, area-free).** `numU = w0*U0 + w1*U1 + w2*U2`,
-      `numV = w0*V0 + w1*V1 + w2*V2`, `den = w0*I0 + w1*I1 + w2*I2` (all exact `I64`, attributes `16.16`);
-      `u = (numU<<16)/den`, `v = (numV<<16)/den` (scalar `SDIV`, `den>0` guaranteed by the near-plane reject
-      `w<=0.05`). `area` cancels — do **not** divide by `area` *and* `den`. *(Ref: brief §1.2–1.3.)*
-- [ ] **Nearest sampling first** (validate interpolation against a checker), then **bilinear** (8.8 weights
-      forced to sum to **exactly 256**: compute 3, derive the 4th), then **wrap** (`REPEAT` = `& (w-1)`
-      power-of-two mask incl. negatives; `CLAMP` = `SMIN/SMAX` per tap, never clamp the coordinate once), then
-      **alpha blend** (`GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA`, exact `div255` = `t=x+128; (t+(t>>8))>>8`).
-- [ ] **Unified pipeline, not a second rasterizer.** `RasterRow` dispatches to the textured span when
-      `g_raster_tex_active`; otherwise the byte-identical `RasterSpanNEON`. The texel gather is scalar by
+**Two compiler root bugs fixed to get here (the actual blockers):**
+1. **Mixed I64/F64 arithmetic** (`Compiler.HC`): the float binary path reinterpreted the integer operand's
+   bits as a double (`fmov` instead of `scvtf`) → `g_hgl.vp_w * 0.5` ≈ 0 → **all HolyGL geometry collapsed to
+   (0,0)**. Fixed with `HcEmitPromoteFloat` in Multiplicative/Additive/Relational/Equality.
+2. **Struct-member pointer stride = 8**: `g_rtex.data[k]` (`U32 *` member) advanced 8 bytes. Routed through a
+   typed local pointer. *(Also: `CRasterTex.data` had to be `U32 *`, not `U64`.)*
+
+**Lesson (kept):** never `doldoc_printf` from inside the rasterizer and never exceed **8 args** — a 9-arg debug
+print failed `RasterTile.HC` to compile and left **dangling** function symbols (publish-before-body) → BSOD.
+
+**p4.3b (next):** vectorize the textured span's coordinate/filter/blend math in NEON (the gather stays scalar).
+
+- [x] Remove ALL `doldoc_printf` from the rasterizer; diagnostics are globals read after the draw.
+- [x] Perspective-correct interpolation (area-free).
+- [x] NEAREST → LINEAR (256-sum weights) → REPEAT/CLAMP → alpha blend (exact `div255`).
+- [x] Unified pipeline, not a second rasterizer. `RasterRow` dispatches to the textured span when
       necessity (AArch64 NEON has no gather); the coordinate/filter/blend math may be NEON. NEON extension of
       the textured span is **p4.3b** (the definitive goal), validated against the scalar math.
 - [ ] **`RasterDisableTexture()`** is called by the 2D path (`RenderGoldenScene`) so the golden hash stays
       bit-exact; `glDisable(GL_TEXTURE_2D)` unbinds.
-- [ ] **`SelfTestTexture`** (gate `TEXTURE: PASS`): (1) screen-aligned 2×2 NEAREST quad → 4 quadrant colours;
-      (2) LINEAR → centre = bilinear average; (3) perspective (w 2→6) → the texel row boundary at the
-      perspective-correct screen position `v=3t/(1+2t)`, not the affine midpoint; (4) alpha 50% over a known
-      background. Restore GL state; add `TEXTURE: PASS` to `scripts/golden-boot.sh`.
-- [ ] **Decision (color space):** shade in **linear light**, present **sRGB**; store **premultiplied alpha**
-      for correct blending. *(Refs: Søren Sandmann "Gamma vs premultiplied".)*
-- [ ] Blend modes: opaque / alpha / additive / multiply.
-- [ ] **Exit — MET when:** `SELFTEST 80/80`, `RASTER: PASS`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
-      `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`; commit P4.3 + refresh the bundle.
+- [x] **`SelfTestTexture`** (gate `TEXTURE: PASS`): (1) NEAREST quadrants; (2) LINEAR centre; (3) perspective
+      row boundary at `v=3t/(1+2t)`; (4) alpha 50% blend. `TEXTURE: PASS` added to `golden-boot.sh`.
+- [ ] **Decision (color space) — DEFERRED to P4.4+:** shade in linear light / present sRGB / premultiplied
+      alpha (current path is straight alpha + sRGB-ish 0xAARRGGBB).
+- [ ] Blend modes additive/multiply — DEFERRED (opaque + src-alpha landed).
+- [x] **Exit — MET:** `SELFTEST 80/80`, `RASTER: PASS`, `RENDER: PASS (0xD28836F)`, `TEXTURE: PASS`,
+      `KHEAP: PASS`, `SELF-HOST: PASS`, `GOLDEN BOOT: PASS`; committed `51a9c68` + bundle refreshed.
 
 **Cross-module accessors (sovereign rule):** `HolyGLGetTrisRendered()`, `HolyGLGetViewportW/H()`,
 `HolyGLGetBound()`, `RasterTextureActive()` — never read `g_hgl.*`/`g_rtex.*` from another module. (Existing
