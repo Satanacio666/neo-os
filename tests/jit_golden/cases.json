@@ -649,6 +649,30 @@
       "expect": "0x5"
     },
     {
+      "name": "decl_comma_init",
+      "note": "D18: comma-separated initialized declarations (local).",
+      "cmds": [
+        "I64 fn() { U8 a = 10, b = 25, c = 7; I64 x = 100, y = 200; return a + b + c + x + y; } fn();"
+      ],
+      "expect": "0x156"
+    },
+    {
+      "name": "decl_comma_global",
+      "note": "D18 root fix: comma-separated initialized GLOBAL declarations (was a top-level parser gap).",
+      "cmds": [
+        "I64 g1 = 5, g2 = 6; g1 + g2;"
+      ],
+      "expect": "0xB"
+    },
+    {
+      "name": "fn_prototype_forward",
+      "note": "D17 root fix: a forward prototype must not shadow the real definition's address.",
+      "cmds": [
+        "I64 fwd_add(I64 a, I64 b); I64 caller() { return fwd_add(19, 23); } I64 fwd_add(I64 a, I64 b) { return a + b; } caller();"
+      ],
+      "expect": "0x2A"
+    },
+    {
       "name": "known_over8_args",
       "known": true,
       "cmds": [

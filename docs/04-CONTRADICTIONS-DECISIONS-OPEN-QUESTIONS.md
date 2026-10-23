@@ -629,6 +629,29 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
 - **Fix.** Moved the `CCompositorState` class + `CCompositorState g_comp;` declaration to the top of the module,
   before any use. **Rule: declare a global before the first function that touches it.**
 
+### D21. FNV-1a `hash % 128` is **signed-negative** → out-of-bounds bucket read — **ROOT-FIXED** (Shell.HC)
+- **Symptom.** `Shell.HC` compiled but the OS BSOD'd while executing `ShellInit`'s command registrations:
+  `Data Abort`, `FAR 0xBAD2CF896F69AD18` (a wild pointer), inside a strcmp loop.
+- **Root cause.** `I64 b = (I64)(ShellHash(name) % SHELL_CMD_BUCKETS);`. `ShellHash` returns a `U64` whose high
+  bit is often set; cast to `I64` it is negative, and C `%` is signed, so `b` landed in `[-127, 0]`. `g_shell_buckets[b]`
+  read *before* the array, yielding a garbage chain index → `g_shell_cmds[garbage].name` → wild read.
+- **Fix.** Use a power-of-two mask: `b = (I64)(ShellHash(name) & (SHELL_CMD_BUCKETS - 1));` (both in `ShellFindCmd`
+  and `shell_register_cmd`). **Rule: for a power-of-two table, mask the hash; never signed-`%` a `U64`.**
+
+### D22. P6 architecture — documents emit actions, the shell executes them — **DECIDED**
+- **The cycle is broken.** `DolDoc.HC` no longer names any Shell function. Buttons/links/`$CM$` enqueue a
+  `CDocAction{kind,target,val,payload}` into a 64-entry ring (`DolDocPushAction`); the shell drains it
+  (`ShellDrainActions` → `ShellExecuteAction`). For the desktop loop (which lives in DolDoc), the Shell registers
+  its pump via a function pointer (`DolDocSetPump(&shell_poll)`) — a callback, not a name coupling. The DAG is
+  strictly `Shell.HC → DolDoc.HC`.
+- **The ladder is gone.** `ShellRunCommand` splits `verb`/`args`, does an O(1) `ShellFindCmd` (FNV-1a), dispatches
+  through the handler pointer, else tries `<verb>.HC` on RedSea, else feeds the raw text to the HolyC JIT.
+- **Tools are documents.** `top` (live timer/CPU/KHeap/FPS + `$PB` bar + buttons), `filer` (per-file
+  `[Open][Edit][Run]` buttons), `edit`/`editline`/`editsave`/`editchrun` (line-numbered buffer, save to RedSea,
+  compile-and-run in place).
+- **Idle.** The event loop calls `__wfe()` when a frame has no work (wakes on the 1 kHz timer PPI), else
+  `task_yield()`.
+
 ### Open questions
 - **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
   (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +

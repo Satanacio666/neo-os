@@ -45,6 +45,8 @@ U0 KhSyncStats() {
 I64 KHeapFreeBytes() { return g_kheap.free_memory; }
 I64 KHeapUsedBytes() { return g_kheap.used_memory; }
 I64 KHeapPeakBytes() { return g_kheap.peak_used; }
+I64 KHeapTotalBytes() { return g_kheap.total_memory; }
+I64 KHeapAllocCount() { return g_kheap.allocation_count; }
 
 U0 KhMemSet(U8 *buf, U8 val, I64 count) {
   if (!buf || count <= 0) return;

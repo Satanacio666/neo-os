@@ -267,6 +267,60 @@ class CCompositorState {
 CCompositorState g_comp;
 I64 g_doc_comp_ready = 0;
 
+// ============================================================================
+// P6 action protocol — documents EMIT actions; the Shell EXECUTES them. This is
+// the seam that breaks the DolDoc -> Shell cycle: DolDoc never names a Shell
+// function, it only enqueues actions (and calls a Shell-registered pump via a
+// function pointer).
+// ============================================================================
+#define DOC_ACT_NONE  0
+#define DOC_ACT_RUN   1
+#define DOC_ACT_OPEN  2
+#define DOC_ACT_SET   3
+#define DOC_ACT_CLONE 4
+#define DOC_ACT_FOCUS 5
+#define DOC_ACT_Q     64
+
+class CDocAction {
+    I64 kind;
+    I64 target_id;
+    I64 val;
+    U8  payload[128];
+};
+CDocAction g_doc_act_q[DOC_ACT_Q];
+I64 g_doc_act_head = 0;
+I64 g_doc_act_tail = 0;
+U64 g_doc_pump_cb = 0;   // Shell registers its input/action pump here
+
+I64 DolDocPushAction(I64 kind, I64 target_id, I64 val, U8 *payload) {
+    I64 next = (g_doc_act_head + 1) % DOC_ACT_Q;
+    if (next == g_doc_act_tail) return 0;   // queue full
+    CDocAction *ac = &g_doc_act_q[g_doc_act_head];
+    ac->kind = kind; ac->target_id = target_id; ac->val = val;
+    I64 i = 0;
+    if (payload) { while (payload[i] && i < 127) { ac->payload[i] = payload[i]; i++; } }
+    ac->payload[i] = 0;
+    g_doc_act_head = next;
+    return 1;
+}
+
+I64 DolDocPollAction(I64 *out_kind, I64 *out_target, I64 *out_val, U8 *out_payload) {
+    if (g_doc_act_tail == g_doc_act_head) return 0;
+    CDocAction *ac = &g_doc_act_q[g_doc_act_tail];
+    *out_kind = ac->kind; *out_target = ac->target_id; *out_val = ac->val;
+    if (out_payload) { I64 i = 0; while (ac->payload[i] && i < 127) { out_payload[i] = ac->payload[i]; i++; } out_payload[i] = 0; }
+    g_doc_act_tail = (g_doc_act_tail + 1) % DOC_ACT_Q;
+    return 1;
+}
+
+I64 DolDocActionCount() {
+    I64 n = g_doc_act_head - g_doc_act_tail;
+    if (n < 0) n += DOC_ACT_Q;
+    return n;
+}
+
+U0 DolDocSetPump(U64 fn) { g_doc_pump_cb = fn; }
+
 // Anchors & macros
 U8  g_doc_anchor_names[DOC_MAX_ANCHORS * 32];
 I64 g_doc_anchor_nodes[DOC_MAX_ANCHORS];
@@ -1141,7 +1195,7 @@ U0 DolDocExecTag(U8 *tag) {
         DolDocAdvance(cols);
         return;
     }
-    if (t0 == 'C' && t1 == 'M') { U8 cmd[128]; DolDocParseQuoted(tag + 2, cmd, 120); if (cmd[0]) shell_run_command(cmd); return; }
+    if (t0 == 'C' && t1 == 'M') { U8 cmd[128]; DolDocParseQuoted(tag + 2, cmd, 120); if (cmd[0]) DolDocPushAction(DOC_ACT_RUN, -1, 0, cmd); return; }
     // ---- widgets ----
     if (t0 == 'B' && t1 == 'T') {
         U8 lbl[64]; lbl[0] = 0; U8 cmd[128]; cmd[0] = 0;
@@ -1844,7 +1898,7 @@ I64 DolDocHandleClick(I64 mx, I64 my) {
             DolDocPrint("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$");
             DolDocPrint(g_click_cmd_buf);
             DolDocPrint("$FG$\n");
-            shell_run_command(g_click_cmd_buf);
+            DolDocPushAction(DOC_ACT_RUN, -1, 0, g_click_cmd_buf);
             return 1;
         }
         DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
@@ -2283,10 +2337,10 @@ U0 DolDocDesktopMouse() {
             I64 d_x = 8; I64 d_y = sh - 40 - 280;
             if (mx >= d_x && mx <= d_x + 490 && my >= d_y && my <= d_y + 274) {
                 if (my >= d_y + 40 && my <= d_y + 62) {
-                    if (mx >= d_x + 110 && mx <= d_x + 190) shell_run_command("showcase");
-                    else if (mx >= d_x + 196 && mx <= d_x + 264) shell_run_command("shader");
-                    else if (mx >= d_x + 270 && mx <= d_x + 338) shell_run_command("gears");
-                    else if (mx >= d_x + 344 && mx <= d_x + 412) shell_run_command("physics");
+                    if (mx >= d_x + 110 && mx <= d_x + 190) DolDocPushAction(DOC_ACT_RUN, -1, 0, "showcase");
+                    else if (mx >= d_x + 196 && mx <= d_x + 264) DolDocPushAction(DOC_ACT_RUN, -1, 0, "shader");
+                    else if (mx >= d_x + 270 && mx <= d_x + 338) DolDocPushAction(DOC_ACT_RUN, -1, 0, "gears");
+                    else if (mx >= d_x + 344 && mx <= d_x + 412) DolDocPushAction(DOC_ACT_RUN, -1, 0, "physics");
                 } else if (my >= d_y + 76 && my <= d_y + 98) {
                     if (mx >= d_x + 130 && mx <= d_x + 182) { ThemeApply(0); DolDocDamageAll(); }
                     else if (mx >= d_x + 188 && mx <= d_x + 240) { ThemeApply(1); DolDocDamageAll(); }
@@ -2295,13 +2349,13 @@ U0 DolDocDesktopMouse() {
                     else if (mx >= d_x + 358 && mx <= d_x + 418) { ThemeApply(4); DolDocDamageAll(); }
                     else if (mx >= d_x + 424 && mx <= d_x + 478) { ThemeApply(5); DolDocDamageAll(); }
                 } else if (my >= d_y + 112 && my <= d_y + 134) {
-                    if (mx >= d_x + 130 && mx <= d_x + 204) shell_run_command("run Compiler.HC");
-                    else if (mx >= d_x + 210 && mx <= d_x + 284) shell_run_command("run TestJitP0.HC");
-                    else if (mx >= d_x + 290 && mx <= d_x + 344) shell_run_command("bench");
-                    else if (mx >= d_x + 410 && mx <= d_x + 478) shell_run_command("mem");
+                    if (mx >= d_x + 130 && mx <= d_x + 204) DolDocPushAction(DOC_ACT_RUN, -1, 0, "run Compiler.HC");
+                    else if (mx >= d_x + 210 && mx <= d_x + 284) DolDocPushAction(DOC_ACT_RUN, -1, 0, "run TestJitP0.HC");
+                    else if (mx >= d_x + 290 && mx <= d_x + 344) DolDocPushAction(DOC_ACT_RUN, -1, 0, "bench");
+                    else if (mx >= d_x + 410 && mx <= d_x + 478) DolDocPushAction(DOC_ACT_RUN, -1, 0, "mem");
                 } else if (my >= d_y + 148 && my <= d_y + 170) {
-                    if (mx >= d_x + 130 && mx <= d_x + 184) shell_run_command("filer");
-                    else if (mx >= d_x + 370 && mx <= d_x + 434) shell_run_command("inspect 0");
+                    if (mx >= d_x + 130 && mx <= d_x + 184) DolDocPushAction(DOC_ACT_RUN, -1, 0, "filer");
+                    else if (mx >= d_x + 370 && mx <= d_x + 434) DolDocPushAction(DOC_ACT_RUN, -1, 0, "inspect 0");
                 }
                 g_doc_menu_open = 0; DolDocDamageAll(); g_doc_prev_btn = 1; return;
             } else { g_doc_menu_open = 0; DolDocDamageAll(); }
@@ -2310,8 +2364,8 @@ U0 DolDocDesktopMouse() {
             I64 fs_x = sh > 0 ? (g_comp.screen_w - 210) : 0;
             if (mx >= fs_x && mx <= fs_x + 82) { g_doc_desktop_running = 0; g_doc_prev_btn = 1; return; }
             if (mx >= 8 && mx <= 100) { g_doc_menu_open = !g_doc_menu_open; DolDocDamageAll(); g_doc_prev_btn = 1; return; }
-            if (mx >= 106 && mx <= 180) { shell_run_command("showcase"); g_doc_prev_btn = 1; return; }
-            if (mx >= 186 && mx <= 252) { shell_run_command("shader"); g_doc_prev_btn = 1; return; }
+            if (mx >= 106 && mx <= 180) { DolDocPushAction(DOC_ACT_RUN, -1, 0, "showcase"); g_doc_prev_btn = 1; return; }
+            if (mx >= 186 && mx <= 252) { DolDocPushAction(DOC_ACT_RUN, -1, 0, "shader"); g_doc_prev_btn = 1; return; }
             if (mx >= 258 && mx <= 314) { ThemeApply((g_theme.theme_id + 1) % 6); DolDocDamageAll(); g_doc_prev_btn = 1; return; }
             if (mx >= 320 && mx <= 370) {
                 I64 off = (g_doc_win_count * 28) % 160;
@@ -2409,7 +2463,7 @@ U0 DolDocDesktopLoop() {
     I64 last_anim_ms = timer_get_uptime_ms();
     while (g_doc_desktop_running) {
         virtio_input_poll();
-        shell_poll();
+        if (g_doc_pump_cb) g_doc_pump_cb();
         mouse_poll();
         DolDocDesktopMouse();
         I64 cur_sec = timer_get_uptime_sec();
@@ -2438,6 +2492,7 @@ U0 DolDocDesktopLoop() {
 U0 DolDocDesktopClose() { g_doc_desktop_running = 0; }
 I64 DolDocWindowCount() { return g_doc_win_count; }
 I64 DolDocSpawnWindow(U8 *title, I64 x, I64 y, I64 w, I64 h, I64 kind) { return DolDocWinCreate(title, x, y, w, h, kind); }
+U0 DolDocFocusWindow(I64 id) { DolDocWinFocus(id); }
 I64 DolDocGetFps() { return g_comp.fps; }
 I64 DolDocGetFrameUs() { return g_comp.frame_time_us; }
 

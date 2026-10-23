@@ -154,8 +154,8 @@ global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in
 | Full two-letter tag set `TX CR SR … FI` | **[REAL — P5]** the whole set is parsed by `DolDocExecTag` (see doc 3 §2). |
 | Windows are documents (`$WIN$`/`$SPLIT$`) | **[REAL — P5]** `$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`; the desktop is a document (`DolDocDesktopDraw`). |
 | Compositor dissolved into DolDoc | **[REAL — P5]** `Compositor.HC` deleted; `DolDocDamage*`/`DolDocPresent`/`DolDocDrawShadow`/`DolDocDrawGlass`/`g_comp` live in `DolDoc.HC`. |
-| Shell = action executor over a CDoc; command registry | **[PARTIAL]** shell output is now a CDoc; the action protocol / command registry is P6. |
-| No cycles (`DolDoc⇄Shell`, `WM⇄Shell`, `WM⇄Compositor`, `DolDoc⇄Compositor`) | **[PARTIAL — P5]** `WM⇄Compositor` gone (both deleted). `DolDoc→Shell` (`shell_run_command` on button/link click) remains for P6. |
+| Shell = action executor over a CDoc; command registry | **[REAL — P6]** `shell_register_cmd` is live (FNV-1a hash table, O(1) `ShellFindCmd`); the if/else ladder is gone (registry dispatch, then `<verb>.HC`, then interactive JIT); shell output is a CDoc; the action protocol (`DOC_ACT_*`) executes button/link/widget actions. |
+| No cycles (`DolDoc⇄Shell`, `WM⇄Shell`, `WM⇄Compositor`, `DolDoc⇄Compositor`) | **[REAL — P6]** `WM⇄Compositor` gone (both deleted); **`DolDoc → Shell` gone** — `DolDoc.HC` has 0 `shell_run_command`/`shell_poll` references; it enqueues actions and calls a Shell-registered pump through a function pointer (`g_doc_pump_cb`). The DAG is `Shell.HC → DolDoc.HC`. |
 | `g_doc_dirty_mask` bug `((U64)1<<r)` | **[FIXED — P5]** now `((U64)1) << r`; the P5 self-test asserts row 40 sets bit 40. |
 | `Showcase.HC` flagship doc | **[GONE]/[MISSING]** not in the current 34 apps. |
 | `$EQ$`, `$GRAPH$`, `$SHADER$`, `$SP$`, CSprite/`SPT_MESH` | **[REAL — P5]** `$EQ$` (FRAC/SQRT/SUM/INT), `$GRAPH$`/`$PL$` oscilloscope, `$SH$`/`$SHADER$` viewport, `$SP$`/`$SX$`/`$SY$` 3D scene all render through the one pipeline. |

@@ -913,15 +913,16 @@ renderer is byte-identical on 1 vs N cores.
 
 ---
 
-## P6 — Shell (action executor over a CDoc)
+## P6 — Shell (action executor over a CDoc)  ✅ **DONE**
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P6, P2-P6-MIGRATION-SPECS §6)`
-- [ ] **Action protocol:** documents emit `Action{Run,Open,Set,Clone,Focus}`; the shell executes.
-- [ ] **Command registry:** fill the dead `shell_register_cmd` (`Shell.HC:42`, zero callers); replace the if/else ladder (`Shell.HC:467-751`).
-- [ ] **Break all cycles** (`DolDoc→Shell`, `WM→Shell`, `WM↔Compositor`).
-- [ ] **Shell buffer is a CDoc**; keep the input/event loop.
-- [ ] Fold `top`/`edit`/`filer` into shell-backed docs.
-- [ ] **Exit:** no cycles; shell output *is* a CDoc.
+- [x] **Action protocol:** documents emit `Action{Run,Open,Set,Clone,Focus}` (`DOC_ACT_*` in `DolDoc.HC`); the shell executes (`ShellDrainActions`/`ShellExecuteAction`).
+- [x] **Command registry:** `shell_register_cmd` is live (FNV-1a `CShellCmd` hash table + `ShellFindCmd`); the if/else ladder is gone.
+- [x] **Break all cycles** (`DolDoc→Shell`, `WM→Shell`, `WM↔Compositor`) — `DolDoc.HC` has 0 Shell references.
+- [x] **Shell buffer is a CDoc**; the input/event loop is kept (with `WFE` idle).
+- [x] Fold `top`/`edit`/`filer` into shell-backed docs (interactive CDoc: buttons, `$PB` bars, line-numbered text).
+- [x] **Exit:** no cycles; shell output *is* a CDoc. Gate: `SHELL: PASS`; screenshots `p6_top_live.png`, `p6_filer_live.png`, `p6_edit_live.png`.
+- Root fix this priority: **D21** (FNV-1a `% 128` is signed-negative → OOB bucket read). See doc 4.
 
 ---
 
@@ -985,6 +986,7 @@ renderer is byte-identical on 1 vs N cores.
 | Shading (P4.5) | inside the gate: `selftest` | `SHADING: PASS` |
 | Fragment-shader VM (P4.6) | inside the gate: `selftest` | `SHADERVM: PASS (14/14)` |
 | DolDoc 3.0 (P5) | inside the gate: `selftest` | `DOLDOC: PASS` |
+| Shell action executor (P6) | inside the gate: `selftest` | `SHELL: PASS` |
 | C-runtime census | `scripts/census-c-runtime.sh` | `CENSUS: PASS` |
 | Self-host | `scripts/self-host-test.sh` | `SELF-HOST: PASS` |
 | Module parity | `scripts/p1-parity.sh` | `RESULT: PASS — engines agree` |

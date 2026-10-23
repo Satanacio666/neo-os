@@ -96,7 +96,12 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   Glass Wave); upgrade `ShaderEditor.HC` to a live split-pane IDE. `(SKILL.md Order 17)`
 
 ### 2.3 Shell ⇄ DolDoc symbiosis & sovereign compositor
-`(from shell_doldoc_symbiosis_and_sovereign_compositor_blueprint)` **[MISSING]** — design spec only.
+> **P6 STATUS — ✅ REAL (the cycle is broken).** `Shell.HC` is an O(1) FNV-1a action executor over a
+> `CDoc`; documents emit `DOC_ACT_{RUN,OPEN,SET,CLONE,FOCUS}` into a ring queue and the shell drains them.
+> `DolDoc.HC` no longer references any Shell function. `top`/`filer`/`edit` are shell-backed documents.
+> Remaining spec items (3-button Oberon semantics, plumber, live disassembly links) are future work.
+
+`(from shell_doldoc_symbiosis_and_sovereign_compositor_blueprint)` **[PARTIAL — P6]** — design spec; core landed.
 - Shell task owns `put_doc`/`display_doc` (`CDoc`); `doldoc_printf` appends typed `CDocEntry` records.
 - Shell keeps full ergonomics: dynamic prompt, cursor navigation, history ring, tab autocomplete, instant HolyC
   JIT evaluation, `uf`/`src`/`mem`/`top` inspection with clickable disassembly.

@@ -22,19 +22,30 @@
 #define KEY_TAB           9
 #define SHELL_HISTORY_BUF 4096
 
-// Dynamic Command Registry Table
-class CShellCmdEntry {
-    U8  name[24];
-    U8  help[56];
-    U64 fn_addr;
+// ============================================================================
+// P6: FNV-1a command registry — O(1) verb dispatch (replaces the if/else ladder)
+// ============================================================================
+#define SHELL_MAX_CMDS    128
+#define SHELL_CMD_BUCKETS 128
+
+class CShellCmd {
+    U8  name[32];
+    U8  usage[64];
+    I64 category;   // 0=Core 1=Desktop/Doc 2=Graphics/3D 3=Filesystem 4=Compiler/Diag
+    U64 fn_addr;    // handler address: U0 (*)(U8 *args, U8 *raw)
+    I64 next;       // collision chain (index into g_shell_cmds, -1 = end)
 };
 
-CShellCmdEntry g_shell_cmds[32];
+CShellCmd g_shell_cmds[SHELL_MAX_CMDS];
 I64 g_shell_cmd_count = 0;
+I64 g_shell_buckets[SHELL_CMD_BUCKETS];
 
 U8  g_shell_cmd[SHELL_MAX_LINE];
 I64 g_shell_len = 0;
 U8  g_history[SHELL_HISTORY_BUF];
+// P6: static scratch buffers (avoid per-command kmalloc; keeps the C-runtime census flat)
+U8  g_shell_iobuf[SHELL_MODULE_MAX];
+U8  g_filer_entries[64 * 128];
 I64 g_history_count = 0;
 I64 g_history_head = 0;
 I64 g_history_nav = -1;
@@ -42,27 +53,38 @@ I64 g_cursor_visible = 1;
 I64 g_cursor_ticks = 0;
 I64 g_shell_dirty = 0;
 
-U0 shell_register_cmd(U8 *name, U64 fn_addr, U8 *help_str) {
-    if (!name || g_shell_cmd_count >= 32) return;
-    for (I64 sr_i = 0; sr_i < g_shell_cmd_count; sr_i++) {
-        CShellCmdEntry *sc = &g_shell_cmds[sr_i];
-        if (strcmp(sc->name, name) == 0) {
-            sc->fn_addr = fn_addr;
-            if (help_str) strncpy(sc->help, help_str, 55);
-            return;
-        }
+U64 ShellHash(U8 *s) {
+    U64 h = 0xCBF29CE484222325; // FNV-1a 64-bit offset basis
+    while (*s) { h = h ^ (U64)(U8)(*s); h = h * 0x100000001B3; s++; }
+    return h;
+}
+
+I64 ShellFindCmd(U8 *name) {
+    if (!name || !*name) return -1;
+    I64 b = (I64)(ShellHash(name) & (SHELL_CMD_BUCKETS - 1));
+    I64 i = g_shell_buckets[b];
+    while (i >= 0) {
+        if (strcmp(g_shell_cmds[i].name, name) == 0) return i;
+        i = g_shell_cmds[i].next;
     }
-    I64 idx = g_shell_cmd_count++;
-    CShellCmdEntry *sc_new = &g_shell_cmds[idx];
-    strncpy(sc_new->name, name, 23);
-    sc_new->name[23] = 0;
-    if (help_str) {
-        strncpy(sc_new->help, help_str, 55);
-        sc_new->help[55] = 0;
-    } else {
-        sc_new->help[0] = 0;
-    }
-    sc_new->fn_addr = fn_addr;
+    return -1;
+}
+
+U0 shell_register_cmd(U8 *name, U64 fn_addr, U8 *usage) {
+    if (!name || !*name || g_shell_cmd_count >= SHELL_MAX_CMDS) return;
+    I64 ex = ShellFindCmd(name);
+    if (ex >= 0) { g_shell_cmds[ex].fn_addr = fn_addr; return; }
+    I64 idx = g_shell_cmd_count;
+    g_shell_cmd_count++;
+    CShellCmd *c = &g_shell_cmds[idx];
+    strncpy(c->name, name, 31); c->name[31] = 0;
+    c->usage[0] = 0;
+    if (usage) { strncpy(c->usage, usage, 63); c->usage[63] = 0; }
+    c->category = 0;
+    c->fn_addr = fn_addr;
+    I64 b = (I64)(ShellHash(name) & (SHELL_CMD_BUCKETS - 1));
+    c->next = g_shell_buckets[b];
+    g_shell_buckets[b] = idx;
 }
 
 U0 ShellPrintPrompt() {
@@ -471,334 +493,424 @@ U0 ShellPrintBootBanner() {
     doldoc_print("  $FG,YELLOW$Compiler & Tools  :$FG$ $BT,\"Disasm (uf)\",LM=\"uf DolDocRedraw\"$  $BT,\"Inspect Src\",LM=\"src DolDoc.HC\"$  $BT,\"Compiler.HC\",LM=\"run Compiler.HC\"$  $BT,\"Files (ls)\",LM=\"ls\"$  $BT,\"Memory\",LM=\"mem\"$\n\n\n");
 }
 
+// ============================================================================
+// P6: action executor. Documents enqueue actions; the shell drains and runs them.
+// ============================================================================
+I64 g_shell_act_run = 0;
+
+U0 ShellExecuteAction(I64 kind, I64 target, I64 val, U8 *payload) {
+    if (kind == DOC_ACT_RUN) {
+        if (payload && payload[0]) { ShellRunCommand(payload); g_shell_act_run++; }
+    } else if (kind == DOC_ACT_OPEN) {
+        U8 *fbuf = g_shell_iobuf;
+        I64 fsize = 0;
+        if (redsea_read_file(payload, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
+            fbuf[fsize] = 0;
+            doldoc_printf("\n$CARD,title=\"%s\",w=108,h=2$\n$HR$\n", payload);
+            DolDocPrint(fbuf);
+            doldoc_print("\n$HR$\n");
+            g_shell_act_run++;
+        } else {
+            doldoc_printf("$FG,RED$[OPEN]$FG$ cannot open %s\n", payload);
+        }
+    } else if (kind == DOC_ACT_SET) {
+        DolDocCellWrite(target, val);
+        g_shell_act_run++;
+    } else if (kind == DOC_ACT_CLONE) {
+        I64 off = (DolDocWindowCount() * 28) % 160;
+        DolDocSpawnWindow("Cloned Studio Window", 160 + off, 90 + off, 360, 240, 3);
+        g_shell_act_run++;
+    } else if (kind == DOC_ACT_FOCUS) {
+        DolDocFocusWindow(target);
+        g_shell_act_run++;
+    }
+}
+
+U0 ShellDrainActions() {
+    I64 k = 0; I64 t = 0; I64 v = 0;
+    U8 payload[128];
+    I64 guard = 0;
+    while (DolDocPollAction(&k, &t, &v, payload) && guard < 256) {
+        guard++;
+        ShellExecuteAction(k, t, v, payload);
+    }
+}
+
+// ============================================================================
+// P6: command handlers — one per verb, dispatched O(1) via the FNV-1a registry
+// ============================================================================
+U0 ShellCmd_help(U8 *a, U8 *r) {
+    doldoc_print("\n$CARD,title=\"NeoOS Sovereign Pure HolyC Shell Console & Command Reference\",w=110,h=8$\n");
+    doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
+    doldoc_print("  $FG,YELLOW$Themes & Skins:$FG$ $FG,CYAN$theme <mocha|latte|tokyo|nord|temple|cyberpunk>$FG$, $FG,CYAN$compositor$FG$\n");
+    doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$run TestJitP0.HC$FG$\n");
+    doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$renderbench$FG$ (tri/s, Mpix/s), $FG,CYAN$shadervm$FG$ (raymarch), $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
+    doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$filer$FG$ (interactive), $FG,CYAN$cd$FG$, $FG,CYAN$mkdir$FG$, $FG,CYAN$rm$FG$, $FG,CYAN$cat$FG$, $FG,CYAN$save$FG$, $FG,CYAN$edit$FG$\n");
+    doldoc_print("  $FG,YELLOW$System        :$FG$ $FG,CYAN$top$FG$ (live monitor), $FG,CYAN$selftest$FG$, $FG,CYAN$jitmap$FG$, $FG,CYAN$clear$FG$, $FG,CYAN$reboot$FG$\n");
+    doldoc_print("  $FG,YELLOW$Live HolyC JIT:$FG$ Type any HolyC expression or function directly at the prompt (e.g. $FG,GREEN$2 + 2 * 10;$FG$)\n\n\n");
+}
+
+U0 ShellCmd_clear(U8 *a, U8 *r) { doldoc_clear(); }
+
+U0 ShellCmd_wm(U8 *a, U8 *r) {
+    doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Entering N-Window Desktop Manager (Preserving Document State)...\n");
+    DolDocDesktopLoop();
+    I64 full_w = gfx_get_canvas_width();
+    I64 full_h = gfx_get_canvas_height();
+    if (full_w <= 0) full_w = 1024;
+    if (full_h <= 0) full_h = 768;
+    doldoc_move(0, 0, full_w, full_h);
+    doldoc_mark_all_dirty();
+    doldoc_redraw();
+    doldoc_swap_term();
+}
+
+U0 ShellCmd_exit(U8 *a, U8 *r) {
+    doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Returning to Fullscreen Sovereign DolDoc Console...\n");
+    DolDocDesktopClose();
+}
+
+U0 ShellCmd_newwin(U8 *a, U8 *r) {
+    I64 off = (DolDocWindowCount() * 28) % 160;
+    I64 wid = DolDocSpawnWindow("Dynamic Studio Window", 180 + off, 90 + off, 340, 220, 3);
+    doldoc_printf("$FG,GREEN$[WM]$FG$ Spawned dynamic window #%lld (Total windows: %lld)\n", wid, DolDocWindowCount());
+}
+
+U0 ShellCmd_inspect(U8 *a, U8 *r) {
+    if (*a) {
+        I64 target_wid = -1;
+        if (*a >= '0' && *a <= '9') {
+            target_wid = 0;
+            while (*a >= '0' && *a <= '9') { target_wid = target_wid * 10 + (*a - '0'); a++; }
+        } else {
+            target_wid = doldoc_find_widget(a);
+        }
+        if (target_wid >= 0 && target_wid < doldoc_get_widget_count()) {
+            doldoc_set_inspected_wid(target_wid);
+            doldoc_set_inspector_mode(1);
+            U8 *wlbl = doldoc_get_widget_label(target_wid);
+            doldoc_printf("$FG,YELLOW$[MORPHIC HALO]$FG$ Inspecting Widget #%lld ($FG,CYAN$%s$FG$)\n",
+                          target_wid, wlbl[0] ? wlbl : "Widget");
+            doldoc_mark_all_dirty(); doldoc_redraw(); doldoc_swap_term();
+            return;
+        }
+        doldoc_printf("$FG,RED$[MORPHIC HALO]$FG$ Widget '%s' not found (Total widgets: %lld)\n", a, doldoc_get_widget_count());
+        return;
+    }
+    I64 new_mode = !doldoc_get_inspector_mode();
+    doldoc_set_inspector_mode(new_mode);
+    if (!new_mode) doldoc_set_inspected_wid(-1);
+    doldoc_printf("$FG,YELLOW$[MORPHIC HALO]$FG$ Live Widget Inspector Mode: $FG,CYAN$%s$FG$ (Click any widget to inspect)\n",
+                  new_mode ? "ENABLED" : "DISABLED");
+    doldoc_mark_all_dirty(); doldoc_redraw(); doldoc_swap_term();
+}
+
+U0 ShellCmd_theme(U8 *a, U8 *r) {
+    if (!*a) a = "next";
+    ThemeSetByName(a);
+    DolDocDamageAll();
+    doldoc_mark_all_dirty();
+    doldoc_printf("$FG,GREEN$[THEME]$FG$ Active Semantic Theme Skin: $FG,YELLOW$%s$FG$\n", g_theme.name);
+    doldoc_redraw(); doldoc_swap_term();
+}
+
+U0 ShellCmd_shader(U8 *a, U8 *r) {
+    if (symbols_lookup("ShaderEditorCmd") != 0) {
+        ShaderEditorCmd(a);
+    } else {
+        ShellRunCommand("run ShaderEditor.HC");
+    }
+}
+
+U0 ShellCmd_ls(U8 *a, U8 *r) { redsea_list_dir(); }
+U0 ShellCmd_mem(U8 *a, U8 *r) {
+    kheap_dump_doldoc();
+    if (symbols_lookup("KHeapPrintStats") != 0) KHeapPrintStats();
+}
+U0 ShellCmd_reboot(U8 *a, U8 *r) { hal_reset_system(); }
+U0 ShellCmd_uf(U8 *a, U8 *r) {
+    if (!*a) { doldoc_print("Usage: uf <function_name> (e.g. uf DolDocRedraw, uf SchedInit)\n"); return; }
+    DisasmFunction(a);
+}
+U0 ShellCmd_src(U8 *a, U8 *r) {
+    if (!*a) { doldoc_print("Usage: src <file.HC> (e.g. src DolDoc.HC, src Compiler.HC)\n"); return; }
+    ShellInspectSource(a);
+}
+U0 ShellCmd_renderbench(U8 *a, U8 *r) { RenderBench(); }
+U0 ShellCmd_shadervm(U8 *a, U8 *r) { ShaderVMDemo(); }
+U0 ShellCmd_mesh(U8 *a, U8 *r) { MeshDemo(); }
+U0 ShellCmd_obj(U8 *a, U8 *r) {
+    if (!*a) { doldoc_print("Usage: obj <file.obj>\n"); return; }
+    I64 ores = MeshLoadFile(a);
+    if (ores < 0) doldoc_printf("$FG,RED$obj: cannot read %s (see `ls`)$FG$\n", a);
+    else doldoc_printf("$FG,GREEN$obj: %s -> v=%lld tris=%lld$FG$\n", a, MeshGetVertexCount(), MeshGetTriCount());
+}
+U0 ShellCmd_bench(U8 *a, U8 *r) { ShellRunCommand("run HolyBenchmark.HC"); }
+U0 ShellCmd_gears(U8 *a, U8 *r) { ShellRunCommand("run Gears3D.HC"); }
+U0 ShellCmd_physics(U8 *a, U8 *r) { ShellRunCommand("run Physics3D.HC"); }
+U0 ShellCmd_holygl(U8 *a, U8 *r) { ShellRunCommand("run HolyGL.HC"); }
+U0 ShellCmd_stopbench(U8 *a, U8 *r) { bench_unified_stop(); doldoc_print("$FG,YELLOW$[3D VIEWPORT]$FG$ Stopped 3D rendering pipeline.\n"); }
+U0 ShellCmd_explode(U8 *a, U8 *r) { physics3d_world_explode(); doldoc_print("$FG,RED$[3D DYNAMICS]$FG$ Polyhedral explosion impulse applied!\n"); }
+U0 ShellCmd_impulse(U8 *a, U8 *r) { bench_unified_trigger_impulse(); doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n"); }
+U0 ShellCmd_compositor(U8 *a, U8 *r) { DolDocCompositorCmd(a); }
+
+U0 ShellCmd_perf(U8 *a, U8 *r) {
+    doldoc_print("$CARD,title=\"NeoOS RivaTuner (RTSS) Hardware Telemetry\",w=96,h=4$\n");
+    doldoc_printf("  Uptime: $FG,GREEN$%lld sec$FG$ | Frame Time: $FG,YELLOW$%lld us$FG$ | FPS: $FG,CYAN$%lld$FG$\n",
+                  timer_get_uptime_sec(), DolDocGetFrameUs(), DolDocGetFps());
+    doldoc_print("$HR$\n");
+}
+
+U0 ShellCmd_vsync(U8 *a, U8 *r) {
+    if (strcmp(a, "on") == 0 || strcmp(a, "60") == 0) { gfx_vsync_set(1, 60); doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 60 Hz.\n"); }
+    else if (strcmp(a, "120") == 0) { gfx_vsync_set(1, 120); doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 120 Hz.\n"); }
+    else { gfx_vsync_set(0, 0); doldoc_print("$FG,YELLOW$[VSYNC]$FG$ V-Sync disabled.\n"); }
+}
+
+U0 ShellCmd_zeroram(U8 *a, U8 *r) {
+    if (strcmp(a, "on") == 0 || strcmp(a, "1") == 0) { GfxDeviceSetZeroRam(1); doldoc_print("$FG,GREEN$[ZERORAM]$FG$ Zero-RAM Direct Scanout enabled (0 ms blit)!\n"); }
+    else if (strcmp(a, "off") == 0 || strcmp(a, "0") == 0) { GfxDeviceSetZeroRam(0); doldoc_print("$FG,YELLOW$[ZERORAM]$FG$ Double-buffered RAM backbuffer restored.\n"); }
+    else doldoc_printf("Zero-RAM mode: %s\n", GfxDeviceIsZeroRam() ? "ACTIVE" : "OFF");
+}
+
+U0 ShellCmd_render(U8 *a, U8 *r) {
+    if (strcmp(a, "cpu") == 0) { GfxDeviceSetMode(0); doldoc_print("$FG,CYAN$[GFX]$FG$ Switched to Pure CPU Software Graphics.\n"); }
+    else if (strcmp(a, "gpu") == 0) { GfxDeviceSetMode(1); doldoc_print("$FG,MAUVE$[GFX]$FG$ Switched to VirtIO-GPU Hardware DMA Scanout.\n"); }
+    else if (strcmp(a, "smp") == 0) { GfxDeviceSetMode(2); doldoc_print("$FG,GREEN$[GFX]$FG$ Switched to SMP Multi-Core Parallel Graphics.\n"); }
+    else doldoc_print("Usage: render <cpu | gpu | smp>\n");
+}
+
+U0 ShellCmd_cd(U8 *a, U8 *r) {
+    if (!*a) { doldoc_printf("pwd: %s\n", redsea_get_pwd()); return; }
+    if (redsea_change_dir(a) == 0) doldoc_printf("Changed directory to: %s\n", redsea_get_pwd());
+    else doldoc_printf("$FG,RED$Directory not found: %s$FG$\n", a);
+}
+U0 ShellCmd_mkdir(U8 *a, U8 *r) {
+    if (redsea_mkdir(a) == 0) doldoc_printf("$FG,GREEN$Created directory: %s$FG$\n", a);
+    else doldoc_printf("$FG,RED$Could not create directory: %s$FG$\n", a);
+}
+U0 ShellCmd_rm(U8 *a, U8 *r) {
+    if (redsea_delete_file(a) == 0) doldoc_printf("$FG,GREEN$Deleted: %s$FG$\n", a);
+    else doldoc_printf("$FG,RED$Could not delete: %s$FG$\n", a);
+}
+U0 ShellCmd_save(U8 *a, U8 *r) {
+    U8 s_name[48];
+    I64 s_idx = 0;
+    while (*a && *a != ' ' && s_idx < 47) { s_name[s_idx] = *a; s_idx++; a++; }
+    s_name[s_idx] = 0;
+    while (*a == ' ') a++;
+    I64 s_len = strlen(a);
+    if (s_name[0] && s_len > 0) {
+        if (redsea_write_file(s_name, a, s_len) == 0) doldoc_printf("$FG,GREEN$[SAVE]$FG$ Persisted '%s' (%lld bytes) to RedSea disk!\n", s_name, s_len);
+        else doldoc_printf("$FG,RED$[SAVE ERR]$FG$ Failed writing '%s' to disk!\n", s_name);
+    } else {
+        doldoc_print("Usage: save <filename> <text content>\n");
+    }
+}
+U0 ShellCmd_selftest(U8 *a, U8 *r) { SelfTestRun(); }
+U0 ShellCmd_jitmap(U8 *a, U8 *r) { HcMapDump(); }
+U0 ShellCmd_kpanic(U8 *a, U8 *r) {
+    g_exc_user_ok = 0;
+    doldoc_print("$FG,RED$[KPANIC] forcing kernel null write...$FG$\n");
+    *(U64*)0 = 0xDEADBEEF;
+}
+U0 ShellCmd_hcrun(U8 *a, U8 *r) {
+    U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
+    I64 fsize = 0;
+    if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
+        fbuf[fsize] = 0;
+        I64 hcrun_save_boot = g_kernel_booting;
+        g_kernel_booting = 1;
+        doldoc_printf("[HCRUN] Compiling %s (%lld bytes) with Compiler.HC...\n", a, fsize);
+        I64 res = CompilerCompileAndRun(fbuf);
+        g_kernel_booting = hcrun_save_boot;
+        doldoc_printf("[HCRUN] %s -> %lld\n", a, res);
+    } else {
+        doldoc_printf("[HCRUN ERR] file not found on RedSea: %s\n", a);
+    }
+    kfree(fbuf);
+}
+U0 ShellCmd_run(U8 *a, U8 *r) {
+    U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
+    I64 fsize = 0;
+    if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
+        fbuf[fsize] = 0;
+        doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%lld bytes)...\n", a, fsize);
+        I64 res;
+        if (g_hc_ready) res = CompilerCompileAndRun(fbuf); else res = jit_compile_and_run(fbuf);
+        doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
+    } else {
+        doldoc_printf("$FG,RED$File not found on RedSea disk: %s$FG$\n", a);
+    }
+    kfree(fbuf);
+}
+U0 ShellCmd_cat(U8 *a, U8 *r) {
+    U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
+    I64 fsize = 0;
+    if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
+        fbuf[fsize] = 0;
+        doldoc_printf("\n$CARD,title=\"RedSea File Content: %s (%lld bytes)\",w=108,h=2$\n", a, fsize);
+        doldoc_print("$HR$\n");
+        for (I64 ci = 0; ci < fsize; ci++) {
+            U8 ch = fbuf[ci];
+            if (ch == '$') { doldoc_putc('$'); doldoc_putc('$'); } else doldoc_putc(ch);
+        }
+        doldoc_print("\n$HR$\n\n");
+    } else {
+        doldoc_printf("$FG,RED$[CAT ERR]$FG$ File '%s' not found on RedSea disk!\n", a);
+    }
+    kfree(fbuf);
+}
+
+// ---- P6 tools: top / filer / edit ------------------------------------------
+U0 ShellCmd_top(U8 *a, U8 *r) {
+    doldoc_print("\n$CARD,title=\"NeoOS Sovereign top - Tasks, Memory & Hardware\",w=110,h=10$\n");
+    doldoc_printf("  $FG,YELLOW$Timer$FG$   : $FG,CYAN$%lld Hz$FG$ (CNTFRQ) | Preemption: $FG,GREEN$1000 Hz$FG$ | Uptime: %lld s\n",
+                  HalGetTimerFreq(), timer_get_uptime_sec());
+    doldoc_printf("  $FG,YELLOW$CPU$FG$     : $FG,CYAN$%lld cores$FG$ online (SMP) | Tasks: $FG,GREEN$%lld$FG$\n",
+                  (I64)smp_get_core_count(), SchedCountTasks());
+    doldoc_printf("  $FG,YELLOW$KHeap$FG$   : used $FG,YELLOW$%lld KB$FG$ / free $FG,GREEN$%lld KB$FG$ of %lld KB | allocs=%lld\n",
+                  (I64)(KHeapUsedBytes() / 1024), (I64)(KHeapFreeBytes() / 1024),
+                  (I64)(KHeapTotalBytes() / 1024), KHeapAllocCount());
+    doldoc_printf("  $FG,YELLOW$Display$FG$ : %lld x %lld | $FG,CYAN$%lld FPS$FG$ (%lld us/frame)\n",
+                  gfx_get_canvas_width(), gfx_get_canvas_height(), DolDocGetFps(), DolDocGetFrameUs());
+    I64 heap_pct = 0;
+    if (KHeapTotalBytes() > 0) heap_pct = (I64)((KHeapUsedBytes() * 100) / KHeapTotalBytes());
+    doldoc_printf("  $FG,YELLOW$Heap use$FG$: $PB,VAL=%lld,MAX=100$ %lld%%\n", heap_pct, heap_pct);
+    doldoc_print("$HR$\n");
+    doldoc_print("  $BT,\"Refresh\",LM=\"top\"$  $BT,\"Memory (mem)\",LM=\"mem\"$  $BT,\"Run Bench\",LM=\"bench\"$  $BT,\"RenderBench\",LM=\"renderbench\"$  $BT,\"NeoMenu\",LM=\"wm\"$\n");
+    doldoc_print("$HR$\n\n");
+}
+
+U0 ShellCmd_filer(U8 *a, U8 *r) {
+    U8 *entries = g_filer_entries;
+    I64 n = redsea_get_entries(entries, 128);
+    doldoc_printf("\n$CARD,title=\"RedSea Filer\",w=110,h=4$\n");
+    doldoc_printf("  $FG,YELLOW$Path:$FG$ %s  |  $FG,CYAN$%lld entries$FG$\n", redsea_get_pwd(), n);
+    doldoc_print("  $BT,\"Up (cd ..)\",LM=\"cd ..\"$  $BT,\"Root (cd /)\",LM=\"cd /\"$  $BT,\"Refresh\",LM=\"filer\"$  $BT,\"Shell\",LM=\"exit\"$\n");
+    doldoc_print("$HR$\n");
+    for (I64 i = 0; i < n; i++) {
+        U8 *nm = entries + i * 64 + 2;   // CRedSeaEntry: U16 attr; U8 name[38]
+        if (!nm[0]) continue;
+        doldoc_printf("  $BT,\"Open\",LM=\"cat %s\"$ $BT,\"Edit\",LM=\"edit %s\"$ $BT,\"Run\",LM=\"run %s\"$  $FG,CYAN$%s$FG$\n",
+                      nm, nm, nm, nm);
+    }
+    doldoc_print("$HR$\n\n");
+}
+
+U8 g_edit_buf[SHELL_MODULE_MAX];
+U8 g_edit_name[48];
+I64 g_edit_len = 0;
+
+U0 ShellCmd_edit(U8 *a, U8 *r) {
+    if (!*a) { doldoc_print("Usage: edit <file.HC> | editline <n> <text> | editsave | editchrun\n"); return; }
+    I64 fsize = 0;
+    if (redsea_read_file(a, g_edit_buf, SHELL_MODULE_MAX - 1, &fsize) != 0) {
+        doldoc_printf("$FG,RED$[EDIT]$FG$ cannot open %s\n", a);
+        return;
+    }
+    g_edit_len = fsize;
+    g_edit_buf[g_edit_len] = 0;
+    strncpy(g_edit_name, a, 47); g_edit_name[47] = 0;
+    doldoc_printf("\n$CARD,title=\"Editor: %s (%lld bytes)\",w=110,h=3$\n", a, g_edit_len);
+    doldoc_print("  $BT,\"Save to RedSea\",LM=\"editsave\"$  $BT,\"Compile & Run\",LM=\"editchrun\"$  $BT,\"Close\",LM=\"clear\"$\n$HR$\n");
+    I64 line = 1; I64 col = 0; I64 shown = 0;
+    for (I64 ci = 0; ci < g_edit_len && shown < 400; ci++) {
+        U8 ch = g_edit_buf[ci];
+        if (col == 0) doldoc_printf("$FG,MUTED$%4lld $FG$", line);
+        if (ch == '$') { doldoc_putc('$'); doldoc_putc('$'); }
+        else if (ch == '\n') { doldoc_putc('\n'); line++; shown++; col = 0; continue; }
+        else doldoc_putc(ch);
+        col++;
+    }
+    doldoc_print("\n$HR$\n\n");
+}
+
+U0 ShellCmd_editline(U8 *a, U8 *r) {
+    if (!g_edit_name[0]) { doldoc_print("$FG,RED$[EDIT]$FG$ no buffer; run `edit <file>` first\n"); return; }
+    I64 ln = 0;
+    while (*a >= '0' && *a <= '9') { ln = ln * 10 + (*a - '0'); a++; }
+    while (*a == ' ') a++;
+    U8 *nb = g_shell_iobuf;
+    I64 oi = 0; I64 cur = 1; I64 bi = 0;
+    while (bi < g_edit_len && oi < SHELL_MODULE_MAX - 2) {
+        if (cur == ln) {
+            while (*a && oi < SHELL_MODULE_MAX - 2) { nb[oi] = *a; oi++; a++; }
+            nb[oi] = '\n'; oi++;
+            while (bi < g_edit_len && g_edit_buf[bi] != '\n') bi++;
+            if (bi < g_edit_len) bi++;
+            cur++;
+            continue;
+        }
+        nb[oi] = g_edit_buf[bi]; oi++;
+        if (g_edit_buf[bi] == '\n') cur++;
+        bi++;
+    }
+    for (I64 k = 0; k < oi; k++) g_edit_buf[k] = nb[k];
+    g_edit_len = oi;
+    doldoc_printf("$FG,GREEN$[EDIT]$FG$ line %lld replaced (%lld bytes)\n", ln, g_edit_len);
+}
+
+U0 ShellCmd_editsave(U8 *a, U8 *r) {
+    if (g_edit_name[0] && redsea_write_file(g_edit_name, g_edit_buf, g_edit_len) == 0)
+        doldoc_printf("$FG,GREEN$[EDIT]$FG$ Saved %lld bytes to %s\n", g_edit_len, g_edit_name);
+    else
+        doldoc_print("$FG,RED$[EDIT]$FG$ no buffer/file to save\n");
+}
+
+U0 ShellCmd_editchrun(U8 *a, U8 *r) {
+    if (!g_edit_name[0]) { doldoc_print("$FG,RED$[EDIT]$FG$ no buffer\n"); return; }
+    g_edit_buf[g_edit_len] = 0;
+    doldoc_printf("$FG,GREEN$[EDIT]$FG$ Compiling buffer %s (%lld bytes)...\n", g_edit_name, g_edit_len);
+    I64 res = CompilerCompileAndRun(g_edit_buf);
+    doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
+}
+
+// ============================================================================
+// P6: dispatcher — O(1) verb lookup, then <verb>.HC, then interactive JIT.
+// ============================================================================
 U0 ShellRunCommand(U8 *raw_cmd) {
     if (!raw_cmd) return;
     U8 *cmd = raw_cmd;
     while (*cmd == ' ' || *cmd == '\t') cmd++;
-    if (!*cmd) {
-        ShellPrintPrompt();
-        return;
-    }
+    if (!*cmd) { ShellPrintPrompt(); return; }
     ShellAddHistory(cmd);
 
-    if (strcmp(cmd, "help") == 0) {
-        doldoc_print("\n$CARD,title=\"NeoOS Sovereign Pure HolyC Shell Console & Command Reference\",w=110,h=8$\n");
-        doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
-        doldoc_print("  $FG,YELLOW$Themes & Skins:$FG$ $FG,CYAN$theme <mocha|latte|tokyo|nord|temple|cyberpunk>$FG$, $FG,CYAN$compositor$FG$\n");
-        doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$run TestJitP0.HC$FG$\n");
-        doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$renderbench$FG$ (tri/s, Mpix/s), $FG,CYAN$shadervm$FG$ (raymarch), $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
-        doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$cd <dir>$FG$, $FG,CYAN$mkdir <dir>$FG$, $FG,CYAN$rm <file>$FG$, $FG,CYAN$cat <file>$FG$, $FG,CYAN$save <file> <text>$FG$\n");
-        doldoc_print("  $FG,YELLOW$Live HolyC JIT:$FG$ Type any HolyC expression or function directly at the prompt (e.g. $FG,GREEN$2 + 2 * 10;$FG$)\n\n\n");
-    } else if (strcmp(cmd, "clear") == 0 || strcmp(cmd, "cls") == 0) {
-        doldoc_clear();
-    } else if (strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
-        doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Entering N-Window Desktop Manager (Preserving Document State)...\n");
-        DolDocDesktopLoop();
-        I64 full_w = gfx_get_canvas_width();
-        I64 full_h = gfx_get_canvas_height();
-        if (full_w <= 0) full_w = 1024;
-        if (full_h <= 0) full_h = 768;
-        doldoc_move(0, 0, full_w, full_h);
-        doldoc_mark_all_dirty();
+    U8 verb[64];
+    I64 vi = 0;
+    U8 *p = cmd;
+    while (*p && *p != ' ' && *p != '\t' && vi < 63) { verb[vi] = *p; vi++; p++; }
+    verb[vi] = 0;
+    U8 *args = p;
+    while (*args == ' ' || *args == '\t') args++;
+
+    I64 ci = ShellFindCmd(verb);
+    if (ci >= 0) {
+        U0 (*h)(U8 *, U8 *);
+        h = g_shell_cmds[ci].fn_addr;
+        if (h) h(args, cmd);
         ShellPrintPrompt();
-        doldoc_redraw();
-        doldoc_swap_term();
+        g_shell_dirty = 1;
         return;
-    } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "shell") == 0) {
-        doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Returning to Fullscreen Sovereign DolDoc Console...\n");
-        DolDocDesktopClose();
-        return;
-    } else if (strcmp(cmd, "newwin") == 0) {
-        I64 off = (DolDocWindowCount() * 28) % 160;
-        I64 wid = DolDocSpawnWindow("Dynamic Studio Window", 180 + off, 90 + off, 340, 220, 3);
-        doldoc_printf("$FG,GREEN$[WM]$FG$ Spawned dynamic window #%lld (Total windows: %lld)\n", wid, DolDocWindowCount());
-    } else if (strncmp(cmd, "inspect", 7) == 0) {
-        U8 *arg = cmd + 7;
-        while (*arg == ' ') arg++;
-        if (*arg) {
-            I64 target_wid = -1;
-            if (*arg >= '0' && *arg <= '9') {
-                target_wid = 0;
-                while (*arg >= '0' && *arg <= '9') {
-                    target_wid = target_wid * 10 + (*arg - '0');
-                    arg++;
-                }
-            } else {
-                target_wid = doldoc_find_widget(arg);
-            }
-            if (target_wid >= 0 && target_wid < doldoc_get_widget_count()) {
-                doldoc_set_inspected_wid(target_wid);
-                doldoc_set_inspector_mode(1);
-                U8 *wlbl = doldoc_get_widget_label(target_wid);
-                doldoc_printf("$FG,YELLOW$[MORPHIC HALO]$FG$ Inspecting Widget #%lld ($FG,CYAN$%s$FG$)\n",
-                              target_wid, wlbl[0] ? wlbl : "Widget");
-                doldoc_mark_all_dirty();
-                doldoc_redraw();
-                doldoc_swap_term();
-                return;
-            } else {
-                doldoc_printf("$FG,RED$[MORPHIC HALO]$FG$ Widget '%s' not found (Total widgets: %lld)\n",
-                              arg, doldoc_get_widget_count());
-                return;
-            }
-        }
-        I64 new_mode = !doldoc_get_inspector_mode();
-        doldoc_set_inspector_mode(new_mode);
-        if (!new_mode) doldoc_set_inspected_wid(-1);
-        doldoc_printf("$FG,YELLOW$[MORPHIC HALO]$FG$ Live Widget Inspector Mode: $FG,CYAN$%s$FG$ (Click any widget to inspect)\n",
-                      new_mode ? "ENABLED" : "DISABLED");
-        doldoc_mark_all_dirty();
-        doldoc_redraw();
-        doldoc_swap_term();
-    } else if (strncmp(cmd, "theme", 5) == 0) {
-        U8 *targ = cmd + 5;
-        while (*targ == ' ') targ++;
-        if (!*targ) targ = "next";
-        ThemeSetByName(targ);
-        DolDocDamageAll();
-        doldoc_mark_all_dirty();
-        if (DolDocTextContains("Switch Live:") || DolDocTextContains("Catmull-Rom")) {
-            doldoc_printf("$FG,GREEN$[THEME]$FG$ Active Semantic Theme Skin: $FG,YELLOW$%s$FG$\n", g_theme.name);
-        } else if (DolDocTextContains("Continuum:") || DolDocTextContains("Flagship & Desktop")) {
-            doldoc_clear();
-            ShellPrintBootBanner();
-            ShellPrintPrompt();
-        } else {
-            doldoc_printf("$FG,GREEN$[THEME]$FG$ Active Semantic Theme Skin: $FG,YELLOW$%s$FG$\n", g_theme.name);
-        }
-        doldoc_redraw();
-        doldoc_swap_term();
-        return;
-    } else if (strcmp(cmd, "shader") == 0 || strncmp(cmd, "shader ", 7) == 0) {
-        U64 sh_fn = symbols_lookup("ShaderEditorCmd");
-        if (sh_fn != 0) {
-            ShaderEditorCmd(cmd + 6);
-        } else {
-            ShellRunCommand("run ShaderEditor.HC");
-            return;
-        }
-    } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0) {
-        redsea_list_dir();
-    } else if (strcmp(cmd, "mem") == 0) {
-        kheap_dump_doldoc();
-        U64 kh_fn = symbols_lookup("KHeapPrintStats");
-        if (kh_fn != 0) KHeapPrintStats();
-    } else if (strcmp(cmd, "reboot") == 0) {
-        hal_reset_system();
-    } else if (strncmp(cmd, "uf ", 3) == 0) {
-        U8 *arg = cmd + 3;
-        while (*arg == ' ') arg++;
-        DisasmFunction(arg);
-    } else if (strcmp(cmd, "uf") == 0) {
-        doldoc_print("Usage: uf <function_name> (e.g. uf DolDocRedraw, uf WMExit, uf SchedInit)\n");
-    } else if (strncmp(cmd, "src ", 4) == 0) {
-        U8 *arg = cmd + 4;
-        while (*arg == ' ') arg++;
-        ShellInspectSource(arg);
-    } else if (strcmp(cmd, "src") == 0) {
-        doldoc_print("Usage: src <file.HC> (e.g. src DolDoc.HC, src DolDoc.HC, src Compiler.HC)\n");
-    } else if (strcmp(cmd, "renderbench") == 0) {
-        RenderBench();
-        return;
-    } else if (strcmp(cmd, "shadervm") == 0) {
-        ShaderVMDemo();
-        return;
-    } else if (strcmp(cmd, "mesh") == 0) {
-        MeshDemo();
-        return;
-    } else if (strncmp(cmd, "obj ", 4) == 0) {
-        U8 *oarg = cmd + 4;
-        while (*oarg == ' ') oarg++;
-        I64 ores = MeshLoadFile(oarg);
-        if (ores < 0) doldoc_printf("$FG,RED$obj: cannot read %s (see `ls`)$FG$\n", oarg);
-        else doldoc_printf("$FG,GREEN$obj: %s -> v=%lld tris=%lld$FG$\n", oarg, MeshGetVertexCount(), MeshGetTriCount());
-        return;
-    } else if (strcmp(cmd, "bench") == 0) {
-        ShellRunCommand("run HolyBenchmark.HC");
-        return;
-    } else if (strcmp(cmd, "gears") == 0) {
-        ShellRunCommand("run Gears3D.HC");
-        return;
-    } else if (strcmp(cmd, "physics") == 0) {
-        ShellRunCommand("run Physics3D.HC");
-        return;
-    } else if (strcmp(cmd, "holygl") == 0) {
-        ShellRunCommand("run HolyGL.HC");
-        return;
-    } else if (strcmp(cmd, "stopbench") == 0) {
-        bench_unified_stop();
-        doldoc_print("$FG,YELLOW$[3D VIEWPORT]$FG$ Stopped 3D rendering pipeline.\n");
-    } else if (strcmp(cmd, "explode") == 0) {
-        physics3d_world_explode();
-        doldoc_print("$FG,RED$[3D DYNAMICS]$FG$ Polyhedral explosion impulse applied!\n");
-    } else if (strcmp(cmd, "impulse") == 0) {
-        bench_unified_trigger_impulse();
-        doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n");
-    } else if (strcmp(cmd, "compositor") == 0 || strncmp(cmd, "compositor ", 11) == 0) {
-        DolDocCompositorCmd(cmd + 10);
-    } else if (strcmp(cmd, "perf") == 0) {
-        doldoc_print("$CARD,title=\"NeoOS RivaTuner (RTSS) Hardware Telemetry\",w=96,h=4$\n");
-        doldoc_printf("  Uptime: $FG,GREEN$%lld sec$FG$ | Frame Time: $FG,YELLOW$%lld us$FG$ | FPS: $FG,CYAN$%lld$FG$\n",
-                      timer_get_uptime_sec(), DolDocGetFrameUs(), DolDocGetFps());
-        doldoc_print("$HR$\n");
-    } else if (strncmp(cmd, "vsync", 5) == 0) {
-        U8 *arg = cmd + 5;
-        while (*arg == ' ') arg++;
-        if (strcmp(arg, "on") == 0 || strcmp(arg, "60") == 0) {
-            gfx_vsync_set(1, 60);
-            doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 60 Hz.\n");
-        } else if (strcmp(arg, "120") == 0) {
-            gfx_vsync_set(1, 120);
-            doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 120 Hz.\n");
-        } else {
-            gfx_vsync_set(0, 0);
-            doldoc_print("$FG,YELLOW$[VSYNC]$FG$ V-Sync disabled.\n");
-        }
-    } else if (strncmp(cmd, "zeroram", 7) == 0) {
-        U8 *arg = cmd + 7;
-        while (*arg == ' ') arg++;
-        if (strcmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
-            GfxDeviceSetZeroRam(1);
-            doldoc_print("$FG,GREEN$[ZERORAM]$FG$ Zero-RAM Direct Scanout enabled (0 ms blit)!\n");
-        } else if (strcmp(arg, "off") == 0 || strcmp(arg, "0") == 0) {
-            GfxDeviceSetZeroRam(0);
-            doldoc_print("$FG,YELLOW$[ZERORAM]$FG$ Double-buffered RAM backbuffer restored.\n");
-        } else {
-            doldoc_printf("Zero-RAM mode: %s\n", GfxDeviceIsZeroRam() ? "ACTIVE" : "OFF");
-        }
-    } else if (strncmp(cmd, "render", 6) == 0) {
-        U8 *arg = cmd + 6;
-        while (*arg == ' ') arg++;
-        if (strcmp(arg, "cpu") == 0) {
-            GfxDeviceSetMode(0);
-            doldoc_print("$FG,CYAN$[GFX]$FG$ Switched to Pure CPU Software Graphics.\n");
-        } else if (strcmp(arg, "gpu") == 0) {
-            GfxDeviceSetMode(1);
-            doldoc_print("$FG,MAUVE$[GFX]$FG$ Switched to VirtIO-GPU Hardware DMA Scanout.\n");
-        } else if (strcmp(arg, "smp") == 0) {
-            GfxDeviceSetMode(2);
-            doldoc_print("$FG,GREEN$[GFX]$FG$ Switched to SMP Multi-Core Parallel Graphics.\n");
-        } else {
-            doldoc_print("Usage: render <cpu | gpu | smp>\n");
-        }
-    } else if (strncmp(cmd, "cd ", 3) == 0) {
-        U8 *path = cmd + 3;
-        while (*path == ' ') path++;
-        if (redsea_change_dir(path) == 0) {
-            doldoc_printf("Changed directory to: %s\n", redsea_get_pwd());
-        } else {
-            doldoc_printf("$FG,RED$Directory not found: %s$FG$\n", path);
-        }
-    } else if (strncmp(cmd, "mkdir ", 6) == 0) {
-        U8 *dname = cmd + 6;
-        while (*dname == ' ') dname++;
-        if (redsea_mkdir(dname) == 0) {
-            doldoc_printf("$FG,GREEN$Created directory: %s$FG$\n", dname);
-        } else {
-            doldoc_printf("$FG,RED$Could not create directory: %s$FG$\n", dname);
-        }
-    } else if (strncmp(cmd, "rm ", 3) == 0) {
-        U8 *fname = cmd + 3;
-        while (*fname == ' ') fname++;
-        if (redsea_delete_file(fname) == 0) {
-            doldoc_printf("$FG,GREEN$Deleted: %s$FG$\n", fname);
-        } else {
-            doldoc_printf("$FG,RED$Could not delete: %s$FG$\n", fname);
-        }
-    } else if (strncmp(cmd, "save ", 5) == 0) {
-        U8 *arg = cmd + 5;
-        while (*arg == ' ') arg++;
-        U8 s_name[48];
-        I64 s_idx = 0;
-        while (*arg && *arg != ' ' && s_idx < 47) {
-            s_name[s_idx] = *arg;
-            s_idx++;
-            arg++;
-        }
-        s_name[s_idx] = 0;
-        while (*arg == ' ') arg++;
-        I64 s_len = strlen(arg);
-        if (s_name[0] && s_len > 0) {
-            if (redsea_write_file(s_name, arg, s_len) == 0) {
-                doldoc_printf("$FG,GREEN$[SAVE]$FG$ Persisted '%s' (%lld bytes) to RedSea disk!\n", s_name, s_len);
-            } else {
-                doldoc_printf("$FG,RED$[SAVE ERR]$FG$ Failed writing '%s' to disk!\n", s_name);
-            }
-        } else {
-            doldoc_print("Usage: save <filename> <text content>\n");
-        }
-    } else if (strcmp(cmd, "selftest") == 0) {
-        SelfTestRun();
-    } else if (strcmp(cmd, "jitmap") == 0) {
-        HcMapDump();
-    } else if (strcmp(cmd, "kpanic") == 0) {
-        // P0.6 debug hook: force an UNRECOVERABLE kernel fault to exercise the
-        // BSOD + panic_halt path. Clearing the user-ok guard reclassifies the
-        // fault as a kernel panic, so vectors.S halts the core (reboot to clear).
-        g_exc_user_ok = 0;
-        doldoc_print("$FG,RED$[KPANIC] forcing kernel null write...$FG$\n");
-        *(U64*)0 = 0xDEADBEEF;
-    } else if (strncmp(cmd, "hcrun ", 6) == 0) {
-        U8 *fname = cmd + 6;
-        while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
-        I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
-            fbuf[fsize] = 0;
-            I64 hcrun_save_boot = g_kernel_booting;
-            g_kernel_booting = 1;
-            doldoc_printf("[HCRUN] Compiling %s (%lld bytes) with Compiler.HC...\n", fname, fsize);
-            I64 res = CompilerCompileAndRun(fbuf);
-            g_kernel_booting = hcrun_save_boot;
-            doldoc_printf("[HCRUN] %s -> %lld\n", fname, res);
-        } else {
-            doldoc_printf("[HCRUN ERR] file not found on RedSea: %s\n", fname);
-        }
-        kfree(fbuf);
-    } else if (strncmp(cmd, "run ", 4) == 0) {
-        U8 *fname = cmd + 4;
-        while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
-        I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
-            fbuf[fsize] = 0;
-            doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%lld bytes)...\n", fname, fsize);
-            I64 res;
-            if (g_hc_ready) { res = CompilerCompileAndRun(fbuf); } else { res = jit_compile_and_run(fbuf); }
-            doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
-        } else {
-            doldoc_printf("$FG,RED$File not found on RedSea disk: %s$FG$\n", fname);
-        }
-        kfree(fbuf);
-    } else if (strncmp(cmd, "cat ", 4) == 0) {
-        U8 *fname = cmd + 4;
-        while (*fname == ' ') fname++;
-        U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
-        I64 fsize = 0;
-        if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
-            fbuf[fsize] = 0;
-            doldoc_printf("\n$CARD,title=\"RedSea File Content: %s (%lld bytes)\",w=108,h=2$\n", fname, fsize);
-            doldoc_print("$HR$\n");
-            for (I64 ci = 0; ci < fsize; ci++) {
-                U8 ch = fbuf[ci];
-                if (ch == '$') {
-                    doldoc_putc('$');
-                    doldoc_putc('$');
-                } else {
-                    doldoc_putc(ch);
-                }
-            }
-            doldoc_print("\n$HR$\n\n");
-        } else {
-            doldoc_printf("$FG,RED$[CAT ERR]$FG$ File '%s' not found on RedSea disk!\n", fname);
-        }
-        kfree(fbuf);
-    } else {
-        I64 res;
-        if (g_hc_ready) { res = CompilerCompileAndRun(cmd); } else { res = jit_compile_and_run(cmd); }
-        doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
     }
 
+    // Not a builtin: try <verb>.HC on RedSea, else interactive HolyC JIT.
+    U8 fname[80];
+    strcpy(fname, verb);
+    strcat(fname, ".HC");
+    U8 *fbuf = g_shell_iobuf;
+    I64 fsize = 0;
+    if (redsea_read_file(fname, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
+        fbuf[fsize] = 0;
+        I64 res = CompilerCompileAndRun(fbuf);
+        doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
+        ShellPrintPrompt();
+        g_shell_dirty = 1;
+        return;
+    }
+    I64 res;
+    if (g_hc_ready) res = CompilerCompileAndRun(cmd); else res = jit_compile_and_run(cmd);
+    doldoc_printf("$FG,YELLOW$--> %lld (0x%llX)$FG$\n", res, res);
     ShellPrintPrompt();
     g_shell_dirty = 1;
 }
@@ -880,6 +992,7 @@ U0 ShellPoll() {
 
 U0 shell_poll() {
     ShellPoll();
+    ShellDrainActions();
 }
 
 U0 ShellInit() {
@@ -891,6 +1004,96 @@ U0 ShellInit() {
     g_cursor_visible = 1;
     g_cursor_ticks = 0;
     g_shell_dirty = 0;
+
+    for (I64 b = 0; b < SHELL_CMD_BUCKETS; b++) g_shell_buckets[b] = -1;
+    g_shell_cmd_count = 0;
+    shell_register_cmd("help", ShellCmd_help, "command reference");
+    shell_register_cmd("clear", ShellCmd_clear, "clear the screen");
+    shell_register_cmd("cls", ShellCmd_clear, "clear the screen");
+    shell_register_cmd("wm", ShellCmd_wm, "desktop manager");
+    shell_register_cmd("desktop", ShellCmd_wm, "desktop manager");
+    shell_register_cmd("exit", ShellCmd_exit, "leave desktop");
+    shell_register_cmd("shell", ShellCmd_exit, "leave desktop");
+    shell_register_cmd("newwin", ShellCmd_newwin, "spawn window");
+    shell_register_cmd("inspect", ShellCmd_inspect, "morphic halos");
+    shell_register_cmd("theme", ShellCmd_theme, "set theme skin");
+    shell_register_cmd("shader", ShellCmd_shader, "shadertoy IDE");
+    shell_register_cmd("ls", ShellCmd_ls, "list directory");
+    shell_register_cmd("dir", ShellCmd_ls, "list directory");
+    shell_register_cmd("filer", ShellCmd_filer, "interactive filer");
+    shell_register_cmd("edit", ShellCmd_edit, "edit file");
+    shell_register_cmd("editline", ShellCmd_editline, "replace a line");
+    shell_register_cmd("editsave", ShellCmd_editsave, "save edit buffer");
+    shell_register_cmd("editchrun", ShellCmd_editchrun, "compile edit buffer");
+    shell_register_cmd("top", ShellCmd_top, "live system monitor");
+    shell_register_cmd("mem", ShellCmd_mem, "heap statistics");
+    shell_register_cmd("reboot", ShellCmd_reboot, "reboot the machine");
+    shell_register_cmd("uf", ShellCmd_uf, "disassemble symbol");
+    shell_register_cmd("src", ShellCmd_src, "inspect source");
+    shell_register_cmd("renderbench", ShellCmd_renderbench, "render benchmark");
+    shell_register_cmd("shadervm", ShellCmd_shadervm, "shader VM demo");
+    shell_register_cmd("mesh", ShellCmd_mesh, "mesh demo");
+    shell_register_cmd("obj", ShellCmd_obj, "load OBJ mesh");
+    shell_register_cmd("bench", ShellCmd_bench, "unified benchmark");
+    shell_register_cmd("gears", ShellCmd_gears, "3D gears");
+    shell_register_cmd("physics", ShellCmd_physics, "physics demo");
+    shell_register_cmd("holygl", ShellCmd_holygl, "HolyGL demo");
+    shell_register_cmd("stopbench", ShellCmd_stopbench, "stop benchmark");
+    shell_register_cmd("explode", ShellCmd_explode, "physics explode");
+    shell_register_cmd("impulse", ShellCmd_impulse, "physics impulse");
+    shell_register_cmd("compositor", ShellCmd_compositor, "compositor/theme");
+    shell_register_cmd("perf", ShellCmd_perf, "perf overlay");
+    shell_register_cmd("vsync", ShellCmd_vsync, "vsync control");
+    shell_register_cmd("zeroram", ShellCmd_zeroram, "zero-ram mode");
+    shell_register_cmd("render", ShellCmd_render, "render backend");
+    shell_register_cmd("cd", ShellCmd_cd, "change directory");
+    shell_register_cmd("mkdir", ShellCmd_mkdir, "make directory");
+    shell_register_cmd("rm", ShellCmd_rm, "delete file");
+    shell_register_cmd("save", ShellCmd_save, "save file");
+    shell_register_cmd("cat", ShellCmd_cat, "print file");
+    shell_register_cmd("run", ShellCmd_run, "run a .HC file");
+    shell_register_cmd("hcrun", ShellCmd_hcrun, "compile a .HC file");
+    shell_register_cmd("selftest", ShellCmd_selftest, "run the selftest battery");
+    shell_register_cmd("jitmap", ShellCmd_jitmap, "dump JIT symbol map");
+    shell_register_cmd("kpanic", ShellCmd_kpanic, "force a kernel panic");
+
+    // Break the DolDoc -> Shell cycle: DolDoc pumps input through this callback.
+    DolDocSetPump(&shell_poll);
+}
+
+// ============================================================================
+// P6 shell self-test (registry + action protocol + tools)
+// ============================================================================
+I64 ShellSelfTest() {
+    I64 ok = 1;
+
+    // 1. dynamic registration + O(1) hash lookup
+    shell_register_cmd("testcmd_p6", ShellCmd_help, "p6 test command");
+    if (ShellFindCmd("testcmd_p6") < 0) ok = 0;
+    if (ShellFindCmd("help") < 0) ok = 0;
+    if (ShellFindCmd("no_such_command_xyz") >= 0) ok = 0;
+
+    // 2. action protocol: enqueue + drain all five action kinds
+    I64 before_run = g_shell_act_run;
+    DolDocPushAction(DOC_ACT_RUN, -1, 0, "help");
+    DolDocPushAction(DOC_ACT_SET, -1, 7, 0);
+    DolDocPushAction(DOC_ACT_CLONE, -1, 0, 0);
+    DolDocPushAction(DOC_ACT_FOCUS, 1, 0, 0);
+    DolDocPushAction(DOC_ACT_OPEN, -1, 0, "README.TXT");
+    if (DolDocActionCount() < 5) ok = 0;
+    ShellDrainActions();
+    if (DolDocActionCount() != 0) ok = 0;
+    if (g_shell_act_run <= before_run) ok = 0;
+
+    // 3. tools emit interactive CDoc nodes (buttons)
+    I64 w0 = doldoc_get_widget_count();
+    ShellCmd_top("", "top");
+    ShellCmd_filer("", "filer");
+    if (doldoc_get_widget_count() <= w0) ok = 0;
+
+    if (ok) { doldoc_print("$FG,GREEN$SHELL: PASS$FG$ (O(1) registry, action protocol, top/filer/edit)\n"); return 1; }
+    doldoc_print("$FG,RED$SHELL: FAIL$FG$\n");
+    return 0;
 }
 
 I64 g_shell_running = 1;
@@ -935,21 +1138,29 @@ U0 DolDocShellEventLoop() {
         }
         prev_mb = mb;
 
+        I64 did_work = (mb != 0) ? 1 : 0;
+        if (DolDocActionCount() > 0) did_work = 1;
+        if (g_shell_dirty != 0) did_work = 1;
+
         shell_poll();
 
         I64 cur_anim_ms = timer_get_uptime_ms();
         if (cur_anim_ms - last_anim_ms >= 33) {
             last_anim_ms = cur_anim_ms;
             doldoc_animate_tick();
+            did_work = 1;
         }
 
         if (g_shell_dirty != 0) {
             doldoc_redraw();
             doldoc_swap_term();
             g_shell_dirty = 0;
+            did_work = 1;
         }
 
-        task_yield();
+        // P6: hardware idle when there is no work this frame (WFE wakes on the
+        // 1 kHz timer PPI); otherwise yield cooperatively to the scheduler.
+        if (did_work) { task_yield(); } else { __wfe(); task_yield(); }
     }
 }
 

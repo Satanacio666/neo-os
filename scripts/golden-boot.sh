@@ -222,6 +222,13 @@ else
         echo "  [FAIL] doldoc: ${ddline:-<none>} (want DOLDOC: PASS)"
         fail=1
     fi
+    shline="$(printf '%s\n' "$out" | grep -a 'SHELL: ' | tail -1)"
+    if printf '%s' "$shline" | grep -aq 'PASS'; then
+        echo "  [PASS] $shline (O(1) registry + action protocol)"
+    else
+        echo "  [FAIL] shell: ${shline:-<none>} (want SHELL: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

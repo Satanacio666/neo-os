@@ -957,6 +957,9 @@ U0 SelfTestRun() {
     // expression (N*M / N+M), like local and global arrays. Before the fix `[4 * 3]`
     // recorded only 4 elements, so CC.n sat at offset 32 instead of 96 and this read 0.
     SelfTestCheck("member_arr_compound_dim", "struct CL { I64 m[12]; I64 n; }; struct CC { I64 m[4 * 3]; I64 n; }; CL cl; CC *cc = (CC*)&cl; cc->n = 5; cl.n;", 5);
+    SelfTestCheck("decl_comma_init", "I64 fn() { U8 a = 10, b = 25, c = 7; I64 x = 100, y = 200; return a + b + c + x + y; } fn();", 342);
+    SelfTestCheck("decl_comma_global", "I64 g1 = 5, g2 = 6; g1 + g2;", 11);
+    SelfTestCheck("fn_prototype_forward", "I64 fwd_add(I64 a, I64 b); I64 caller() { return fwd_add(19, 23); } I64 fwd_add(I64 a, I64 b) { return a + b; } caller();", 42);
     SelfTestCheck2("macro_define_add", 42, "#define MAC21 21", "MAC21 + MAC21;");
     SelfTestCheck2("macro_define_expr", 42, "#define MACEXPR 6 * 7", "MACEXPR;");
     SelfTestCheck("addr_of_array_elem", "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;", 20);
@@ -1003,6 +1006,7 @@ U0 SelfTestRun() {
     MeshSelfTest();
     SelfTestRender();
     DolDocSelfTest();
+    ShellSelfTest();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

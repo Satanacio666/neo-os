@@ -3095,7 +3095,6 @@ U0 HcParseStatement() {
 
 U0 HcParseFunction(U8 *func_name) {
     U64 fn_entry = g_hc_code + g_hc_code_len * 4;
-    HcAddFunc(func_name, fn_entry);
     if (strcmp(func_name, "Main") == 0) {
         g_hc_unit_main = fn_entry;
     }
@@ -3151,6 +3150,17 @@ U0 HcParseFunction(U8 *func_name) {
     }
     if (g_hc_tok == TOK_RPAREN) HcLexNext(); // eat ')'
 
+    // D17 root fix: a forward prototype `Type name(args);` must NOT publish a body.
+    // An empty body emitted at this address would win the SIC cell over the real
+    // definition (HcPublishFunc never updates an already-defined symbol). Record
+    // only the return-floatness; the real definition publishes the address.
+    if (g_hc_tok == TOK_SEMICOLON) {
+        HcFnFloatSet(func_name, g_hc_fn_ret_float);
+        HcLexNext();
+        return;
+    }
+
+    HcAddFunc(func_name, fn_entry);
     HcParseStatement();
     HcEmitEpilogue();
     HcFinalizeFrame();
@@ -3238,7 +3248,10 @@ U0 HcParseProgram() {
             HcLexNext(); // eat Type
             I64 g_is_ptr = 0;
             while (g_hc_tok == TOK_STAR) { g_is_ptr = 1; HcLexNext(); }
-            if (g_hc_tok == TOK_IDENT) {
+            I64 g_decl = 0;
+            I64 g_was_fn = 0;
+            while (g_hc_tok == TOK_IDENT) {
+                g_decl = 1;
                 U8 fname[64];
                 HcSafeCopy(fname, g_hc_tok_str, 64);
                 HcLexNext(); // eat ident
@@ -3247,7 +3260,8 @@ U0 HcParseProgram() {
                     g_hc_fn_ret_float = (save_t == TOK_TYPE_F64);
                     HcParseFunction(fname);
                     g_hc_fn_ret_float = 0;
-                    continue;
+                    g_was_fn = 1;
+                    break;
                 }
                 // Top-level array dimensions: Type g_arr[N][M]...  A dimension may be
                 // a constant expression of the form N, N*M or N+M (macros are already
@@ -3411,9 +3425,18 @@ U0 HcParseProgram() {
                     }
                     } // end non-array initializer
                 }
-                if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
-                continue;
+                // D18 root fix: multiple initialized globals in one declaration
+                // (`I64 g1 = 5, g2 = 6;`). Preserve the base type across declarators.
+                if (g_hc_tok == TOK_COMMA) {
+                    HcLexNext();
+                    g_is_ptr = 0;
+                    while (g_hc_tok == TOK_STAR) { g_is_ptr = 1; HcLexNext(); }
+                    continue;
+                }
+                break;
             }
+            if (g_was_fn) continue;
+            if (g_decl) { if (g_hc_tok == TOK_SEMICOLON) HcLexNext(); continue; }
 
             // Restore state and parse as top-level statement block
             g_hc_pos = save_p;
