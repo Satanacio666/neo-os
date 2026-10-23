@@ -22,7 +22,7 @@ for i in $(seq 1 40); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && brea
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"
-check "all 36 subsystems"   1 "$(count 'ALL 36 HOLYC SUBSYSTEMS')"
+check "all 34 subsystems"   1 "$(count 'ALL 34 HOLYC SUBSYSTEMS')"
 check "exceptions"          0 "$(count 'Synchronous Exception')"
 check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
@@ -213,6 +213,13 @@ else
         echo "  [PASS] $mshline (OBJ mesh: parse + quad triangulation + render)"
     else
         echo "  [FAIL] mesh: ${mshline:-<none>} (want MESH: PASS)"
+        fail=1
+    fi
+    ddline="$(printf '%s\n' "$out" | grep -a 'DOLDOC: ' | tail -1)"
+    if printf '%s' "$ddline" | grep -aq 'PASS'; then
+        echo "  [PASS] $ddline (CDoc/CTree + full two-letter tag set)"
+    else
+        echo "  [FAIL] doldoc: ${ddline:-<none>} (want DOLDOC: PASS)"
         fail=1
     fi
 fi

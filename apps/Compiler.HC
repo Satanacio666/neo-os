@@ -103,7 +103,10 @@
 // NOTE: there is no HC_MAX_LOCALS macro. The per-function local table is sized 256
 // (see g_hc_local_* below) and HcAddLocalTyped hard-errors (g_hc_error = 1) rather
 // than silently dropping a local if that ceiling is ever reached.
-#define HC_MAX_FUNCS     128
+#define HC_MAX_FUNCS     512
+// Max `return` statements per function (epilogue back-patches). A large
+// two-letter tag dispatcher legitimately needs well over the old 64.
+#define HC_MAX_EPILOGUES 512
 // P0.7: source / include-expansion ceilings. A module larger than the load
 // buffer used to be silently truncated (see KernelInit.HC HC_MODULE_MAX); these
 // match that 1 MB source cap, with a 2 MB expansion buffer for #include splicing.
@@ -150,7 +153,7 @@ U64   g_hc_unit_main;
 
 // Function Prologue/Epilogue Dynamic Frame Patching
 I64   g_hc_pro_sub_idx;
-I64   g_hc_epi_patches[64];
+I64   g_hc_epi_patches[HC_MAX_EPILOGUES];
 I64   g_hc_epi_count;
 
 // Local Variables Table (per function)
@@ -168,10 +171,10 @@ I64   g_hc_decl_elem_float;     // transient: current decl's element/pointee is 
 I64   g_hc_frame_offset;
 
 // Persistent Compiled Function Table
-U8    g_hc_func_names[4096];    // 128 * 32
-U64   g_hc_func_addrs[128];
+U8    g_hc_func_names[HC_MAX_FUNCS * 32];
+U64   g_hc_func_addrs[HC_MAX_FUNCS];
 I64   g_hc_func_count;
-I64   g_hc_func_ret_float[128];  // 1 if the function returns F64 (result in D0)
+I64   g_hc_func_ret_float[HC_MAX_FUNCS];  // 1 if the function returns F64 (result in D0)
 I64   g_hc_fn_ret_float;         // transient: current function return type is F64
 I64   g_hc_arg_float[32];        // transient: which call args are F64
 
@@ -741,7 +744,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
             return;
         }
     }
-    if (g_hc_func_count < 128) {
+    if (g_hc_func_count < HC_MAX_FUNCS) {
         HcSafeCopy(&g_hc_func_names[g_hc_func_count * 32], name, 32);
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
@@ -861,7 +864,7 @@ U0 HcEmitEpilogue() {
     // mov sp, x29
     HcEmit(0x910003BF);
     // add sp, sp, #frame_sz (backpatched at end of function)
-    if (g_hc_epi_count < 64) {
+    if (g_hc_epi_count < HC_MAX_EPILOGUES) {
         g_hc_epi_patches[g_hc_epi_count] = g_hc_code_len;
         g_hc_epi_count++;
     } else {

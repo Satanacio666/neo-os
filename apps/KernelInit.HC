@@ -92,24 +92,23 @@ U0 KernelInitMain() {
     KInitLoad("Physics3D.HC");
     KInitLoad("Gears3D.HC");
 
-    // Stage 6: Telemetry, Theme Compositor, DolDoc 3.0, Shell & Window Manager
-    KInitLog("Stage 6: Theme Compositor, DolDoc 3.0, Shadertoy & Desktop...");
+    // Stage 6: Telemetry, Theme, DolDoc 3.0 (CDoc/CTree), Shell & Desktop
+    KInitLog("Stage 6: Theme, DolDoc 3.0 (CDoc/CTree), Shadertoy & Desktop...");
     KInitLoad("Profiler.HC");
     KInitLoad("PerfOverlay.HC");
     KInitLoad("BenchCpu.HC");
     KInitLoad("BenchReport.HC");
     KInitLoad("Theme.HC");
-    KInitLoad("Compositor.HC");
+    // P5: WM.HC and Compositor.HC are dissolved into DolDoc.HC (windows are
+    // documents; damage/present/effects live in the continuum). DolDoc loads
+    // before Shell, which drives DolDocDesktopLoop().
     KInitLoad("DolDoc.HC");
-    // WM.HC defines g_wm/StudioWin* which Shell.HC references. Load WM first;
-    // WM's own dependency on Shell (shell_run_command) late-binds via SIC.
-    KInitLoad("WM.HC");
     KInitLoad("Shell.HC");
     KInitLoad("ShaderEditor.HC");
     KInitLoad("HolyBenchmark.HC");
 
     KInitLog("======================================================");
-    KInitLog("✦ ALL 36 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
+    KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum

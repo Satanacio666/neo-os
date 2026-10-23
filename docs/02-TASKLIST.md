@@ -900,15 +900,16 @@ renderer is byte-identical on 1 vs N cores.
 
 ---
 
-## P5 — DolDoc (real TempleOS model + dissolution)
+## P5 — DolDoc (real TempleOS model + dissolution)  ✅ **DONE**
 
 `(from 00-MASTER-CONSOLIDATED-PLAN §6 P5, 02-PRIORITY-PLAN P5, P2-P6-MIGRATION-SPECS §5, 03-design §3.2–3.4)`
-- [ ] **Rewrite `DolDoc.HC` → CDoc/CTree** of entries + **per-char attributes**; delete `g_doc_chars/fg/bg`, `g_doc_link_idx`, `g_hist_chars`.
-- [ ] **Full two-letter tag set:** `TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI` — incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap.
-- [ ] **Windows are documents:** `$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`; **dissolve `WM.HC`**; **dissolve `Compositor.HC`**.
-- [ ] **Reactive cells** (generalize `DolDocPatchTarget`); RedSea document persistence; the DolDoc reference is a DolDoc (dogfood).
-- [ ] Fix `g_doc_dirty_mask` (`((U64)1 << r)`).
-- [ ] **Exit:** a doc with text/link/button/slider/form/tree/3D-scene/shader renders + responds; no char grid.
+- [x] **Rewrite `DolDoc.HC` → CDoc/CTree** of entries + **per-char attributes**; delete `g_doc_chars/fg/bg`, `g_doc_link_idx`, `g_hist_chars`. — flat `CDocNode` tree + `g_doc_attr[fg|bg]` arena; grid gone.
+- [x] **Full two-letter tag set:** `TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI` — incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap.
+- [x] **Windows are documents:** `$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`; **dissolve `WM.HC`**; **dissolve `Compositor.HC`** — both files DELETED; desktop/window/damage/present/effects absorbed.
+- [x] **Reactive cells** (generalize `DolDocPatchTarget` via `DolDocCellWrite`/`$SL`/`$DA` `target=`); RedSea document persistence (`$FI` include); the DolDoc reference is a DolDoc (dogfood: `DolDocSelfTest`).
+- [x] Fix `g_doc_dirty_mask` (`((U64)1 << r)`).
+- [x] **Exit:** a doc with text/link/button/slider/form/tree/3D-scene/shader renders + responds; no char grid. Gate: `DOLDOC: PASS`; screenshots `p5_desktop_live.png`, `p5_shader_editor_live.png`, `p5_doc_widgets_live.png`.
+- Compiler root fixes this priority: **D17** (no function forward declarations), **D18** (no comma-separated initialized declarations), **D19** (`HC_MAX_FUNCS` 128→512, epilogue-patch cap 64→512), **D20** (declare globals before use). See doc 4.
 
 ---
 
@@ -977,24 +978,24 @@ renderer is byte-identical on 1 vs N cores.
 | Check | Command | Expected |
 |---|---|---|
 | Golden gate (one boot) | `scripts/golden-boot.sh` | `GOLDEN BOOT: PASS` |
-| In-guest battery | inside the gate: `selftest` (one command) | `SELFTEST: 85/85 PASS` |
-| In-guest parity | inside the gate: `selftest` | `PARITY: 54/54`, `0 diff` |
+| In-guest battery | inside the gate: `selftest` (one command) | `SELFTEST: 87/87 PASS` |
+| In-guest parity | inside the gate: `selftest` | `PARITY: 56/56`, `0 diff` |
 | Twin-liveness | inside the gate: `selftest` | `TWINS: 5/5` |
 | Symbol audit | inside the gate: `selftest` | `SYMS: <n> symbols, 0 unresolved` |
 | Shading (P4.5) | inside the gate: `selftest` | `SHADING: PASS` |
 | Fragment-shader VM (P4.6) | inside the gate: `selftest` | `SHADERVM: PASS (14/14)` |
+| DolDoc 3.0 (P5) | inside the gate: `selftest` | `DOLDOC: PASS` |
 | C-runtime census | `scripts/census-c-runtime.sh` | `CENSUS: PASS` |
 | Self-host | `scripts/self-host-test.sh` | `SELF-HOST: PASS` |
 | Module parity | `scripts/p1-parity.sh` | `RESULT: PASS — engines agree` |
 | Undefined syms | `scripts/audit-symbols.sh` | 0 undefined, 0 unresolved |
-| Legacy battery | `scripts/run-jit-golden.py` | 74/74 (superseded by `selftest`) |
+| Legacy battery | `scripts/run-jit-golden.py` | 86/86 (superseded by `selftest`) |
 | Token parity | `scripts/check-token-parity.py` | 71 tokens identical |
 | Visual | `scripts/screenshot-diff.py` | no unexpected diff |
-| Cycles | `rg "shell_run_command" apps/DolDoc.HC apps/WM.HC` | empty |
+| Cycles | `rg "shell_run_command" apps/DolDoc.HC` | button/link click only (P6) |
 
-> `tests/jit_golden/cases.json` holds **84 cases** (1 `known`), i.e. **83 active**; the in-guest suite is
-> those 83 plus coverage/subsystem gates = **85 counted checks** (`SELFTEST 85/85`). The earlier "65/65" /
-> "75 cases" / "80 checks" figures are stale.
+> `tests/jit_golden/cases.json` holds **86 cases** (1 `known`), i.e. **85 active**; the in-guest suite is
+> those 85 plus coverage/subsystem gates = **87 counted checks** (`SELFTEST 87/87`).
 
 ---
 
@@ -1044,9 +1045,10 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
       `gfx_draw_char`; add the **stb_truetype v2 signed-area AA rasterizer** + `GetGlyphSDF` (or
       rasterize-then-EDT); bake an **SDF atlas** at boot; composite as textured quads through the one rasterizer.
       Gate: `FONTS: PASS` (AA glyph hash) + `RENDER` unchanged.
-- [ ] **P5.0 — DolDoc 3.0** (`apps/DolDoc.HC`, `apps/Compositor.HC`). Flat index-based `CDNode` tree; React
-      O(n) keyed reconciliation; memory-watch bindings (`$DA`); document = window/shell/editor; Morton dirty
-      tiles; draw through the one rasterizer. Gate: `DOLDOC: PASS` + golden hash unchanged.
+- [x] **P5.0 — DolDoc 3.0** (`apps/DolDoc.HC`). Flat index-based `CDocNode` tree; reactive-cell bindings
+      (`$DA`/`$SL` `target=` via `DolDocCellWrite`); document = window/shell/editor; windows are `$WIN$` docs;
+      draw through the one rasterizer. Gate: `DOLDOC: PASS` + golden hash unchanged (`0xD28836F`). *React O(n)
+      keyed reconciliation and Morton dirty tiles were superseded by the tree walk + single dirty rect.*
 - [ ] **P6.0 — Reactive shell** (`apps/Shell.HC`, `apps/Symbols.HC`). Symbol-table O(1) dispatch; command
       output as a mounted `CDoc` subtree; `WFE` idle with a lost-wakeup-safe re-check. Gate: all builtins
       dispatch + `WFE` idle verified.

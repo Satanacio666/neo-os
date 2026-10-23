@@ -594,6 +594,41 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   identical. Wired into `golden-boot.sh`. Result: `DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)` —
   the rasterizer is single-core and IRQ-masked during the golden render, so SMP scheduling cannot perturb it.
 
+### D17. HolyC has **no function forward declarations** — **ROOT-FIXED** (Compiler.HC / DolDoc.HC)
+- **Symptom.** `DolDoc.HC` compiled (`res = 1`) but `DolDocExecTag` did nothing: `$FG,RED$` did not change the
+  colour, `$BT$`/`$SL$`/`$AN$`/`$MA$` created no widgets/anchors/macros. The whole tag dispatcher was inert.
+- **Root cause.** A prototype `U0 DolDocExecTag(U8 *tag);` is parsed by `HcParseProgram` as a *function
+  definition* (`Type ident (` → `HcParseFunction`), which then consumes tokens looking for a `{ … }` body. The
+  later real definition was therefore mis-registered/empty, so every call to `DolDocExecTag` hit an empty body.
+- **Fix.** Removed every function prototype (`U0 DolDocExecTag(U8*);`, `U0 DolDocDrawNode(I64,I64);`). HolyC
+  resolves forward *references* through the runtime symbol/function table — prototypes are unnecessary and
+  harmful. **Rule: never write a `Type name(args);` prototype.**
+
+### D18. HolyC rejects **comma-separated initialized declarations** — **ROOT-FIXED** (DolDoc.HC)
+- **Symptom.** `U8 t0 = tag[0], t1 = tag[1];` left `t1` undefined/garbage, so every `t1 == 'X'` comparison was
+  false and the dispatcher fell through.
+- **Root cause.** The compiler's statement parser handles `Type a, b;` (no initializers) but not
+  `Type a = expr, b = expr;` — only the first declarator is bound correctly.
+- **Fix.** Split every such declaration into one statement per variable (`U8 t0 = tag[0]; U8 t1 = tag[1];`);
+  18 sites in `DolDoc.HC`. **Rule: one initialized variable per declaration.**
+
+### D19. Per-module compiler caps were too small for the new UI module — **RAISED** (Compiler.HC)
+- `HC_MAX_FUNCS` (persistent function table) was **128**; `DolDoc.HC` now defines ~141 functions → `HcAddFunc`
+  set `g_hc_error`. Raised to **512** (`g_hc_func_names/addrs/ret_float` resized).
+- The per-function epilogue-patch cap was a literal **64** (`g_hc_epi_patches[64]`); a large two-letter tag
+  dispatcher legitimately has 60+ `return`s → error. Introduced `HC_MAX_EPILOGUES 512`.
+- Both are arbitrary ceilings, not semantic limits; raising them is the root fix. The C seed has no such table,
+  so parity is unaffected; `self-host` and `PARITY 56/56 (0 diff)` stay green.
+
+### D20. A global used **before its declaration** is implicitly sized to 8 bytes — **ROOT-FIXED** (DolDoc.HC)
+- **Symptom.** `DolDoc.HC` compiled, but writing `g_comp.screen_w = …` during module execution corrupted the
+  kernel heap; the *next* module (`Shell.HC`) then failed `GLOBAL ARRAY ALLOC FAILED g_shell_cmds`.
+- **Root cause.** `DolDocSampleTelemetry` (defined earlier in the file) references `g_comp.fps`; the compiler
+  implicitly registered `g_comp` as an 8-byte global at that point. The later `CCompositorState g_comp;`
+  declaration was skipped (symbol already present), so `DolDocCompositorInit` wrote 13×I64 into an 8-byte block.
+- **Fix.** Moved the `CCompositorState` class + `CCompositorState g_comp;` declaration to the top of the module,
+  before any use. **Rule: declare a global before the first function that touches it.**
+
 ### Open questions
 - **P4.3/P4.5 color space:** P4.5 now shades in **linear light** and gamma-corrects to sRGB on output
   (`sqrt`), but the 2D golden path stays straight-alpha sRGB. Full pipeline unification (linear present +

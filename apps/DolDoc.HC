@@ -1,38 +1,66 @@
 // ==============================================================================
-// DolDoc.HC - Sovereign Pure HolyC DolDoc 3.0 Scene-Graph & OmniTape Continuum
+// DolDoc.HC - Sovereign Pure HolyC DolDoc 3.0 CDoc/CTree Continuum  (P5)
 // Architecture: ARMv8-A Ring 0 | 100% Native AArch64 JIT Execution
-// Substrate: OmniTape Stream, Dynamic Morton 64x64 Tiles, Native Shadertoy
-//            ($SHADER$), Scalable Vector Fonts ($FONT$), 3D Meshes ($SP$),
-//            Live Telemetry Oscilloscopes ($GRAPH$), Math ($EQ$) & Morphic Halos
+//
+// P5 rewrite: the fixed character grid (g_doc_chars/fg/bg, g_doc_link_idx,
+// g_hist_chars) and the parallel g_widget_* tables are GONE. A document is now a
+// genuine CDoc/CTree: a flat, index-linked tree of CDocNode entries whose text
+// lives in a contiguous arena with a PER-CHARACTER attribute word (fg|bg). The
+// full TempleOS two-letter tag set is parsed ($TX CR SR CU TB CL PB PL LM RM HD
+// FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI), plus $WIN$
+// windows, $SPLIT$/$BLUR$/$ELEV$ and reactive cells ($DA/$SL target= binding).
+//
+// WM.HC and Compositor.HC are dissolved here: windows are documents ($WIN$),
+// the desktop is a document, damage/present/effects live in this module.
 // ==============================================================================
 
-#define DOLDOC_MAX_COLS     256
-#define DOLDOC_MAX_ROWS     64
-#define DOLDOC_CELLS        16384
-#define DOLDOC_HIST_LINES   512
-#define DOLDOC_HIST_CELLS   131072
-#define DOLDOC_MAX_WIDGETS  512
+#define DOC_MAX_NODES     2048
+#define DOC_MAX_TEXT      65536
+#define DOC_MAX_ARGS      32768
+#define DOC_MAX_WINDOWS   8
+#define DOC_MAX_MACROS    32
+#define DOC_MAX_ANCHORS   64
+#define DOC_MAX_ATTRS     4096
 
-#define WIDGET_NONE         0
-#define WIDGET_BUTTON       1
-#define WIDGET_LINK         2
-#define WIDGET_CHECKBOX     3
-#define WIDGET_TREE         4
-#define WIDGET_BOX          5
-#define WIDGET_CARD         6
-#define WIDGET_GLASS        7
-#define WIDGET_SLIDER       8
-#define WIDGET_EQUATION     9
-#define WIDGET_GRAPH        10
-#define WIDGET_SPRITE3D     11
-#define WIDGET_PROGRESS     12
-#define WIDGET_HR           13
-#define WIDGET_SHADOW       14
-#define WIDGET_SHADER       15
-#define WIDGET_FONT_TEXT    16
-#define WIDGET_REPL         17
+// ---- Node kinds (the CDoc/CTree entry vocabulary) ----------------------------
+#define DOC_ROOT       0
+#define DOC_TEXT       1
+#define DOC_LINK       2
+#define DOC_BUTTON     3
+#define DOC_DATA       4
+#define DOC_SLIDER     5
+#define DOC_TOGGLE     6
+#define DOC_PROGRESS   7
+#define DOC_TREE       8
+#define DOC_BITMAP     9
+#define DOC_SCENE3D    10
+#define DOC_SHADER     11
+#define DOC_GRAPH      12
+#define DOC_MACRO      13
+#define DOC_INCLUDE    14
+#define DOC_ANCHOR     15
+#define DOC_WINDOW     16
+#define DOC_SPLIT      17
+#define DOC_EQ         18
+#define DOC_RULE       19
+#define DOC_CARD       20
+#define DOC_BOX        21
+#define DOC_GLASS      22
+#define DOC_SHADOW     23
+#define DOC_FONT       24
+#define DOC_INPUT      25
 
-// Semantic Color Token IDs (Resolved Dynamically via g_theme at Render Time!)
+// ---- Node flags --------------------------------------------------------------
+#define DOCF_OPEN      1
+#define DOCF_ACTIVE    2
+#define DOCF_MIN       4
+#define DOCF_MAX       8
+#define DOCF_ELEV      16
+#define DOCF_BLUR      32
+#define DOCF_WRAP      64
+#define DOCF_INVERT    128
+
+// Semantic Color Token IDs (resolved dynamically via g_theme at render time)
 #define SEM_COLOR_TEXT      0x01000001
 #define SEM_COLOR_SUBTEXT   0x01000002
 #define SEM_COLOR_MUTED     0x01000003
@@ -52,38 +80,49 @@
 #define SEM_COLOR_MAUVE     0x01000011
 #define SEM_COLOR_PINK      0x01000012
 
-class CDolDocOps {
-    I64 putc;
-    I64 print;
-    I64 clear;
-    I64 redraw;
-    I64 click;
-    I64 move;
-    I64 scroll_up;
-    I64 scroll_down;
-    I64 backspace;
-    I64 draw_cursor;
-    I64 set_bg;
-    I64 get_bg;
-    I64 mark_all_dirty;
+// ============================================================================
+// CDocNode - one entry in the document tree
+// ============================================================================
+class CDocNode {
+    I64 kind;
+    I64 flags;
+    I64 parent;
+    I64 first;
+    I64 last;
+    I64 next;
+    I64 prev;
+    I64 x;
+    I64 y;
+    I64 w;
+    I64 h;
+    I64 val;
+    I64 min;
+    I64 max;
+    U64 target;
+    I64 text_off;
+    I64 text_len;
+    I64 arg_off;
+    U32 fg;
+    U32 bg;
+    I64 state;
+    I64 win_id;
 };
 
-// Live Reactive Parameters for Shaders, 3D Sprites & Oscilloscopes
+// Live reactive parameters for shaders, 3D sprites & oscilloscopes
 I64 g_shader_speed       = 50;
 I64 g_shader_zoom        = 40;
 I64 g_shader_morph       = 60;
 I64 g_sprite_rot_speed   = 50;
 I64 g_doc_inspector_mode = 0;
-I64 g_doc_inspected_wid  = -1;
+I64 g_doc_inspected_nid  = -1;
 I64 g_doc_anim_tick      = 0;
 
-// Live Telemetry Ring Buffers for $GRAPH$ Oscilloscopes
+// Telemetry ring buffers for $PL$ / $GRAPH$ oscilloscopes
 I64 g_osc_sine_buf[64];
 I64 g_osc_fps_buf[64];
-I64 g_osc_mem_buf[64];
 I64 g_osc_head = 0;
 
-// Fast Integer Sine/Cosine Table (64 entries for full 2*pi period, scaled -256..256)
+// Fast integer sine table (64 entries, -256..256)
 I64 g_doc_sin64[64];
 I64 g_doc_trig_ready = 0;
 I64 g_cube_px[8];
@@ -91,40 +130,26 @@ I64 g_cube_py[8];
 
 U0 DolDocInitTrig() {
     if (g_doc_trig_ready) return;
-    // Quarter wave 0..15
     g_doc_sin64[0]  = 0;   g_doc_sin64[1]  = 25;  g_doc_sin64[2]  = 50;  g_doc_sin64[3]  = 74;
     g_doc_sin64[4]  = 98;  g_doc_sin64[5]  = 121; g_doc_sin64[6]  = 142; g_doc_sin64[7]  = 162;
     g_doc_sin64[8]  = 181; g_doc_sin64[9]  = 198; g_doc_sin64[10] = 213; g_doc_sin64[11] = 226;
     g_doc_sin64[12] = 237; g_doc_sin64[13] = 245; g_doc_sin64[14] = 251; g_doc_sin64[15] = 255;
     g_doc_sin64[16] = 256;
-    for (I64 ti = 1; ti < 16; ti++) {
-        g_doc_sin64[16 + ti] = g_doc_sin64[16 - ti];
-    }
-    for (I64 ti2 = 0; ti2 < 32; ti2++) {
-        g_doc_sin64[32 + ti2] = -g_doc_sin64[ti2];
-    }
+    for (I64 ti = 1; ti < 16; ti++) g_doc_sin64[16 + ti] = g_doc_sin64[16 - ti];
+    for (I64 ti2 = 0; ti2 < 32; ti2++) g_doc_sin64[32 + ti2] = -g_doc_sin64[ti2];
     for (I64 oi = 0; oi < 64; oi++) {
         g_osc_sine_buf[oi] = g_doc_sin64[oi];
         g_osc_fps_buf[oi]  = 60 + (g_doc_sin64[(oi * 3) & 63] / 32);
-        g_osc_mem_buf[oi]  = 45 + (oi % 15);
     }
     g_doc_trig_ready = 1;
 }
 
-I64 DocFastSin(I64 idx) {
-    if (!g_doc_trig_ready) DolDocInitTrig();
-    return g_doc_sin64[idx & 63];
-}
+I64 DocFastSin(I64 idx) { if (!g_doc_trig_ready) DolDocInitTrig(); return g_doc_sin64[idx & 63]; }
+I64 DocFastCos(I64 idx) { if (!g_doc_trig_ready) DolDocInitTrig(); return g_doc_sin64[(idx + 16) & 63]; }
 
-I64 DocFastCos(I64 idx) {
-    if (!g_doc_trig_ready) DolDocInitTrig();
-    return g_doc_sin64[(idx + 16) & 63];
-}
-
-// Resolve Semantic Color Token or Legacy Hex to Active Theme Palette (g_theme)
+// Resolve a semantic colour token (or legacy hex) against the live theme palette
 U32 DolDocResolveColor(U32 col) {
     if (g_theme.bg_base == 0) {
-        // Fallback if CompositorInit hasn't run yet
         if (col == SEM_COLOR_TEXT)     return 0xFFCDD6F4;
         if (col == SEM_COLOR_MANTLE)   return 0xFF181825;
         if (col == SEM_COLOR_BASE)     return 0xFF1E1E2E;
@@ -143,7 +168,6 @@ U32 DolDocResolveColor(U32 col) {
         if (col == SEM_COLOR_MUTED)    return 0xFF6C7086;
         return col;
     }
-
     if (col == SEM_COLOR_TEXT)     return g_theme.text_primary;
     if (col == SEM_COLOR_SUBTEXT)  return g_theme.text_secondary;
     if (col == SEM_COLOR_MUTED)    return g_theme.text_muted;
@@ -162,8 +186,6 @@ U32 DolDocResolveColor(U32 col) {
     if (col == SEM_COLOR_RED)      return g_theme.status_danger;
     if (col == SEM_COLOR_MAUVE)    return g_theme.accent_tertiary;
     if (col == SEM_COLOR_PINK)     return g_theme.accent_tertiary;
-
-    // Remap legacy hardcoded Mocha surface/border colors when another theme is active
     if (g_theme.theme_id != 0) {
         if (col == 0xFF1E1E2E) return g_theme.bg_base;
         if (col == 0xFF181825) return g_theme.bg_mantle;
@@ -176,102 +198,88 @@ U32 DolDocResolveColor(U32 col) {
     return col;
 }
 
-// Viewport Geometry & State
+// ============================================================================
+// Document storage: flat node arena + per-character text/attr arena
+// ============================================================================
+CDocNode g_doc_nodes[DOC_MAX_NODES];
+U8  g_doc_text[DOC_MAX_TEXT];
+U64 g_doc_attr[DOC_MAX_TEXT];       // low 32 = fg token, high 32 = bg token
+U8  g_doc_args[DOC_MAX_ARGS];
+I64 g_doc_node_count = 0;
+I64 g_doc_text_used  = 0;
+I64 g_doc_args_used  = 0;
+I64 g_doc_root       = 0;
+I64 g_doc_cur        = 0;           // flow parent (usually root)
+I64 g_doc_cur_run    = -1;          // current single-line text run
+I64 g_doc_col        = 0;
+I64 g_doc_row        = 0;
+I64 g_doc_cols       = 126;
+I64 g_doc_rows       = 41;
+
+// Viewport geometry
 I64 g_doc_x = 0;
 I64 g_doc_y = 0;
 I64 g_doc_w = 1024;
 I64 g_doc_h = 768;
-I64 g_doc_cols = 126;
-I64 g_doc_rows = 41;
-I64 g_doc_cur_col = 0;
-I64 g_doc_cur_row = 0;
 
+// Flow style (colour stack + margins + wrap)
 U32 g_doc_cur_fg = SEM_COLOR_TEXT;
 U32 g_doc_cur_bg = SEM_COLOR_MANTLE;
-
-// Style Stack for Nested Elements
-U32 g_style_fg_stack[16];
-U32 g_style_bg_stack[16];
+U32 g_doc_fg_stack[16];
+U32 g_doc_bg_stack[16];
 I64 g_style_depth = 0;
+I64 g_doc_lmargin = 0;
+I64 g_doc_rmargin = 126;
+I64 g_doc_wrap    = 1;
+I64 g_doc_underline = 0;
 
-U0 DolDocStylePush(U32 fg, U32 bg) {
-    if (g_style_depth < 15) {
-        g_style_fg_stack[g_style_depth] = g_doc_cur_fg;
-        g_style_bg_stack[g_style_depth] = g_doc_cur_bg;
-        g_style_depth++;
-    }
-    g_doc_cur_fg = fg;
-    g_doc_cur_bg = bg;
-}
-
-U0 DolDocStylePop() {
-    if (g_style_depth > 0) {
-        g_style_depth--;
-        g_doc_cur_fg = g_style_fg_stack[g_style_depth];
-        g_doc_cur_bg = g_style_bg_stack[g_style_depth];
-    }
-}
-
+// Cursor
 I64 g_doc_cursor_x = 8;
 I64 g_doc_cursor_y = 8;
 I64 g_doc_cursor_visible = 1;
 
+// Dirty tracking: one bit per row (fixed: 64-bit shift) + whole-doc flag
 U64 g_doc_dirty_mask = -1;
+I64 g_doc_dirty = 1;
+I64 g_doc_quiet = 0;
 I64 g_doc_scroll_offset = 0;
-I64 g_doc_history_count = 0;
-
-// Document Stream & History Storage
-U8  g_doc_chars[DOLDOC_CELLS];
-U32 g_doc_fg[DOLDOC_CELLS];
-U32 g_doc_bg[DOLDOC_CELLS];
-I64 g_doc_link_idx[DOLDOC_CELLS];
-
-U8  g_hist_chars[DOLDOC_HIST_CELLS];
-U32 g_hist_fg[DOLDOC_HIST_CELLS];
-U32 g_hist_bg[DOLDOC_HIST_CELLS];
-
-// Interactive Scene-Graph Nodes / Widgets Table
-I64 g_widget_type[DOLDOC_MAX_WIDGETS];
-I64 g_widget_row[DOLDOC_MAX_WIDGETS];
-I64 g_widget_start_col[DOLDOC_MAX_WIDGETS];
-I64 g_widget_end_col[DOLDOC_MAX_WIDGETS];
-I64 g_widget_state[DOLDOC_MAX_WIDGETS];
-I64 g_widget_pixel_x[DOLDOC_MAX_WIDGETS];
-I64 g_widget_pixel_y[DOLDOC_MAX_WIDGETS];
-I64 g_widget_pixel_w[DOLDOC_MAX_WIDGETS];
-I64 g_widget_pixel_h[DOLDOC_MAX_WIDGETS];
-I64 g_widget_val[DOLDOC_MAX_WIDGETS];
-I64 g_widget_min[DOLDOC_MAX_WIDGETS];
-I64 g_widget_max[DOLDOC_MAX_WIDGETS];
-U64 g_widget_target[DOLDOC_MAX_WIDGETS];
-I64 g_widget_tape_offset[DOLDOC_MAX_WIDGETS];
-U8  g_widget_label[32768];  // 512 * 64
-U8  g_widget_cmd[65536];    // 512 * 128
-U8  g_widget_extra[65536];  // 512 * 128
-I64 g_widget_count = 0;
-I64 g_doc_drag_wid = -1;
-I64 g_doc_scroll_px = 0;
+I64 g_doc_drag_nid = -1;
 
 // ============================================================================
-// OMNITAPE & LIVING CELL MATRIX (LCM) SOVEREIGN MEMORY ARENA
+// Compositor state (dissolved from Compositor.HC). Declared before any use so
+// that functions earlier in the module resolve `g_comp` to the real struct.
 // ============================================================================
-#define OMNITAPE_ARENA_SIZE  1048576
-#define OMNITAPE_MAGIC       0x544150454E454F31
+class CCompositorState {
+    I64 screen_w;
+    I64 screen_h;
+    I64 screen_pitch;
+    I64 vsync_hz;
+    I64 shadows_enabled;
+    I64 glass_enabled;
+    I64 rounded_corners;
+    I64 dirty_blit_enabled;
+    I64 frame_count;
+    I64 fps;
+    I64 last_fps_time_sec;
+    I64 frame_time_us;
+    I64 last_frame_start_us;
+};
+CCompositorState g_comp;
+I64 g_doc_comp_ready = 0;
 
-#define CMD_NOP               0x00
-#define CMD_TEXT_RUN          0x01
-#define CMD_SDF_RECT          0x02
-#define CMD_SDF_CARD          0x03
-#define CMD_MATH_EQUATION     0x04
-#define CMD_SPRITE_3D         0x05
-#define CMD_CELL_SLIDER       0x06
-#define CMD_CELL_COLOR        0x07
-#define CMD_SHADER_QUAD       0x08
-#define CMD_CELL_OSCILLOSCOPE 0x09
-#define CMD_CELL_CHECKBOX     0x0A
-#define CMD_PROGRESS_BAR      0x0B
-#define CMD_PLUMB_DISPATCH    0x0C
+// Anchors & macros
+U8  g_doc_anchor_names[DOC_MAX_ANCHORS * 32];
+I64 g_doc_anchor_nodes[DOC_MAX_ANCHORS];
+I64 g_doc_anchor_count = 0;
+U8  g_doc_macro_names[DOC_MAX_MACROS * 32];
+U8  g_doc_macro_bodies[DOC_MAX_MACROS * 256];
+I64 g_doc_macro_count = 0;
 
+// ============================================================================
+// OmniTape: every CDocNode compiles to one 64-byte command record
+// ============================================================================
+#define OMNITAPE_ARENA_SIZE 1048576
+#define OMNITAPE_MAGIC      0x544150454E454F31
 class CTapeCmdHeader {
     I64 opcode;
     I64 flags;
@@ -282,124 +290,273 @@ class CTapeCmdHeader {
     I64 box_w;
     I64 box_h;
 };
-
 U8  *g_omnitape_buf = 0;
 I64  g_omnitape_tail = 0;
 I64  g_omnitape_cmd_count = 0;
 
-// ============================================================================
-// DYNAMIC SPATIAL MORTON-TILE PARTITIONING (64x64 L1 CACHE BINS, UP TO 2048x1280)
-// ============================================================================
-#define MORTON_TILES_X       32
-#define MORTON_TILES_Y       20
-#define MORTON_TOTAL_TILES   1024
-#define TILE_MAX_WIDGETS     32
-
-I64 g_tile_widget_count[MORTON_TOTAL_TILES];
-I64 g_tile_widgets[32768]; // 1024 * 32
-
-I64 Morton2D(I64 tx, I64 ty) {
-    if (tx < 0) tx = 0;
-    if (tx >= MORTON_TILES_X) tx = MORTON_TILES_X - 1;
-    if (ty < 0) ty = 0;
-    if (ty >= MORTON_TILES_Y) ty = MORTON_TILES_Y - 1;
-    I64 m = 0;
-    for (I64 m_i = 0; m_i < 5; m_i++) {
-        m = m | (((tx >> m_i) & 1) << (2 * m_i));
-        m = m | (((ty >> m_i) & 1) << (2 * m_i + 1));
-    }
-    return m & (MORTON_TOTAL_TILES - 1);
-}
-
-U0 MortonSpatialClear() {
-    for (I64 clr_i = 0; clr_i < MORTON_TOTAL_TILES; clr_i++) {
-        g_tile_widget_count[clr_i] = 0;
-    }
-}
-
-U0 MortonSpatialInsertWidget(I64 wid) {
-    if (wid < 0 || wid >= DOLDOC_MAX_WIDGETS) return;
-    I64 vx = g_widget_pixel_x[wid];
-    I64 vy = g_widget_pixel_y[wid];
-    I64 vw = g_widget_pixel_w[wid];
-    I64 vh = g_widget_pixel_h[wid];
-
-    I64 tx0 = vx / 64; if (tx0 < 0) tx0 = 0; if (tx0 >= MORTON_TILES_X) tx0 = MORTON_TILES_X - 1;
-    I64 ty0 = vy / 64; if (ty0 < 0) ty0 = 0; if (ty0 >= MORTON_TILES_Y) ty0 = MORTON_TILES_Y - 1;
-    I64 tx1 = (vx + vw - 1) / 64; if (tx1 < 0) tx1 = 0; if (tx1 >= MORTON_TILES_X) tx1 = MORTON_TILES_X - 1;
-    I64 ty1 = (vy + vh - 1) / 64; if (ty1 < 0) ty1 = 0; if (ty1 >= MORTON_TILES_Y) ty1 = MORTON_TILES_Y - 1;
-
-    for (I64 m_ty = ty0; m_ty <= ty1; m_ty++) {
-        for (I64 m_tx = tx0; m_tx <= tx1; m_tx++) {
-            I64 midx = Morton2D(m_tx, m_ty);
-            I64 cnt = g_tile_widget_count[midx];
-            if (cnt < TILE_MAX_WIDGETS) {
-                g_tile_widgets[midx * TILE_MAX_WIDGETS + cnt] = wid;
-                g_tile_widget_count[midx] = cnt + 1;
-            }
-        }
-    }
-}
-
-I64 OmniTapeAppendCmd(I64 opcode, I64 x, I64 y, I64 w, I64 h, U8 *payload, I64 payload_len, I64 wid) {
+I64 OmniTapeAppendNode(I64 nid) {
     if (!g_omnitape_buf) return -1;
-    I64 aligned_tail = ((g_omnitape_tail + 63) / 64) * 64;
-    I64 total_len = 64 + payload_len + 1;
-    if (aligned_tail + total_len >= OMNITAPE_ARENA_SIZE) {
-        return -1;
-    }
-
-    CTapeCmdHeader *hdr = g_omnitape_buf + aligned_tail;
-    hdr->opcode = opcode;
-    hdr->flags = wid;
-    hdr->payload_size = payload_len;
-    hdr->rel_child_offset = 0;
-    hdr->box_x = x;
-    hdr->box_y = y;
-    hdr->box_w = w;
-    hdr->box_h = h;
-
-    if (payload && payload_len > 0) {
-        U8 *dst = g_omnitape_buf + aligned_tail + 64;
-        for (I64 tape_i = 0; tape_i < payload_len; tape_i++) {
-            dst[tape_i] = payload[tape_i];
-        }
-        dst[payload_len] = 0;
-    } else {
-        U8 *dst0 = g_omnitape_buf + aligned_tail + 64;
-        dst0[0] = 0;
-    }
-
-    I64 off = aligned_tail;
-    g_omnitape_tail = aligned_tail + ((total_len + 63) / 64) * 64;
+    CDocNode *nd = &g_doc_nodes[nid];
+    I64 aligned = ((g_omnitape_tail + 63) / 64) * 64;
+    I64 total = 64 + nd->text_len + 1;
+    if (aligned + total >= OMNITAPE_ARENA_SIZE) return -1;
+    CTapeCmdHeader *hdr = g_omnitape_buf + aligned;
+    hdr->opcode = nd->kind;
+    hdr->flags = nid;
+    hdr->payload_size = nd->text_len;
+    hdr->rel_child_offset = nd->first;
+    hdr->box_x = nd->x;
+    hdr->box_y = nd->y;
+    hdr->box_w = nd->w;
+    hdr->box_h = nd->h;
+    U8 *dst = g_omnitape_buf + aligned + 64;
+    for (I64 i = 0; i < nd->text_len; i++) dst[i] = g_doc_text[nd->text_off + i];
+    dst[nd->text_len] = 0;
+    g_omnitape_tail = aligned + ((total + 63) / 64) * 64;
     g_omnitape_cmd_count++;
+    return aligned;
+}
+
+// ============================================================================
+// Tree primitives
+// ============================================================================
+U0 DolDocLink(I64 parent, I64 n) {
+    CDocNode *p = &g_doc_nodes[parent];
+    CDocNode *c = &g_doc_nodes[n];
+    c->parent = parent;
+    c->next = -1;
+    c->prev = p->last;
+    if (p->last >= 0) g_doc_nodes[p->last].next = n;
+    else p->first = n;
+    p->last = n;
+}
+
+U0 DolDocUnlink(I64 n) {
+    CDocNode *c = &g_doc_nodes[n];
+    I64 p = c->parent;
+    if (p >= 0) {
+        if (g_doc_nodes[p].first == n) g_doc_nodes[p].first = c->next;
+        if (g_doc_nodes[p].last == n) g_doc_nodes[p].last = c->prev;
+    }
+    if (c->prev >= 0) g_doc_nodes[c->prev].next = c->next;
+    if (c->next >= 0) g_doc_nodes[c->next].prev = c->prev;
+    c->next = -1; c->prev = -1;
+}
+
+I64 DolDocNewNode(I64 kind, I64 parent) {
+    if (g_doc_node_count >= DOC_MAX_NODES) return -1;
+    I64 n = g_doc_node_count;
+    g_doc_node_count++;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->kind = kind; nd->flags = 0;
+    nd->parent = parent; nd->first = -1; nd->last = -1; nd->next = -1; nd->prev = -1;
+    nd->x = 0; nd->y = 0; nd->w = 0; nd->h = 0;
+    nd->val = 0; nd->min = 0; nd->max = 100; nd->target = 0;
+    nd->text_off = 0; nd->text_len = 0; nd->arg_off = 0;
+    nd->fg = SEM_COLOR_TEXT; nd->bg = SEM_COLOR_MANTLE;
+    nd->state = 0; nd->win_id = 0;
+    if (parent >= 0) DolDocLink(parent, n);
+    return n;
+}
+
+I64 DolDocArgStore(U8 *tag) {
+    if (!tag) return 0;
+    I64 len = strlen(tag);
+    if (g_doc_args_used + len + 1 >= DOC_MAX_ARGS) return 0;
+    I64 off = g_doc_args_used;
+    for (I64 i = 0; i < len; i++) g_doc_args[off + i] = tag[i];
+    g_doc_args[off + len] = 0;
+    g_doc_args_used += len + 1;
     return off;
 }
 
-// Persistent Tag Parsing Scratch Buffers
+// ============================================================================
+// Text arena (per-character attributes)
+// ============================================================================
+I64 DolDocNewRun(I64 parent, I64 px, I64 py) {
+    I64 n = DolDocNewNode(DOC_TEXT, parent);
+    if (n < 0) return -1;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->x = px; nd->y = py; nd->h = 18; nd->w = 0;
+    nd->text_off = g_doc_text_used; nd->text_len = 0;
+    return n;
+}
+
+U0 DolDocRunPutc(I64 n, U8 c, U32 fg, U32 bg) {
+    if (n < 0 || g_doc_text_used >= DOC_MAX_TEXT) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    I64 off = nd->text_off + nd->text_len;
+    g_doc_text[off] = c;
+    g_doc_attr[off] = ((U64)bg << 32) | (U64)(fg & 0xFFFFFFFF);
+    nd->text_len++;
+    nd->w = nd->text_len * 8;
+    g_doc_text_used = off + 1;
+}
+
+U0 DolDocRunAppendStr(I64 n, U8 *s, U32 fg, U32 bg) {
+    if (!s) return;
+    for (I64 i = 0; s[i]; i++) DolDocRunPutc(n, s[i], fg, bg);
+}
+
+// ============================================================================
+// Style stack / flow helpers
+// ============================================================================
+U0 DolDocStylePush(U32 fg, U32 bg) {
+    if (g_style_depth < 15) {
+        g_doc_fg_stack[g_style_depth] = g_doc_cur_fg;
+        g_doc_bg_stack[g_style_depth] = g_doc_cur_bg;
+        g_style_depth++;
+    }
+    g_doc_cur_fg = fg; g_doc_cur_bg = bg;
+}
+
+U0 DolDocStylePop() {
+    if (g_style_depth > 0) {
+        g_style_depth--;
+        g_doc_cur_fg = g_doc_fg_stack[g_style_depth];
+        g_doc_cur_bg = g_doc_bg_stack[g_style_depth];
+    }
+}
+
+U0 DolDocUpdateCursor() {
+    g_doc_cursor_x = g_doc_x + 8 + g_doc_col * 8;
+    g_doc_cursor_y = g_doc_y + 8 + g_doc_row * 18;
+}
+
+I64 DolDocEnsureRun() {
+    if (g_doc_cur_run < 0) {
+        g_doc_cur_run = DolDocNewRun(g_doc_cur, g_doc_x + 8 + g_doc_col * 8, g_doc_y + 8 + g_doc_row * 18);
+    }
+    return g_doc_cur_run;
+}
+
+U0 DolDocBreakRun() { g_doc_cur_run = -1; }
+
+// Word-wrap: split the current run at its last space, moving the tail to a new
+// line. Returns 1 if a wrap happened.
+I64 DolDocWordWrap() {
+    I64 r = g_doc_cur_run;
+    if (r < 0) return 0;
+    CDocNode *nd = &g_doc_nodes[r];
+    I64 sp = -1;
+    for (I64 k = nd->text_len - 1; k >= 0; k--) {
+        if (g_doc_text[nd->text_off + k] == ' ') { sp = k; break; }
+    }
+    if (sp <= 0) return 0;
+    I64 tail = nd->text_len - sp - 1;
+    if (tail <= 0) { nd->text_len = sp; nd->w = sp * 8; g_doc_text_used = nd->text_off + sp; }
+    // new row
+    g_doc_row++;
+    if (g_doc_row >= g_doc_rows) { DolDocScroll(); return 1; }
+    I64 n2 = DolDocNewRun(g_doc_cur, g_doc_x + 8, g_doc_y + 8 + g_doc_row * 18);
+    if (tail > 0 && n2 >= 0) {
+        for (I64 i = 0; i < tail; i++) {
+            I64 si = nd->text_off + sp + 1 + i;
+            U32 fgc = (U32)(g_doc_attr[si] & 0xFFFFFFFF);
+            U32 bgc = (U32)(g_doc_attr[si] >> 32);
+            DolDocRunPutc(n2, g_doc_text[si], fgc, bgc);
+        }
+    }
+    nd->text_len = sp; nd->w = sp * 8;
+    g_doc_text_used = nd->text_off + sp;
+    g_doc_cur_run = n2;
+    g_doc_col = tail;
+    DolDocUpdateCursor();
+    return 1;
+}
+
+U0 DolDocScroll() {
+    if (g_doc_rows > 1) {
+        // Archive the oldest line (the topmost text run) is implicit: the tree
+        // already retains every run. We only shift the live flow upward.
+        for (I64 i = 0; i < g_doc_node_count; i++) {
+            CDocNode *nd = &g_doc_nodes[i];
+            if (nd->kind != DOC_WINDOW && nd->y > g_doc_y - 200) nd->y -= 18;
+        }
+        g_doc_row = g_doc_rows - 1;
+        g_doc_cur_run = -1;
+        DolDocUpdateCursor();
+    }
+    DolDocMarkAllDirty();
+}
+
+U0 DolDocBackspace() {
+    if (g_doc_cur_run < 0) return;
+    CDocNode *nd = &g_doc_nodes[g_doc_cur_run];
+    if (nd->text_len > 0) {
+        nd->text_len--;
+        nd->w = nd->text_len * 8;
+        g_doc_text_used = nd->text_off + nd->text_len;
+        if (g_doc_col > 0) g_doc_col--;
+        DolDocUpdateCursor();
+        gfx_draw_rect(g_doc_cursor_x, g_doc_cursor_y, 8, 16, DolDocResolveColor(g_doc_cur_bg));
+    }
+}
+
+U0 doldoc_backspace() { DolDocBackspace(); }
+
+U0 DolDocDrawCursor(I64 visible) {
+    U32 color = visible ? DolDocResolveColor(SEM_COLOR_SKY) : DolDocResolveColor(g_doc_cur_bg);
+    gfx_draw_rect(g_doc_cursor_x, g_doc_cursor_y + 1, 2, 14, color);
+}
+
+U0 doldoc_draw_cursor(I64 visible) { DolDocDrawCursor(visible); }
+
+// ============================================================================
+// Character flow (drives the text runs; wraps at words or characters)
+// ============================================================================
+U0 DolDocPutc(U8 c) {
+    if (g_doc_scroll_offset != 0) { g_doc_scroll_offset = 0; DolDocMarkAllDirty(); }
+    g_doc_dirty = 1;
+    if (c == 10) {
+        if (!g_doc_quiet) { uart_putc(13); uart_putc(10); }
+        DolDocBreakRun();
+        g_doc_col = 0; g_doc_row++;
+        if (g_doc_row >= g_doc_rows) DolDocScroll();
+        else DolDocUpdateCursor();
+        return;
+    }
+    if (c == 13) { if (!g_doc_quiet) uart_putc(13); g_doc_col = 0; DolDocUpdateCursor(); return; }
+    if (c == 8) { if (!g_doc_quiet) { uart_putc(8); uart_putc(32); uart_putc(8); } DolDocBackspace(); return; }
+    if (c == 9) { DolDocPutc(' '); DolDocPutc(' '); DolDocPutc(' '); DolDocPutc(' '); return; }
+
+    if (!g_doc_quiet) uart_putc(c);
+    if (g_doc_row >= g_doc_rows) return;
+
+    // word-wrap before overflow
+    if (g_doc_wrap && g_doc_col >= g_doc_cols - 1 && c != ' ') {
+        if (DolDocWordWrap()) return;
+    }
+
+    I64 r = DolDocEnsureRun();
+    DolDocRunPutc(r, c, g_doc_cur_fg, g_doc_cur_bg);
+    g_doc_col++;
+    if (g_doc_col >= g_doc_cols) {
+        DolDocBreakRun();
+        g_doc_col = 0; g_doc_row++;
+        if (g_doc_row >= g_doc_rows) DolDocScroll();
+    }
+    DolDocUpdateCursor();
+}
+
+// ============================================================================
+// Tag attribute parsing helpers
+// ============================================================================
 U8  g_tag_buf[2048];
 U8  g_tag_label[256];
 U8  g_tag_cmd[256];
 U8  g_tag_title[256];
 U8  g_click_cmd_buf[256];
-
-CDolDocOps g_doldoc_ops;
+U8  g_doc_inc_buf[4096];
 
 U8* DolDocParseQuoted(U8 *p, U8 *out, I64 max_out) {
     if (!p) return 0;
     if (!out) return p;
     while (*p && *p != '"') p++;
-    if (!*p) {
-        out[0] = 0;
-        return p;
-    }
+    if (!*p) { out[0] = 0; return p; }
     p++;
     I64 idx = 0;
-    while (*p && *p != '"' && idx < max_out - 1) {
-        out[idx] = *p;
-        idx++;
-        p++;
-    }
+    while (*p && *p != '"' && idx < max_out - 1) { out[idx] = *p; idx++; p++; }
     out[idx] = 0;
     if (*p == '"') p++;
     return p;
@@ -410,18 +567,11 @@ I64 DolDocAtoi(U8 *p) {
     I64 neg = 0;
     if (*p == '-') { neg = 1; p++; }
     I64 res = 0;
-    while (*p >= '0' && *p <= '9') {
-        res = res * 10 + (*p - '0');
-        p++;
-    }
+    while (*p >= '0' && *p <= '9') { res = res * 10 + (*p - '0'); p++; }
     return neg ? -res : res;
 }
 
-U8* DolDocFindKey(U8 *tag, U8 *key) {
-    if (!tag) return 0;
-    if (!key) return 0;
-    return strstr(tag, key);
-}
+U8* DolDocFindKey(U8 *tag, U8 *key) { if (!tag || !key) return 0; return strstr(tag, key); }
 
 I64 DolDocGetAttrInt(U8 *tag, U8 *key, I64 def_val) {
     U8 *p = DolDocFindKey(tag, key);
@@ -429,8 +579,7 @@ I64 DolDocGetAttrInt(U8 *tag, U8 *key, I64 def_val) {
     p += strlen(key);
     while (*p == ' ' || *p == '=') p++;
     if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-        I64 val = 0;
+        p += 2; I64 val = 0;
         while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
             val = val << 4;
             if (*p >= '0' && *p <= '9') val |= (*p - '0');
@@ -448,9 +597,7 @@ U32 DolDocGetAttrHex(U8 *tag, U8 *key, U32 def_val) {
     if (!p) return def_val;
     p += strlen(key);
     while (*p == ' ' || *p == '=') p++;
-    if (p[0] == '0') {
-        if (p[1] == 'x' || p[1] == 'X') p += 2;
-    }
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
     U32 val = 0;
     while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
         val = val << 4;
@@ -468,212 +615,10 @@ U0 DolDocGetAttrStr(U8 *tag, U8 *key, U8 *out, I64 max_len) {
     if (!p) return;
     p += strlen(key);
     while (*p == ' ' || *p == '=') p++;
-    if (*p == '"') {
-        DolDocParseQuoted(p, out, max_len);
-    } else {
-        I64 as_i = 0;
-        while (*p && *p != ',' && *p != '$' && as_i < max_len - 1) {
-            out[as_i++] = *p++;
-        }
-        out[as_i] = 0;
-    }
-}
-
-U0 DolDocMarkAllDirty() {
-    g_doc_dirty_mask = -1;
-}
-
-U0 DolDocMarkRowDirty(I64 r) {
-    if (r >= 0 && r < 64) {
-        g_doc_dirty_mask = g_doc_dirty_mask | (1 << r);
-    } else {
-        g_doc_dirty_mask = -1;
-    }
-}
-
-U0 DolDocClear() {
-    for (I64 cell_i = 0; cell_i < DOLDOC_CELLS; cell_i++) {
-        g_doc_chars[cell_i] = ' ';
-        g_doc_fg[cell_i] = SEM_COLOR_TEXT;
-        g_doc_bg[cell_i] = SEM_COLOR_MANTLE;
-        g_doc_link_idx[cell_i] = -1;
-    }
-    for (I64 w_i = 0; w_i < DOLDOC_MAX_WIDGETS; w_i++) {
-        g_widget_target[w_i] = 0;
-        g_widget_tape_offset[w_i] = -1;
-    }
-    g_doc_cur_col = 0;
-    g_doc_cur_row = 0;
-    g_widget_count = 0;
-    g_doc_scroll_offset = 0;
-    g_doc_history_count = 0;
-    g_doc_inspected_wid = -1;
-    g_doc_cursor_x = g_doc_x + 8;
-    g_doc_cursor_y = g_doc_y + 8;
-    g_omnitape_tail = 0;
-    g_omnitape_cmd_count = 0;
-    MortonSpatialClear();
-    DolDocMarkAllDirty();
-}
-
-U0 DolDocScroll() {
-    if (g_doc_rows > 1) {
-        // 1. Archive top row into circular/linear scrollback history buffer
-        if (g_doc_history_count < DOLDOC_HIST_LINES) {
-            I64 h_base = g_doc_history_count * DOLDOC_MAX_COLS;
-            for (I64 hc = 0; hc < g_doc_cols; hc++) {
-                g_hist_chars[h_base + hc] = g_doc_chars[hc];
-                g_hist_fg[h_base + hc]    = g_doc_fg[hc];
-                g_hist_bg[h_base + hc]    = g_doc_bg[hc];
-            }
-            g_doc_history_count++;
-        } else {
-            // Shift history up by 1 line
-            for (I64 hr = 0; hr < DOLDOC_HIST_LINES - 1; hr++) {
-                I64 hdst = hr * DOLDOC_MAX_COLS;
-                I64 hsrc = (hr + 1) * DOLDOC_MAX_COLS;
-                for (I64 hc2 = 0; hc2 < g_doc_cols; hc2++) {
-                    g_hist_chars[hdst + hc2] = g_hist_chars[hsrc + hc2];
-                    g_hist_fg[hdst + hc2]    = g_hist_fg[hsrc + hc2];
-                    g_hist_bg[hdst + hc2]    = g_hist_bg[hsrc + hc2];
-                }
-            }
-            I64 h_last = (DOLDOC_HIST_LINES - 1) * DOLDOC_MAX_COLS;
-            for (I64 hc3 = 0; hc3 < g_doc_cols; hc3++) {
-                g_hist_chars[h_last + hc3] = g_doc_chars[hc3];
-                g_hist_fg[h_last + hc3]    = g_doc_fg[hc3];
-                g_hist_bg[h_last + hc3]    = g_doc_bg[hc3];
-            }
-        }
-
-        // 2. Shift active viewport rows up
-        for (I64 sr = 0; sr < g_doc_rows - 1; sr++) {
-            I64 dst = sr * DOLDOC_MAX_COLS;
-            I64 src = (sr + 1) * DOLDOC_MAX_COLS;
-            for (I64 sc = 0; sc < g_doc_cols; sc++) {
-                g_doc_chars[dst + sc]    = g_doc_chars[src + sc];
-                g_doc_fg[dst + sc]       = g_doc_fg[src + sc];
-                g_doc_bg[dst + sc]       = g_doc_bg[src + sc];
-                g_doc_link_idx[dst + sc] = g_doc_link_idx[src + sc];
-            }
-        }
-
-        // 3. Clear bottom row
-        I64 last_base = (g_doc_rows - 1) * DOLDOC_MAX_COLS;
-        for (I64 lc = 0; lc < g_doc_cols; lc++) {
-            g_doc_chars[last_base + lc]    = ' ';
-            g_doc_fg[last_base + lc]       = g_doc_cur_fg;
-            g_doc_bg[last_base + lc]       = g_doc_cur_bg;
-            g_doc_link_idx[last_base + lc] = -1;
-        }
-
-        // 4. Shift scene-graph widget coordinates and rebuild Morton spatial bins
-        for (I64 sw_i = 0; sw_i < g_widget_count; sw_i++) {
-            g_widget_row[sw_i] = g_widget_row[sw_i] - 1;
-            g_widget_pixel_y[sw_i] = g_widget_pixel_y[sw_i] - 18;
-        }
-        if (g_omnitape_buf) {
-            I64 sc_toff = 0;
-            while (sc_toff + 64 <= g_omnitape_tail) {
-                CTapeCmdHeader *sc_hdr = g_omnitape_buf + sc_toff;
-                if (sc_hdr->opcode == CMD_NOP) break;
-                if (sc_hdr->box_h > 0) {
-                    sc_hdr->box_y = sc_hdr->box_y - 18;
-                }
-                I64 sc_tot = 64 + sc_hdr->payload_size + 1;
-                sc_toff += ((sc_tot + 63) / 64) * 64;
-            }
-        }
-        MortonSpatialClear();
-        for (I64 mw_i = 0; mw_i < g_widget_count; mw_i++) {
-            MortonSpatialInsertWidget(mw_i);
-        }
-    }
-    g_doc_cur_row = g_doc_rows - 1;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-    g_doc_cursor_y = g_doc_y + 8 + g_doc_cur_row * 18;
-    DolDocMarkAllDirty();
-}
-
-U0 DolDocBackspace() {
-    if (g_doc_cur_col > 0) {
-        g_doc_cur_col--;
-        I64 idx = g_doc_cur_row * DOLDOC_MAX_COLS + g_doc_cur_col;
-        g_doc_chars[idx] = ' ';
-        g_doc_link_idx[idx] = -1;
-        g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-        DolDocMarkRowDirty(g_doc_cur_row);
-        gfx_draw_rect(g_doc_cursor_x, g_doc_cursor_y, 8, 16, DolDocResolveColor(g_doc_cur_bg));
-    }
-}
-
-U0 doldoc_backspace() {
-    DolDocBackspace();
-}
-
-U0 DolDocDrawCursor(I64 visible) {
-    U32 color = visible ? DolDocResolveColor(SEM_COLOR_SKY) : DolDocResolveColor(g_doc_cur_bg);
-    gfx_draw_rect(g_doc_cursor_x, g_doc_cursor_y + 1, 2, 14, color);
-}
-
-U0 doldoc_draw_cursor(I64 visible) {
-    DolDocDrawCursor(visible);
-}
-
-U0 DolDocPutc(U8 c) {
-    // Typing snaps scrollback to live bottom
-    if (g_doc_scroll_offset != 0) {
-        g_doc_scroll_offset = 0;
-        DolDocMarkAllDirty();
-    }
-    if (c == 10) {
-        uart_putc(13);
-        uart_putc(10);
-        g_doc_cur_col = 0;
-        g_doc_cur_row++;
-        if (g_doc_cur_row >= g_doc_rows) {
-            DolDocScroll();
-        } else {
-            g_doc_cursor_x = g_doc_x + 8;
-            g_doc_cursor_y = g_doc_y + 8 + g_doc_cur_row * 18;
-            DolDocMarkRowDirty(g_doc_cur_row);
-        }
-    } else if (c == 13) {
-        uart_putc(13);
-        g_doc_cur_col = 0;
-        g_doc_cursor_x = g_doc_x + 8;
-    } else if (c == 8) {
-        uart_putc(8);
-        uart_putc(32);
-        uart_putc(8);
-        DolDocBackspace();
-    } else if (c == 9) {
-        DolDocPutc(' ');
-        DolDocPutc(' ');
-        DolDocPutc(' ');
-        DolDocPutc(' ');
-    } else {
-        uart_putc(c);
-        if (g_doc_cur_row < g_doc_rows && g_doc_cur_col < g_doc_cols) {
-            I64 idx = g_doc_cur_row * DOLDOC_MAX_COLS + g_doc_cur_col;
-            g_doc_chars[idx] = c;
-            g_doc_fg[idx] = g_doc_cur_fg;
-            g_doc_bg[idx] = g_doc_cur_bg;
-            g_doc_link_idx[idx] = -1;
-
-            DolDocMarkRowDirty(g_doc_cur_row);
-            g_doc_cur_col++;
-            if (g_doc_cur_col >= g_doc_cols) {
-                g_doc_cur_col = 0;
-                g_doc_cur_row++;
-                if (g_doc_cur_row >= g_doc_rows) {
-                    DolDocScroll();
-                }
-            }
-            g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-            g_doc_cursor_y = g_doc_y + 8 + g_doc_cur_row * 18;
-        }
-    }
+    if (*p == '"') { DolDocParseQuoted(p, out, max_len); return; }
+    I64 i = 0;
+    while (*p && *p != ',' && *p != '$' && i < max_len - 1) { out[i] = *p; i++; p++; }
+    out[i] = 0;
 }
 
 U32 DolDocParseColor(U8 *val, U32 def_col) {
@@ -700,485 +645,634 @@ U32 DolDocParseColor(U8 *val, U32 def_col) {
     if (strcmp(val, "DARK") == 0)     return SEM_COLOR_MANTLE;
     if (strcmp(val, "WINDOW") == 0)   return SEM_COLOR_BASE;
     if (strcmp(val, "SURFACE") == 0)  return SEM_COLOR_SURFACE0;
-
     U8 *p = val;
     if (*p == '#') p++;
-    if (p[0] == '0') {
-        if (p[1] == 'x' || p[1] == 'X') p += 2;
-    }
-
-    U32 h = 0;
-    I64 digits = 0;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    U32 h = 0; I64 digits = 0;
     while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
         h = h << 4;
         if (*p >= '0' && *p <= '9') h |= (*p - '0');
         else if (*p >= 'a' && *p <= 'f') h |= (*p - 'a' + 10);
         else if (*p >= 'A' && *p <= 'F') h |= (*p - 'A' + 10);
-        p++;
-        digits++;
+        p++; digits++;
     }
-
     if (digits == 6) return 0xFF000000 | h;
     if (digits == 8) return h;
     return def_col;
 }
 
-U0 DolDocDrawShadow(I64 x, I64 y, I64 w, I64 h, I64 radius) {
-    CompositorDrawShadow(x, y, w, h, radius);
+U0 DolDocMarkAllDirty() { g_doc_dirty_mask = -1; g_doc_dirty = 1; }
+
+U0 DolDocMarkRowDirty(I64 r) {
+    if (r >= 0 && r < 64) g_doc_dirty_mask = g_doc_dirty_mask | (((U64)1) << r);
+    else g_doc_dirty_mask = -1;
+    g_doc_dirty = 1;
 }
 
-U0 DolDocDrawGlass(I64 x, I64 y, I64 w, I64 h, I64 alpha) {
-    CompositorDrawGlass(x, y, w, h, alpha);
-}
+U0 doldoc_mark_all_dirty() { DolDocMarkAllDirty(); }
 
-U0 DolDocParseBox(U8 *tag) {
-    I64 bw = DolDocGetAttrInt(tag, "w=", 40);
-    I64 bh = DolDocGetAttrInt(tag, "h=", 4);
-    U32 bbg = DolDocGetAttrHex(tag, "bg=", SEM_COLOR_SURFACE0);
-    U32 bborder = DolDocGetAttrHex(tag, "border=", SEM_COLOR_SURFACE1);
-    if (bw > g_doc_cols - g_doc_cur_col) bw = g_doc_cols - g_doc_cur_col;
-    if (bw < 4) bw = 4;
-    if (bh < 2) bh = 2;
-    DolDocMarkRowDirty(g_doc_cur_row);
-
-    I64 box_px = g_doc_x + 8 + g_doc_cur_col * 8;
-    I64 box_py = g_doc_y + 8 + g_doc_cur_row * 18;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        I64 wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_BOX;
-        g_widget_pixel_x[wid] = box_px;
-        g_widget_pixel_y[wid] = box_py;
-        g_widget_pixel_w[wid] = bw * 8;
-        g_widget_pixel_h[wid] = bh * 18;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + bw;
-        g_widget_val[wid] = (I64)bbg;
-        g_widget_min[wid] = (I64)bborder;
-        g_widget_label[wid * 64] = 0;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_RECT, box_px, box_py, bw * 8, bh * 18, "BOX", 3, wid);
-        g_widget_count++;
+// ============================================================================
+// Reactive cells: bind a node value to a live memory word and patch it
+// ============================================================================
+U0 DolDocPatchTarget(U64 target_addr, I64 new_val) {
+    if (!target_addr) return;
+    U32 *ins_ptr = (U32*)target_addr;
+    U32 ins = *ins_ptr;
+    if ((ins & 0x7F800000) == 0x52800000 || (ins & 0x7F800000) == 0x72800000) {
+        *ins_ptr = (ins & ~(0xFFFF << 5)) | (((U32)new_val & 0xFFFF) << 5);
+        __dc_civac((U64)ins_ptr); __dsb_sy(); __ic_ivau((U64)ins_ptr); __isb();
+    } else {
+        *(I64*)target_addr = new_val;
+        __dc_civac(target_addr); __dsb_sy(); __ic_ivau(target_addr); __isb();
     }
 }
 
-U0 DolDocParseCard(U8 *tag) {
-    g_tag_title[0] = 0;
-    DolDocGetAttrStr(tag, "title=", g_tag_title, 47);
-    I64 cw = DolDocGetAttrInt(tag, "w=", 50);
-    I64 ch = DolDocGetAttrInt(tag, "h=", 5);
-    U32 cbg = DolDocGetAttrHex(tag, "bg=", SEM_COLOR_BASE);
-    U32 cborder = DolDocGetAttrHex(tag, "border=", SEM_COLOR_BLUE);
-    if (cw > g_doc_cols - g_doc_cur_col) cw = g_doc_cols - g_doc_cur_col;
-    if (cw < 6) cw = 6;
-    if (ch < 2) ch = 2;
-    DolDocMarkRowDirty(g_doc_cur_row);
+U0 DolDocCellWrite(I64 nid, I64 new_val) {
+    if (nid < 0 || nid >= g_doc_node_count) return;
+    CDocNode *nd = &g_doc_nodes[nid];
+    if (new_val < nd->min) new_val = nd->min;
+    if (new_val > nd->max) new_val = nd->max;
+    nd->val = new_val;
+    if (nd->target != 0) DolDocPatchTarget(nd->target, new_val);
+    DolDocMarkRowDirty(nd->y / 18);
+}
 
-    I64 card_px = g_doc_x + 8 + g_doc_cur_col * 8;
-    I64 card_py = g_doc_y + 8 + g_doc_cur_row * 18;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        I64 wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_CARD;
-        g_widget_pixel_x[wid] = card_px;
-        g_widget_pixel_y[wid] = card_py;
-        g_widget_pixel_w[wid] = cw * 8;
-        g_widget_pixel_h[wid] = ch * 18;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cw;
-        g_widget_val[wid] = (I64)cbg;
-        g_widget_min[wid] = (I64)cborder;
-        strcpy(g_widget_label + wid * 64, g_tag_title);
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_CARD, card_px, card_py, cw * 8, ch * 18, g_tag_title, strlen(g_tag_title), wid);
-        g_widget_count++;
+// ============================================================================
+// Node constructors for the widget/tag vocabulary
+// ============================================================================
+I64 g_widget_count = 0;
+
+I64 DolDocWidget(I64 kind, I64 px, I64 py, I64 pw, I64 ph, U8 *tag) {
+    I64 n = DolDocNewNode(kind, g_doc_cur);
+    if (n < 0) return -1;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->x = px; nd->y = py; nd->w = pw; nd->h = ph;
+    nd->arg_off = DolDocArgStore(tag);
+    g_widget_count++;
+    g_doc_dirty = 1;
+    OmniTapeAppendNode(n);
+    return n;
+}
+
+// store a label string into the text arena (NUL-terminated) and point the node at it
+U0 DolDocSetLabel(I64 nid, U8 *s) {
+    if (nid < 0 || !s) return;
+    CDocNode *nd = &g_doc_nodes[nid];
+    nd->text_off = g_doc_text_used;
+    I64 i = 0;
+    for (; s[i] && g_doc_text_used < DOC_MAX_TEXT - 1; i++) {
+        g_doc_text[g_doc_text_used] = s[i]; g_doc_attr[g_doc_text_used] = 0; g_doc_text_used++;
+    }
+    g_doc_text[g_doc_text_used] = 0; g_doc_text_used++;
+    nd->text_len = i;
+}
+
+// advance the flow past a widget of `cols` cells, wrapping if needed
+U0 DolDocAdvance(I64 cols) {
+    if (g_doc_col > 0 && (g_doc_col + cols >= g_doc_cols)) {
+        DolDocBreakRun();
+        g_doc_col = 0; g_doc_row++;
+        if (g_doc_row >= g_doc_rows) DolDocScroll();
+    }
+    DolDocBreakRun();
+    g_doc_col += cols;
+    DolDocUpdateCursor();
+}
+
+I64 DolDocFlowPx() { return g_doc_x + 8 + g_doc_col * 8; }
+I64 DolDocFlowPy() { return g_doc_y + 8 + g_doc_row * 18; }
+
+// ============================================================================
+// Anchor & macro tables
+// ============================================================================
+U0 DolDocAddAnchor(U8 *name, I64 nid) {
+    if (!name || !*name || g_doc_anchor_count >= DOC_MAX_ANCHORS) return;
+    I64 idx = g_doc_anchor_count;
+    strncpy(g_doc_anchor_names + idx * 32, name, 31);
+    g_doc_anchor_names[idx * 32 + 31] = 0;
+    g_doc_anchor_nodes[idx] = nid;
+    g_doc_anchor_count++;
+}
+
+I64 DolDocFindAnchor(U8 *name) {
+    for (I64 i = 0; i < g_doc_anchor_count; i++) {
+        if (strcmp(g_doc_anchor_names + i * 32, name) == 0) return g_doc_anchor_nodes[i];
+    }
+    return -1;
+}
+
+U0 DolDocDefineMacro(U8 *name, U8 *body) {
+    if (!name || !*name || g_doc_macro_count >= DOC_MAX_MACROS) return;
+    I64 idx = g_doc_macro_count;
+    strncpy(g_doc_macro_names + idx * 32, name, 31);
+    g_doc_macro_names[idx * 32 + 31] = 0;
+    strncpy(g_doc_macro_bodies + idx * 256, body, 255);
+    g_doc_macro_bodies[idx * 256 + 255] = 0;
+    g_doc_macro_count++;
+}
+
+U8* DolDocFindMacro(U8 *name) {
+    for (I64 i = 0; i < g_doc_macro_count; i++) {
+        if (strcmp(g_doc_macro_names + i * 32, name) == 0) return g_doc_macro_bodies + i * 256;
+    }
+    return 0;
+}
+
+// ============================================================================
+// Full two-letter tag executor
+// ============================================================================
+
+// $EQ$ mathematical typography (FRAC/SQRT/SUM/INT)
+U0 DolDocParseEquation(U8 *tag) {
+    U8 *lbl = 0;
+    I64 w = 120;
+    I64 h = 34;
+    if (strstr(tag, "FRAC")) { lbl = "FRAC"; }
+    else if (strstr(tag, "SQRT")) { lbl = "SQRT"; }
+    else if (strstr(tag, "SUM")) { lbl = "SUM"; }
+    else if (strstr(tag, "INT")) { lbl = "INT"; }
+    else return;
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_EQ, DolDocFlowPx(), DolDocFlowPy() - 6, w, h, tag);
+    if (n >= 0) {
+        g_doc_nodes[n].state = (strcmp(lbl, "FRAC") == 0) ? 0 : (strcmp(lbl, "SQRT") == 0 ? 1 : (strcmp(lbl, "SUM") == 0 ? 2 : 3));
+    }
+    DolDocAdvance(cols);
+}
+
+// $FI$ include (distributed documents)
+U0 DolDocParseInclude(U8 *tag) {
+    U8 fname[64]; fname[0] = 0;
+    DolDocGetAttrStr(tag, "file=", fname, 60);
+    if (!fname[0]) DolDocParseQuoted(tag + 2, fname, 60);
+    if (!fname[0]) return;
+    I64 sz = 0;
+    I64 rc = redsea_read_file(fname, g_doc_inc_buf, 4000, &sz);
+    if (rc >= 0 && sz > 0) {
+        g_doc_inc_buf[sz] = 0;
+        DolDocPrint(g_doc_inc_buf);
     }
 }
 
-U0 DolDocParseGlass(U8 *tag) {
-    I64 gw = DolDocGetAttrInt(tag, "w=", 40);
-    I64 gh = DolDocGetAttrInt(tag, "h=", 4);
-    I64 galpha = DolDocGetAttrInt(tag, "alpha=", 0x80);
-    I64 gpx = g_doc_x + 8 + g_doc_cur_col * 8;
-    I64 gpy = g_doc_y + 8 + g_doc_cur_row * 18;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        I64 wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_GLASS;
-        g_widget_pixel_x[wid] = gpx;
-        g_widget_pixel_y[wid] = gpy;
-        g_widget_pixel_w[wid] = gw * 8;
-        g_widget_pixel_h[wid] = gh * 18;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + gw;
-        g_widget_val[wid] = galpha;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_RECT, gpx, gpy, gw * 8, gh * 18, "GLASS", 5, wid);
-        g_widget_count++;
+// $MA$ macro definition/expansion
+U0 DolDocParseMacro(U8 *tag) {
+    U8 name[32]; name[0] = 0;
+    DolDocGetAttrStr(tag, "name=", name, 30);
+    if (!name[0]) {
+        U8 *p = tag + 2;
+        while (*p == ' ' || *p == ',') p++;
+        I64 i = 0;
+        while (*p && *p != ',' && i < 30) { name[i] = *p; i++; p++; }
+        name[i] = 0;
     }
+    U8 body[256]; body[0] = 0;
+    DolDocGetAttrStr(tag, "text=", body, 250);
+    if (body[0]) { DolDocDefineMacro(name, body); return; }
+    U8 *m = DolDocFindMacro(name);
+    if (m) DolDocPrint(m);
 }
 
-U0 DolDocParseShadow(U8 *tag) {
-    I64 sw = DolDocGetAttrInt(tag, "w=", 40);
-    I64 sh = DolDocGetAttrInt(tag, "h=", 4);
-    I64 srad = DolDocGetAttrInt(tag, "radius=", 6);
-    I64 spx = g_doc_x + 8 + g_doc_cur_col * 8;
-    I64 spy = g_doc_y + 8 + g_doc_cur_row * 18;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        I64 wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_SHADOW;
-        g_widget_pixel_x[wid] = spx;
-        g_widget_pixel_y[wid] = spy;
-        g_widget_pixel_w[wid] = sw * 8;
-        g_widget_pixel_h[wid] = sh * 18;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + sw;
-        g_widget_val[wid] = srad;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_RECT, spx, spy, sw * 8, sh * 18, "SHADOW", 6, wid);
-        g_widget_count++;
-    }
-}
-
-// Tag: Scalable Vector Font Heading/Span: $FONT,text="...",scale=200,color="CYAN"$
-U0 DolDocParseFontText(U8 *tag) {
-    g_tag_label[0] = 0;
-    DolDocGetAttrStr(tag, "text=", g_tag_label, 63);
-    if (!g_tag_label[0]) {
-        DolDocParseQuoted(tag + 4, g_tag_label, 63);
-    }
-    I64 scale_pct = DolDocGetAttrInt(tag, "scale=", 180);
-    if (scale_pct < 100) scale_pct = 100;
-    if (scale_pct > 400) scale_pct = 400;
-
-    U8 col_str[32]; col_str[0] = 0;
-    DolDocGetAttrStr(tag, "color=", col_str, 30);
-    U32 fcol = SEM_COLOR_SAPPHIRE;
-    if (col_str[0]) fcol = DolDocParseColor(col_str, SEM_COLOR_SAPPHIRE);
-
-    I64 char_adv = (10 * scale_pct) / 100;
-    I64 char_h   = (16 * scale_pct) / 100 + 6;
-    I64 fw = strlen(g_tag_label) * char_adv + 12;
-    I64 cell_cols = (fw + 7) / 8;
-    I64 cell_rows = (char_h + 17) / 18;
-    if (cell_rows < 1) cell_rows = 1;
-
-    if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-        DolDocPutc(10);
-    }
-
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        I64 wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_FONT_TEXT;
-        g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-        g_widget_pixel_w[wid] = fw;
-        g_widget_pixel_h[wid] = char_h;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-        g_widget_val[wid] = scale_pct;
-        g_widget_min[wid] = (I64)fcol;
-        strcpy(g_widget_label + wid * 64, g_tag_label);
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_TEXT_RUN, g_widget_pixel_x[wid], g_widget_pixel_y[wid], fw, char_h, g_tag_label, strlen(g_tag_label), wid);
-        g_widget_count++;
-    }
-
-    g_doc_cur_col += cell_cols;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-}
-
-U0 DolDocParseSlider(U8 *tag) {
-    g_tag_label[0] = 0;
-    U8 *tp = tag + 3;
-    tp = DolDocParseQuoted(tp, g_tag_label, 63);
-    I64 val = DolDocGetAttrInt(tag, "val=", 50);
-    I64 min_v = DolDocGetAttrInt(tag, "min=", 0);
-    I64 max_v = DolDocGetAttrInt(tag, "max=", 100);
-    I64 sw = DolDocGetAttrInt(tag, "w=", 140);
-    if (sw < 60) sw = 60;
-    I64 sh = 18;
-
+// $DA$ data / form field
+U0 DolDocParseData(U8 *tag) {
+    U8 lbl[64]; lbl[0] = 0;
+    U8 *tp = tag + 2;
+    tp = DolDocParseQuoted(tp, lbl, 60);
+    I64 val = DolDocGetAttrInt(tag, "val=", 0);
+    I64 mn = DolDocGetAttrInt(tag, "min=", 0);
+    I64 mx = DolDocGetAttrInt(tag, "max=", 1000);
+    I64 w = DolDocGetAttrInt(tag, "w=", 160);
     U64 target = DolDocGetAttrInt(tag, "target=", 0);
     if (target == 0) {
-        U8 var_name[64];
-        var_name[0] = 0;
-        DolDocGetAttrStr(tag, "var=", var_name, 60);
-        if (var_name[0]) {
-            target = SymLookup(var_name);
-            if (target == 0) target = symbols_lookup(var_name);
-        }
-    }
-    if (target == 0 && g_tag_label[0]) {
-        target = SymLookup(g_tag_label);
-        if (target == 0) target = symbols_lookup(g_tag_label);
+        U8 vn[64]; vn[0] = 0;
+        DolDocGetAttrStr(tag, "var=", vn, 60);
+        if (vn[0]) target = SymLookup(vn);
     }
     if (target != 0) {
         val = *(I64*)target;
-        if (val < min_v) val = min_v;
-        if (val > max_v) val = max_v;
+        if (val < mn) val = mn;
+        if (val > mx) val = mx;
     }
-
-    I64 cell_cols = (sw + 7) / 8 + 5;
-    if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-        DolDocPutc(10);
+    I64 cols = (w + 32 + 7) / 8;
+    I64 n = DolDocWidget(DOC_DATA, DolDocFlowPx(), DolDocFlowPy(), w + 32, 18, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->val = val; nd->min = mn; nd->max = mx; nd->target = target;
+        DolDocSetLabel(n, lbl);
     }
-
-    I64 wid = -1;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_SLIDER;
-        g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-        g_widget_pixel_w[wid] = sw;
-        g_widget_pixel_h[wid] = sh;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-        g_widget_val[wid] = val;
-        g_widget_min[wid] = min_v;
-        g_widget_max[wid] = max_v;
-        g_widget_target[wid] = target;
-        g_widget_state[wid] = 0;
-        strcpy(g_widget_label + wid * 64, g_tag_label);
-        g_widget_cmd[wid * 128] = 0;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_CELL_SLIDER, g_widget_pixel_x[wid], g_widget_pixel_y[wid], sw, sh, g_tag_label, strlen(g_tag_label), wid);
-        MortonSpatialInsertWidget(wid);
-        g_widget_count++;
-    }
-
-    g_doc_cur_col += cell_cols;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
+    DolDocAdvance(cols);
 }
 
-U0 DolDocParseEquation(U8 *tag) {
-    if (g_widget_count >= DOLDOC_MAX_WIDGETS) return;
-
-    if (strstr(tag, "FRAC")) {
-        U8 eq_num[128]; eq_num[0] = 0;
-        U8 eq_den[128]; eq_den[0] = 0;
-        DolDocGetAttrStr(tag, "num=", eq_num, 120);
-        DolDocGetAttrStr(tag, "den=", eq_den, 120);
-        I64 eq_l1 = strlen(eq_num);
-        I64 eq_l2 = strlen(eq_den);
-        I64 eq_max_l = (eq_l1 > eq_l2) ? eq_l1 : eq_l2;
-        I64 eq_ew = eq_max_l * 8 + 16;
-        I64 eq_eh = 34;
-        I64 eq_cell_cols = (eq_ew + 7) / 8;
-
-        if (g_doc_cur_col > 0 && (g_doc_cur_col + eq_cell_cols >= g_doc_cols)) {
-            DolDocPutc(10);
-        }
-
-        I64 eq_wid = g_widget_count;
-        g_widget_type[eq_wid] = WIDGET_EQUATION;
-        g_widget_pixel_x[eq_wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[eq_wid] = g_doc_y + 8 + g_doc_cur_row * 18 - 6;
-        g_widget_pixel_w[eq_wid] = eq_ew;
-        g_widget_pixel_h[eq_wid] = eq_eh;
-        g_widget_row[eq_wid] = g_doc_cur_row;
-        g_widget_start_col[eq_wid] = g_doc_cur_col;
-        g_widget_end_col[eq_wid] = g_doc_cur_col + eq_cell_cols;
-        strcpy(g_widget_label + eq_wid * 64, "FRAC");
-        strcpy(g_widget_extra + eq_wid * 128, eq_num);
-        strcpy(g_widget_cmd + eq_wid * 128, eq_den);
-        g_widget_tape_offset[eq_wid] = OmniTapeAppendCmd(CMD_MATH_EQUATION, g_widget_pixel_x[eq_wid], g_widget_pixel_y[eq_wid], eq_ew, eq_eh, tag, strlen(tag), eq_wid);
-        MortonSpatialInsertWidget(eq_wid);
-        g_widget_count++;
-
-        g_doc_cur_col += eq_cell_cols;
-        g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-    } else if (strstr(tag, "SQRT")) {
-        U8 eq_rad[128]; eq_rad[0] = 0;
-        DolDocGetAttrStr(tag, "rad=", eq_rad, 120);
-        I64 eq_ew2 = strlen(eq_rad) * 8 + 24;
-        I64 eq_eh2 = 24;
-        I64 eq_cell_cols2 = (eq_ew2 + 7) / 8;
-
-        if (g_doc_cur_col > 0 && (g_doc_cur_col + eq_cell_cols2 >= g_doc_cols)) {
-            DolDocPutc(10);
-        }
-
-        I64 eq_wid2 = g_widget_count;
-        g_widget_type[eq_wid2] = WIDGET_EQUATION;
-        g_widget_pixel_x[eq_wid2] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[eq_wid2] = g_doc_y + 8 + g_doc_cur_row * 18 - 4;
-        g_widget_pixel_w[eq_wid2] = eq_ew2;
-        g_widget_pixel_h[eq_wid2] = eq_eh2;
-        g_widget_row[eq_wid2] = g_doc_cur_row;
-        g_widget_start_col[eq_wid2] = g_doc_cur_col;
-        g_widget_end_col[eq_wid2] = g_doc_cur_col + eq_cell_cols2;
-        strcpy(g_widget_label + eq_wid2 * 64, "SQRT");
-        strcpy(g_widget_extra + eq_wid2 * 128, eq_rad);
-        g_widget_cmd[eq_wid2 * 128] = 0;
-        g_widget_tape_offset[eq_wid2] = OmniTapeAppendCmd(CMD_MATH_EQUATION, g_widget_pixel_x[eq_wid2], g_widget_pixel_y[eq_wid2], eq_ew2, eq_eh2, tag, strlen(tag), eq_wid2);
-        MortonSpatialInsertWidget(eq_wid2);
-        g_widget_count++;
-
-        g_doc_cur_col += eq_cell_cols2;
-        g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-    } else if (strstr(tag, "SUM") || strstr(tag, "INT")) {
-        U8 eq_expr[128]; eq_expr[0] = 0;
-        U8 eq_lim[128];  eq_lim[0] = 0;
-        DolDocGetAttrStr(tag, "expr=", eq_expr, 120);
-        DolDocGetAttrStr(tag, "lim=", eq_lim, 120);
-        I64 eq_ew3 = (strlen(eq_expr) + strlen(eq_lim)) * 8 + 36;
-        I64 eq_eh3 = 32;
-        I64 eq_cell_cols3 = (eq_ew3 + 7) / 8;
-
-        if (g_doc_cur_col > 0 && (g_doc_cur_col + eq_cell_cols3 >= g_doc_cols)) {
-            DolDocPutc(10);
-        }
-
-        I64 eq_wid3 = g_widget_count;
-        g_widget_type[eq_wid3] = WIDGET_EQUATION;
-        g_widget_pixel_x[eq_wid3] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[eq_wid3] = g_doc_y + 8 + g_doc_cur_row * 18 - 6;
-        g_widget_pixel_w[eq_wid3] = eq_ew3;
-        g_widget_pixel_h[eq_wid3] = eq_eh3;
-        g_widget_row[eq_wid3] = g_doc_cur_row;
-        g_widget_start_col[eq_wid3] = g_doc_cur_col;
-        g_widget_end_col[eq_wid3] = g_doc_cur_col + eq_cell_cols3;
-        if (strstr(tag, "SUM")) strcpy(g_widget_label + eq_wid3 * 64, "SUM");
-        else strcpy(g_widget_label + eq_wid3 * 64, "INT");
-        strcpy(g_widget_extra + eq_wid3 * 128, eq_expr);
-        strcpy(g_widget_cmd + eq_wid3 * 128, eq_lim);
-        g_widget_tape_offset[eq_wid3] = OmniTapeAppendCmd(CMD_MATH_EQUATION, g_widget_pixel_x[eq_wid3], g_widget_pixel_y[eq_wid3], eq_ew3, eq_eh3, tag, strlen(tag), eq_wid3);
-        MortonSpatialInsertWidget(eq_wid3);
-        g_widget_count++;
-
-        g_doc_cur_col += eq_cell_cols3;
-        g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
+// $SL$ reactive slider
+U0 DolDocParseSlider(U8 *tag) {
+    U8 lbl[64]; lbl[0] = 0;
+    U8 *tp = tag + 2;
+    tp = DolDocParseQuoted(tp, lbl, 60);
+    I64 val = DolDocGetAttrInt(tag, "val=", 50);
+    I64 mn = DolDocGetAttrInt(tag, "min=", 0);
+    I64 mx = DolDocGetAttrInt(tag, "max=", 100);
+    I64 w = DolDocGetAttrInt(tag, "w=", 140);
+    if (w < 60) w = 60;
+    U64 target = DolDocGetAttrInt(tag, "target=", 0);
+    if (target == 0) {
+        U8 vn[64]; vn[0] = 0;
+        DolDocGetAttrStr(tag, "var=", vn, 60);
+        if (vn[0]) { target = SymLookup(vn); if (target == 0) target = symbols_lookup(vn); }
     }
+    if (target == 0 && lbl[0]) { target = SymLookup(lbl); if (target == 0) target = symbols_lookup(lbl); }
+    if (target != 0) {
+        val = *(I64*)target;
+        if (val < mn) val = mn;
+        if (val > mx) val = mx;
+    }
+    I64 cols = (w + 7) / 8 + 5;
+    I64 n = DolDocWidget(DOC_SLIDER, DolDocFlowPx(), DolDocFlowPy(), w, 18, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->val = val; nd->min = mn; nd->max = mx; nd->target = target;
+    }
+    DolDocAdvance(cols);
 }
 
-U0 DolDocParseGraph(U8 *tag) {
-    I64 gw = DolDocGetAttrInt(tag, "w=", 220);
-    I64 gh = DolDocGetAttrInt(tag, "h=", 52);
-    U8 gtype[32]; gtype[0] = 0;
-    DolDocGetAttrStr(tag, "type=", gtype, 30);
-    if (!gtype[0]) strcpy(gtype, "sine");
-
-    I64 cell_cols = (gw + 7) / 8;
-    I64 cell_rows = (gh + 17) / 18;
-
-    if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-        DolDocPutc(10);
+// $IV$ toggle / $CB$ checkbox
+U0 DolDocParseToggle(U8 *tag) {
+    U8 lbl[64]; lbl[0] = 0;
+    U8 *tp = tag + 2;
+    tp = DolDocParseQuoted(tp, lbl, 60);
+    I64 chk = 0;
+    if (*tp == ',') { tp++; if (*tp == '1' || *tp == 't' || *tp == 'T') chk = 1; }
+    I64 w = 20 + strlen(lbl) * 8 + 8;
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_TOGGLE, DolDocFlowPx(), DolDocFlowPy(), w, 18, tag);
+    if (n >= 0) {
+        g_doc_nodes[n].state = chk;
+        DolDocSetLabel(n, lbl);
     }
-
-    I64 wid = -1;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_GRAPH;
-        g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-        g_widget_pixel_w[wid] = gw;
-        g_widget_pixel_h[wid] = gh;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-        strcpy(g_widget_label + wid * 64, gtype);
-        g_widget_cmd[wid * 128] = 0;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_CELL_OSCILLOSCOPE, g_widget_pixel_x[wid], g_widget_pixel_y[wid], gw, gh, gtype, strlen(gtype), wid);
-        MortonSpatialInsertWidget(wid);
-        g_widget_count++;
-    }
-
-    g_doc_cur_col += cell_cols;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
+    DolDocAdvance(cols);
 }
 
+// $PB$ progress bar
+U0 DolDocParseProgress(U8 *tag) {
+    I64 val = DolDocGetAttrInt(tag, "val=", 0);
+    I64 mx = DolDocGetAttrInt(tag, "max=", 100);
+    if (mx <= 0) mx = 100;
+    if (val < 0) val = 0;
+    if (val > mx) val = mx;
+    I64 w = 160;
+    I64 cols = (w + 48 + 7) / 8;
+    I64 n = DolDocWidget(DOC_PROGRESS, DolDocFlowPx(), DolDocFlowPy(), w, 18, tag);
+    if (n >= 0) { g_doc_nodes[n].val = val; g_doc_nodes[n].max = mx; }
+    DolDocAdvance(cols);
+}
+
+// $ID$ collapsible tree
+U0 DolDocParseTree(U8 *tag) {
+    U8 title[64]; title[0] = 0;
+    DolDocGetAttrStr(tag, "title=", title, 60);
+    if (!title[0]) DolDocParseQuoted(tag + 2, title, 60);
+    I64 lvl = DolDocGetAttrInt(tag, "level=", 0);
+    I64 len = strlen(title) + 4 + lvl * 2;
+    I64 cols = (len * 8 + 7) / 8;
+    I64 n = DolDocWidget(DOC_TREE, DolDocFlowPx() + lvl * 12, DolDocFlowPy(), len * 8, 18, tag);
+    if (n >= 0) {
+        g_doc_nodes[n].state = 1;
+        DolDocSetLabel(n, title);
+    }
+    DolDocAdvance(cols);
+}
+
+// $SP$ in-code sprite / 3D mesh
 U0 DolDocParseSprite(U8 *tag) {
-    I64 sw = DolDocGetAttrInt(tag, "w=", 96);
-    I64 sh = DolDocGetAttrInt(tag, "h=", 72);
-    U8 stype[32]; stype[0] = 0;
-    DolDocGetAttrStr(tag, "type=", stype, 30);
-    if (!stype[0]) strcpy(stype, "cube");
-
-    I64 cell_cols = (sw + 7) / 8;
-    I64 cell_rows = (sh + 17) / 18;
-
-    if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-        DolDocPutc(10);
-    }
-
-    I64 wid = -1;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_SPRITE3D;
-        g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-        g_widget_pixel_w[wid] = sw;
-        g_widget_pixel_h[wid] = sh;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-        strcpy(g_widget_label + wid * 64, stype);
-        g_widget_cmd[wid * 128] = 0;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SPRITE_3D, g_widget_pixel_x[wid], g_widget_pixel_y[wid], sw, sh, stype, strlen(stype), wid);
-        MortonSpatialInsertWidget(wid);
-        g_widget_count++;
-    }
-
-    g_doc_cur_col += cell_cols;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
+    I64 w = DolDocGetAttrInt(tag, "w=", 96);
+    I64 h = DolDocGetAttrInt(tag, "h=", 72);
+    U8 st[32]; st[0] = 0;
+    DolDocGetAttrStr(tag, "type=", st, 30);
+    if (!st[0]) strcpy(st, "cube");
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_BITMAP, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) strncpy(g_doc_args + g_doc_nodes[n].arg_off, st, 32);
+    DolDocAdvance(cols);
 }
 
-// Tag 19: Native Real-Time Shadertoy Viewport: $SHADER,type="plasma",w=220,h=72$
+// $SH$ / $SHADER$ fragment shader viewport
 U0 DolDocParseShader(U8 *tag) {
-    I64 sh_w = DolDocGetAttrInt(tag, "w=", 220);
-    I64 sh_h = DolDocGetAttrInt(tag, "h=", 72);
-    U8 sh_type[32]; sh_type[0] = 0;
-    DolDocGetAttrStr(tag, "type=", sh_type, 30);
-    if (!sh_type[0]) strcpy(sh_type, "plasma");
+    I64 w = DolDocGetAttrInt(tag, "w=", 220);
+    I64 h = DolDocGetAttrInt(tag, "h=", 72);
+    U8 st[32]; st[0] = 0;
+    DolDocGetAttrStr(tag, "type=", st, 30);
+    if (!st[0]) strcpy(st, "plasma");
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_SHADER, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) strncpy(g_doc_args + g_doc_nodes[n].arg_off, st, 32);
+    DolDocAdvance(cols);
+}
 
-    I64 cell_cols = (sh_w + 7) / 8;
-    I64 cell_rows = (sh_h + 17) / 18;
+// $GR$ / $PL$ telemetry oscilloscope
+U0 DolDocParseGraph(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 220);
+    I64 h = DolDocGetAttrInt(tag, "h=", 52);
+    U8 gt[32]; gt[0] = 0;
+    DolDocGetAttrStr(tag, "type=", gt, 30);
+    if (!gt[0]) strcpy(gt, "sine");
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_GRAPH, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) strncpy(g_doc_args + g_doc_nodes[n].arg_off, gt, 32);
+    DolDocAdvance(cols);
+}
 
-    if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-        DolDocPutc(10);
+// $FO$ / $HD$ / $FONT$ scalable vector typography
+U0 DolDocParseFontText(U8 *tag) {
+    U8 lbl[64]; lbl[0] = 0;
+    DolDocGetAttrStr(tag, "text=", lbl, 60);
+    if (!lbl[0]) DolDocParseQuoted(tag + 2, lbl, 60);
+    I64 scale = DolDocGetAttrInt(tag, "scale=", 180);
+    if (scale < 100) scale = 100;
+    if (scale > 400) scale = 400;
+    U8 cs[32]; cs[0] = 0;
+    DolDocGetAttrStr(tag, "color=", cs, 30);
+    U32 fcol = SEM_COLOR_SAPPHIRE;
+    if (cs[0]) fcol = DolDocParseColor(cs, SEM_COLOR_SAPPHIRE);
+    I64 char_adv = (10 * scale) / 100;
+    I64 char_h = (16 * scale) / 100 + 6;
+    I64 fw = strlen(lbl) * char_adv + 12;
+    I64 cols = (fw + 7) / 8;
+    I64 n = DolDocWidget(DOC_FONT, DolDocFlowPx(), DolDocFlowPy(), fw, char_h, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->val = scale; nd->min = (I64)fcol;
+        DolDocSetLabel(n, lbl);
     }
+    DolDocAdvance(cols);
+}
 
-    I64 wid = -1;
-    if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-        wid = g_widget_count;
-        g_widget_type[wid] = WIDGET_SHADER;
-        g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-        g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-        g_widget_pixel_w[wid] = sh_w;
-        g_widget_pixel_h[wid] = sh_h;
-        g_widget_row[wid] = g_doc_cur_row;
-        g_widget_start_col[wid] = g_doc_cur_col;
-        g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-        strcpy(g_widget_label + wid * 64, sh_type);
-        g_widget_cmd[wid * 128] = 0;
-        g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SHADER_QUAD, g_widget_pixel_x[wid], g_widget_pixel_y[wid], sh_w, sh_h, sh_type, strlen(sh_type), wid);
-        MortonSpatialInsertWidget(wid);
-        g_widget_count++;
+// $WIN$ window container (creates a desktop window node; children via $EW$)
+U0 DolDocParseWindow(U8 *tag) {
+    U8 title[64]; title[0] = 0;
+    DolDocGetAttrStr(tag, "title=", title, 60);
+    I64 x = DolDocGetAttrInt(tag, "x=", 40);
+    I64 y = DolDocGetAttrInt(tag, "y=", 60);
+    I64 w = DolDocGetAttrInt(tag, "w=", 400);
+    I64 h = DolDocGetAttrInt(tag, "h=", 300);
+    I64 kind = DolDocGetAttrInt(tag, "kind=", 0);
+    DolDocWinCreate(title, x, y, w, h, kind);
+}
+
+U0 DolDocParseEndWindow() { }
+
+// $CARD$ / $BD$ / $BK$ container box
+U0 DolDocParseCard(U8 *tag, I64 kind) {
+    U8 title[64]; title[0] = 0;
+    DolDocGetAttrStr(tag, "title=", title, 60);
+    I64 w = DolDocGetAttrInt(tag, "w=", 50);
+    I64 h = DolDocGetAttrInt(tag, "h=", 5);
+    if (w < 6) w = 6;
+    if (h < 2) h = 2;
+    I64 n = DolDocWidget(kind, DolDocFlowPx(), DolDocFlowPy(), w * 8, h * 18, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->val = (I64)DolDocGetAttrHex(tag, "bg=", kind == DOC_CARD ? SEM_COLOR_BASE : SEM_COLOR_SURFACE0);
+        nd->min = (I64)DolDocGetAttrHex(tag, "border=", SEM_COLOR_BLUE);
+        DolDocSetLabel(n, title);
     }
+    // Containers do not advance the flow; following text flows inside them.
+}
 
-    g_doc_cur_col += cell_cols;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
+// $GLASS$ / $BLUR$ frosted panel
+U0 DolDocParseGlass(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 40);
+    I64 h = DolDocGetAttrInt(tag, "h=", 4);
+    I64 alpha = DolDocGetAttrInt(tag, "alpha=", 0xC8);
+    I64 n = DolDocWidget(DOC_GLASS, DolDocFlowPx(), DolDocFlowPy(), w * 8, h * 18, tag);
+    if (n >= 0) g_doc_nodes[n].val = alpha;
+}
+
+U0 DolDocParseShadow(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 40);
+    I64 h = DolDocGetAttrInt(tag, "h=", 4);
+    I64 rad = DolDocGetAttrInt(tag, "radius=", 6);
+    I64 n = DolDocWidget(DOC_SHADOW, DolDocFlowPx(), DolDocFlowPy(), w * 8, h * 18, tag);
+    if (n >= 0) g_doc_nodes[n].val = rad;
 }
 
 // ============================================================================
-// REAL-TIME SHADERTOY FRAGMENT EVALUATOR ($SHADER$ IN DOLDOC)
+// The tag dispatcher (full two-letter set + legacy aliases)
 // ============================================================================
-// ============================================================================
-// REAL-TIME SHADERTOY FRAGMENT EVALUATOR ($SHADER$ IN DOLDOC)
-// Supports 8 Native Procedural Shaders with Real-Time Uniform Reaction
-// ============================================================================
-U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
-    // P4.6: the procedural fragment-shader VM owns these types ("vm","sdf",
-    // "noise","mandel","bulb"). ShaderVM.HC loads in Stage 5, before DolDoc
-    // (Stage 6), so these are direct calls bound through the SIC cell.
-    if (ShaderTypeId(sh_type) >= 0) {
-        ShaderVMRenderNode(vx, vy, vw, vh, sh_type);
+U0 DolDocExecTag(U8 *tag) {
+    if (!tag || !*tag) return;
+    I64 t0 = tag[0]; I64 t1 = tag[1];
+
+    // ---- colour tags ----
+    if (t0 == 'F' && t1 == 'G') {
+        if (tag[2] == ',') g_doc_cur_fg = DolDocParseColor(tag + 3, SEM_COLOR_TEXT);
+        else g_doc_cur_fg = SEM_COLOR_TEXT;
         return;
     }
+    if (t0 == 'B' && t1 == 'G') {
+        if (tag[2] == ',') g_doc_cur_bg = DolDocParseColor(tag + 3, SEM_COLOR_MANTLE);
+        else g_doc_cur_bg = SEM_COLOR_MANTLE;
+        return;
+    }
+    if (t0 == 'F' && t1 == 'D') { g_doc_cur_fg = SEM_COLOR_TEXT; return; }
+    if (t0 == 'B' && t1 == 'D') { g_doc_cur_bg = SEM_COLOR_MANTLE; return; }
+    if (t0 == 'C' && t1 == 'L' && (tag[2] == 'S' || tag[2] == 0)) { DolDocClear(); return; }
+    if (strcmp(tag, "CLEAR") == 0) { DolDocClear(); return; }
+    if (t0 == 'C' && t1 == 'L') {
+        U8 a[32]; a[0] = 0; U8 b[32]; b[0] = 0;
+        U8 *p = tag + 2;
+        while (*p == ',' || *p == ' ') p++;
+        I64 i = 0; while (*p && *p != ',' && i < 30) { a[i] = *p; i++; p++; } a[i] = 0;
+        if (*p == ',') p++;
+        while (*p == ' ') p++;
+        i = 0; while (*p && *p != ',' && i < 30) { b[i] = *p; i++; p++; } b[i] = 0;
+        if (a[0]) g_doc_cur_fg = DolDocParseColor(a, SEM_COLOR_TEXT);
+        if (b[0]) g_doc_cur_bg = DolDocParseColor(b, SEM_COLOR_MANTLE);
+        return;
+    }
+    // ---- text / flow ----
+    if (t0 == 'T' && t1 == 'X') { U8 s[256]; DolDocParseQuoted(tag + 2, s, 250); DolDocPrint(s); return; }
+    if (t0 == 'P' && t1 == 'T') { U8 s[256]; DolDocParseQuoted(tag + 2, s, 250); DolDocPrint(s); return; }
+    if (t0 == 'C' && t1 == 'R') { DolDocPutc(10); return; }
+    if (t0 == 'T' && t1 == 'B') { DolDocPutc(9); return; }
+    if (t0 == 'C' && t1 == 'U') { I64 c = DolDocGetAttrInt(tag, "x=", -1); I64 r = DolDocGetAttrInt(tag, "y=", -1);
+        if (c >= 0 && c < g_doc_cols) g_doc_col = c; if (r >= 0 && r < g_doc_rows) g_doc_row = r; DolDocUpdateCursor(); return; }
+    if (t0 == 'L' && t1 == 'M') { g_doc_lmargin = DolDocGetAttrInt(tag, "x=", 0); return; }
+    if (t0 == 'R' && t1 == 'M') { g_doc_rmargin = DolDocGetAttrInt(tag, "x=", g_doc_cols); return; }
+    if (t0 == 'S' && t1 == 'R') { g_doc_rmargin = g_doc_col; return; }
+    if (t0 == 'W' && t1 == 'W') { g_doc_wrap = !g_doc_wrap; return; }
+    if (t0 == 'U' && t1 == 'L') { g_doc_underline = !g_doc_underline; return; }
+    if (t0 == 'P' && t1 == 'U') { DolDocStylePush(g_doc_cur_fg, g_doc_cur_bg); return; }
+    if (t0 == 'P' && t1 == 'O') { DolDocStylePop(); return; }
+    if (t0 == 'R' && t1 == 'O') { DolDocPutc(10); return; }
+    if (t0 == 'C' && t1 == 'O') { I64 c = DolDocAtoi(tag + 4); while (g_doc_col < c && g_doc_col < g_doc_cols) DolDocPutc(' '); return; }
+    // ---- anchors / links ----
+    if (t0 == 'A' && t1 == 'N') {
+        U8 nm[32]; nm[0] = 0;
+        DolDocGetAttrStr(tag, "name=", nm, 30);
+        if (!nm[0] && tag[2] == ',') {
+            U8 *p = tag + 3; I64 i = 0;
+            while (*p == ' ') p++;
+            while (*p && *p != ',' && *p != '$' && i < 30) { nm[i] = *p; i++; p++; }
+            nm[i] = 0;
+        }
+        if (!nm[0]) DolDocParseQuoted(tag + 2, nm, 30);
+        if (nm[0]) DolDocAddAnchor(nm, g_doc_cur);
+        return;
+    }
+    if (t0 == 'B' && t1 == 'K') {
+        U8 nm[32]; nm[0] = 0;
+        DolDocGetAttrStr(tag, "name=", nm, 30);
+        if (!nm[0] && tag[2] == ',') { U8 *p = tag + 3; I64 i = 0; while (*p == ' ') p++; while (*p && *p != ',' && *p != '$' && i < 30) { nm[i] = *p; i++; p++; } nm[i] = 0; }
+        if (nm[0]) DolDocAddAnchor(nm, g_doc_cur);
+        return;
+    }
+    if (t0 == 'L' && t1 == 'K') {
+        U8 lbl[64]; lbl[0] = 0; U8 cmd[128]; cmd[0] = 0; U8 id[64]; id[0] = 0;
+        U8 *p = DolDocParseQuoted(tag + 2, lbl, 60);
+        U8 *ap = strstr(p, "A="); if (ap) DolDocParseQuoted(ap + 2, cmd, 120);
+        U8 *ip = strstr(p, "ID="); if (ip) DolDocParseQuoted(ip + 3, id, 60);
+        if (!id[0]) { U8 *lp = strstr(p, "LK="); if (lp) DolDocParseQuoted(lp + 3, id, 60); }
+        I64 cols = strlen(lbl) + 2;
+        I64 n = DolDocWidget(DOC_LINK, DolDocFlowPx(), DolDocFlowPy(), strlen(lbl) * 8, 18, tag);
+        if (n >= 0) {
+            U8 both[200]; both[0] = 0;
+            if (cmd[0]) strcpy(both, cmd); else if (id[0]) { strcpy(both, "#"); strcat(both, id); }
+            strncpy(g_doc_args + g_doc_nodes[n].arg_off, both, strlen(both) + 1);
+            DolDocSetLabel(n, lbl);
+        }
+        DolDocAdvance(cols);
+        return;
+    }
+    if (t0 == 'C' && t1 == 'M') { U8 cmd[128]; DolDocParseQuoted(tag + 2, cmd, 120); if (cmd[0]) shell_run_command(cmd); return; }
+    // ---- widgets ----
+    if (t0 == 'B' && t1 == 'T') {
+        U8 lbl[64]; lbl[0] = 0; U8 cmd[128]; cmd[0] = 0;
+        U8 *p = DolDocParseQuoted(tag + 2, lbl, 60);
+        U8 *lp = strstr(p, "LM="); if (lp) DolDocParseQuoted(lp + 3, cmd, 120);
+        I64 vw = strlen(lbl) * 8 + 16;
+        I64 cols = (vw + 7) / 8 + 1;
+        I64 n = DolDocWidget(DOC_BUTTON, DolDocFlowPx(), DolDocFlowPy(), vw, 18, tag);
+        if (n >= 0) {
+            strncpy(g_doc_args + g_doc_nodes[n].arg_off, cmd, strlen(cmd) + 1);
+            DolDocSetLabel(n, lbl);
+        }
+        DolDocAdvance(cols);
+        return;
+    }
+    if (t0 == 'D' && t1 == 'A') { DolDocParseData(tag); return; }
+    if (t0 == 'S' && t1 == 'L') { DolDocParseSlider(tag); return; }
+    if (t0 == 'C' && t1 == 'B') { DolDocParseToggle(tag); return; }
+    if (t0 == 'I' && t1 == 'V') { DolDocParseToggle(tag); return; }
+    if (t0 == 'P' && t1 == 'B') { DolDocParseProgress(tag); return; }
+    if (t0 == 'I' && t1 == 'D') { DolDocParseTree(tag); return; }
+    if (strncmp(tag, "SPLIT", 5) == 0) { return; }
+    if (t0 == 'S' && t1 == 'P') { DolDocParseSprite(tag); return; }
+    if (strncmp(tag, "SHADOW", 6) == 0) { DolDocParseShadow(tag); return; }
+    if (strncmp(tag, "SHADER", 6) == 0) { DolDocParseShader(tag); return; }
+    if (t0 == 'S' && t1 == 'H') { DolDocParseShader(tag); return; }
+    if (t0 == 'S' && t1 == 'X') { DolDocParseSprite(tag); return; }
+    if (t0 == 'S' && t1 == 'Y') { DolDocParseSprite(tag); return; }
+    if (t0 == 'G' && t1 == 'R') { DolDocParseGraph(tag); return; }
+    if (t0 == 'P' && t1 == 'L') { DolDocParseGraph(tag); return; }
+    if (t0 == 'E' && t1 == 'Q') { DolDocParseEquation(tag); return; }
+    if (t0 == 'F' && t1 == 'O') { DolDocParseFontText(tag); return; }
+    if (t0 == 'H' && t1 == 'D') { DolDocParseFontText(tag); return; }
+    if (t0 == 'M' && t1 == 'A') { DolDocParseMacro(tag); return; }
+    if (t0 == 'F' && t1 == 'I') { DolDocParseInclude(tag); return; }
+    if (t0 == 'H' && t1 == 'R') { I64 n = DolDocWidget(DOC_RULE, g_doc_x + 12, DolDocFlowPy(), g_doc_w - 24, 18, tag); DolDocAdvance(1); return; }
+    if (t0 == 'B' && t1 == 'O') { DolDocParseCard(tag, DOC_BOX); return; }
+    if (t0 == 'C' && t1 == 'A') { DolDocParseCard(tag, DOC_CARD); return; }
+    if (t0 == 'G' && t1 == 'L') { DolDocParseGlass(tag); return; }
+    if (t0 == 'B' && t1 == 'L') { DolDocParseGlass(tag); return; }
+    if (t0 == 'W' && t1 == 'I') { DolDocParseWindow(tag); return; }
+    if (t0 == 'E' && t1 == 'W') { DolDocParseEndWindow(); return; }
+    if (t0 == 'E' && t1 == 'L') { if (g_doc_cur >= 0) g_doc_nodes[g_doc_cur].flags |= DOCF_ELEV; return; }
+    // ---- legacy long tags ----
+    if (strncmp(tag, "SHADER", 6) == 0) { DolDocParseShader(tag); return; }
+    if (strncmp(tag, "GRAPH", 5) == 0) { DolDocParseGraph(tag); return; }
+    if (strncmp(tag, "GLASS", 5) == 0) { DolDocParseGlass(tag); return; }
+    if (strncmp(tag, "SHADOW", 6) == 0) { DolDocParseShadow(tag); return; }
+    if (strncmp(tag, "FONT", 4) == 0) { DolDocParseFontText(tag); return; }
+    if (strncmp(tag, "CARD", 4) == 0) { DolDocParseCard(tag, DOC_CARD); return; }
+    if (strncmp(tag, "H1", 2) == 0) { DolDocParseFontText(tag); return; }
+    if (strncmp(tag, "BOX", 3) == 0) { DolDocParseCard(tag, DOC_BOX); return; }
+    // ---- macro invocation fallback ----
+    U8 *m = DolDocFindMacro(tag);
+    if (m) { DolDocPrint(m); return; }
+}
+
+// ============================================================================
+// DolDocPrint: the stream parser / compiler
+// ============================================================================
+U0 DolDocPrint(U8 *str) {
+    if (!str) return;
+    while (*str) {
+        if (*str == '$') {
+            str++;
+            if (*str == '$') { DolDocPutc('$'); str++; continue; }
+            I64 tlen = 0;
+            while (*str && *str != '$' && tlen < 2047) { g_tag_buf[tlen] = *str; tlen++; str++; }
+            g_tag_buf[tlen] = 0;
+            if (*str == '$') str++;
+            DolDocExecTag(g_tag_buf);
+            continue;
+        }
+        DolDocPutc(*str);
+        str++;
+    }
+}
+
+U0 DolDocExportPrint(U8 *str) { DolDocPrint(str); }
+
+// ============================================================================
+// Scrollback & clear
+// ============================================================================
+U0 DolDocClear() {
+    g_doc_node_count = 0;
+    g_doc_text_used = 0;
+    g_doc_args_used = 1;   // offset 0 reserved (0 == "no args")
+    g_doc_root = DolDocNewNode(DOC_ROOT, -1);
+    g_doc_cur = g_doc_root;
+    g_doc_cur_run = -1;
+    g_doc_col = 0; g_doc_row = 0;
+    g_widget_count = 0;
+    g_doc_scroll_offset = 0;
+    g_doc_inspected_nid = -1;
+    g_doc_anchor_count = 0;
+    g_doc_cursor_x = g_doc_x + 8;
+    g_doc_cursor_y = g_doc_y + 8;
+    g_omnitape_tail = 0;
+    g_omnitape_cmd_count = 0;
+    DolDocMarkAllDirty();
+}
+
+U0 DolDocScrollUp(I64 lines) {
+    g_doc_scroll_offset += lines;
+    DolDocMarkAllDirty();
+    DolDocRedraw();
+    doldoc_swap_term();
+}
+
+U0 DolDocScrollDown(I64 lines) {
+    g_doc_scroll_offset -= lines;
+    if (g_doc_scroll_offset < 0) g_doc_scroll_offset = 0;
+    DolDocMarkAllDirty();
+    DolDocRedraw();
+    doldoc_swap_term();
+}
+
+U0 DolDocSetBgColor(U32 bg) { g_doc_cur_bg = bg; DolDocMarkAllDirty(); }
+U32 DolDocGetBgColor() { return DolDocResolveColor(g_doc_cur_bg); }
+
+// ============================================================================
+// Real-time shader viewport ($SH$ / $SHADER$)
+// ============================================================================
+U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
+    if (ShaderTypeId(sh_type) >= 0) { ShaderVMRenderNode(vx, vy, vw, vh, sh_type); return; }
     I64 t_ms = timer_get_uptime_ms();
     I64 phase = ((t_ms * g_shader_speed) / 400) + g_doc_anim_tick * 3;
     I64 zoom = g_shader_zoom;
     if (zoom < 8) zoom = 8;
 
-    I64 mode = 0; // 0=plasma, 1=torus, 2=wave, 3=fire, 4=tunnel, 5=metaballs, 6=stars, 7=fractal
+    I64 mode = 0;
     if (strcmp(sh_type, "torus") == 0 || strcmp(sh_type, "sdf") == 0) mode = 1;
     else if (strcmp(sh_type, "wave") == 0 || strcmp(sh_type, "glass") == 0) mode = 2;
     else if (strcmp(sh_type, "fire") == 0 || strcmp(sh_type, "flame") == 0) mode = 3;
@@ -1187,16 +1281,12 @@ U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
     else if (strcmp(sh_type, "stars") == 0 || strcmp(sh_type, "warp") == 0) mode = 6;
     else if (strcmp(sh_type, "fractal") == 0 || strcmp(sh_type, "julia") == 0) mode = 7;
 
-    // Render 2x2 pixel blocks for high-speed evaluation
     for (I64 sy = 2; sy < vh - 2; sy += 2) {
         for (I64 sx = 2; sx < vw - 2; sx += 2) {
             U32 frag_col = 0xFF181825;
             if (mode == 0) {
-                // Shader #0: Cyber Plasma Interference Field
-                I64 u = (sx * zoom) / 32;
-                I64 v = (sy * zoom) / 32;
-                I64 w1 = DocFastSin(u + phase);
-                I64 w2 = DocFastCos(v + (phase >> 1));
+                I64 u = (sx * zoom) / 32; I64 v = (sy * zoom) / 32;
+                I64 w1 = DocFastSin(u + phase); I64 w2 = DocFastCos(v + (phase >> 1));
                 I64 w3 = DocFastSin(((u + v) >> 1) - phase);
                 I64 sum = (w1 + w2 + w3) / 3;
                 I64 r = (128 + ((DocFastSin((sum >> 3) + (g_shader_morph >> 1)) * 120) >> 8)) & 0xFF;
@@ -1204,14 +1294,11 @@ U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
                 I64 b = (185 + ((sum * 68) >> 8)) & 0xFF;
                 frag_col = 0xFF000000 | (r << 16) | (g << 8) | b;
             } else if (mode == 1) {
-                // Shader #1: Raymarched SDF Morphing Torus & Specular Phong
-                I64 cx = sx - (vw / 2);
-                I64 cy = sy - (vh / 2);
+                I64 cx = sx - (vw / 2); I64 cy = sy - (vh / 2);
                 I64 r2 = cx * cx + cy * cy * 2;
                 I64 torus_rad = (vh * (20 + (g_shader_morph >> 2))) / 100;
                 I64 ring_r = torus_rad * torus_rad;
-                I64 diff = r2 - ring_r;
-                if (diff < 0) diff = -diff;
+                I64 diff = r2 - ring_r; if (diff < 0) diff = -diff;
                 I64 band = ring_r / 2 + 64;
                 if (diff < band) {
                     I64 inten = 255 - ((diff * 220) / band);
@@ -1219,170 +1306,89 @@ U0 DolDocRenderShaderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
                     I64 ly = (DocFastSin(phase) * (vh / 4)) >> 8;
                     I64 spec = 64 - ((cx - lx) * (cx - lx) + (cy - ly) * (cy - ly)) / 16;
                     if (spec < 0) spec = 0;
-                    I64 tr = ((inten * 90) >> 8) + spec;
-                    I64 tg = ((inten * 210) >> 8) + spec;
-                    I64 tb = ((inten * 250) >> 8) + spec;
-                    if (tr > 255) tr = 255;
-                    if (tg > 255) tg = 255;
-                    if (tb > 255) tb = 255;
+                    I64 tr = ((inten * 90) >> 8) + spec; I64 tg = ((inten * 210) >> 8) + spec; I64 tb = ((inten * 250) >> 8) + spec;
+                    if (tr > 255) tr = 255; if (tg > 255) tg = 255; if (tb > 255) tb = 255;
                     frag_col = 0xFF000000 | (tr << 16) | (tg << 8) | tb;
                 } else {
-                    I64 bg_grid = (((sx + phase) & 15) == 0 || ((sy + phase) & 15) == 0) ? 0xFF283048 : 0xFF111420;
-                    frag_col = bg_grid;
+                    frag_col = (((sx + phase) & 15) == 0 || ((sy + phase) & 15) == 0) ? 0xFF283048 : 0xFF111420;
                 }
             } else if (mode == 2) {
-                // Shader #2: Acrylic Caustic Wave & Chromatic Dispersion
                 I64 wy = (DocFastSin((sx * zoom) / 40 + phase) * (vh / 4)) >> 8;
-                I64 dy = (sy - (vh / 2)) - wy;
-                if (dy < 0) dy = -dy;
-                I64 glow = 240 - dy * 8;
-                if (glow < 24) glow = 24;
-                I64 wr = (glow * 140) >> 8;
-                I64 wg = (glow * 220) >> 8;
-                I64 wb = glow;
-                frag_col = 0xFF000000 | (wr << 16) | (wg << 8) | wb;
+                I64 dy = (sy - (vh / 2)) - wy; if (dy < 0) dy = -dy;
+                I64 glow = 240 - dy * 8; if (glow < 24) glow = 24;
+                frag_col = 0xFF000000 | (((glow * 140) >> 8) << 16) | (((glow * 220) >> 8) << 8) | glow;
             } else if (mode == 3) {
-                // Shader #3: Volumetric Cyber Fire & Turbulence
-                I64 y_inv = vh - sy;
-                I64 t_up = phase * 2;
+                I64 y_inv = vh - sy; I64 t_up = phase * 2;
                 I64 n1 = (DocFastSin((sx * 8) + t_up) * 28) >> 8;
                 I64 n2 = (DocFastCos((sx * 14) - t_up) * 18) >> 8;
                 I64 n3 = (DocFastSin((sx + y_inv) * 6 + t_up) * 16) >> 8;
-                I64 turb = n1 + n2 + n3;
-                I64 e = 240 - ((y_inv * 260) / vh) + turb;
-                if (e > 170) {
-                    frag_col = 0xFFFFF090; // White-hot yellow core
-                } else if (e > 105) {
-                    I64 og = 100 + ((e - 105) * 140) / 65;
-                    frag_col = 0xFF000000 | (250 << 16) | (og << 8) | 30; // Orange flame
-                } else if (e > 35) {
-                    I64 cr = 60 + ((e - 35) * 190) / 70;
-                    frag_col = 0xFF000000 | (cr << 16) | (20 << 8) | 25; // Crimson flame
-                } else if (e > 8) {
-                    frag_col = 0xFF351830; // Smoke/ember
-                } else {
-                    frag_col = 0xFF0F0E17;
-                }
+                I64 e = 240 - ((y_inv * 260) / vh) + n1 + n2 + n3;
+                if (e > 170) frag_col = 0xFFFFF090;
+                else if (e > 105) frag_col = 0xFF000000 | (250 << 16) | ((100 + ((e - 105) * 140) / 65) << 8) | 30;
+                else if (e > 35) frag_col = 0xFF000000 | ((60 + ((e - 35) * 190) / 70) << 16) | (20 << 8) | 25;
+                else if (e > 8) frag_col = 0xFF351830;
+                else frag_col = 0xFF0F0E17;
             } else if (mode == 4) {
-                // Shader #4: Synthwave 80s 3D Perspective Grid Tunnel
-                I64 cy = sy - (vh / 2);
-                I64 cx = sx - (vw / 2);
+                I64 cy = sy - (vh / 2); I64 cx = sx - (vw / 2);
                 if (cy > 0) {
-                    I64 z = (vh * 48) / cy;
-                    I64 gx = ((cx * z) >> 6);
-                    I64 gz = z + phase * 4;
-                    I64 is_line = 0;
-                    I64 mx = gx;
-                    if (mx < 0) mx = -mx;
-                    if ((mx % 24) < 2 || (gz % 32) < 2) is_line = 1;
-                    if (is_line) {
-                        I64 fade = 255 - (z * 2);
-                        if (fade < 30) fade = 30;
-                        I64 gr = (fade * 243) >> 8;
-                        I64 gg = (fade * 139) >> 8;
-                        I64 gb = (fade * 255) >> 8;
-                        frag_col = 0xFF000000 | (gr << 16) | (gg << 8) | gb;
-                    } else {
-                        frag_col = 0xFF141224;
-                    }
+                    I64 z = (vh * 48) / cy; I64 gx = ((cx * z) >> 6); I64 gz = z + phase * 4;
+                    I64 mx = gx; if (mx < 0) mx = -mx;
+                    if ((mx % 24) < 2 || (gz % 32) < 2) {
+                        I64 fade = 255 - (z * 2); if (fade < 30) fade = 30;
+                        frag_col = 0xFF000000 | (((fade * 243) >> 8) << 16) | (((fade * 139) >> 8) << 8) | ((fade * 255) >> 8);
+                    } else frag_col = 0xFF141224;
                 } else {
                     I64 dist_h = -cy;
-                    if (dist_h < 18 && (cx * cx + dist_h * dist_h * 4) < 400) {
-                        if ((dist_h % 4) == 0 && dist_h > 4) {
-                            frag_col = 0xFF181825;
-                        } else {
-                            frag_col = 0xFFF9E2AF; // Golden sun
-                        }
-                    } else {
-                        I64 sky_glow = 80 - dist_h * 2;
-                        if (sky_glow < 12) sky_glow = 12;
-                        frag_col = 0xFF000000 | ((sky_glow + 10) << 16) | (10 << 8) | ((sky_glow * 2) & 0xFF);
-                    }
+                    if (dist_h < 18 && (cx * cx + dist_h * dist_h * 4) < 400) frag_col = ((dist_h % 4) == 0 && dist_h > 4) ? 0xFF181825 : 0xFFF9E2AF;
+                    else { I64 sky = 80 - dist_h * 2; if (sky < 12) sky = 12; frag_col = 0xFF000000 | ((sky + 10) << 16) | (10 << 8) | ((sky * 2) & 0xFF); }
                 }
             } else if (mode == 5) {
-                // Shader #5: Tri-Orbital Fluid Isosurface Metaballs
-                I64 mx0 = sx - (vw / 2);
-                I64 my0 = sy - (vh / 2);
-                I64 ox1 = (DocFastCos(phase) * (vw / 5)) >> 8;
-                I64 oy1 = (DocFastSin(phase) * (vh / 4)) >> 8;
-                I64 ox2 = (DocFastCos(phase + 21) * (vw / 4)) >> 8;
-                I64 oy2 = (DocFastSin(phase + 21) * (vh / 5)) >> 8;
-                I64 ox3 = (DocFastCos(phase + 42) * (vw / 6)) >> 8;
-                I64 oy3 = (DocFastSin(phase + 42) * (vh / 3)) >> 8;
+                I64 mx0 = sx - (vw / 2); I64 my0 = sy - (vh / 2);
+                I64 ox1 = (DocFastCos(phase) * (vw / 5)) >> 8; I64 oy1 = (DocFastSin(phase) * (vh / 4)) >> 8;
+                I64 ox2 = (DocFastCos(phase + 21) * (vw / 4)) >> 8; I64 oy2 = (DocFastSin(phase + 21) * (vh / 5)) >> 8;
+                I64 ox3 = (DocFastCos(phase + 42) * (vw / 6)) >> 8; I64 oy3 = (DocFastSin(phase + 42) * (vh / 3)) >> 8;
                 I64 d1 = (mx0 - ox1) * (mx0 - ox1) + (my0 - oy1) * (my0 - oy1) + 20;
                 I64 d2 = (mx0 - ox2) * (mx0 - ox2) + (my0 - oy2) * (my0 - oy2) + 20;
                 I64 d3 = (mx0 - ox3) * (mx0 - ox3) + (my0 - oy3) * (my0 - oy3) + 20;
                 I64 pot = 16000 / d1 + 16000 / d2 + 16000 / d3;
-                if (pot > 180) {
-                    frag_col = 0xFFCBA6F7; // Mauve core
-                } else if (pot > 70) {
-                    I64 bcol = (pot * 200) / 110;
-                    if (bcol > 255) bcol = 255;
-                    frag_col = 0xFF000000 | (137 << 16) | (180 << 8) | bcol;
-                } else if (pot > 25) {
-                    frag_col = 0xFF1E1E2E;
-                } else {
-                    frag_col = 0xFF11111B;
-                }
+                if (pot > 180) frag_col = 0xFFCBA6F7;
+                else if (pot > 70) { I64 bcol = (pot * 200) / 110; if (bcol > 255) bcol = 255; frag_col = 0xFF000000 | (137 << 16) | (180 << 8) | bcol; }
+                else if (pot > 25) frag_col = 0xFF1E1E2E;
+                else frag_col = 0xFF11111B;
             } else if (mode == 6) {
-                // Shader #6: Cosmic Warp Starfield & Hyperspace
-                I64 csx = sx - (vw / 2);
-                I64 csy = sy - (vh / 2);
+                I64 csx = sx - (vw / 2); I64 csy = sy - (vh / 2);
                 I64 rad2 = csx * csx + csy * csy;
                 I64 ang_s = (csx * 128) / (csy == 0 ? 1 : csy);
                 I64 star_hash = ((ang_s * 17) ^ (rad2 >> 4) ^ phase) & 127;
-                if (star_hash == 0 && rad2 > 36) {
-                    I64 br = (rad2 * 255) / ((vw * vw) / 4);
-                    if (br > 255) br = 255;
-                    if (br < 80) br = 80;
-                    frag_col = 0xFF000000 | (br << 16) | (br << 8) | 255;
-                } else {
-                    I64 neb = (DocFastSin((csx * 6) / 20 + phase) * DocFastCos((csy * 6) / 20 - phase)) >> 10;
-                    if (neb < 0) neb = 0;
-                    frag_col = 0xFF000000 | ((neb * 80) << 16) | ((neb * 40) << 8) | (neb * 140);
-                }
+                if (star_hash == 0 && rad2 > 36) { I64 br = (rad2 * 255) / ((vw * vw) / 4); if (br > 255) br = 255; if (br < 80) br = 80; frag_col = 0xFF000000 | (br << 16) | (br << 8) | 255; }
+                else { I64 neb = (DocFastSin((csx * 6) / 20 + phase) * DocFastCos((csy * 6) / 20 - phase)) >> 10; if (neb < 0) neb = 0; frag_col = 0xFF000000 | ((neb * 80) << 16) | ((neb * 40) << 8) | (neb * 140); }
             } else {
-                // Shader #7: Complex Fractal Orbit-Trap Kaleidoscope
-                I64 fx0 = ((sx - (vw / 2)) * zoom) / 24;
-                I64 fy0 = ((sy - (vh / 2)) * zoom) / 24;
-                I64 fzx = fx0;
-                I64 fzy = fy0;
+                I64 fzx = ((sx - (vw / 2)) * zoom) / 24; I64 fzy = ((sy - (vh / 2)) * zoom) / 24;
                 I64 min_d = 9999;
                 for (I64 iter = 0; iter < 4; iter++) {
-                    I64 nzx = (fzx * fzx - fzy * fzy) >> 8;
-                    I64 nzy = (fzx * fzy) >> 7;
-                    fzx = nzx + ((DocFastCos(phase) * 60) >> 8);
-                    fzy = nzy + ((DocFastSin(phase) * 60) >> 8);
-                    I64 adx = fzx < 0 ? -fzx : fzx;
-                    I64 ady = fzy < 0 ? -fzy : fzy;
+                    I64 nzx = (fzx * fzx - fzy * fzy) >> 8; I64 nzy = (fzx * fzy) >> 7;
+                    fzx = nzx + ((DocFastCos(phase) * 60) >> 8); fzy = nzy + ((DocFastSin(phase) * 60) >> 8);
+                    I64 adx = fzx < 0 ? -fzx : fzx; I64 ady = fzy < 0 ? -fzy : fzy;
                     I64 trap = adx < ady ? adx : ady;
                     if (trap < min_d) min_d = trap;
                 }
-                I64 finten = 255 - min_d * 3;
-                if (finten < 16) finten = 16;
-                if (finten > 255) finten = 255;
-                I64 fr = (finten * 203) >> 8;
-                I64 fg = (finten * 166) >> 8;
-                I64 fb = finten;
-                frag_col = 0xFF000000 | (fr << 16) | (fg << 8) | fb;
+                I64 finten = 255 - min_d * 3; if (finten < 16) finten = 16; if (finten > 255) finten = 255;
+                frag_col = 0xFF000000 | (((finten * 203) >> 8) << 16) | (((finten * 166) >> 8) << 8) | finten;
             }
             gfx_draw_rect(vx + sx, vy + sy, 2, 2, frag_col);
         }
     }
-
-    // Viewport border & HUD badge
     gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_BLUE));
     gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_BLUE));
     gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SEM_COLOR_BLUE));
     gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_BLUE));
-
     gfx_blend_rect(vx + 4, vy + 4, vw - 8, 16, 0xA011111B);
     gfx_draw_string(vx + 8, vy + 4, "SHADERTOY:", DolDocResolveColor(SEM_COLOR_YELLOW), 0);
     gfx_draw_string(vx + 92, vy + 4, sh_type, DolDocResolveColor(SEM_COLOR_SKY), 0);
 }
 
 // ============================================================================
-// SOVEREIGN 3D PIPELINE: REAL HOLYGL CUBE & 3D INVOLUTE GEARS IN $SP$
+// 3D scene viewport ($SP$ / $SX$ / $CM$)
 // ============================================================================
 U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
     I64 t_ms = timer_get_uptime_ms();
@@ -1404,8 +1410,7 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
             return;
         }
     } else if (strcmp(stype, "gears") == 0) {
-        U64 g3d_fn = symbols_lookup("Gears3DRenderViewport");
-        if (g3d_fn != 0) {
+        if (symbols_lookup("Gears3DRenderViewport") != 0) {
             Gears3DRenderViewport(vx + 2, vy + 2, vw - 4, vh - 4, (F64)ang * 1.5);
             gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
             gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
@@ -1414,8 +1419,7 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
             return;
         }
     } else if (strcmp(stype, "physics") == 0) {
-        U64 phys_fn = symbols_lookup("Physics3DRenderViewport");
-        if (phys_fn != 0) {
+        if (symbols_lookup("Physics3DRenderViewport") != 0) {
             Physics3DRenderViewport(vx + 2, vy + 2, vw - 4, vh - 4);
             gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
             gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
@@ -1424,8 +1428,6 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
             return;
         }
     } else if (strcmp(stype, "mesh") == 0) {
-        // P4.7: Wavefront OBJ mesh through the ONE pipeline. Mesh.HC loads in
-        // Stage 5, before DolDoc (Stage 6), so this is a direct call.
         MeshRenderViewport(vx + 2, vy + 2, vw - 4, vh - 4, (F64)ang * 0.6);
         gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
         gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
@@ -1440,1462 +1442,1162 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
     gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
     gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
 
-    I64 cx = vx + vw / 2;
-    I64 cy = vy + vh / 2 + 4;
-    I64 sp_rad = (vh < vw ? vh : vw) / 3;
-    if (sp_rad < 12) sp_rad = 12;
-
-    I64 ca = DocFastCos(ang);
-    I64 sa = DocFastSin(ang);
-    I64 cb = DocFastCos((ang >> 1) + 9);
-    I64 sb = DocFastSin((ang >> 1) + 9);
-
+    I64 cx = vx + vw / 2; I64 cy = vy + vh / 2 + 4;
+    I64 sp_rad = (vh < vw ? vh : vw) / 3; if (sp_rad < 12) sp_rad = 12;
+    I64 ca = DocFastCos(ang); I64 sa = DocFastSin(ang);
+    I64 cb = DocFastCos((ang >> 1) + 9); I64 sb = DocFastSin((ang >> 1) + 9);
     for (I64 vi = 0; vi < 8; vi++) {
         I64 vx3 = (vi & 1) ? sp_rad : -sp_rad;
         I64 vy3 = (vi & 2) ? sp_rad : -sp_rad;
         I64 vz3 = (vi & 4) ? sp_rad : -sp_rad;
-
         I64 rx1 = (vx3 * ca - vz3 * sa) >> 8;
         I64 rz1 = (vx3 * sa + vz3 * ca) >> 8;
         I64 ry2 = (vy3 * cb - rz1 * sb) >> 8;
         I64 rz2 = (vy3 * sb + rz1 * cb) >> 8;
-
-            // Perspective projection
-            I64 dist = 128 + (rz2 >> 1);
-            if (dist < 48) dist = 48;
-            g_cube_px[vi] = cx + (rx1 * 110) / dist;
-            g_cube_py[vi] = cy + (ry2 * 110) / dist;
-        }
-
-        // Bottom & Top Quad Edges + Vertical Pillars
-        U32 c_front = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
-        U32 c_back  = DolDocResolveColor(SEM_COLOR_TEAL);
-        U32 c_strut = DolDocResolveColor(SEM_COLOR_MAUVE);
-
-        gfx_draw_line(g_cube_px[0], g_cube_py[0], g_cube_px[1], g_cube_py[1], c_back);
-        gfx_draw_line(g_cube_px[1], g_cube_py[1], g_cube_px[3], g_cube_py[3], c_back);
-        gfx_draw_line(g_cube_px[3], g_cube_py[3], g_cube_px[2], g_cube_py[2], c_back);
-        gfx_draw_line(g_cube_px[2], g_cube_py[2], g_cube_px[0], g_cube_py[0], c_back);
-
-        gfx_draw_line(g_cube_px[4], g_cube_py[4], g_cube_px[5], g_cube_py[5], c_front);
-        gfx_draw_line(g_cube_px[5], g_cube_py[5], g_cube_px[7], g_cube_py[7], c_front);
-        gfx_draw_line(g_cube_px[7], g_cube_py[7], g_cube_px[6], g_cube_py[6], c_front);
-        gfx_draw_line(g_cube_px[6], g_cube_py[6], g_cube_px[4], g_cube_py[4], c_front);
-
-        for (I64 ei = 0; ei < 4; ei++) {
-            gfx_draw_line(g_cube_px[ei], g_cube_py[ei], g_cube_px[ei + 4], g_cube_py[ei + 4], c_strut);
-        }
-        // Highlight 3D vertices with gizmo dots
-        for (I64 gi = 0; gi < 8; gi++) {
-            gfx_draw_rect(g_cube_px[gi] - 1, g_cube_py[gi] - 1, 3, 3, DolDocResolveColor(SEM_COLOR_YELLOW));
-        }
-
+        I64 dist = 128 + (rz2 >> 1); if (dist < 48) dist = 48;
+        g_cube_px[vi] = cx + (rx1 * 110) / dist;
+        g_cube_py[vi] = cy + (ry2 * 110) / dist;
+    }
+    U32 c_front = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
+    U32 c_back  = DolDocResolveColor(SEM_COLOR_TEAL);
+    U32 c_strut = DolDocResolveColor(SEM_COLOR_MAUVE);
+    gfx_draw_line(g_cube_px[0], g_cube_py[0], g_cube_px[1], g_cube_py[1], c_back);
+    gfx_draw_line(g_cube_px[1], g_cube_py[1], g_cube_px[3], g_cube_py[3], c_back);
+    gfx_draw_line(g_cube_px[3], g_cube_py[3], g_cube_px[2], g_cube_py[2], c_back);
+    gfx_draw_line(g_cube_px[2], g_cube_py[2], g_cube_px[0], g_cube_py[0], c_back);
+    gfx_draw_line(g_cube_px[4], g_cube_py[4], g_cube_px[5], g_cube_py[5], c_front);
+    gfx_draw_line(g_cube_px[5], g_cube_py[5], g_cube_px[7], g_cube_py[7], c_front);
+    gfx_draw_line(g_cube_px[7], g_cube_py[7], g_cube_px[6], g_cube_py[6], c_front);
+    gfx_draw_line(g_cube_px[6], g_cube_py[6], g_cube_px[4], g_cube_py[4], c_front);
+    for (I64 ei = 0; ei < 4; ei++) gfx_draw_line(g_cube_px[ei], g_cube_py[ei], g_cube_px[ei + 4], g_cube_py[ei + 4], c_strut);
+    for (I64 gi = 0; gi < 8; gi++) gfx_draw_rect(g_cube_px[gi] - 1, g_cube_py[gi] - 1, 3, 3, DolDocResolveColor(SEM_COLOR_YELLOW));
     gfx_draw_string(vx + 6, vy + 2, "3D:", DolDocResolveColor(SEM_COLOR_MUTED), 0);
     gfx_draw_string(vx + 30, vy + 2, stype, DolDocResolveColor(SEM_COLOR_PEACH), 0);
 }
 
 // ============================================================================
-// REAL RING-BUFFER CATMULL-ROM OSCILLOSCOPE IN $GRAPH$ (WIDGET_GRAPH)
+// Telemetry oscilloscope ($PL$ / $GR$)
 // ============================================================================
 U0 DolDocSampleTelemetry() {
     if (!g_doc_trig_ready) DolDocInitTrig();
     g_osc_head = (g_osc_head + 1) & 63;
     I64 freq_step = 2 + (g_shader_speed / 25);
     g_osc_sine_buf[g_osc_head] = DocFastSin((g_osc_head * freq_step + g_doc_anim_tick * 3) & 63);
-    I64 cur_fps = g_comp.fps;
-    if (cur_fps <= 0) cur_fps = 60;
+    I64 cur_fps = g_comp.fps; if (cur_fps <= 0) cur_fps = 60;
     g_osc_fps_buf[g_osc_head] = cur_fps;
 }
 
 U0 DolDocRenderGraphNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *gtype) {
     DolDocSampleTelemetry();
-
     gfx_draw_rounded_rect(vx, vy, vw, vh, 4, DolDocResolveColor(SEM_COLOR_CRUST));
     gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
     gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
     gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
     gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
-
-    // Sub-grid lines
     I64 mid_y = vy + vh / 2;
     gfx_draw_line(vx + 4, mid_y, vx + vw - 4, mid_y, DolDocResolveColor(SEM_COLOR_SURFACE0));
     gfx_draw_line(vx + vw / 2, vy + 4, vx + vw / 2, vy + vh - 4, DolDocResolveColor(SEM_COLOR_SURFACE0));
-
-    I64 floor_y = vy + vh - 4;
-    I64 plot_w = vw - 8;
-    if (plot_w < 16) plot_w = 16;
-    I64 amp = (vh / 2) - 8;
-    if (amp < 6) amp = 6;
-
-    I64 prev_x = vx + 4;
-    I64 prev_y = mid_y;
+    I64 floor_y = vy + vh - 4; I64 plot_w = vw - 8; if (plot_w < 16) plot_w = 16;
+    I64 amp = (vh / 2) - 8; if (amp < 6) amp = 6;
+    I64 prev_x = vx + 4; I64 prev_y = mid_y;
     U32 wave_col = DolDocResolveColor(SEM_COLOR_TEAL);
     if (strcmp(gtype, "fps") == 0) wave_col = DolDocResolveColor(SEM_COLOR_GREEN);
     else if (strcmp(gtype, "mem") == 0) wave_col = DolDocResolveColor(SEM_COLOR_MAUVE);
-
     for (I64 s_i = 0; s_i < 48; s_i++) {
         I64 cur_x = vx + 4 + (s_i * plot_w) / 48;
         I64 r_idx = (g_osc_head + s_i) & 63;
         I64 sample_y = mid_y;
-        if (strcmp(gtype, "fps") == 0) {
-            I64 fval = g_osc_fps_buf[r_idx];
-            sample_y = floor_y - ((fval * (vh - 12)) / 120);
-        } else {
-            // Smooth harmonic synthesis of fundamental + 2nd harmonic
+        if (strcmp(gtype, "fps") == 0) { sample_y = floor_y - ((g_osc_fps_buf[r_idx] * (vh - 12)) / 120); }
+        else {
             I64 s1 = g_osc_sine_buf[r_idx];
             I64 s2 = DocFastCos((r_idx * 3 + g_doc_anim_tick) & 63) / 3;
-            I64 val = s1 + s2;
-            sample_y = mid_y - ((val * amp) / 300);
+            sample_y = mid_y - (((s1 + s2) * amp) / 300);
         }
         if (sample_y < vy + 4) sample_y = vy + 4;
         if (sample_y > floor_y) sample_y = floor_y;
-
         if (s_i > 0) {
             gfx_draw_line(prev_x, prev_y, cur_x, sample_y, wave_col);
             gfx_draw_line(prev_x, prev_y + 1, cur_x, sample_y + 1, wave_col);
-            if ((s_i & 1) == 0 && sample_y < floor_y) {
-                gfx_blend_rect(cur_x, sample_y + 2, 2, floor_y - sample_y - 2, 0x38000000 | (wave_col & 0x00FFFFFF));
-            }
+            if ((s_i & 1) == 0 && sample_y < floor_y) gfx_blend_rect(cur_x, sample_y + 2, 2, floor_y - sample_y - 2, 0x38000000 | (wave_col & 0x00FFFFFF));
         }
-        prev_x = cur_x;
-        prev_y = sample_y;
+        prev_x = cur_x; prev_y = sample_y;
     }
-
     gfx_draw_string(vx + 8, vy + 4, "OSC:", DolDocResolveColor(SEM_COLOR_MUTED), 0);
     gfx_draw_string(vx + 42, vy + 4, gtype, DolDocResolveColor(SEM_COLOR_YELLOW), 0);
 }
 
 // ============================================================================
-// DOLDOC STREAM PARSER & COMPILER
+// Mathematical typography ($EQ$)
 // ============================================================================
-U0 DolDocPrint(U8 *str) {
-    if (!str) return;
-    U8 *tp = 0;
-    U8 *ap = 0;
-    U8 *lmp = 0;
-    U8 *vp = 0;
-    U8 *mp = 0;
-
-    while (*str) {
-        if (*str == '$') {
-            str++;
-            if (*str == '$') {
-                DolDocPutc('$');
-                str++;
-                continue;
-            }
-
-            I64 tlen = 0;
-            while (*str && *str != '$' && tlen < 2047) {
-                g_tag_buf[tlen] = *str;
-                tlen++;
-                str++;
-            }
-            g_tag_buf[tlen] = 0;
-            if (*str == '$') str++;
-
-            // 1. Color tags
-            if (strncmp(g_tag_buf, "FG,", 3) == 0) {
-                g_doc_cur_fg = DolDocParseColor(g_tag_buf + 3, SEM_COLOR_TEXT);
-            } else if (strcmp(g_tag_buf, "FG") == 0) {
-                g_doc_cur_fg = SEM_COLOR_TEXT;
-            } else if (strncmp(g_tag_buf, "BG,", 3) == 0) {
-                g_doc_cur_bg = DolDocParseColor(g_tag_buf + 3, SEM_COLOR_MANTLE);
-            } else if (strcmp(g_tag_buf, "BG") == 0) {
-                g_doc_cur_bg = SEM_COLOR_MANTLE;
-            }
-            // 2. Hyperlinks: $LK,"Label",A="command"$
-            else if (strncmp(g_tag_buf, "LK,", 3) == 0) {
-                g_tag_label[0] = 0; g_tag_cmd[0] = 0;
-                tp = g_tag_buf + 3;
-                tp = DolDocParseQuoted(tp, g_tag_label, 63);
-                ap = strstr(tp, "A=");
-                if (ap) DolDocParseQuoted(ap + 2, g_tag_cmd, 127);
-
-                I64 link_len = strlen(g_tag_label) + 2;
-                if (g_doc_cur_col > 0 && (g_doc_cur_col + link_len >= g_doc_cols)) {
-                    DolDocPutc(10);
-                }
-
-                I64 wid = -1;
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_LINK;
-                    g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-                    g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-                    g_widget_pixel_w[wid] = link_len * 8;
-                    g_widget_pixel_h[wid] = 18;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = g_doc_cur_col;
-                    g_widget_end_col[wid] = g_doc_cur_col + link_len;
-                    g_widget_state[wid] = 0;
-                    strcpy(g_widget_label + wid * 64, g_tag_label);
-                    strcpy(g_widget_cmd + wid * 128, g_tag_cmd);
-                    g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_PLUMB_DISPATCH, g_widget_pixel_x[wid], g_widget_pixel_y[wid], link_len * 8, 18, g_tag_cmd, strlen(g_tag_cmd), wid);
-                    MortonSpatialInsertWidget(wid);
-                    g_widget_count++;
-                }
-
-                U32 old_fg = g_doc_cur_fg;
-                g_doc_cur_fg = SEM_COLOR_SKY;
-                for (I64 doc_i = 0; g_tag_label[doc_i]; doc_i++) {
-                    DolDocPutc(g_tag_label[doc_i]);
-                    I64 c_idx = g_doc_cur_row * DOLDOC_MAX_COLS + (g_doc_cur_col - 1);
-                    if (c_idx >= 0 && c_idx < DOLDOC_CELLS) g_doc_link_idx[c_idx] = wid;
-                }
-                g_doc_cur_fg = old_fg;
-            }
-            // 3. Vector Buttons: $BT,"Label",LM="command"$
-            else if (strncmp(g_tag_buf, "BT,", 3) == 0) {
-                g_tag_label[0] = 0; g_tag_cmd[0] = 0;
-                tp = g_tag_buf + 3;
-                tp = DolDocParseQuoted(tp, g_tag_label, 63);
-                lmp = strstr(tp, "LM=");
-                if (lmp) DolDocParseQuoted(lmp + 3, g_tag_cmd, 127);
-
-                I64 lbl_len = strlen(g_tag_label);
-                I64 vw = lbl_len * 8 + 16;
-                I64 vh = 18;
-                I64 cell_cols = (vw + 7) / 8;
-                if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-                    DolDocPutc(10);
-                }
-
-                I64 wid = -1;
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_BUTTON;
-                    g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-                    g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-                    g_widget_pixel_w[wid] = vw;
-                    g_widget_pixel_h[wid] = vh;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = g_doc_cur_col;
-                    g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-                    g_widget_state[wid] = 0;
-                    strcpy(g_widget_label + wid * 64, g_tag_label);
-                    strcpy(g_widget_cmd + wid * 128, g_tag_cmd);
-                    g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_RECT, g_widget_pixel_x[wid], g_widget_pixel_y[wid], vw, vh, g_tag_label, lbl_len, wid);
-                    MortonSpatialInsertWidget(wid);
-                    g_widget_count++;
-                }
-
-                g_doc_cur_col += cell_cols + 1;
-                g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-            }
-            // 4. Progress Bar: $PB,VAL=x,MAX=y$
-            else if (strncmp(g_tag_buf, "PB,", 3) == 0) {
-                I64 val = 0;
-                I64 max_val = 100;
-                vp = strstr(g_tag_buf, "VAL=");
-                if (vp) val = DolDocAtoi(vp + 4);
-                mp = strstr(g_tag_buf, "MAX=");
-                if (mp) max_val = DolDocAtoi(mp + 4);
-                if (max_val <= 0) max_val = 100;
-                if (val < 0) val = 0;
-                if (val > max_val) val = max_val;
-
-                I64 bar_width = 160;
-                I64 cell_cols = (bar_width + 48 + 7) / 8;
-                if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-                    DolDocPutc(10);
-                }
-
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    I64 wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_PROGRESS;
-                    g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-                    g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-                    g_widget_pixel_w[wid] = bar_width;
-                    g_widget_pixel_h[wid] = 18;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = g_doc_cur_col;
-                    g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-                    g_widget_val[wid] = val;
-                    g_widget_max[wid] = max_val;
-                    g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_PROGRESS_BAR, g_widget_pixel_x[wid], g_widget_pixel_y[wid], bar_width, 18, "PB", 2, wid);
-                    MortonSpatialInsertWidget(wid);
-                    g_widget_count++;
-                }
-
-                g_doc_cur_col += cell_cols;
-                g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-            }
-            // 5. Checkbox: $CB,"Label",val$
-            else if (strncmp(g_tag_buf, "CB,", 3) == 0) {
-                g_tag_label[0] = 0;
-                tp = g_tag_buf + 3;
-                tp = DolDocParseQuoted(tp, g_tag_label, 63);
-                I64 chk = 0;
-                if (*tp == ',') {
-                    tp++;
-                    if (*tp == '1' || *tp == 't' || *tp == 'T') chk = 1;
-                }
-
-                I64 lbl_len = strlen(g_tag_label);
-                I64 vw = 20 + lbl_len * 8 + 8;
-                I64 cell_cols = (vw + 7) / 8;
-                if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-                    DolDocPutc(10);
-                }
-
-                I64 wid = -1;
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_CHECKBOX;
-                    g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-                    g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-                    g_widget_pixel_w[wid] = vw;
-                    g_widget_pixel_h[wid] = 18;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = g_doc_cur_col;
-                    g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-                    g_widget_state[wid] = chk;
-                    g_widget_target[wid] = 0;
-                    strcpy(g_widget_label + wid * 64, g_tag_label);
-                    g_widget_cmd[wid * 128] = 0;
-                    g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_CELL_CHECKBOX, g_widget_pixel_x[wid], g_widget_pixel_y[wid], vw, 18, g_tag_label, lbl_len, wid);
-                    MortonSpatialInsertWidget(wid);
-                    g_widget_count++;
-                }
-
-                g_doc_cur_col += cell_cols;
-                g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-            }
-            // 6. Collapsible Tree: $TR,"Title"$
-            else if (strncmp(g_tag_buf, "TR,", 3) == 0) {
-                g_tag_title[0] = 0;
-                DolDocParseQuoted(g_tag_buf + 3, g_tag_title, 63);
-                I64 tr_len = strlen(g_tag_title) + 4;
-                I64 cell_cols = (tr_len * 8 + 7) / 8;
-                if (g_doc_cur_col > 0 && (g_doc_cur_col + cell_cols >= g_doc_cols)) {
-                    DolDocPutc(10);
-                }
-
-                I64 wid = -1;
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_TREE;
-                    g_widget_pixel_x[wid] = g_doc_x + 8 + g_doc_cur_col * 8;
-                    g_widget_pixel_y[wid] = g_doc_y + 8 + g_doc_cur_row * 18;
-                    g_widget_pixel_w[wid] = tr_len * 8;
-                    g_widget_pixel_h[wid] = 18;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = g_doc_cur_col;
-                    g_widget_end_col[wid] = g_doc_cur_col + cell_cols;
-                    g_widget_state[wid] = 1;
-                    strcpy(g_widget_label + wid * 64, g_tag_title);
-                    g_widget_cmd[wid * 128] = 0;
-                    g_widget_tape_offset[wid] = OmniTapeAppendCmd(CMD_SDF_RECT, g_widget_pixel_x[wid], g_widget_pixel_y[wid], tr_len * 8, 18, g_tag_title, tr_len, wid);
-                    MortonSpatialInsertWidget(wid);
-                    g_widget_count++;
-                }
-
-                g_doc_cur_col += cell_cols;
-                g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-            }
-            // 7. Horizontal Rule: $HR$
-            else if (strcmp(g_tag_buf, "HR") == 0) {
-                if (g_doc_cur_col > 0) DolDocPutc(10);
-                I64 hy = g_doc_y + 8 + g_doc_cur_row * 18;
-                if (g_widget_count < DOLDOC_MAX_WIDGETS) {
-                    I64 wid = g_widget_count;
-                    g_widget_type[wid] = WIDGET_HR;
-                    g_widget_pixel_x[wid] = g_doc_x + 12;
-                    g_widget_pixel_y[wid] = hy;
-                    g_widget_pixel_w[wid] = g_doc_w - 24;
-                    g_widget_pixel_h[wid] = 18;
-                    g_widget_row[wid] = g_doc_cur_row;
-                    g_widget_start_col[wid] = 0;
-                    g_widget_end_col[wid] = g_doc_cols;
-                    g_widget_count++;
-                }
-                for (I64 hr_i = 0; hr_i < g_doc_cols - 2; hr_i++) DolDocPutc(' ');
-                DolDocPutc(10);
-            }
-            // 8. Style Stack Control: $PUSH$, $POP$
-            else if (strcmp(g_tag_buf, "PUSH") == 0) {
-                DolDocStylePush(g_doc_cur_fg, g_doc_cur_bg);
-            } else if (strcmp(g_tag_buf, "POP") == 0) {
-                DolDocStylePop();
-            }
-            // 9. Screen Clear: $CLEAR$, $CLS$
-            else if (strcmp(g_tag_buf, "CLEAR") == 0 || strcmp(g_tag_buf, "CLS") == 0) {
-                DolDocClear();
-            }
-            // 10. Layout Flow: $ROW$, $COL,n$
-            else if (strcmp(g_tag_buf, "ROW") == 0) {
-                DolDocPutc(10);
-            } else if (strncmp(g_tag_buf, "COL,", 4) == 0) {
-                I64 new_col = DolDocAtoi(g_tag_buf + 4);
-                if (new_col < g_doc_cols) {
-                    while (g_doc_cur_col < new_col) {
-                        DolDocPutc(' ');
-                    }
-                }
-            }
-            // 11. CSS Box Model: $BOX,w=...,h=...,bg=...,border=...$
-            else if (strncmp(g_tag_buf, "BOX", 3) == 0) {
-                DolDocParseBox(g_tag_buf);
-            }
-            // 12. CSS Card Container: $CARD,title="...",w=...,h=...,bg=...,border=...$
-            else if (strncmp(g_tag_buf, "CARD", 4) == 0) {
-                DolDocParseCard(g_tag_buf);
-            }
-            // 13. Acrylic Glass Panel: $GLASS,w=...,h=...,alpha=...$
-            else if (strncmp(g_tag_buf, "GLASS", 5) == 0) {
-                DolDocParseGlass(g_tag_buf);
-            }
-            // 14. Soft Drop Shadow: $SHADOW,w=...,h=...,radius=...$
-            else if (strncmp(g_tag_buf, "SHADOW", 6) == 0) {
-                DolDocParseShadow(g_tag_buf);
-            }
-            // 15. Reactive Slider: $SL,"Label",val=50,min=0,max=100,w=160$
-            else if (strncmp(g_tag_buf, "SL,", 3) == 0) {
-                DolDocParseSlider(g_tag_buf);
-            }
-            // 16. Mathematical Typography: $EQ,FRAC,...$ / $EQ,SQRT,...$ / $EQ,SUM,...$
-            else if (strncmp(g_tag_buf, "EQ,", 3) == 0) {
-                DolDocParseEquation(g_tag_buf);
-            }
-            // 17. Real-Time Telemetry Graph: $GRAPH,type="...",w=...,h=...$
-            else if (strncmp(g_tag_buf, "GRAPH", 5) == 0) {
-                DolDocParseGraph(g_tag_buf);
-            }
-            // 18. In-Code 3D Mesh / Sprite: $SP,type="...",w=...,h=...$
-            else if (strncmp(g_tag_buf, "SP", 2) == 0) {
-                DolDocParseSprite(g_tag_buf);
-            }
-            // 19. Native Shadertoy Viewport: $SHADER,type="...",w=...,h=...$
-            else if (strncmp(g_tag_buf, "SHADER", 6) == 0) {
-                DolDocParseShader(g_tag_buf);
-            }
-            // 20. Scalable Vector Font Span: $FONT,text="...",scale=200,color="CYAN"$
-            else if (strncmp(g_tag_buf, "FONT", 4) == 0 || strncmp(g_tag_buf, "H1", 2) == 0) {
-                DolDocParseFontText(g_tag_buf);
-            }
-            continue;
+U0 DolDocRenderEquation(I64 vx, I64 vy, I64 vw, I64 vh, I64 sub, U8 *tag) {
+    U8 num[128]; num[0] = 0; U8 den[128]; den[0] = 0;
+    DolDocGetAttrStr(tag, "num=", num, 120);
+    DolDocGetAttrStr(tag, "den=", den, 120);
+    if (!num[0]) DolDocGetAttrStr(tag, "rad=", num, 120);
+    if (!num[0]) DolDocGetAttrStr(tag, "expr=", num, 120);
+    if (!den[0]) DolDocGetAttrStr(tag, "lim=", den, 120);
+    U32 text_col = DolDocResolveColor(SEM_COLOR_TEXT);
+    U32 sapphire = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
+    U32 yellow = DolDocResolveColor(SEM_COLOR_YELLOW);
+    U32 teal = DolDocResolveColor(SEM_COLOR_TEAL);
+    U64 fv_fn = symbols_lookup("FontVectorDrawString");
+    if (sub == 0) {
+        gfx_draw_rect(vx, vy + 15, vw, 2, text_col);
+        if (fv_fn != 0) {
+            FontVectorDrawString(vx + (vw - FontVectorMeasureString(num, 70)) / 2, vy, num, 70, sapphire);
+            FontVectorDrawString(vx + (vw - FontVectorMeasureString(den, 70)) / 2, vy + 17, den, 70, text_col);
+        } else {
+            gfx_draw_string(vx + (vw - strlen(num) * 8) / 2, vy, num, sapphire, 0);
+            gfx_draw_string(vx + (vw - strlen(den) * 8) / 2, vy + 18, den, text_col, 0);
         }
-
-        DolDocPutc(*str);
-        str++;
-    }
-}
-
-// ============================================================================
-// SMALLTALK MORPHIC HALO MANIPULATOR OVERLAY
-// ============================================================================
-U0 DolDocDrawMorphicHalo(I64 wid) {
-    if (wid < 0 || wid >= g_widget_count) return;
-    I64 vx = g_widget_pixel_x[wid];
-    I64 vy = g_widget_pixel_y[wid] + g_doc_scroll_offset * 18;
-    I64 vw = g_widget_pixel_w[wid];
-    I64 vh = g_widget_pixel_h[wid];
-
-    U32 yellow_col   = DolDocResolveColor(SEM_COLOR_YELLOW);
-    U32 sapphire_col = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
-    U32 red_col      = DolDocResolveColor(SEM_COLOR_RED);
-    U32 teal_col     = DolDocResolveColor(SEM_COLOR_TEAL);
-    U32 green_col    = DolDocResolveColor(SEM_COLOR_GREEN);
-    U32 peach_col    = DolDocResolveColor(SEM_COLOR_PEACH);
-    U32 mantle_col   = DolDocResolveColor(SEM_COLOR_MANTLE);
-    U32 text_col     = DolDocResolveColor(SEM_COLOR_TEXT);
-
-    // 1. Halo Bounding Box Outline (crisp glowing border)
-    gfx_draw_rect(vx - 1, vy - 1, vw + 2, 1, yellow_col);
-    gfx_draw_rect(vx - 1, vy + vh, vw + 2, 1, yellow_col);
-    gfx_draw_rect(vx - 1, vy - 1, 1, vh + 2, yellow_col);
-    gfx_draw_rect(vx + vw, vy - 1, 1, vh + 2, yellow_col);
-
-    // 2. Morphic Halo Corner Handles (Sleek 10x10 handles hugging corners)
-    // Handle [S] Top-Left: Source / AST Inspector
-    gfx_draw_rounded_rect(vx - 2, vy - 6, 10, 10, 2, sapphire_col);
-    gfx_draw_string(vx, vy - 5, "S", mantle_col, 0);
-
-    // Handle [X] Top-Right: Dismiss Inspector
-    gfx_draw_rounded_rect(vx + vw - 8, vy - 6, 10, 10, 2, red_col);
-    gfx_draw_string(vx + vw - 6, vy - 5, "X", mantle_col, 0);
-
-    // Handle [?] Bottom-Left: Memory Cell / Reflection Probe
-    gfx_draw_rounded_rect(vx - 2, vy + vh - 4, 10, 10, 2, teal_col);
-    gfx_draw_string(vx, vy + vh - 3, "?", mantle_col, 0);
-
-    // Handle [D] Bottom-Right: Duplicate / Clone Morph
-    gfx_draw_rounded_rect(vx + vw - 8, vy + vh - 4, 10, 10, 2, green_col);
-    gfx_draw_string(vx + vw - 6, vy + vh - 3, "D", mantle_col, 0);
-
-    // 3. Morphic Name Pill (Centered on top border between [S] and [X])
-    U8 *lbl = g_widget_label + wid * 64;
-    U8 *name = lbl[0] ? lbl : "Morph";
-    I64 name_len = strlen(name);
-    I64 pill_w = name_len * 8 + 12;
-    if (pill_w > vw - 22) pill_w = vw - 22;
-    if (pill_w < 24) pill_w = 24;
-    I64 pill_x = vx + (vw - pill_w) / 2;
-    I64 pill_y = vy - 7;
-
-    gfx_draw_rounded_rect(pill_x, pill_y, pill_w, 13, 3, mantle_col);
-    gfx_draw_rect(pill_x, pill_y, pill_w, 1, peach_col);
-
-    U8 disp_name[32];
-    I64 max_chars = (pill_w - 8) / 8;
-    if (max_chars < 1) max_chars = 1;
-    if (name_len > max_chars && max_chars >= 4) {
-        for (I64 ni = 0; ni < max_chars - 2; ni++) disp_name[ni] = name[ni];
-        disp_name[max_chars - 2] = '.';
-        disp_name[max_chars - 1] = '.';
-        disp_name[max_chars] = 0;
+    } else if (sub == 1) {
+        gfx_draw_line(vx, vy + 16, vx + 4, vy + 22, sapphire);
+        gfx_draw_line(vx + 4, vy + 22, vx + 9, vy + 2, sapphire);
+        gfx_draw_line(vx + 9, vy + 2, vx + vw, vy + 2, sapphire);
+        if (fv_fn != 0) FontVectorDrawString(vx + 12, vy + 5, num, 75, text_col);
+        else gfx_draw_string(vx + 12, vy + 5, num, text_col, 0);
+    } else if (sub == 2) {
+        gfx_draw_line(vx + 2, vy + 2, vx + 16, vy + 2, yellow);
+        gfx_draw_line(vx + 2, vy + 2, vx + 10, vy + 14, yellow);
+        gfx_draw_line(vx + 10, vy + 14, vx + 2, vy + 26, yellow);
+        gfx_draw_line(vx + 2, vy + 26, vx + 16, vy + 26, yellow);
+        if (fv_fn != 0) { FontVectorDrawString(vx + 22, vy + 6, num, 75, sapphire); if (den[0]) FontVectorDrawString(vx + 22 + FontVectorMeasureString(num, 75) + 4, vy + 12, den, 70, DolDocResolveColor(SEM_COLOR_PEACH)); }
+        else { gfx_draw_string(vx + 22, vy + 6, num, sapphire, 0); if (den[0]) gfx_draw_string(vx + 22 + strlen(num) * 8 + 4, vy + 14, den, DolDocResolveColor(SEM_COLOR_PEACH), 0); }
     } else {
-        strcpy(disp_name, name);
+        gfx_draw_line(vx + 10, vy + 2, vx + 14, vy + 2, teal);
+        gfx_draw_line(vx + 10, vy + 2, vx + 6, vy + 26, teal);
+        gfx_draw_line(vx + 2, vy + 26, vx + 6, vy + 26, teal);
+        if (fv_fn != 0) FontVectorDrawString(vx + 18, vy + 6, num, 75, sapphire);
+        else gfx_draw_string(vx + 18, vy + 6, num, sapphire, 0);
     }
-    gfx_draw_string(pill_x + 4, pill_y + 1, disp_name, yellow_col, 0);
 }
 
 // ============================================================================
-// OMNITAPE DISPLAY JOURNAL REPLAY ENGINE
+// Widget drawing (dispatched from the tree walk)
 // ============================================================================
-U0 OmniTapeReplay(I64 pass, I64 scroll_px) {
-    if (!g_omnitape_buf) return;
+U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
+    I64 vx = nd->x;
+    I64 vy = nd->y + scroll;
+    I64 vw = nd->w;
+    I64 vh = nd->h;
+    U8 *args = nd->arg_off ? (g_doc_args + nd->arg_off) : "";
+    U8 *lbl = nd->text_len ? (g_doc_text + nd->text_off) : "";
 
-    U32 surface0_col  = DolDocResolveColor(SEM_COLOR_SURFACE0);
-    U32 surface1_col  = DolDocResolveColor(SEM_COLOR_SURFACE1);
-    U32 crust_col     = DolDocResolveColor(SEM_COLOR_CRUST);
-    U32 text_col      = DolDocResolveColor(SEM_COLOR_TEXT);
-    U32 yellow_col    = DolDocResolveColor(SEM_COLOR_YELLOW);
-    U32 sapphire_col  = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
-    U32 teal_col      = DolDocResolveColor(SEM_COLOR_TEAL);
-    U32 blue_col      = DolDocResolveColor(SEM_COLOR_BLUE);
-    U32 peach_col     = DolDocResolveColor(SEM_COLOR_PEACH);
-    U32 sky_col       = DolDocResolveColor(SEM_COLOR_SKY);
+    U32 surface0 = DolDocResolveColor(SEM_COLOR_SURFACE0);
+    U32 surface1 = DolDocResolveColor(SEM_COLOR_SURFACE1);
+    U32 crust = DolDocResolveColor(SEM_COLOR_CRUST);
+    U32 text_col = DolDocResolveColor(SEM_COLOR_TEXT);
+    U32 yellow = DolDocResolveColor(SEM_COLOR_YELLOW);
+    U32 sapphire = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
+    U32 teal = DolDocResolveColor(SEM_COLOR_TEAL);
+    U32 blue = DolDocResolveColor(SEM_COLOR_BLUE);
+    U32 sky = DolDocResolveColor(SEM_COLOR_SKY);
+    U32 peach = DolDocResolveColor(SEM_COLOR_PEACH);
 
-    // Direct Tape Traversal from contiguous Sovereign RAM Arena
-    I64 tape_off = 0;
-    while (tape_off < g_omnitape_tail) {
-        CTapeCmdHeader *hdr = g_omnitape_buf + tape_off;
-        if (hdr->opcode == CMD_NOP) break;
-
-        I64 opcode       = hdr->opcode;
-        I64 wid          = hdr->flags;
-        I64 payload_len  = hdr->payload_size;
-        U8 *payload      = g_omnitape_buf + tape_off + 64;
-
-        I64 total_len    = 64 + payload_len + 1;
-        I64 aligned_step = ((total_len + 63) / 64) * 64;
-        tape_off += aligned_step;
-
-        if (wid < 0 || wid >= g_widget_count) continue;
-        I64 wtype = g_widget_type[wid];
-
-        I64 vx = (hdr->box_w > 0) ? hdr->box_x : (g_doc_x + 8 + g_widget_start_col[wid] * 8);
-        I64 vy = (hdr->box_h > 0) ? (hdr->box_y + scroll_px) : (g_doc_y + 8 + g_widget_row[wid] * 18 + scroll_px);
-        if (wtype == WIDGET_EQUATION) vy -= 6;
-        I64 vw = (hdr->box_w > 0) ? hdr->box_w : g_widget_pixel_w[wid];
-        if (vw > g_doc_w - 16) vw = g_doc_w - 16;
-        I64 vh = (hdr->box_h > 0) ? hdr->box_h : g_widget_pixel_h[wid];
-        g_widget_pixel_x[wid] = vx;
-        g_widget_pixel_y[wid] = vy - scroll_px;
-
-        if (pass == 1) {
-            // Layer 1 Containers: Cards, Boxes, Glass, Shadow, HR
-            if (opcode == CMD_SDF_CARD || (opcode == CMD_SDF_RECT && (wtype == WIDGET_CARD || wtype == WIDGET_BOX || wtype == WIDGET_HR || wtype == WIDGET_GLASS || wtype == WIDGET_SHADOW))) {
-                if (vy + vh < g_doc_y || vy > g_doc_y + g_doc_h) continue;
-
-                if (wtype == WIDGET_CARD || opcode == CMD_SDF_CARD) {
-                    U32 cbg = DolDocResolveColor((U32)g_widget_val[wid]);
-                    U32 cborder = DolDocResolveColor((U32)g_widget_min[wid]);
-                    I64 card_rad = g_theme.corner_radius;
-                    gfx_draw_soft_shadow(vx, vy, vw, vh, 6, g_theme.shadow_color);
-                    if (card_rad > 0) {
-                        if (cborder) gfx_draw_rounded_rect(vx, vy, vw, vh, card_rad, cborder);
-                        gfx_draw_rounded_rect(vx + 1, vy + 1, vw - 2, vh - 2, card_rad - 1, cbg);
-                    } else {
-                        if (cborder) gfx_draw_rect(vx, vy, vw, vh, cborder);
-                        gfx_draw_rect(vx + 2, vy + 2, vw - 4, vh - 4, cbg);
-                    }
-                    U8 *lbl = payload[0] ? payload : (g_widget_label + wid * 64);
-                    I64 t_len = strlen(lbl);
-                    if (t_len > 0) {
-                        I64 badge_w = t_len * 8 + 16;
-                        if (badge_w > vw - 24) badge_w = vw - 24;
-                        gfx_draw_rounded_rect(vx + 12, vy + 4, badge_w, 18, 4, surface0_col);
-                        gfx_draw_string(vx + 20, vy + 5, lbl, yellow_col, 0);
-                    }
-                } else if (wtype == WIDGET_BOX) {
-                    U32 bbg = DolDocResolveColor((U32)g_widget_val[wid]);
-                    U32 bborder = DolDocResolveColor((U32)g_widget_min[wid]);
-                    if (bborder) gfx_draw_rounded_rect(vx, vy, vw, vh, 4, bborder);
-                    gfx_draw_rounded_rect(vx + 1, vy + 1, vw - 2, vh - 2, 3, bbg);
-                } else if (wtype == WIDGET_HR) {
-                    gfx_draw_rect(vx, vy + 8, vw, 1, surface1_col);
-                } else if (wtype == WIDGET_GLASS) {
-                    DolDocDrawGlass(vx, vy, vw, vh, g_widget_val[wid]);
-                } else if (wtype == WIDGET_SHADOW) {
-                    DolDocDrawShadow(vx, vy, vw, vh, g_widget_val[wid]);
-                }
-            }
-        } else if (pass == 3) {
-            // Layer 3 Interactive Widgets: Buttons, Sliders, Progress, Checkbox, Tree, Equations, Shaders, 3D Sprites, Graphs, Fonts
-            if (opcode != CMD_SDF_CARD && !(opcode == CMD_SDF_RECT && (wtype == WIDGET_CARD || wtype == WIDGET_BOX || wtype == WIDGET_HR || wtype == WIDGET_GLASS || wtype == WIDGET_SHADOW))) {
-                if (vy + vh < g_doc_y || vy > g_doc_y + g_doc_h) continue;
-
-                if (wtype == WIDGET_BUTTON || (opcode == CMD_SDF_RECT && wtype == WIDGET_BUTTON)) {
-                    U8 *lbl = payload[0] ? payload : (g_widget_label + wid * 64);
-                    I64 is_pressed = g_widget_state[wid];
-                    I64 dy = is_pressed ? 1 : 0;
-
-                    if (!is_pressed) {
-                        gfx_draw_soft_shadow(vx, vy, vw, vh, 4, g_theme.shadow_color);
-                    }
-
-                    U32 body_col = is_pressed ? surface0_col : surface1_col;
-                    if (g_theme.corner_radius > 0) {
-                        gfx_draw_rounded_rect(vx, vy + dy, vw, vh - dy, 4, body_col);
-                    } else {
-                        gfx_draw_rect(vx, vy + dy, vw, vh - dy, body_col);
-                        gfx_draw_rect(vx, vy + dy, vw, 1, blue_col);
-                    }
-
-                    if (!is_pressed) {
-                        gfx_blend_rect(vx + 4, vy + 1, vw - 8, 1, 0x2AFFFFFF);
-                        gfx_blend_rect(vx + 4, vy + vh - 1, vw - 8, 1, 0x40000000);
-                    }
-
-                    I64 tx = vx + (vw - strlen(lbl) * 8) / 2;
-                    I64 ty = vy + dy + (vh - 16) / 2;
-                    U32 btn_tcol = is_pressed ? blue_col : text_col;
-                    gfx_draw_string(tx, ty, lbl, btn_tcol, 0);
-                } else if (wtype == WIDGET_SLIDER || opcode == CMD_CELL_SLIDER) {
-                    I64 val = g_widget_val[wid];
-                    if (g_widget_target[wid] != 0) {
-                        val = *(I64*)(g_widget_target[wid]);
-                        g_widget_val[wid] = val;
-                    }
-                    I64 min_v = g_widget_min[wid];
-                    I64 max_v = g_widget_max[wid];
-                    if (max_v <= min_v) max_v = min_v + 100;
-                    I64 track_y = vy + (vh - 6) / 2;
-
-                    gfx_draw_rounded_rect(vx, track_y, vw, 6, 3, crust_col);
-                    gfx_draw_line(vx + 2, track_y, vx + vw - 2, track_y, 0x60000000);
-
-                    I64 fill_w = ((val - min_v) * (vw - 12)) / (max_v - min_v);
-                    if (fill_w < 0) fill_w = 0;
-                    if (fill_w > vw - 12) fill_w = vw - 12;
-                    if (fill_w > 0) {
-                        gfx_draw_rounded_rect(vx, track_y, fill_w + 6, 6, 3, teal_col);
-                    }
-
-                    I64 thumb_x = vx + fill_w + 6;
-                    I64 thumb_y = track_y + 3;
-                    gfx_draw_circle_filled(thumb_x, thumb_y, 7, text_col);
-                    gfx_draw_circle_filled(thumb_x, thumb_y, 5, sapphire_col);
-
-                    U8 val_str[16];
-                    I64 tmp_v = val;
-                    if (tmp_v <= 0) {
-                        val_str[0] = '0'; val_str[1] = 0;
-                    } else {
-                        U8 rev[16]; I64 r_i = 0;
-                        while (tmp_v > 0 && r_i < 12) {
-                            rev[r_i] = '0' + (tmp_v % 10);
-                            r_i++;
-                            tmp_v /= 10;
-                        }
-                        for (I64 d = 0; d < r_i; d++) {
-                            val_str[d] = rev[r_i - 1 - d];
-                        }
-                        val_str[r_i] = 0;
-                    }
-                    gfx_draw_string(vx + vw + 8, vy + 2, val_str, yellow_col, 0);
-                } else if (wtype == WIDGET_PROGRESS || opcode == CMD_PROGRESS_BAR) {
-                    I64 val = g_widget_val[wid];
-                    I64 max_val = g_widget_max[wid];
-                    if (max_val <= 0) max_val = 100;
-                    if (val < 0) val = 0;
-                    if (val > max_val) val = max_val;
-
-                    gfx_draw_rounded_rect(vx, vy + 4, vw, 10, 5, crust_col);
-                    I64 fill_w = (val * vw) / max_val;
-                    if (fill_w > 0) {
-                        if (fill_w < 6) fill_w = 6;
-                        gfx_draw_rounded_rect(vx, vy + 4, fill_w, 10, 5, teal_col);
-                    }
-
-                    I64 pct = (val * 100) / max_val;
-                    U8 pct_buf[16];
-                    I64 p_i = 0;
-                    if (pct >= 100) { pct_buf[p_i++] = '1'; pct_buf[p_i++] = '0'; pct_buf[p_i++] = '0'; }
-                    else if (pct >= 10) { pct_buf[p_i++] = '0' + ((pct / 10) % 10); pct_buf[p_i++] = '0' + (pct % 10); }
-                    else { pct_buf[p_i++] = '0' + (pct % 10); }
-                    pct_buf[p_i++] = '%';
-                    pct_buf[p_i] = 0;
-                    gfx_draw_string(vx + vw + 8, vy + 1, pct_buf, peach_col, 0);
-                } else if (wtype == WIDGET_CHECKBOX || opcode == CMD_CELL_CHECKBOX) {
-                    I64 is_chk = g_widget_state[wid];
-                    U8 *lbl = payload[0] ? payload : (g_widget_label + wid * 64);
-                    U32 box_bg = is_chk ? blue_col : surface0_col;
-                    gfx_draw_rounded_rect(vx, vy + 2, 14, 14, 3, box_bg);
-                    if (is_chk) {
-                        gfx_draw_line(vx + 3, vy + 8, vx + 6, vy + 11, crust_col);
-                        gfx_draw_line(vx + 6, vy + 11, vx + 11, vy + 4, crust_col);
-                        gfx_draw_line(vx + 3, vy + 9, vx + 6, vy + 12, crust_col);
-                        gfx_draw_line(vx + 6, vy + 12, vx + 11, vy + 5, crust_col);
-                    }
-                    if (lbl[0]) {
-                        gfx_draw_string(vx + 20, vy + 1, lbl, text_col, 0);
-                    }
-                } else if (wtype == WIDGET_TREE) {
-                    I64 is_open = g_widget_state[wid];
-                    U8 *lbl = payload[0] ? payload : (g_widget_label + wid * 64);
-                    if (is_open) {
-                        gfx_draw_line(vx + 2, vy + 6, vx + 7, vy + 11, yellow_col);
-                        gfx_draw_line(vx + 7, vy + 11, vx + 12, vy + 6, yellow_col);
-                    } else {
-                        gfx_draw_line(vx + 4, vy + 3, vx + 9, vy + 8, sky_col);
-                        gfx_draw_line(vx + 9, vy + 8, vx + 4, vy + 13, sky_col);
-                    }
-                    if (lbl[0]) {
-                        gfx_draw_string(vx + 18, vy + 1, lbl, text_col, 0);
-                    }
-                } else if (wtype == WIDGET_EQUATION || opcode == CMD_MATH_EQUATION) {
-                    U8 *eq_type = g_widget_label + wid * 64;
-                    U8 *extra = g_widget_extra + wid * 128;
-                    U8 *cmd = g_widget_cmd + wid * 128;
-                    U64 fv_fn = symbols_lookup("FontVectorDrawString");
-                    if (strcmp(eq_type, "FRAC") == 0) {
-                        gfx_draw_rect(vx, vy + 15, vw, 2, text_col);
-                        if (fv_fn != 0) {
-                            I64 eq_nw = FontVectorMeasureString(extra, 70);
-                            I64 eq_dw = FontVectorMeasureString(cmd, 70);
-                            I64 eq_nx = vx + (vw - eq_nw) / 2;
-                            I64 eq_dx = vx + (vw - eq_dw) / 2;
-                            FontVectorDrawString(eq_nx, vy, extra, 70, sapphire_col);
-                            FontVectorDrawString(eq_dx, vy + 17, cmd, 70, text_col);
-                        } else {
-                            I64 eq_nx = vx + (vw - strlen(extra) * 8) / 2;
-                            gfx_draw_string(eq_nx, vy, extra, sapphire_col, 0);
-                            I64 eq_dx = vx + (vw - strlen(cmd) * 8) / 2;
-                            gfx_draw_string(eq_dx, vy + 18, cmd, text_col, 0);
-                        }
-                    } else if (strcmp(eq_type, "SQRT") == 0) {
-                        gfx_draw_line(vx, vy + 16, vx + 4, vy + 22, sapphire_col);
-                        gfx_draw_line(vx + 4, vy + 22, vx + 9, vy + 2, sapphire_col);
-                        gfx_draw_line(vx + 9, vy + 2, vx + vw, vy + 2, sapphire_col);
-                        if (fv_fn != 0) {
-                            FontVectorDrawString(vx + 12, vy + 5, extra, 75, text_col);
-                        } else {
-                            gfx_draw_string(vx + 12, vy + 5, extra, text_col, 0);
-                        }
-                    } else if (strcmp(eq_type, "SUM") == 0) {
-                        gfx_draw_line(vx + 2, vy + 2, vx + 16, vy + 2, yellow_col);
-                        gfx_draw_line(vx + 2, vy + 2, vx + 10, vy + 14, yellow_col);
-                        gfx_draw_line(vx + 10, vy + 14, vx + 2, vy + 26, yellow_col);
-                        gfx_draw_line(vx + 2, vy + 26, vx + 16, vy + 26, yellow_col);
-                        if (fv_fn != 0) {
-                            FontVectorDrawString(vx + 22, vy + 6, extra, 75, sapphire_col);
-                            if (cmd[0]) {
-                                I64 ew = FontVectorMeasureString(extra, 75);
-                                FontVectorDrawString(vx + 22 + ew + 4, vy + 12, cmd, 70, peach_col);
-                            }
-                        } else {
-                            gfx_draw_string(vx + 22, vy + 6, extra, sapphire_col, 0);
-                            if (cmd[0]) gfx_draw_string(vx + 22 + strlen(extra) * 8 + 4, vy + 14, cmd, peach_col, 0);
-                        }
-                    } else if (strcmp(eq_type, "INT") == 0) {
-                        gfx_draw_line(vx + 10, vy + 2, vx + 14, vy + 2, teal_col);
-                        gfx_draw_line(vx + 10, vy + 2, vx + 6, vy + 26, teal_col);
-                        gfx_draw_line(vx + 2, vy + 26, vx + 6, vy + 26, teal_col);
-                        if (fv_fn != 0) {
-                            FontVectorDrawString(vx + 18, vy + 6, extra, 75, sapphire_col);
-                        } else {
-                            gfx_draw_string(vx + 18, vy + 6, extra, sapphire_col, 0);
-                        }
-                    }
-                } else if (wtype == WIDGET_GRAPH || opcode == CMD_CELL_OSCILLOSCOPE) {
-                    U8 *gtype = payload[0] ? payload : (g_widget_label + wid * 64);
-                    DolDocRenderGraphNode(vx, vy, vw, vh, gtype);
-                } else if (wtype == WIDGET_SPRITE3D || opcode == CMD_SPRITE_3D) {
-                    U8 *stype = payload[0] ? payload : (g_widget_label + wid * 64);
-                    DolDocRenderSprite3D(vx, vy, vw, vh, stype);
-                } else if (wtype == WIDGET_SHADER || opcode == CMD_SHADER_QUAD) {
-                    U8 *shtype = payload[0] ? payload : (g_widget_label + wid * 64);
-                    DolDocRenderShaderNode(vx, vy, vw, vh, shtype);
-                } else if (wtype == WIDGET_FONT_TEXT || opcode == CMD_TEXT_RUN) {
-                    U8 *flbl = payload[0] ? payload : (g_widget_label + wid * 64);
-                    I64 fscale = g_widget_val[wid];
-                    U32 fcol = DolDocResolveColor((U32)g_widget_min[wid]);
-                    U64 fv_fn = symbols_lookup("FontVectorDrawString");
-                    if (fv_fn != 0) {
-                        FontVectorDrawString(vx, vy + 2, flbl, fscale, fcol);
-                    } else {
-                        gfx_draw_string(vx, vy + 2, flbl, fcol, 0);
-                        gfx_draw_string(vx + 1, vy + 2, flbl, fcol, 0);
-                    }
-                }
-            }
+    I64 kind = nd->kind;
+    if (kind == DOC_CARD || kind == DOC_BOX) {
+        U32 bg = DolDocResolveColor((U32)nd->val);
+        U32 border = DolDocResolveColor((U32)nd->min);
+        I64 rad = g_theme.corner_radius;
+        if (kind == DOC_CARD) gfx_draw_soft_shadow(vx, vy, vw, vh, 6, g_theme.shadow_color);
+        if (rad > 0) {
+            if (border) gfx_draw_rounded_rect(vx, vy, vw, vh, rad, border);
+            gfx_draw_rounded_rect(vx + 1, vy + 1, vw - 2, vh - 2, rad - 1, bg);
+        } else {
+            if (border) gfx_draw_rect(vx, vy, vw, vh, border);
+            gfx_draw_rect(vx + 2, vy + 2, vw - 4, vh - 4, bg);
         }
-    }
-}
-
-// ============================================================================
-// UNIFIED SCENE-GRAPH & OMNITAPE COMPOSITING RENDERER
-// ============================================================================
-U0 DolDocRedraw() {
-    if (g_doc_dirty_mask == 0) {
+        if (kind == DOC_CARD && lbl[0]) {
+            I64 bl = strlen(lbl);
+            I64 badge_w = bl * 8 + 16; if (badge_w > vw - 24) badge_w = vw - 24;
+            gfx_draw_rounded_rect(vx + 12, vy + 4, badge_w, 18, 4, surface0);
+            gfx_draw_string(vx + 20, vy + 5, lbl, yellow, 0);
+        }
         return;
     }
-    g_doc_anim_tick++;
+    if (kind == DOC_RULE) { gfx_draw_rect(vx, vy + 8, vw, 1, surface1); return; }
+    if (kind == DOC_GLASS) { DolDocDrawGlass(vx, vy, vw, vh, nd->val); return; }
+    if (kind == DOC_SHADOW) { DolDocDrawShadow(vx, vy, vw, vh, nd->val); return; }
+    if (kind == DOC_BUTTON) {
+        I64 pressed = nd->state;
+        I64 dy = pressed ? 1 : 0;
+        if (!pressed) gfx_draw_soft_shadow(vx, vy, vw, vh, 4, g_theme.shadow_color);
+        U32 body = pressed ? surface0 : surface1;
+        if (g_theme.corner_radius > 0) gfx_draw_rounded_rect(vx, vy + dy, vw, vh - dy, 4, body);
+        else { gfx_draw_rect(vx, vy + dy, vw, vh - dy, body); gfx_draw_rect(vx, vy + dy, vw, 1, blue); }
+        if (!pressed) { gfx_blend_rect(vx + 4, vy + 1, vw - 8, 1, 0x2AFFFFFF); gfx_blend_rect(vx + 4, vy + vh - 1, vw - 8, 1, 0x40000000); }
+        gfx_draw_string(vx + (vw - strlen(lbl) * 8) / 2, vy + dy + (vh - 16) / 2, lbl, pressed ? blue : text_col, 0);
+        return;
+    }
+    if (kind == DOC_LINK) {
+        gfx_draw_string(vx, vy + 1, lbl, sky, 0);
+        gfx_draw_rect(vx, vy + 15, strlen(lbl) * 8, 1, sky);
+        return;
+    }
+    if (kind == DOC_SLIDER) {
+        I64 val = nd->val;
+        if (nd->target != 0) { val = *(I64*)(nd->target); nd->val = val; }
+        I64 mn = nd->min; I64 mx = nd->max; if (mx <= mn) mx = mn + 100;
+        if (val < mn) val = mn; if (val > mx) val = mx;
+        I64 track_y = vy + (vh - 6) / 2;
+        gfx_draw_rounded_rect(vx, track_y, vw, 6, 3, crust);
+        I64 fill_w = ((val - mn) * (vw - 12)) / (mx - mn);
+        if (fill_w < 0) fill_w = 0; if (fill_w > vw - 12) fill_w = vw - 12;
+        if (fill_w > 0) gfx_draw_rounded_rect(vx, track_y, fill_w + 6, 6, 3, teal);
+        I64 thumb_x = vx + fill_w + 6; I64 thumb_y = track_y + 3;
+        gfx_draw_circle_filled(thumb_x, thumb_y, 7, text_col);
+        gfx_draw_circle_filled(thumb_x, thumb_y, 5, sapphire);
+        U8 vs[16]; I64 tv = val; I64 pi = 0;
+        if (tv <= 0) { vs[0] = '0'; vs[1] = 0; }
+        else { U8 rev[16]; I64 ri = 0; while (tv > 0 && ri < 12) { rev[ri] = '0' + (tv % 10); ri++; tv /= 10; } for (I64 d = 0; d < ri; d++) vs[d] = rev[ri - 1 - d]; vs[ri] = 0; }
+        gfx_draw_string(vx + vw + 8, vy + 2, vs, yellow, 0);
+        return;
+    }
+    if (kind == DOC_DATA) {
+        I64 val = nd->val;
+        if (nd->target != 0) { val = *(I64*)(nd->target); nd->val = val; }
+        gfx_draw_rounded_rect(vx, vy + 2, vw, 14, 3, surface0);
+        U8 vs[24]; I64 tv = val; I64 ri = 0; U8 rev[24];
+        if (tv < 0) { vs[0] = '-'; tv = -tv; ri = 1; }
+        I64 ri2 = 0;
+        if (tv == 0) { rev[ri2] = '0'; ri2++; } else { while (tv > 0 && ri2 < 20) { rev[ri2] = '0' + (tv % 10); ri2++; tv /= 10; } }
+        for (I64 d = 0; d < ri2; d++) vs[ri + d] = rev[ri2 - 1 - d];
+        vs[ri + ri2] = 0;
+        gfx_draw_string(vx + 6, vy + 1, lbl, DolDocResolveColor(SEM_COLOR_SUBTEXT), 0);
+        gfx_draw_string(vx + 6, vy + 1 + 0, "", text_col, 0);
+        gfx_draw_rounded_rect(vx + vw - 34, vy + 2, 16, 14, 2, surface1);
+        gfx_draw_string(vx + vw - 30, vy + 1, "-", text_col, 0);
+        gfx_draw_rounded_rect(vx + vw - 16, vy + 2, 16, 14, 2, surface1);
+        gfx_draw_string(vx + vw - 12, vy + 1, "+", text_col, 0);
+        gfx_draw_string(vx + vw / 2 - 8, vy + 1, vs, yellow, 0);
+        return;
+    }
+    if (kind == DOC_TOGGLE) {
+        I64 is_chk = nd->state;
+        U32 box_bg = is_chk ? blue : surface0;
+        gfx_draw_rounded_rect(vx, vy + 2, 14, 14, 3, box_bg);
+        if (is_chk) {
+            gfx_draw_line(vx + 3, vy + 8, vx + 6, vy + 11, crust);
+            gfx_draw_line(vx + 6, vy + 11, vx + 11, vy + 4, crust);
+        }
+        if (lbl[0]) gfx_draw_string(vx + 20, vy + 1, lbl, text_col, 0);
+        return;
+    }
+    if (kind == DOC_PROGRESS) {
+        I64 val = nd->val; I64 mx = nd->max; if (mx <= 0) mx = 100;
+        if (val < 0) val = 0; if (val > mx) val = mx;
+        gfx_draw_rounded_rect(vx, vy + 4, vw, 10, 5, crust);
+        I64 fill_w = (val * vw) / mx;
+        if (fill_w > 0) { if (fill_w < 6) fill_w = 6; gfx_draw_rounded_rect(vx, vy + 4, fill_w, 10, 5, teal); }
+        I64 pct = (val * 100) / mx; U8 pb[8]; I64 pi = 0;
+        if (pct >= 100) { pb[pi++] = '1'; pb[pi++] = '0'; pb[pi++] = '0'; }
+        else if (pct >= 10) { pb[pi++] = '0' + ((pct / 10) % 10); pb[pi++] = '0' + (pct % 10); }
+        else pb[pi++] = '0' + (pct % 10);
+        pb[pi++] = '%'; pb[pi] = 0;
+        gfx_draw_string(vx + vw + 8, vy + 1, pb, peach, 0);
+        return;
+    }
+    if (kind == DOC_TREE) {
+        I64 is_open = nd->state;
+        if (is_open) { gfx_draw_line(vx + 2, vy + 6, vx + 7, vy + 11, yellow); gfx_draw_line(vx + 7, vy + 11, vx + 12, vy + 6, yellow); }
+        else { gfx_draw_line(vx + 4, vy + 3, vx + 9, vy + 8, sky); gfx_draw_line(vx + 9, vy + 8, vx + 4, vy + 13, sky); }
+        if (lbl[0]) gfx_draw_string(vx + 18, vy + 1, lbl, text_col, 0);
+        return;
+    }
+    if (kind == DOC_EQ) { DolDocRenderEquation(vx, vy, vw, vh, nd->state, args); return; }
+    if (kind == DOC_GRAPH) { DolDocRenderGraphNode(vx, vy, vw, vh, args); return; }
+    if (kind == DOC_BITMAP) { DolDocRenderSprite3D(vx, vy, vw, vh, args); return; }
+    if (kind == DOC_SHADER) { DolDocRenderShaderNode(vx, vy, vw, vh, args); return; }
+    if (kind == DOC_FONT) {
+        U32 fcol = DolDocResolveColor((U32)nd->min);
+        if (symbols_lookup("FontVectorDrawString") != 0) FontVectorDrawString(vx, vy + 2, lbl, nd->val, fcol);
+        else { gfx_draw_string(vx, vy + 2, lbl, fcol, 0); gfx_draw_string(vx + 1, vy + 2, lbl, fcol, 0); }
+        return;
+    }
+}
 
-    gfx_set_clip(g_doc_x, g_doc_y, g_doc_w, g_doc_h);
+// ============================================================================
+// Tree rendering
+// ============================================================================
+U0 DolDocDrawChildren(I64 parent, I64 scroll) {
+    I64 n = g_doc_nodes[parent].first;
+    while (n >= 0) {
+        DolDocDrawNode(n, scroll);
+        n = g_doc_nodes[n].next;
+    }
+}
 
-    U32 canvas_bg     = DolDocResolveColor(g_doc_cur_bg);
-    U32 surface0_col  = DolDocResolveColor(SEM_COLOR_SURFACE0);
-    U32 crust_col     = DolDocResolveColor(SEM_COLOR_CRUST);
-    U32 blue_col      = DolDocResolveColor(SEM_COLOR_BLUE);
-
-    gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, g_doc_h, canvas_bg);
-    gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, 1, surface0_col);
-
-    I64 scroll_px = g_doc_scroll_offset * 18;
-
-    // Layer 1: Background Containers (Cards, Boxes, Dividers, Glass Panels, Shadows via OmniTape)
-    OmniTapeReplay(1, scroll_px);
-
-    // Layer 2: Typography, Scrollback History & Text Runs
-    for (I64 d_r = 0; d_r < g_doc_rows; d_r++) {
-        I64 rx = g_doc_x + 8;
-        I64 ry = g_doc_y + 8 + d_r * 18;
-        I64 virt_line = (g_doc_history_count - g_doc_scroll_offset) + d_r;
-
-        if (virt_line < g_doc_history_count && virt_line >= 0) {
-            // Render from scrollback history buffer
-            I64 h_base = virt_line * DOLDOC_MAX_COLS;
-            for (I64 d_hc = 0; d_hc < g_doc_cols; d_hc++) {
-                U8 hch = g_hist_chars[h_base + d_hc];
-                if (hch > 32 && hch <= 126) {
-                    U32 hfg = DolDocResolveColor(g_hist_fg[h_base + d_hc]);
-                    gfx_draw_char(rx + d_hc * 8, ry, hch, hfg, 0);
-                }
-            }
-        } else {
-            // Render from live viewport row
-            I64 act_r = virt_line - g_doc_history_count;
-            if (act_r >= 0 && act_r < g_doc_rows) {
-                I64 row_base = act_r * DOLDOC_MAX_COLS;
-                for (I64 d_c = 0; d_c < g_doc_cols; d_c++) {
-                    U8 ch = g_doc_chars[row_base + d_c];
-                    if (ch > 32 && ch <= 126) {
-                        U32 fg = DolDocResolveColor(g_doc_fg[row_base + d_c]);
-                        gfx_draw_char(rx + d_c * 8, ry, ch, fg, 0);
-                    }
-                }
+U0 DolDocDrawNode(I64 nid, I64 scroll) {
+    CDocNode *nd = &g_doc_nodes[nid];
+    if (nd->kind == DOC_TEXT) {
+        I64 x = nd->x;
+        I64 y = nd->y + scroll;
+        if (y + nd->h < g_doc_y || y > g_doc_y + g_doc_h) return;
+        for (I64 i = 0; i < nd->text_len; i++) {
+            I64 ci = nd->text_off + i;
+            U8 ch = g_doc_text[ci];
+            if (ch > 32 && ch <= 126) {
+                U32 fg = (U32)(g_doc_attr[ci] & 0xFFFFFFFF);
+                gfx_draw_char(x + i * 8, y, ch, DolDocResolveColor(fg), 0);
             }
         }
+        return;
     }
+    if (nd->kind == DOC_WINDOW) { DolDocDrawWindowNode(nid, scroll); return; }
+    DolDocDrawWidget(nd, scroll);
+}
 
-    // Layer 3: Interactive Foreground Widgets, Shaders, Vector Fonts, 3D Sprites & Oscilloscopes via OmniTape
-    OmniTapeReplay(3, scroll_px);
-
-    // Layer 4: Interactive Scrollbar Track & Thumb (CBoxScrollbar)
-    if (g_doc_history_count > 0) {
-        I64 bar_x = g_doc_x + g_doc_w - 8;
-        I64 bar_y = g_doc_y + 4;
-        I64 bar_h = g_doc_h - 8;
-        gfx_draw_rounded_rect(bar_x, bar_y, 6, bar_h, 3, crust_col);
-
-        I64 total_lines = g_doc_history_count + g_doc_rows;
-        I64 thumb_h = (bar_h * g_doc_rows) / total_lines;
-        if (thumb_h < 24) thumb_h = 24;
-        I64 scroll_pos = g_doc_history_count - g_doc_scroll_offset;
-        if (scroll_pos < 0) scroll_pos = 0;
-        I64 thumb_y = bar_y + ((bar_h - thumb_h) * scroll_pos) / g_doc_history_count;
-        gfx_draw_rounded_rect(bar_x, thumb_y, 6, thumb_h, 3, blue_col);
-    }
-
-    // Layer 5: Smalltalk Morphic Halo Direct Manipulation Overlay
-    if (g_doc_inspected_wid >= 0 && g_doc_inspected_wid < g_widget_count) {
-        DolDocDrawMorphicHalo(g_doc_inspected_wid);
-    }
-
+U0 DolDocRedraw() {
+    if (g_doc_dirty_mask == 0 && g_doc_dirty == 0) return;
+    g_doc_anim_tick++;
+    gfx_set_clip(g_doc_x, g_doc_y, g_doc_w, g_doc_h);
+    gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, g_doc_h, DolDocResolveColor(g_doc_cur_bg));
+    gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, 1, DolDocResolveColor(SEM_COLOR_SURFACE0));
+    DolDocDrawChildren(g_doc_root, g_doc_scroll_offset * 18);
+    if (g_doc_inspected_nid >= 0 && g_doc_inspected_nid < g_doc_node_count) DolDocDrawHalo(g_doc_inspected_nid);
     gfx_reset_clip();
-
     g_doc_dirty_mask = 0;
+    g_doc_dirty = 0;
 }
 
 U0 DolDocAnimateTick() {
-    if (g_widget_count <= 0) return;
+    if (g_doc_node_count <= 0) return;
     g_doc_anim_tick++;
-    I64 scroll_px = g_doc_scroll_offset * 18;
-    for (I64 wid = 0; wid < g_widget_count; wid++) {
-        I64 wtype = g_widget_type[wid];
-        if (wtype == WIDGET_SHADER || wtype == WIDGET_SPRITE3D || wtype == WIDGET_GRAPH) {
-            I64 vx = g_doc_x + 8 + g_widget_start_col[wid] * 8;
-            I64 vy = g_doc_y + 8 + g_widget_row[wid] * 18 + scroll_px;
-            I64 vw = g_widget_pixel_w[wid];
-            I64 vh = g_widget_pixel_h[wid];
+    I64 scroll = g_doc_scroll_offset * 18;
+    for (I64 n = 0; n < g_doc_node_count; n++) {
+        I64 k = g_doc_nodes[n].kind;
+        if (k == DOC_SHADER || k == DOC_BITMAP || k == DOC_GRAPH) {
+            I64 vx = g_doc_nodes[n].x; I64 vy = g_doc_nodes[n].y + scroll;
+            I64 vw = g_doc_nodes[n].w; I64 vh = g_doc_nodes[n].h;
             if (vy + vh < g_doc_y || vy > g_doc_y + g_doc_h) continue;
-
-            if (wtype == WIDGET_SHADER) {
-                U8 *shtype = g_widget_label + wid * 64;
-                DolDocRenderShaderNode(vx, vy, vw, vh, shtype);
-            } else if (wtype == WIDGET_SPRITE3D) {
-                U8 *stype = g_widget_label + wid * 64;
-                DolDocRenderSprite3D(vx, vy, vw, vh, stype);
-            } else if (wtype == WIDGET_GRAPH) {
-                U8 *gtype = g_widget_label + wid * 64;
-                DolDocRenderGraphNode(vx, vy, vw, vh, gtype);
-            }
+            U8 *a = g_doc_nodes[n].arg_off ? (g_doc_args + g_doc_nodes[n].arg_off) : "";
+            if (k == DOC_SHADER) DolDocRenderShaderNode(vx, vy, vw, vh, a);
+            else if (k == DOC_BITMAP) DolDocRenderSprite3D(vx, vy, vw, vh, a);
+            else DolDocRenderGraphNode(vx, vy, vw, vh, a);
             gfx_swap_rect(vx, vy, vw, vh);
         }
     }
-    if (g_doc_inspected_wid >= 0 && g_doc_inspected_wid < g_widget_count) {
-        DolDocDrawMorphicHalo(g_doc_inspected_wid);
-    }
+    if (g_doc_inspected_nid >= 0 && g_doc_inspected_nid < g_doc_node_count) DolDocDrawHalo(g_doc_inspected_nid);
 }
 
 // ============================================================================
-// LIVING COMPUTATIONAL CELL (LCM) DIRECT JIT INSTRUCTION & MEMORY PATCHER
+// Smalltalk Morphic halo
 // ============================================================================
-U0 DolDocPatchTarget(U64 target_addr, I64 new_val) {
-    if (!target_addr) return;
-    U32 *ins_ptr = (U32*)target_addr;
-    U32 ins = *ins_ptr;
-    // Check if target points to an executable AArch64 MOVZ or MOVK instruction:
-    // MOVZ: bits [30:23] = 0b10010100 (0x52800000 or 0xD2800000)
-    // MOVK: bits [30:23] = 0b11110010 (0x72800000 or 0xF2800000)
-    if ((ins & 0x7F800000) == 0x52800000 || (ins & 0x7F800000) == 0x72800000) {
-        *ins_ptr = (ins & ~(0xFFFF << 5)) | (((U32)new_val & 0xFFFF) << 5);
-        __dc_civac((U64)ins_ptr);
-        __dsb_sy();
-        __ic_ivau((U64)ins_ptr);
-        __isb();
-    } else {
-        *(I64*)target_addr = new_val;
-        __dc_civac(target_addr);
-        __dsb_sy();
-        __ic_ivau(target_addr);
-        __isb();
+U0 DolDocDrawHalo(I64 nid) {
+    if (nid < 0 || nid >= g_doc_node_count) return;
+    CDocNode *nd = &g_doc_nodes[nid];
+    I64 vx = nd->x; I64 vy = nd->y + g_doc_scroll_offset * 18; I64 vw = nd->w; I64 vh = nd->h;
+    U32 yellow = DolDocResolveColor(SEM_COLOR_YELLOW);
+    U32 sapphire = DolDocResolveColor(SEM_COLOR_SAPPHIRE);
+    U32 red = DolDocResolveColor(SEM_COLOR_RED);
+    U32 teal = DolDocResolveColor(SEM_COLOR_TEAL);
+    U32 green = DolDocResolveColor(SEM_COLOR_GREEN);
+    U32 mantle = DolDocResolveColor(SEM_COLOR_MANTLE);
+    gfx_draw_rect(vx - 1, vy - 1, vw + 2, 1, yellow);
+    gfx_draw_rect(vx - 1, vy + vh, vw + 2, 1, yellow);
+    gfx_draw_rect(vx - 1, vy - 1, 1, vh + 2, yellow);
+    gfx_draw_rect(vx + vw, vy - 1, 1, vh + 2, yellow);
+    gfx_draw_rounded_rect(vx - 2, vy - 6, 10, 10, 2, sapphire); gfx_draw_string(vx, vy - 5, "S", mantle, 0);
+    gfx_draw_rounded_rect(vx + vw - 8, vy - 6, 10, 10, 2, red); gfx_draw_string(vx + vw - 6, vy - 5, "X", mantle, 0);
+    gfx_draw_rounded_rect(vx - 2, vy + vh - 4, 10, 10, 2, teal); gfx_draw_string(vx, vy + vh - 3, "?", mantle, 0);
+    gfx_draw_rounded_rect(vx + vw - 8, vy + vh - 4, 10, 10, 2, green); gfx_draw_string(vx + vw - 6, vy + vh - 3, "D", mantle, 0);
+}
+
+// ============================================================================
+// Hit testing & interaction
+// ============================================================================
+I64 DolDocHitTest(I64 mx, I64 my) {
+    I64 doc_my = my - g_doc_scroll_offset * 18;
+    for (I64 n = g_doc_node_count - 1; n >= 0; n--) {
+        CDocNode *nd = &g_doc_nodes[n];
+        if (nd->kind == DOC_ROOT || nd->kind == DOC_TEXT || nd->kind == DOC_WINDOW) continue;
+        if (nd->kind == DOC_CARD || nd->kind == DOC_BOX || nd->kind == DOC_GLASS || nd->kind == DOC_SHADOW) continue;
+        if (mx >= nd->x && mx < nd->x + nd->w && doc_my >= nd->y && doc_my < nd->y + nd->h) return n;
     }
+    return -1;
 }
 
 I64 DolDocHandleClick(I64 mx, I64 my) {
     if (mx < g_doc_x || my < g_doc_y || mx >= g_doc_x + g_doc_w || my >= g_doc_y + g_doc_h) return 0;
+    I64 nid = DolDocHitTest(mx, my);
+    if (nid < 0) return 0;
+    CDocNode *nd = &g_doc_nodes[nid];
 
-    // 0. Check Interactive Scrollbar Click (Rightmost 12px)
-    if (g_doc_history_count > 0 && mx >= g_doc_x + g_doc_w - 12) {
-        I64 rel_y = my - (g_doc_y + 4);
-        I64 bar_h = g_doc_h - 8;
-        if (bar_h > 0) {
-            I64 target_pos = (rel_y * g_doc_history_count) / bar_h;
-            g_doc_scroll_offset = g_doc_history_count - target_pos;
-            if (g_doc_scroll_offset < 0) g_doc_scroll_offset = 0;
-            if (g_doc_scroll_offset > g_doc_history_count) g_doc_scroll_offset = g_doc_history_count;
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
+    if (g_doc_inspector_mode) {
+        g_doc_inspected_nid = nid;
+        doldoc_printf("\n$FG,YELLOW$[MORPHIC HALO]$FG$ Node #%lld kind=%lld box=(%lld,%lld,%lldx%lld) target=0x%llX\n",
+                      nid, nd->kind, nd->x, nd->y, nd->w, nd->h, nd->target);
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
     }
 
-    I64 doc_my = my - g_doc_scroll_offset * 18;
-
-    // 1. Morphic Halo Interactive Handles Click
-    if (g_doc_inspected_wid >= 0 && g_doc_inspected_wid < g_widget_count) {
-        I64 iwid = g_doc_inspected_wid;
-        I64 ivx = g_widget_pixel_x[iwid];
-        I64 ivy = g_widget_pixel_y[iwid];
-        I64 ivw = g_widget_pixel_w[iwid];
-        I64 ivh = g_widget_pixel_h[iwid];
-
-        // Handle [X] Dismiss
-        if (mx >= ivx + ivw - 10 && mx <= ivx + ivw + 4 && doc_my >= ivy - 10 && doc_my <= ivy + 6) {
-            g_doc_inspected_wid = -1;
-            DolDocPrint("\n$FG,PEACH$[HALO]$FG$ Dismissed inspection\n");
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
-        // Handle [S] Source / AST Inspector
-        if (mx >= ivx - 6 && mx <= ivx + 10 && doc_my >= ivy - 10 && doc_my <= ivy + 6) {
-            U8 *lbl = g_widget_label + iwid * 64;
-            U8 *cmd = g_widget_cmd + iwid * 128;
-            doldoc_printf("\n$FG,CYAN$[HALO:SRC]$FG$ Node #%lld Type=%lld Label=\"%s\" Cmd=\"%s\"\n",
-                          iwid, g_widget_type[iwid], lbl, cmd);
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
-        // Handle [?] Memory Cell Probe
-        if (mx >= ivx - 6 && mx <= ivx + 10 && doc_my >= ivy + ivh - 6 && doc_my <= ivy + ivh + 10) {
-            doldoc_printf("\n$FG,TEAL$[HALO:MEM]$FG$ Node #%lld Target=0x%llX Val=%lld Min=%lld Max=%lld\n",
-                          iwid, g_widget_target[iwid], g_widget_val[iwid], g_widget_min[iwid], g_widget_max[iwid]);
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
-        // Handle [D] Duplicate Morph
-        if (mx >= ivx + ivw - 10 && mx <= ivx + ivw + 4 && doc_my >= ivy + ivh - 6 && doc_my <= ivy + ivh + 10) {
-            doldoc_printf("\n$FG,GREEN$[HALO:CLONE]$FG$ Cloned Node #%lld to cursor\n", iwid);
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
-        // Handle [R] Refresh
-        if (mx >= ivx + ivw / 2 - 8 && mx <= ivx + ivw / 2 + 8 && doc_my >= ivy - 10 && doc_my <= ivy + 6) {
-            DolDocMarkAllDirty();
-            DolDocRedraw();
-            doldoc_swap_term();
-            return 1;
-        }
-    }
-
-    // 2. O(1) Amortized Morton Spatial Tile Hit-Testing
-    I64 tx = mx / 64;
-    I64 ty = doc_my / 64;
-    if (tx >= 0 && tx < MORTON_TILES_X && ty >= 0 && ty < MORTON_TILES_Y) {
-        I64 midx = Morton2D(tx, ty);
-        I64 count = g_tile_widget_count[midx];
-        for (I64 k = count - 1; k >= 0; k--) {
-            I64 wid = g_tile_widgets[midx * TILE_MAX_WIDGETS + k];
-            if (wid >= 0 && wid < g_widget_count) {
-                I64 wtype = g_widget_type[wid];
-                I64 vx = g_widget_pixel_x[wid];
-                I64 vy = g_widget_pixel_y[wid];
-                I64 vw = g_widget_pixel_w[wid];
-                I64 vh = g_widget_pixel_h[wid];
-
-                if (mx >= vx && mx < vx + vw && doc_my >= vy && doc_my < vy + vh) {
-                    // Smalltalk Morphic Halo Inspection Mode
-                    if (g_doc_inspector_mode) {
-                        g_doc_inspected_wid = wid;
-                        doldoc_printf("\n$FG,YELLOW$[MORPHIC HALO]$FG$ Widget #%lld | Box=(%lld,%lld,%lldx%lld) | TapeOff=0x%llX | Target=0x%llX\n",
-                                      wid, vx, vy, vw, vh, g_widget_tape_offset[wid], g_widget_target[wid]);
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        return 1;
-                    }
-
-                    if (wtype == WIDGET_BUTTON) {
-                        g_widget_state[wid] = 1;
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        g_widget_state[wid] = 0;
-
-                        U8 *cmd = g_widget_cmd + wid * 128;
-                        if (*cmd) {
-                            strcpy(g_click_cmd_buf, cmd);
-                            DolDocPrint("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$");
-                            DolDocPrint(g_click_cmd_buf);
-                            DolDocPrint("$FG$\n");
-                            shell_run_command(g_click_cmd_buf);
-                        }
-                        return 1;
-                    } else if (wtype == WIDGET_LINK) {
-                        U8 *cmd = g_widget_cmd + wid * 128;
-                        if (*cmd) {
-                            strcpy(g_click_cmd_buf, cmd);
-                            DolDocPrint("\n$FG,YELLOW$[LINK]$FG$ $FG,CYAN$");
-                            DolDocPrint(g_click_cmd_buf);
-                            DolDocPrint("$FG$\n");
-                            shell_run_command(g_click_cmd_buf);
-                        }
-                        return 1;
-                    } else if (wtype == WIDGET_SLIDER) {
-                        g_doc_drag_wid = wid;
-                        I64 min_v = g_widget_min[wid];
-                        I64 max_v = g_widget_max[wid];
-                        if (max_v <= min_v) max_v = min_v + 100;
-                        I64 new_val = min_v + ((mx - vx) * (max_v - min_v)) / (vw > 0 ? vw : 1);
-                        if (new_val < min_v) new_val = min_v;
-                        if (new_val > max_v) new_val = max_v;
-                        g_widget_val[wid] = new_val;
-
-                        if (g_widget_target[wid] != 0) {
-                            DolDocPatchTarget(g_widget_target[wid], new_val);
-                        }
-
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        return 1;
-                    } else if (wtype == WIDGET_CHECKBOX) {
-                        g_widget_state[wid] = 1 - g_widget_state[wid];
-                        if (g_widget_target[wid] != 0) {
-                            DolDocPatchTarget(g_widget_target[wid], g_widget_state[wid]);
-                        }
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        return 1;
-                    } else if (wtype == WIDGET_TREE) {
-                        g_widget_state[wid] = 1 - g_widget_state[wid];
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        return 1;
-                    } else if (wtype == WIDGET_SHADER || wtype == WIDGET_SPRITE3D || wtype == WIDGET_GRAPH) {
-                        // Clicking an animated Shadertoy/3D/Oscilloscope node steps its animation live!
-                        DolDocMarkAllDirty();
-                        DolDocRedraw();
-                        doldoc_swap_term();
-                        return 1;
-                    }
-                }
+    U8 *cmd = nd->arg_off ? (g_doc_args + nd->arg_off) : "";
+    if (nd->kind == DOC_BUTTON || nd->kind == DOC_LINK) {
+        if (cmd[0] == '#') {
+            I64 an = DolDocFindAnchor(cmd + 1);
+            if (an >= 0 && an < g_doc_node_count) {
+                g_doc_scroll_offset = 0;
+                DolDocMarkAllDirty();
             }
+        } else if (cmd[0]) {
+            strcpy(g_click_cmd_buf, cmd);
+            DolDocPrint("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$");
+            DolDocPrint(g_click_cmd_buf);
+            DolDocPrint("$FG$\n");
+            shell_run_command(g_click_cmd_buf);
+            return 1;
         }
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
     }
-
-    // 3. Fallback to Character Cell Link Index
-    I64 col = (mx - (g_doc_x + 8)) / 8;
-    I64 row = (doc_my - (g_doc_y + 8)) / 18;
-
-    if (row >= 0 && row < g_doc_rows && col >= 0 && col < g_doc_cols) {
-        I64 idx = row * DOLDOC_MAX_COLS + col;
-        I64 wid2 = g_doc_link_idx[idx];
-        if (wid2 >= 0 && wid2 < g_widget_count) {
-            U8 *cmd2 = g_widget_cmd + wid2 * 128;
-            if (*cmd2) {
-                strcpy(g_click_cmd_buf, cmd2);
-                DolDocPrint("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$");
-                DolDocPrint(g_click_cmd_buf);
-                DolDocPrint("$FG$\n");
-                shell_run_command(g_click_cmd_buf);
-                return 1;
-            }
-        }
+    if (nd->kind == DOC_SLIDER) {
+        g_doc_drag_nid = nid;
+        I64 mn = nd->min; I64 mx = nd->max; if (mx <= mn) mx = mn + 100;
+        I64 nv = mn + ((mx - nd->x) * (mx - mn)) / (nd->w > 0 ? nd->w : 1);
+        DolDocCellWrite(nid, nv);
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
+    }
+    if (nd->kind == DOC_DATA) {
+        I64 mn = nd->min; I64 mx = nd->max;
+        if (mx - nd->x > 0) { }
+        if (mx > nd->x + nd->w - 16) DolDocCellWrite(nid, nd->val + (mx - mn) / 20 + 1);
+        else DolDocCellWrite(nid, nd->val - ((mx - mn) / 20 + 1));
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
+    }
+    if (nd->kind == DOC_TOGGLE || nd->kind == DOC_TREE) {
+        nd->state = 1 - nd->state;
+        if (nd->target != 0) DolDocPatchTarget(nd->target, nd->state);
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
+    }
+    if (nd->kind == DOC_SHADER || nd->kind == DOC_BITMAP || nd->kind == DOC_GRAPH) {
+        DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+        return 1;
     }
     return 0;
 }
 
 I64 DolDocHandleDrag(I64 mx, I64 my) {
-    if (mx < g_doc_x || my < g_doc_y) return 0;
-
-    // Dragging scrollbar
-    if (g_doc_history_count > 0 && mx >= g_doc_x + g_doc_w - 16) {
-        return DolDocHandleClick(g_doc_x + g_doc_w - 4, my);
-    }
-
-    // Active continuous slider drag: tracks mouse smoothly anywhere on screen!
-    if (g_doc_drag_wid >= 0 && g_doc_drag_wid < g_widget_count) {
-        I64 wid = g_doc_drag_wid;
-        if (g_widget_type[wid] == WIDGET_SLIDER) {
-            I64 vx = g_widget_pixel_x[wid];
-            I64 vw = g_widget_pixel_w[wid];
-            I64 min_v = g_widget_min[wid];
-            I64 max_v = g_widget_max[wid];
-            if (max_v <= min_v) max_v = min_v + 100;
-            I64 new_val = min_v + ((mx - vx) * (max_v - min_v)) / (vw > 0 ? vw : 1);
-            if (new_val < min_v) new_val = min_v;
-            if (new_val > max_v) new_val = max_v;
-            if (new_val != g_widget_val[wid]) {
-                g_widget_val[wid] = new_val;
-                if (g_widget_target[wid] != 0) {
-                    DolDocPatchTarget(g_widget_target[wid], new_val);
-                }
-                DolDocMarkAllDirty();
-                DolDocRedraw();
-                doldoc_swap_term();
-                return 1;
-            }
+    if (g_doc_drag_nid >= 0 && g_doc_drag_nid < g_doc_node_count) {
+        CDocNode *nd = &g_doc_nodes[g_doc_drag_nid];
+        if (nd->kind == DOC_SLIDER) {
+            I64 mn = nd->min; I64 mx = nd->max; if (mx <= mn) mx = mn + 100;
+            I64 nv = mn + ((mx - nd->x) * (mx - mn)) / (nd->w > 0 ? nd->w : 1);
+            if (nv != nd->val) { DolDocCellWrite(g_doc_drag_nid, nv); DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term(); }
             return 1;
-        }
-    }
-
-    I64 doc_my = my - g_doc_scroll_offset * 18;
-    I64 tx = mx / 64;
-    I64 ty = doc_my / 64;
-    if (tx >= 0 && tx < MORTON_TILES_X && ty >= 0 && ty < MORTON_TILES_Y) {
-        I64 midx = Morton2D(tx, ty);
-        I64 count = g_tile_widget_count[midx];
-        for (I64 k = count - 1; k >= 0; k--) {
-            I64 wid2 = g_tile_widgets[midx * TILE_MAX_WIDGETS + k];
-            if (wid2 >= 0 && wid2 < g_widget_count) {
-                if (g_widget_type[wid2] == WIDGET_SLIDER) {
-                    I64 vx2 = g_widget_pixel_x[wid2];
-                    I64 vy2 = g_widget_pixel_y[wid2];
-                    I64 vw2 = g_widget_pixel_w[wid2];
-                    I64 vh2 = g_widget_pixel_h[wid2];
-                    if (mx >= vx2 && mx <= vx2 + vw2 && doc_my >= vy2 - 8 && doc_my <= vy2 + vh2 + 8) {
-                        g_doc_drag_wid = wid2;
-                        I64 min_v2 = g_widget_min[wid2];
-                        I64 max_v2 = g_widget_max[wid2];
-                        if (max_v2 <= min_v2) max_v2 = min_v2 + 100;
-                        I64 new_val2 = min_v2 + ((mx - vx2) * (max_v2 - min_v2)) / (vw2 > 0 ? vw2 : 1);
-                        if (new_val2 < min_v2) new_val2 = min_v2;
-                        if (new_val2 > max_v2) new_val2 = max_v2;
-                        if (new_val2 != g_widget_val[wid2]) {
-                            g_widget_val[wid2] = new_val2;
-                            if (g_widget_target[wid2] != 0) {
-                                DolDocPatchTarget(g_widget_target[wid2], new_val2);
-                            }
-                            DolDocMarkAllDirty();
-                            DolDocRedraw();
-                            doldoc_swap_term();
-                            return 1;
-                        }
-                    }
-                }
-            }
         }
     }
     return 0;
 }
 
 I64 DolDocHandleMouseUp() {
-    if (g_doc_drag_wid >= 0) {
-        g_doc_drag_wid = -1;
-        return 1;
-    }
+    if (g_doc_drag_nid >= 0) { g_doc_drag_nid = -1; return 1; }
     return 0;
 }
 
 U0 DolDocMove(I64 x, I64 y, I64 w, I64 h) {
     I64 dx = x - g_doc_x;
     I64 dy = y - g_doc_y;
-    g_doc_x = x;
-    g_doc_y = y;
-    g_doc_w = w;
-    g_doc_h = h;
+    g_doc_x = x; g_doc_y = y; g_doc_w = w; g_doc_h = h;
     g_doc_cols = (w > 16) ? (w - 16) / 8 : 80;
     g_doc_rows = (h > 16) ? (h - 16) / 18 : 24;
-    if (g_doc_cols > DOLDOC_MAX_COLS) g_doc_cols = DOLDOC_MAX_COLS;
-    if (g_doc_rows > DOLDOC_MAX_ROWS) g_doc_rows = DOLDOC_MAX_ROWS;
-    if (g_doc_cur_row >= g_doc_rows) g_doc_cur_row = g_doc_rows - 1;
-    if (g_doc_cur_col >= g_doc_cols) g_doc_cur_col = g_doc_cols - 1;
-    g_doc_cursor_x = g_doc_x + 8 + g_doc_cur_col * 8;
-    g_doc_cursor_y = g_doc_y + 8 + g_doc_cur_row * 18;
-
-    // Translate existing widget positions when viewport moves (e.g., dragging window!)
+    if (g_doc_cols > 256) g_doc_cols = 256;
+    if (g_doc_rows > 64) g_doc_rows = 64;
+    if (g_doc_col >= g_doc_cols) g_doc_col = g_doc_cols - 1;
+    if (g_doc_row >= g_doc_rows) g_doc_row = g_doc_rows - 1;
     if (dx != 0 || dy != 0) {
-        MortonSpatialClear();
-        for (I64 mw = 0; mw < g_widget_count; mw++) {
-            g_widget_pixel_x[mw] = g_doc_x + 8 + g_widget_start_col[mw] * 8;
-            g_widget_pixel_y[mw] = g_doc_y + 8 + g_widget_row[mw] * 18;
-            if (g_widget_type[mw] == WIDGET_EQUATION) g_widget_pixel_y[mw] -= 6;
-            MortonSpatialInsertWidget(mw);
+        for (I64 n = 0; n < g_doc_node_count; n++) {
+            if (g_doc_nodes[n].kind == DOC_WINDOW) continue;
+            g_doc_nodes[n].x += dx;
+            g_doc_nodes[n].y += dy;
         }
     }
+    DolDocUpdateCursor();
     DolDocMarkAllDirty();
 }
 
-U0 doldoc_move(I64 x, I64 y, I64 w, I64 h) {
-    DolDocMove(x, y, w, h);
+// ============================================================================
+// Compositor (dissolved from Compositor.HC): damage, present, effects, pacing
+// ============================================================================
+// Compositor (dissolved from Compositor.HC): damage, present, effects, pacing
+// ============================================================================
+U0 DolDocCompositorInit() {
+    g_comp.screen_w = gfx_get_canvas_width();
+    g_comp.screen_h = gfx_get_canvas_height();
+    g_comp.screen_pitch = gfx_get_canvas_pitch();
+    if (g_comp.screen_w <= 0) g_comp.screen_w = 1024;
+    if (g_comp.screen_h <= 0) g_comp.screen_h = 768;
+    g_comp.vsync_hz = 0;
+    g_comp.shadows_enabled = 1;
+    g_comp.glass_enabled = 1;
+    g_comp.rounded_corners = 1;
+    g_comp.dirty_blit_enabled = 1;
+    g_comp.frame_count = 0;
+    g_comp.fps = 60;
+    g_comp.last_fps_time_sec = timer_get_uptime_sec();
+    g_comp.frame_time_us = 12000;
+    g_comp.last_frame_start_us = timer_get_uptime_us();
+    if (g_theme.bg_base == 0) ThemeApply(THEME_MOCHA);
+    g_doc_comp_ready = 1;
 }
 
-U0 doldoc_swap_term() {
-    gfx_swap_rect(g_doc_x, g_doc_y, g_doc_w, g_doc_h);
+U0 DolDocDamageAll() { gfx_dirty_all(); g_doc_dirty = 1; }
+U0 DolDocDamageRect(I64 x, I64 y, I64 w, I64 h) { if (w <= 0 || h <= 0) return; GfxDeviceDamage(x, y, w, h); g_doc_dirty = 1; }
+U0 DolDocDamageWindow(I64 wx, I64 wy, I64 ww, I64 wh) {
+    I64 pad = g_comp.shadows_enabled ? 16 : 4;
+    DolDocDamageRect(wx - pad, wy - pad, ww + pad * 2, wh + pad * 2);
 }
 
-U0 doldoc_swap_cursor() {
-    gfx_swap_rect(g_doc_cursor_x, g_doc_cursor_y, 8, 16);
+U0 DolDocDrawShadow(I64 x, I64 y, I64 w, I64 h, I64 spread) {
+    if (!g_comp.shadows_enabled) return;
+    if (spread <= 0) spread = 6;
+    U32 base_rgb = g_theme.shadow_color & 0x00FFFFFF;
+    gfx_blend_rect(x - spread, y - spread / 2, w + spread * 2, h + spread * 2, 0x18000000 | base_rgb);
+    gfx_blend_rect(x - spread / 2, y - 1, w + spread, h + spread + 2, 0x2C000000 | base_rgb);
+    gfx_blend_rect(x - 2, y + 1, w + 4, h + 4, 0x48000000 | base_rgb);
 }
 
-U0 doldoc_mark_all_dirty() {
-    DolDocMarkAllDirty();
+U0 DolDocDrawGlass(I64 x, I64 y, I64 w, I64 h, I64 alpha) {
+    if (alpha <= 0) alpha = 0xC8;
+    U32 col = ((alpha & 0xFF) << 24) | (g_theme.glass_tint & 0x00FFFFFF);
+    gfx_blend_rect(x, y, w, h, col);
+    gfx_blend_rect(x + 2, y, w - 4, 1, 0x30FFFFFF);
 }
 
-U0 DolDocScrollUp(I64 lines) {
-    g_doc_scroll_offset += lines;
-    if (g_doc_scroll_offset > g_doc_history_count) g_doc_scroll_offset = g_doc_history_count;
-    DolDocMarkAllDirty();
-    DolDocRedraw();
-    doldoc_swap_term();
-}
-
-U0 DolDocScrollDown(I64 lines) {
-    g_doc_scroll_offset -= lines;
-    if (g_doc_scroll_offset < 0) g_doc_scroll_offset = 0;
-    DolDocMarkAllDirty();
-    DolDocRedraw();
-    doldoc_swap_term();
-}
-
-U0 DolDocSetBgColor(U32 bg) {
-    g_doc_cur_bg = bg;
-    DolDocMarkAllDirty();
-}
-
-U32 DolDocGetBgColor() {
-    return DolDocResolveColor(g_doc_cur_bg);
-}
-
-U0 doldoc_putc(U8 c) {
-    DolDocPutc(c);
-}
-
-U0 DolDocExportPrint(U8 *str) {
-    DolDocPrint(str);
-}
-
-U0 doldoc_clear() {
-    DolDocClear();
-}
-
-U0 doldoc_redraw() {
-    DolDocRedraw();
-}
-
-I64 doldoc_handle_click(I64 mx, I64 my) {
-    return DolDocHandleClick(mx, my);
-}
-
-I64 doldoc_handle_drag(I64 mx, I64 my) {
-    return DolDocHandleDrag(mx, my);
-}
-
-I64 doldoc_handle_mouse_up() {
-    return DolDocHandleMouseUp();
-}
-
-U0 doldoc_scroll_up(I64 lines) {
-    DolDocScrollUp(lines);
-}
-
-U0 doldoc_scroll_down(I64 lines) {
-    DolDocScrollDown(lines);
-}
-
-U0 doldoc_set_bg(U32 bg) {
-    DolDocSetBgColor(bg);
-}
-
-U32 doldoc_get_bg() {
-    return DolDocGetBgColor();
-}
-
-U0 DolDocSelfTest() {
-    uart_puts("\n[DOLDOC-TEST] Running DolDoc 3.0 Scene-Graph & Shadertoy Verification...\n");
-    DolDocStylePush(SEM_COLOR_GREEN, SEM_COLOR_BASE);
-    if (g_style_depth != 1) return;
-    DolDocStylePop();
-    uart_puts("[DOLDOC-TEST] 1/8 Style Stack Push/Pop PASSED\n");
-
-    U32 col1 = DolDocParseColor("0xF38BA8", 0);
-    U32 col2 = DolDocParseColor("#A6E3A1", 0);
-    U32 col3 = DolDocParseColor("MAUVE", 0);
-    if (col1 != 0xFFF38BA8 || col2 != 0xFFA6E3A1 || col3 != SEM_COLOR_MAUVE) return;
-    uart_puts("[DOLDOC-TEST] 2/8 Semantic & Hex Palette Parser PASSED\n");
-
-    DolDocPrint("$BOX,w=30,h=3$\n");
-    DolDocPrint("$CARD,title=\"NeoOS Card\",w=32,h=4$\n");
-    uart_puts("[DOLDOC-TEST] 3/8 Box & Card Continuum PASSED\n");
-
-    DolDocPrint("$SHADER,type=\"plasma\",w=64,h=36$\n");
-    uart_puts("[DOLDOC-TEST] 4/8 Native Shadertoy Node PASSED\n");
-
-    I64 initial_widgets = g_widget_count;
-    DolDocPrint("$BT,\"TestBtn\",LM=\"help\"$ $LK,\"TestLink\",A=\"ls\"$\n");
-    if (g_widget_count < initial_widgets + 2) return;
-    uart_puts("[DOLDOC-TEST] 5/8 Interactive Widgets PASSED\n");
-
-    I64 initial_tape_cmds = g_omnitape_cmd_count;
-    I64 off1 = OmniTapeAppendCmd(CMD_SDF_RECT, 10, 20, 100, 30, "TestPayload", 11, 0);
-    if (off1 < 0 || g_omnitape_cmd_count != initial_tape_cmds + 1) return;
-    uart_puts("[DOLDOC-TEST] 6/8 OmniTape Bump Allocator PASSED\n");
-
-    I64 midx = Morton2D(2, 3);
-    if (midx != 14) return;
-    uart_puts("[DOLDOC-TEST] 7/8 Morton Spatial 64x64 Partitioning PASSED\n");
-
-    I64 test_cell_val = 50;
-    I64 test_wid = g_widget_count;
-    DolDocPrint("$SL,\"TestCell\",val=50,min=0,max=100,w=100$\n");
-    if (g_widget_count > test_wid) {
-        g_widget_target[test_wid] = &test_cell_val;
-        I64 clk_x = g_widget_pixel_x[test_wid] + 80;
-        I64 clk_y = g_widget_pixel_y[test_wid] + 8;
-        DolDocHandleClick(clk_x, clk_y);
+U0 DolDocCompositorEndFrame() {
+    I64 cur_us = timer_get_uptime_us();
+    if (cur_us > g_comp.last_frame_start_us) g_comp.frame_time_us = cur_us - g_comp.last_frame_start_us;
+    g_comp.frame_count++;
+    I64 cur_sec = timer_get_uptime_sec();
+    if (cur_sec != g_comp.last_fps_time_sec) {
+        g_comp.fps = g_comp.frame_count;
+        if (g_comp.fps <= 0) g_comp.fps = 60;
+        g_comp.frame_count = 0;
+        g_comp.last_fps_time_sec = cur_sec;
     }
-    uart_puts("[DOLDOC-TEST] 8/8 Living Cell In-Memory Mutation PASSED\n");
-    uart_puts("ALL 8 DOLDOC TESTS PASSED\n");
 }
 
-I64 doldoc_get_widget_count() {
-    return g_widget_count;
+U0 DolDocPresent() {
+    g_comp.last_frame_start_us = timer_get_uptime_us();
+    if (g_comp.dirty_blit_enabled && RenderDirtyActive()) {
+        I64 c_x = 0; I64 c_y = 0; I64 c_w = 0; I64 c_h = 0;
+        RenderDirtyBounds(&c_x, &c_y, &c_w, &c_h);
+        if (c_x < 0) { c_w = c_w + c_x; c_x = 0; }
+        if (c_y < 0) { c_h = c_h + c_y; c_y = 0; }
+        if (c_x + c_w > g_comp.screen_w) c_w = g_comp.screen_w - c_x;
+        if (c_y + c_h > g_comp.screen_h) c_h = g_comp.screen_h - c_y;
+        if (c_w >= g_comp.screen_w && c_h >= g_comp.screen_h) GfxPresent(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
+        else if (c_w > 0 && c_h > 0) GfxPresent(c_x, c_y, c_w, c_h, 0);
+    } else {
+        GfxPresent(0, 0, g_comp.screen_w, g_comp.screen_h, 1);
+    }
+    gfx_dirty_reset();
+    if (g_comp.vsync_hz > 0) gfx_vsync_wait();
+    DolDocCompositorEndFrame();
 }
 
-I64 doldoc_get_tape_cmd_count() {
-    return g_omnitape_cmd_count;
+U0 DolDocCompositorDashboard() {
+    doldoc_print("\n$CARD,title=\"NeoOS Sovereign Compositor & Theme Engine\",w=108,h=10$\n");
+    doldoc_printf("  Canvas Resolution : $FG,YELLOW$%lld x %lld$FG$ (Pitch: %lld px)\n", g_comp.screen_w, g_comp.screen_h, g_comp.screen_pitch);
+    doldoc_printf("  Active Theme Skin : $FG,CYAN$%s$FG$ (ID #%lld | Radius: %lldpx | Border: %lldpx)\n", g_theme.name, g_theme.theme_id, g_theme.corner_radius, g_theme.border_w);
+    doldoc_printf("  Effects Pipeline  : Shadows=%s | AcrylicGlass=%s | DirtyBlit=%s | VSync=%lld Hz\n",
+                  g_comp.shadows_enabled ? "ON" : "OFF", g_comp.glass_enabled ? "ON" : "OFF", g_comp.dirty_blit_enabled ? "ON" : "OFF", g_comp.vsync_hz);
+    doldoc_printf("  Live Frame Pacing : $FG,GREEN$%lld FPS$FG$ ($FG,YELLOW$%lld us/frame$FG$)\n", g_comp.fps, g_comp.frame_time_us);
+    doldoc_print("$HR$\n");
+    doldoc_print("  $FG,YELLOW$Switch Semantic Theme Skin:$FG$\n");
+    doldoc_print("   $BT,\"Mocha\",LM=\"theme mocha\"$  $BT,\"Latte (Light)\",LM=\"theme latte\"$  $BT,\"Tokyo Night\",LM=\"theme tokyo\"$  $BT,\"Nord\",LM=\"theme nord\"$  $BT,\"TempleOS CGA\",LM=\"theme temple\"$  $BT,\"Cyberpunk OLED\",LM=\"theme cyberpunk\"$\n");
+    doldoc_print("  $FG,YELLOW$Compositor Pipeline Controls:$FG$\n");
+    doldoc_print("   $BT,\"Toggle Shadows\",LM=\"compositor shadow\"$  $BT,\"Toggle Glass\",LM=\"compositor glass\"$  $BT,\"Toggle Corners\",LM=\"compositor round\"$  $BT,\"V-Sync 60Hz\",LM=\"compositor vsync 60\"$  $BT,\"Uncapped\",LM=\"compositor vsync 0\"$\n");
+    doldoc_print("$HR$\n\n");
 }
 
-I64 doldoc_get_inspected_wid() {
-    return g_doc_inspected_wid;
+U0 DolDocCompositorCmd(U8 *cmd) {
+    if (!cmd) { DolDocCompositorDashboard(); return; }
+    while (*cmd == ' ') cmd++;
+    if (*cmd == 0) { DolDocCompositorDashboard(); return; }
+    if (strncmp(cmd, "theme", 5) == 0) {
+        U8 *targ = cmd + 5; while (*targ == ' ') targ++;
+        ThemeSetByName(targ);
+        DolDocSetBgColor(g_theme.bg_mantle);
+        DolDocDamageAll();
+        doldoc_printf("$FG,GREEN$[THEME]$FG$ Applied semantic theme skin: $FG,CYAN$%s$FG$\n", g_theme.name);
+        return;
+    }
+    if (strncmp(cmd, "vsync", 5) == 0) {
+        U8 *arg = cmd + 5; while (*arg == ' ') arg++;
+        if (strcmp(arg, "60") == 0) { g_comp.vsync_hz = 60; gfx_vsync_set(1, 60); doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ V-Sync locked to 60 Hz.\n"); }
+        else if (strcmp(arg, "120") == 0) { g_comp.vsync_hz = 120; gfx_vsync_set(1, 120); doldoc_print("$FG,GREEN$[COMPOSITOR]$FG$ V-Sync locked to 120 Hz.\n"); }
+        else { g_comp.vsync_hz = 0; gfx_vsync_set(0, 0); doldoc_print("$FG,YELLOW$[COMPOSITOR]$FG$ V-Sync disabled (Uncapped FPS).\n"); }
+    } else if (strncmp(cmd, "shadow", 6) == 0) { g_comp.shadows_enabled = !g_comp.shadows_enabled; doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Soft Drop Shadows: %s\n", g_comp.shadows_enabled ? "ENABLED" : "DISABLED"); DolDocDamageAll(); }
+    else if (strncmp(cmd, "glass", 5) == 0) { g_comp.glass_enabled = !g_comp.glass_enabled; doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Acrylic Glass: %s\n", g_comp.glass_enabled ? "ENABLED" : "DISABLED"); DolDocDamageAll(); }
+    else if (strncmp(cmd, "blit", 4) == 0) { g_comp.dirty_blit_enabled = !g_comp.dirty_blit_enabled; doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Dirty Rect Blitting: %s\n", g_comp.dirty_blit_enabled ? "ENABLED" : "DISABLED"); }
+    else if (strncmp(cmd, "round", 5) == 0) { g_comp.rounded_corners = !g_comp.rounded_corners; doldoc_printf("$FG,GREEN$[COMPOSITOR]$FG$ Rounded Corners: %s\n", g_comp.rounded_corners ? "ENABLED" : "DISABLED"); DolDocDamageAll(); }
+    else DolDocCompositorDashboard();
 }
 
-U0 doldoc_set_inspected_wid(I64 wid) {
-    g_doc_inspected_wid = wid;
+// ============================================================================
+// Windows are documents ($WIN$): the desktop continuum (dissolved WM.HC)
+// ============================================================================
+I64 g_doc_win_count = 0;
+I64 g_doc_win_active = 0;
+I64 g_doc_desktop_running = 0;
+I64 g_doc_menu_open = 0;
+I64 g_doc_prev_btn = 0;
+I64 g_doc_drag_win = 0;
+I64 g_doc_drag_ox = 0;
+I64 g_doc_drag_oy = 0;
+I64 g_doc_resize_win = 0;
+I64 g_doc_resize_ow = 0;
+I64 g_doc_resize_oh = 0;
+I64 g_doc_resize_mx = 0;
+I64 g_doc_resize_my = 0;
+I64 g_doc_is_drag = 0;
+I64 g_doc_is_resize = 0;
+I64 g_doc_win_nodes[DOC_MAX_WINDOWS];
+I64 g_doc_win_zorder[DOC_MAX_WINDOWS];
+
+U0 wm_set_dirty() { g_doc_dirty = 1; }
+
+I64 DolDocWinById(I64 id) {
+    for (I64 i = 0; i < g_doc_win_count; i++) if (g_doc_win_nodes[i] >= 0 && g_doc_nodes[g_doc_win_nodes[i]].win_id == id) return i;
+    return -1;
 }
 
-I64 doldoc_get_inspector_mode() {
-    return g_doc_inspector_mode;
+U0 DolDocWinFocus(I64 id) {
+    g_doc_win_active = id;
+    I64 pos = -1;
+    for (I64 i = 0; i < g_doc_win_count; i++) if (g_doc_nodes[g_doc_win_nodes[i]].win_id == id) pos = i;
+    if (pos >= 0 && pos < g_doc_win_count - 1) {
+        I64 t = g_doc_win_zorder[pos];
+        for (I64 j = pos; j < g_doc_win_count - 1; j++) g_doc_win_zorder[j] = g_doc_win_zorder[j + 1];
+        g_doc_win_zorder[g_doc_win_count - 1] = t;
+    }
+    g_doc_dirty = 1;
 }
 
-U0 doldoc_set_inspector_mode(I64 mode) {
-    g_doc_inspector_mode = mode;
+I64 DolDocWinCreate(U8 *title, I64 x, I64 y, I64 w, I64 h, I64 kind) {
+    if (g_doc_win_count >= DOC_MAX_WINDOWS) return -1;
+    I64 n = DolDocNewNode(DOC_WINDOW, -1);
+    if (n < 0) return -1;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->x = x; nd->y = y; nd->w = w; nd->h = h; nd->state = kind;
+    nd->flags = DOCF_OPEN;
+    nd->win_id = g_doc_win_count + 1;
+    nd->text_off = g_doc_text_used;
+    for (I64 i = 0; title[i] && g_doc_text_used < DOC_MAX_TEXT - 1; i++) { g_doc_text[g_doc_text_used] = title[i]; g_doc_attr[g_doc_text_used] = 0; g_doc_text_used++; }
+    nd->text_len = g_doc_text_used - nd->text_off;
+    g_doc_win_nodes[g_doc_win_count] = n;
+    g_doc_win_zorder[g_doc_win_count] = g_doc_win_count;
+    g_doc_win_count++;
+    DolDocWinFocus(nd->win_id);
+    return nd->win_id;
 }
+
+U0 DolDocWinClose(I64 id) {
+    I64 idx = DolDocWinById(id);
+    if (idx < 0) return;
+    I64 n = g_doc_win_nodes[idx];
+    if (g_doc_nodes[n].win_id == 1) { g_doc_nodes[n].flags |= DOCF_MIN; g_doc_dirty = 1; return; }
+    DolDocDamageWindow(g_doc_nodes[n].x, g_doc_nodes[n].y, g_doc_nodes[n].w, g_doc_nodes[n].h);
+    DolDocUnlink(n);
+    for (I64 i = idx; i < g_doc_win_count - 1; i++) { g_doc_win_nodes[i] = g_doc_win_nodes[i + 1]; g_doc_win_zorder[i] = g_doc_win_zorder[i + 1]; }
+    g_doc_win_count--;
+    if (g_doc_win_count > 0) DolDocWinFocus(g_doc_nodes[g_doc_win_nodes[g_doc_win_count - 1]].win_id);
+    g_doc_dirty = 1;
+}
+
+U0 DolDocWinChrome(CDocNode *win, I64 active) {
+    I64 tb_h = g_theme.titlebar_h; if (tb_h < 26) tb_h = 30;
+    I64 rad = g_theme.corner_radius;
+    U32 border_col = active ? g_theme.border_active : g_theme.border_subtle;
+    I64 bw = g_theme.border_w; if (bw < 1) bw = 1;
+    DolDocDrawShadow(win->x, win->y, win->w, win->h, 8);
+    gfx_draw_rect(win->x - bw, win->y - bw, win->w + bw * 2, win->h + bw * 2, border_col);
+    U32 body_bg = (win->state == 0) ? g_theme.bg_mantle : g_theme.bg_base;
+    if (g_comp.glass_enabled && win->state != 0) DolDocDrawGlass(win->x, win->y, win->w, win->h, 0xD8);
+    else if (g_comp.rounded_corners && rad > 0) gfx_draw_rounded_rect(win->x, win->y, win->w, win->h, rad, body_bg);
+    else gfx_draw_rect(win->x, win->y, win->w, win->h, body_bg);
+    U32 tb_col = active ? g_theme.bg_surface0 : g_theme.bg_mantle;
+    gfx_draw_rect(win->x, win->y, win->w, tb_h, tb_col);
+    gfx_draw_rect(win->x, win->y + tb_h - 1, win->w, 1, border_col);
+    U8 title[64];
+    strncpy(title, g_doc_text + win->text_off, 63); title[63] = 0;
+    I64 maxc = (win->w - 82) / 8; if (maxc < 4) maxc = 4;
+    if (strlen(title) > maxc) { title[maxc - 3] = '.'; title[maxc - 2] = '.'; title[maxc - 1] = '.'; title[maxc] = 0; }
+    gfx_draw_string(win->x + 12, win->y + 7, title, g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(win->x + win->w - 24, win->y + 7, 16, 16, 3, g_theme.status_danger); gfx_draw_char(win->x + win->w - 20, win->y + 7, 'x', g_theme.bg_crust, 0);
+    gfx_draw_rounded_rect(win->x + win->w - 44, win->y + 7, 16, 16, 3, g_theme.status_success); gfx_draw_char(win->x + win->w - 40, win->y + 7, '+', g_theme.bg_crust, 0);
+    gfx_draw_rounded_rect(win->x + win->w - 64, win->y + 7, 16, 16, 3, g_theme.status_warning); gfx_draw_char(win->x + win->w - 60, win->y + 7, '-', g_theme.bg_crust, 0);
+    if (!(win->flags & DOCF_MAX)) {
+        I64 gx = win->x + win->w; I64 gy = win->y + win->h;
+        gfx_draw_line(gx - 4, gy - 12, gx - 12, gy - 4, g_theme.text_muted);
+        gfx_draw_line(gx - 4, gy - 8, gx - 8, gy - 4, g_theme.text_muted);
+    }
+}
+
+U0 DolDocDrawWindowContent(CDocNode *win) {
+    I64 tb_h = g_theme.titlebar_h; if (tb_h < 26) tb_h = 30;
+    I64 cx = win->x + 2; I64 cy = win->y + tb_h; I64 cw = win->w - 4; I64 ch = win->h - tb_h - 2;
+    if (cw <= 0 || ch <= 0) return;
+    gfx_set_clip(cx, cy, cw, ch);
+    I64 kind = win->state;
+    if (kind == 0) {
+        // console window hosts the main shell document (viewport already moved)
+        DolDocDrawChildren(g_doc_root, 0);
+    } else if (kind == 1) {
+        gfx_draw_string(win->x + 16, win->y + 40, "Arch  : ARMv8-A Ring 0 (EL1 SASOS)", g_theme.status_success, 0);
+        gfx_draw_string(win->x + 16, win->y + 58, "Skin  :", g_theme.text_secondary, 0);
+        gfx_draw_string(win->x + 80, win->y + 58, g_theme.name, g_theme.status_warning, 0);
+        DolDocRenderShaderNode(win->x + 16, win->y + 78, win->w - 32, 68, "plasma");
+        I64 bar_w = ((timer_get_uptime_sec() * 24 + g_doc_anim_tick * 6) % (win->w - 44)) + 12;
+        gfx_draw_rounded_rect(win->x + 16, win->y + 154, win->w - 32, 16, 4, g_theme.bg_crust);
+        gfx_draw_rounded_rect(win->x + 16, win->y + 154, bar_w, 16, 4, g_theme.accent_teal);
+    } else if (kind == 2) {
+        I64 sp_w = (win->w - 36) / 2; I64 sp_h = win->h - tb_h - 40;
+        if (sp_w > 16 && sp_h > 16) {
+            DolDocRenderSprite3D(win->x + 14, win->y + tb_h + 24, sp_w, sp_h, "gears");
+            DolDocRenderGraphNode(win->x + 22 + sp_w, win->y + tb_h + 24, sp_w, sp_h, "sine");
+        }
+    } else {
+        I64 half_w = (win->w - 36) / 2; I64 sh_h = win->h - tb_h - 68;
+        if (half_w > 20 && sh_h > 20) {
+            DolDocRenderShaderNode(win->x + 14, win->y + tb_h + 36, half_w, sh_h, "torus");
+            DolDocRenderShaderNode(win->x + 22 + half_w, win->y + tb_h + 36, half_w, sh_h, "wave");
+        }
+    }
+    gfx_reset_clip();
+}
+
+U0 DolDocDrawWindowNode(I64 nid, I64 scroll) {
+    CDocNode *win = &g_doc_nodes[nid];
+    if (win->flags & DOCF_MIN) return;
+    I64 active = (win->win_id == g_doc_win_active);
+    DolDocWinChrome(win, active);
+    DolDocDrawWindowContent(win);
+}
+
+U0 DolDocDesktopDraw() {
+    I64 sw = g_comp.screen_w; I64 sh = g_comp.screen_h;
+    gfx_draw_rect(0, 0, sw, sh - 40, g_theme.bg_crust);
+    gfx_draw_rect(0, 0, sw, 28, g_theme.bg_mantle);
+    gfx_draw_rect(0, 27, sw, 1, g_theme.border_subtle);
+    gfx_draw_string(14, 6, "NeoOS Sovereign 3.0 Desktop Continuum", g_theme.accent_primary, 0);
+    gfx_draw_string(390, 6, "Skin:", g_theme.text_muted, 0);
+    gfx_draw_string(436, 6, g_theme.name, g_theme.status_warning, 0);
+    gfx_draw_string(sw - 240, 6, "FPS:", g_theme.text_muted, 0);
+    gfx_draw_string(sw - 200, 6, "60", g_theme.status_success, 0);
+    gfx_draw_string(sw - 150, 6, "SMP:", g_theme.text_muted, 0);
+    gfx_draw_string(sw - 110, 6, "4 Cores", g_theme.accent_cyan, 0);
+    for (I64 zi = 0; zi < g_doc_win_count; zi++) DolDocDrawWindowNode(g_doc_win_nodes[g_doc_win_zorder[zi]], 0);
+    // taskbar
+    I64 ty = sh - 40;
+    gfx_draw_rect(0, ty, sw, 40, g_theme.bg_mantle);
+    gfx_draw_rect(0, ty, sw, 1, g_theme.border_active);
+    U32 menu_col = g_doc_menu_open ? g_theme.accent_secondary : g_theme.accent_primary;
+    gfx_draw_rounded_rect(8, ty + 6, 92, 28, 4, menu_col);
+    gfx_draw_string(14, ty + 12, "NeoMenu", g_theme.bg_crust, 0);
+    gfx_draw_rounded_rect(106, ty + 6, 74, 28, 4, g_theme.bg_surface0); gfx_draw_string(112, ty + 12, "Showcase", g_theme.status_warning, 0);
+    gfx_draw_rounded_rect(186, ty + 6, 66, 28, 4, g_theme.bg_surface0); gfx_draw_string(192, ty + 12, "Shaders", g_theme.accent_cyan, 0);
+    gfx_draw_rounded_rect(258, ty + 6, 56, 28, 4, g_theme.bg_surface0); gfx_draw_string(266, ty + 12, "Theme", g_theme.accent_tertiary, 0);
+    gfx_draw_rounded_rect(320, ty + 6, 50, 28, 4, g_theme.bg_surface0); gfx_draw_string(328, ty + 12, "+Win", g_theme.status_success, 0);
+    I64 tab_x = 378; I64 fs_x = sw - 210;
+    for (I64 i = 0; i < g_doc_win_count; i++) {
+        CDocNode *w = &g_doc_nodes[g_doc_win_nodes[i]];
+        if (!(w->flags & DOCF_MIN) && tab_x + 96 < fs_x) {
+            U32 tcol = (w->win_id == g_doc_win_active) ? g_theme.bg_surface1 : g_theme.bg_base;
+            gfx_draw_rounded_rect(tab_x, ty + 6, 92, 28, 4, tcol);
+            U8 tl[16]; tl[0] = '['; tl[1] = '0' + (w->win_id % 10); tl[2] = ']'; tl[3] = ' ';
+            strncpy(tl + 4, g_doc_text + w->text_off, 6); tl[10] = 0;
+            gfx_draw_string(tab_x + 6, ty + 12, tl, g_theme.text_primary, 0);
+            tab_x += 96;
+        }
+    }
+    gfx_draw_rounded_rect(fs_x, ty + 6, 82, 28, 4, g_theme.bg_surface0);
+    gfx_draw_string(fs_x + 8, ty + 12, "Console >", g_theme.status_peach, 0);
+    I64 cxx = sw - 124;
+    gfx_draw_rounded_rect(cxx, ty + 6, 116, 28, 4, g_theme.bg_crust);
+    gfx_draw_string(cxx + 8, ty + 12, "UP:", g_theme.text_muted, 0);
+    I64 up = timer_get_uptime_sec();
+    gfx_draw_char(cxx + 44, ty + 12, '0' + ((up / 100) % 10), g_theme.status_success, 0);
+    gfx_draw_char(cxx + 52, ty + 12, '0' + ((up / 10) % 10), g_theme.status_success, 0);
+    gfx_draw_char(cxx + 60, ty + 12, '0' + (up % 10), g_theme.status_success, 0);
+    gfx_draw_char(cxx + 70, ty + 12, 's', g_theme.status_success, 0);
+    if (g_doc_menu_open) DolDocDesktopMenu();
+}
+
+U0 DolDocDesktopMenu() {
+    I64 mx = 8; I64 my = g_comp.screen_h - 40 - 280; I64 mw = 490; I64 mh = 274;
+    DolDocDrawShadow(mx, my, mw, mh, 12);
+    gfx_draw_rect(mx - 1, my - 1, mw + 2, mh + 2, g_theme.border_active);
+    DolDocDrawGlass(mx, my, mw, mh, 0xE8);
+    gfx_draw_rounded_rect(mx + 8, my + 8, mw - 16, 26, 4, g_theme.bg_surface0);
+    gfx_draw_string(mx + 16, my + 13, "NeoOS Sovereign Application & Theme Drawer", g_theme.accent_primary, 0);
+    gfx_draw_string(mx + 12, my + 44, "Flagship & 3D:", g_theme.status_warning, 0);
+    gfx_draw_rounded_rect(mx + 110, my + 40, 80, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 116, my + 44, "Showcase", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 196, my + 40, 68, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 202, my + 44, "Shaders", g_theme.accent_cyan, 0);
+    gfx_draw_rounded_rect(mx + 270, my + 40, 68, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 276, my + 44, "GLXGears", g_theme.status_success, 0);
+    gfx_draw_rounded_rect(mx + 344, my + 40, 68, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 350, my + 44, "Physics", g_theme.status_peach, 0);
+    gfx_draw_string(mx + 12, my + 80, "Themes & Skins:", g_theme.accent_secondary, 0);
+    gfx_draw_rounded_rect(mx + 130, my + 76, 52, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 136, my + 80, "Mocha", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 188, my + 76, 52, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 194, my + 80, "Latte", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 246, my + 76, 52, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 252, my + 80, "Tokyo", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 304, my + 76, 48, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 310, my + 80, "Nord", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 358, my + 76, 60, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 364, my + 80, "Temple", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 424, my + 76, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 430, my + 80, "Cyber", g_theme.accent_primary, 0);
+    gfx_draw_string(mx + 12, my + 116, "Compiler & JIT:", g_theme.status_success, 0);
+    gfx_draw_rounded_rect(mx + 130, my + 112, 74, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 136, my + 116, "Compiler", g_theme.accent_cyan, 0);
+    gfx_draw_rounded_rect(mx + 210, my + 112, 74, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 216, my + 116, "JIT Test", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 290, my + 112, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 296, my + 116, "Bench", g_theme.status_warning, 0);
+    gfx_draw_rounded_rect(mx + 350, my + 112, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 356, my + 116, "Top", g_theme.status_success, 0);
+    gfx_draw_rounded_rect(mx + 410, my + 112, 68, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 416, my + 116, "Memory", g_theme.text_muted, 0);
+    gfx_draw_string(mx + 12, my + 152, "Storage & Tools:", g_theme.accent_tertiary, 0);
+    gfx_draw_rounded_rect(mx + 130, my + 148, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 136, my + 152, "Filer", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 190, my + 148, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 196, my + 152, "Editor", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 250, my + 148, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 256, my + 152, "Calc", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 310, my + 148, 54, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 316, my + 152, "Fact", g_theme.text_primary, 0);
+    gfx_draw_rounded_rect(mx + 370, my + 148, 64, 22, 3, g_theme.bg_surface1); gfx_draw_string(mx + 376, my + 152, "Inspect", g_theme.accent_teal, 0);
+    gfx_draw_string(mx + 14, my + 248, "Click outside or on [NeoMenu] to dismiss", g_theme.text_muted, 0);
+}
+
+U0 DolDocDesktopInit() {
+    if (g_doc_win_count > 0) return;
+    I64 sw = g_comp.screen_w; I64 sh = g_comp.screen_h;
+    I64 main_w = sw - 384; if (main_w < 580) main_w = 580;
+    I64 main_h = sh - 88;
+    DolDocWinCreate("NeoOS DolDoc 3.0 Scene Continuum (ARM64 Ring-0)", 16, 36, main_w, main_h, 0);
+    DolDocWinCreate("Sovereign Telemetry & Shader Preview", main_w + 28, 36, 340, 250, 1);
+    DolDocWinCreate("3D Involute Gears & Oscilloscope", main_w + 28, 298, 340, 210, 2);
+    DolDocWinFocus(1);
+    // Host the shell document inside window 1's client area
+    DolDocMove(20, 70, main_w - 8, main_h - 40);
+    g_doc_dirty = 1;
+}
+
+U0 DolDocDesktopMouse() {
+    I64 mx = mouse_get_x(); I64 my = mouse_get_y(); I64 btn = mouse_get_btn();
+    I64 sh = g_comp.screen_h; I64 ty = sh - 40;
+    if ((btn & 1) && !g_doc_prev_btn) {
+        if (g_doc_menu_open) {
+            I64 d_x = 8; I64 d_y = sh - 40 - 280;
+            if (mx >= d_x && mx <= d_x + 490 && my >= d_y && my <= d_y + 274) {
+                if (my >= d_y + 40 && my <= d_y + 62) {
+                    if (mx >= d_x + 110 && mx <= d_x + 190) shell_run_command("showcase");
+                    else if (mx >= d_x + 196 && mx <= d_x + 264) shell_run_command("shader");
+                    else if (mx >= d_x + 270 && mx <= d_x + 338) shell_run_command("gears");
+                    else if (mx >= d_x + 344 && mx <= d_x + 412) shell_run_command("physics");
+                } else if (my >= d_y + 76 && my <= d_y + 98) {
+                    if (mx >= d_x + 130 && mx <= d_x + 182) { ThemeApply(0); DolDocDamageAll(); }
+                    else if (mx >= d_x + 188 && mx <= d_x + 240) { ThemeApply(1); DolDocDamageAll(); }
+                    else if (mx >= d_x + 246 && mx <= d_x + 298) { ThemeApply(2); DolDocDamageAll(); }
+                    else if (mx >= d_x + 304 && mx <= d_x + 352) { ThemeApply(3); DolDocDamageAll(); }
+                    else if (mx >= d_x + 358 && mx <= d_x + 418) { ThemeApply(4); DolDocDamageAll(); }
+                    else if (mx >= d_x + 424 && mx <= d_x + 478) { ThemeApply(5); DolDocDamageAll(); }
+                } else if (my >= d_y + 112 && my <= d_y + 134) {
+                    if (mx >= d_x + 130 && mx <= d_x + 204) shell_run_command("run Compiler.HC");
+                    else if (mx >= d_x + 210 && mx <= d_x + 284) shell_run_command("run TestJitP0.HC");
+                    else if (mx >= d_x + 290 && mx <= d_x + 344) shell_run_command("bench");
+                    else if (mx >= d_x + 410 && mx <= d_x + 478) shell_run_command("mem");
+                } else if (my >= d_y + 148 && my <= d_y + 170) {
+                    if (mx >= d_x + 130 && mx <= d_x + 184) shell_run_command("filer");
+                    else if (mx >= d_x + 370 && mx <= d_x + 434) shell_run_command("inspect 0");
+                }
+                g_doc_menu_open = 0; DolDocDamageAll(); g_doc_prev_btn = 1; return;
+            } else { g_doc_menu_open = 0; DolDocDamageAll(); }
+        }
+        if (my >= ty) {
+            I64 fs_x = sh > 0 ? (g_comp.screen_w - 210) : 0;
+            if (mx >= fs_x && mx <= fs_x + 82) { g_doc_desktop_running = 0; g_doc_prev_btn = 1; return; }
+            if (mx >= 8 && mx <= 100) { g_doc_menu_open = !g_doc_menu_open; DolDocDamageAll(); g_doc_prev_btn = 1; return; }
+            if (mx >= 106 && mx <= 180) { shell_run_command("showcase"); g_doc_prev_btn = 1; return; }
+            if (mx >= 186 && mx <= 252) { shell_run_command("shader"); g_doc_prev_btn = 1; return; }
+            if (mx >= 258 && mx <= 314) { ThemeApply((g_theme.theme_id + 1) % 6); DolDocDamageAll(); g_doc_prev_btn = 1; return; }
+            if (mx >= 320 && mx <= 370) {
+                I64 off = (g_doc_win_count * 28) % 160;
+                DolDocWinCreate("Shadertoy Torus & Caustics Studio", 140 + off, 80 + off, 360, 240, 3);
+                g_doc_prev_btn = 1; return;
+            }
+            I64 tab_x = 378;
+            for (I64 i = 0; i < g_doc_win_count; i++) {
+                CDocNode *w = &g_doc_nodes[g_doc_win_nodes[i]];
+                if (!(w->flags & DOCF_MIN) && tab_x + 96 < g_comp.screen_w - 210) {
+                    if (mx >= tab_x && mx <= tab_x + 92) {
+                        if (w->flags & DOCF_MIN) { w->flags &= ~DOCF_MIN; DolDocWinFocus(w->win_id); }
+                        else if (g_doc_win_active == w->win_id) w->flags |= DOCF_MIN;
+                        else DolDocWinFocus(w->win_id);
+                        g_doc_dirty = 1; g_doc_prev_btn = 1; return;
+                    }
+                    tab_x += 96;
+                }
+            }
+        }
+        for (I64 zi = g_doc_win_count - 1; zi >= 0; zi--) {
+            CDocNode *win = &g_doc_nodes[g_doc_win_nodes[g_doc_win_zorder[zi]]];
+            if (win->flags & DOCF_MIN) continue;
+            if (mx >= win->x && mx < win->x + win->w && my >= win->y && my < win->y + win->h) {
+                DolDocWinFocus(win->win_id);
+                I64 tb_h = g_theme.titlebar_h; if (tb_h < 26) tb_h = 30;
+                if (!(win->flags & DOCF_MAX) && mx >= win->x + win->w - 16 && mx <= win->x + win->w + 4 && my >= win->y + win->h - 16 && my <= win->y + win->h + 4) {
+                    g_doc_is_resize = 1; g_doc_resize_win = win->win_id; g_doc_resize_ow = win->w; g_doc_resize_oh = win->h;
+                    g_doc_resize_mx = mx; g_doc_resize_my = my; g_doc_prev_btn = 1; return;
+                }
+                if (my < win->y + tb_h) {
+                    if (mx >= win->x + win->w - 24 && mx <= win->x + win->w - 8) { DolDocWinClose(win->win_id); g_doc_prev_btn = 1; return; }
+                    if (mx >= win->x + win->w - 44 && mx <= win->x + win->w - 28) {
+                        if (!(win->flags & DOCF_MAX)) { win->flags |= DOCF_MAX; win->x = 0; win->y = 28; win->w = g_comp.screen_w; win->h = g_comp.screen_h - 68; }
+                        else { win->flags &= ~DOCF_MAX; win->x = 16; win->y = 36; }
+                        DolDocWinFocus(win->win_id); g_doc_dirty = 1; g_doc_prev_btn = 1; return;
+                    }
+                    if (mx >= win->x + win->w - 64 && mx <= win->x + win->w - 48) { win->flags |= DOCF_MIN; g_doc_dirty = 1; g_doc_prev_btn = 1; return; }
+                    if (!(win->flags & DOCF_MAX)) { g_doc_is_drag = 1; g_doc_drag_win = win->win_id; g_doc_drag_ox = mx - win->x; g_doc_drag_oy = my - win->y; }
+                    g_doc_prev_btn = 1; return;
+                } else {
+                    if (win->state == 0) {
+                        I64 sx = g_doc_x; I64 sy = g_doc_y; I64 sw = g_doc_w; I64 shh = g_doc_h;
+                        g_doc_x = win->x + 4; g_doc_y = win->y + tb_h + 2; g_doc_w = win->w - 8; g_doc_h = win->h - tb_h - 6;
+                        DolDocHandleClick(mx, my);
+                        g_doc_x = sx; g_doc_y = sy; g_doc_w = sw; g_doc_h = shh;
+                    }
+                    g_doc_dirty = 1; g_doc_prev_btn = 1; return;
+                }
+            }
+        }
+    }
+    if (btn & 1) {
+        if (g_doc_is_resize) {
+            I64 idx = DolDocWinById(g_doc_resize_win);
+            if (idx >= 0) {
+                CDocNode *w = &g_doc_nodes[g_doc_win_nodes[idx]];
+                I64 nw = g_doc_resize_ow + (mx - g_doc_resize_mx);
+                I64 nh = g_doc_resize_oh + (my - g_doc_resize_my);
+                if (nw < 260) nw = 260; if (nh < 160) nh = 160;
+                if (w->x + nw > g_comp.screen_w) nw = g_comp.screen_w - w->x;
+                if (w->y + nh > g_comp.screen_h - 40) nh = g_comp.screen_h - 40 - w->y;
+                if (w->w != nw || w->h != nh) { w->w = nw; w->h = nh; g_doc_dirty = 1; }
+            }
+        } else if (g_doc_is_drag) {
+            I64 idx = DolDocWinById(g_doc_drag_win);
+            if (idx >= 0) {
+                CDocNode *w = &g_doc_nodes[g_doc_win_nodes[idx]];
+                I64 nx = mx - g_doc_drag_ox; I64 ny = my - g_doc_drag_oy;
+                if (nx < 12 && nx > -12) nx = 0;
+                if (ny < 40 && ny > 16) ny = 28;
+                if (ny < 28) ny = 28;
+                if (ny > g_comp.screen_h - 60) ny = g_comp.screen_h - 60;
+                if (w->x != nx || w->y != ny) { w->x = nx; w->y = ny; g_doc_dirty = 1; }
+            }
+        }
+    } else {
+        if (g_doc_prev_btn & 1) DolDocHandleMouseUp();
+        g_doc_is_drag = 0; g_doc_is_resize = 0; g_doc_prev_btn = 0;
+    }
+}
+
+U0 DolDocDesktopLoop() {
+    uart_puts("[DOLDOC] Entered desktop continuum\n");
+    g_doc_desktop_running = 1;
+    I64 node_mark = g_doc_node_count;
+    I64 text_mark = g_doc_text_used;
+    DolDocDesktopInit();
+    DolDocDamageAll();
+    gfx_dirty_all();
+    DolDocDesktopDraw();
+    DolDocPresent();
+    mouse_draw_cursor_front();
+    I64 last_sec = timer_get_uptime_sec();
+    I64 last_anim_ms = timer_get_uptime_ms();
+    while (g_doc_desktop_running) {
+        virtio_input_poll();
+        shell_poll();
+        mouse_poll();
+        DolDocDesktopMouse();
+        I64 cur_sec = timer_get_uptime_sec();
+        if (cur_sec != last_sec) { last_sec = cur_sec; g_doc_dirty = 1; }
+        I64 cur_ms = timer_get_uptime_ms();
+        if (cur_ms - last_anim_ms >= 33) {
+            last_anim_ms = cur_ms;
+            g_doc_anim_tick++;
+            g_doc_dirty = 1;
+        }
+        if (g_doc_dirty || RenderDirtyActive()) {
+            gfx_dirty_all();
+            DolDocDesktopDraw();
+            DolDocPresent();
+            mouse_draw_cursor_front();
+            g_doc_dirty = 0;
+        }
+        task_yield();
+    }
+    g_doc_win_count = 0;
+    g_doc_node_count = node_mark;
+    g_doc_text_used = text_mark;
+    uart_puts("[DOLDOC] Exited desktop continuum\n");
+}
+
+U0 DolDocDesktopClose() { g_doc_desktop_running = 0; }
+I64 DolDocWindowCount() { return g_doc_win_count; }
+I64 DolDocSpawnWindow(U8 *title, I64 x, I64 y, I64 w, I64 h, I64 kind) { return DolDocWinCreate(title, x, y, w, h, kind); }
+I64 DolDocGetFps() { return g_comp.fps; }
+I64 DolDocGetFrameUs() { return g_comp.frame_time_us; }
+
+// ============================================================================
+// Public API, aliases and introspection
+// ============================================================================
+U0 doldoc_move(I64 x, I64 y, I64 w, I64 h) { DolDocMove(x, y, w, h); }
+U0 doldoc_swap_term() { gfx_swap_rect(g_doc_x, g_doc_y, g_doc_w, g_doc_h); }
+U0 doldoc_swap_cursor() { gfx_swap_rect(g_doc_cursor_x, g_doc_cursor_y, 8, 16); }
+U0 doldoc_putc(U8 c) { DolDocPutc(c); }
+U0 doldoc_clear() { DolDocClear(); }
+U0 doldoc_redraw() { DolDocRedraw(); }
+I64 doldoc_handle_click(I64 mx, I64 my) { return DolDocHandleClick(mx, my); }
+I64 doldoc_handle_drag(I64 mx, I64 my) { return DolDocHandleDrag(mx, my); }
+I64 doldoc_handle_mouse_up() { return DolDocHandleMouseUp(); }
+U0 doldoc_scroll_up(I64 lines) { DolDocScrollUp(lines); }
+U0 doldoc_scroll_down(I64 lines) { DolDocScrollDown(lines); }
+U0 doldoc_set_bg(U32 bg) { DolDocSetBgColor(bg); }
+U32 doldoc_get_bg() { return DolDocGetBgColor(); }
+
+I64 doldoc_get_widget_count() { return g_widget_count; }
+I64 doldoc_get_tape_cmd_count() { return g_omnitape_cmd_count; }
+I64 doldoc_get_inspected_wid() { return g_doc_inspected_nid; }
+U0 doldoc_set_inspected_wid(I64 wid) { g_doc_inspected_nid = wid; }
+I64 doldoc_get_inspector_mode() { return g_doc_inspector_mode; }
+U0 doldoc_set_inspector_mode(I64 mode) { g_doc_inspector_mode = mode; }
 
 I64 DolDocFindWidget(U8 *name) {
     if (!name || !*name) return -1;
-    for (I64 fw_i = 0; fw_i < g_widget_count; fw_i++) {
-        U8 *lbl = g_widget_label + fw_i * 64;
-        if (lbl[0] && strstr(lbl, name)) {
-            return fw_i;
+    for (I64 n = 0; n < g_doc_node_count; n++) {
+        CDocNode *nd = &g_doc_nodes[n];
+        if (nd->kind == DOC_TEXT || nd->kind == DOC_ROOT) continue;
+        if (nd->text_len) {
+            U8 *lbl = g_doc_text + nd->text_off;
+            if (strstr(lbl, name) != 0) return n;
         }
-    }
-    for (I64 fw_j = 0; fw_j < g_widget_count; fw_j++) {
-        U8 *extra = g_widget_extra + fw_j * 128;
-        if (extra[0] && strstr(extra, name)) {
-            return fw_j;
-        }
-        U8 *cmd = g_widget_cmd + fw_j * 128;
-        if (cmd[0] && strstr(cmd, name)) {
-            return fw_j;
+        if (nd->arg_off) {
+            U8 *a = g_doc_args + nd->arg_off;
+            if (strstr(a, name) != 0) return n;
         }
     }
     return -1;
 }
+I64 doldoc_find_widget(U8 *name) { return DolDocFindWidget(name); }
 
-I64 doldoc_find_widget(U8 *name) {
-    return DolDocFindWidget(name);
+U8 *doldoc_get_widget_label(I64 nid) {
+    if (nid < 0 || nid >= g_doc_node_count) return "";
+    if (g_doc_nodes[nid].text_len == 0) return "";
+    return g_doc_text + g_doc_nodes[nid].text_off;
 }
 
-U8 *doldoc_get_widget_label(I64 wid) {
-    if (wid < 0 || wid >= g_widget_count) return "";
-    return g_widget_label + wid * 64;
+// bounded substring search inside a run's text (runs are not NUL-terminated)
+I64 DolDocBufContains(I64 off, I64 len, U8 *needle) {
+    I64 nl = strlen(needle);
+    if (nl == 0 || nl > len) return 0;
+    for (I64 i = 0; i + nl <= len; i++) {
+        I64 j = 0;
+        while (j < nl && g_doc_text[off + i + j] == needle[j]) j++;
+        if (j == nl) return 1;
+    }
+    return 0;
 }
 
-U0 doldoc_register_holyc(CDolDocOps *ops) {
-    // Publish the DolDoc operation table into the JIT symbol space so that
-    // other HolyC modules and the shell can dispatch through it by name.
-    if (ops) symbols_register("g_doldoc_ops", ops, 2);
+I64 DolDocTextContains(U8 *needle) {
+    if (!needle) return 0;
+    for (I64 n = 0; n < g_doc_node_count; n++) {
+        if (g_doc_nodes[n].text_len == 0) continue;
+        if (DolDocBufContains(g_doc_nodes[n].text_off, g_doc_nodes[n].text_len, needle)) return 1;
+    }
+    return 0;
 }
 
+U0 doldoc_register_holyc(U8 *ops) { if (ops) symbols_register("g_doldoc_ops", ops, 2); }
+
+// ============================================================================
+// DolDoc 3.0 self-test (CDoc/CTree + full tag set)
+// ============================================================================
+I64 DolDocSelfTest() {
+    I64 ok = 1;
+    DolDocInitTrig();
+    g_doc_quiet = 1;
+    // Snapshot the live document so the test is non-destructive.
+    I64 s_nodes = g_doc_node_count; I64 s_text = g_doc_text_used; I64 s_args = g_doc_args_used;
+    I64 s_cur = g_doc_cur; I64 s_run = g_doc_cur_run; I64 s_col = g_doc_col; I64 s_row = g_doc_row;
+    I64 s_wid = g_widget_count; I64 s_tape = g_omnitape_tail; I64 s_tcmd = g_omnitape_cmd_count;
+    I64 s_anc = g_doc_anchor_count; I64 s_mac = g_doc_macro_count;
+    U64 s_mask = g_doc_dirty_mask; I64 s_dirty = g_doc_dirty;
+
+    // 1. tree: the root entry is a DOC_ROOT
+    if (g_doc_root < 0 || g_doc_nodes[g_doc_root].kind != DOC_ROOT) ok = 0;
+
+    // 2. text runs + per-character attribute words
+    DolDocPrint("$FG,GREEN$qq$FG,RED$ww$");
+    I64 seen_q = 0; I64 seen_w = 0;
+    for (I64 n = 0; n < g_doc_node_count; n++) {
+        if (g_doc_nodes[n].kind == DOC_TEXT) {
+            for (I64 i = 0; i + 1 < g_doc_nodes[n].text_len; i++) {
+                I64 ci = g_doc_nodes[n].text_off + i;
+                if (g_doc_text[ci] == 'q' && g_doc_text[ci + 1] == 'q' && (U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_GREEN) seen_q = 1;
+                if (g_doc_text[ci] == 'w' && g_doc_text[ci + 1] == 'w' && (U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_RED) seen_w = 1;
+            }
+        }
+    }
+    if (!seen_q || !seen_w) ok = 0;
+
+    // 3. widget tag set: BT LK SL CB ID PB DA HR
+    I64 before = g_widget_count;
+    DolDocPrint("$BT,\"Go\",LM=\"help\"$$LK,\"Lnk\",A=\"ls\"$$SL,\"S\",val=50,min=0,max=100,w=100$$CB,\"Chk\",1$$ID,\"Tree\",level=1$$PB,VAL=30,MAX=100$$DA,\"D\",val=5,min=0,max=9$$HR$");
+    if (g_widget_count < before + 8) ok = 0;
+
+    // 4. $AN anchors + $MA macros
+    DolDocPrint("$AN,mark1$");
+    if (DolDocFindAnchor("mark1") < 0) ok = 0;
+    DolDocPrint("$MA,hi,text=\"hello\"$");
+    if (!DolDocFindMacro("hi")) ok = 0;
+
+    // 5. reactive cell: bind a node value to a live memory word and patch it
+    I64 cell = 7;
+    I64 nid = DolDocWidget(DOC_SLIDER, 0, 0, 100, 18, "SL");
+    if (nid < 0) ok = 0;
+    else {
+        g_doc_nodes[nid].target = &cell;
+        g_doc_nodes[nid].min = 0; g_doc_nodes[nid].max = 100;
+        DolDocCellWrite(nid, 42);
+        if (cell != 42) ok = 0;
+    }
+
+    // 6. windows are documents ($WIN$ node)
+    I64 wn = DolDocNewNode(DOC_WINDOW, -1);
+    if (wn < 0 || g_doc_nodes[wn].kind != DOC_WINDOW) ok = 0;
+
+    // 7. dirty-mask shift fix (row 40 must set bit 40)
+    g_doc_dirty_mask = 0;
+    DolDocMarkRowDirty(40);
+    if ((g_doc_dirty_mask & (((U64)1) << 40)) == 0) ok = 0;
+
+    // 8. OmniTape compiled a command record per node
+    if (g_omnitape_cmd_count <= 0) ok = 0;
+
+    // Restore the live document.
+    g_doc_node_count = s_nodes; g_doc_text_used = s_text; g_doc_args_used = s_args;
+    g_doc_cur = s_cur; g_doc_cur_run = s_run; g_doc_col = s_col; g_doc_row = s_row;
+    g_widget_count = s_wid; g_omnitape_tail = s_tape; g_omnitape_cmd_count = s_tcmd;
+    g_doc_anchor_count = s_anc; g_doc_macro_count = s_mac;
+    g_doc_dirty_mask = s_mask; g_doc_dirty = s_dirty;
+    g_doc_quiet = 0;
+
+    if (ok) { doldoc_print("$FG,GREEN$DOLDOC: PASS$FG$ (CDoc/CTree, per-char attrs, tag set, cells, windows)\n"); return 1; }
+    doldoc_print("$FG,RED$DOLDOC: FAIL$FG$\n");
+    return 0;
+}
+
+// ============================================================================
+// Init
+// ============================================================================
 U0 DolDocInit() {
     DolDocInitTrig();
-    if (!g_omnitape_buf) {
-        g_omnitape_buf = kmalloc(OMNITAPE_ARENA_SIZE);
-    }
+    if (!g_omnitape_buf) g_omnitape_buf = kmalloc(OMNITAPE_ARENA_SIZE);
     DolDocClear();
-
-    g_doldoc_ops.putc           = DolDocPutc;
-    g_doldoc_ops.print          = DolDocPrint;
-    g_doldoc_ops.clear          = DolDocClear;
-    g_doldoc_ops.redraw         = DolDocRedraw;
-    g_doldoc_ops.click          = DolDocHandleClick;
-    g_doldoc_ops.move           = DolDocMove;
-    g_doldoc_ops.scroll_up      = DolDocScrollUp;
-    g_doldoc_ops.scroll_down    = DolDocScrollDown;
-    g_doldoc_ops.backspace      = DolDocBackspace;
-    g_doldoc_ops.draw_cursor    = DolDocDrawCursor;
-    g_doldoc_ops.set_bg         = DolDocSetBgColor;
-    g_doldoc_ops.get_bg         = DolDocGetBgColor;
-    g_doldoc_ops.mark_all_dirty = DolDocMarkAllDirty;
+    if (!g_doc_comp_ready) DolDocCompositorInit();
 
     symbols_register("doldoc_print", DolDocPrint, 1);
     symbols_register("doldoc_putc", DolDocPutc, 1);
@@ -2918,12 +2620,12 @@ U0 DolDocInit() {
     symbols_register("g_widget_count", &g_widget_count, 2);
     symbols_register("g_omnitape_cmd_count", &g_omnitape_cmd_count, 2);
     symbols_register("g_doc_inspector_mode", &g_doc_inspector_mode, 2);
-    symbols_register("g_doc_inspected_wid", &g_doc_inspected_wid, 2);
+    symbols_register("g_doc_inspected_nid", &g_doc_inspected_nid, 2);
     symbols_register("g_shader_speed", &g_shader_speed, 2);
     symbols_register("g_shader_zoom", &g_shader_zoom, 2);
     symbols_register("g_shader_morph", &g_shader_morph, 2);
     symbols_register("g_sprite_rot_speed", &g_sprite_rot_speed, 2);
-    doldoc_register_holyc(&g_doldoc_ops);
 }
 
 DolDocInit();
+

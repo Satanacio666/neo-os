@@ -1002,6 +1002,7 @@ U0 SelfTestRun() {
     ShaderVMSelfTest();
     MeshSelfTest();
     SelfTestRender();
+    DolDocSelfTest();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

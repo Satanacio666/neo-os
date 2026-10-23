@@ -60,7 +60,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P2** | Bootstrap perfection (seed = compiler substrate only) | ✅ **DONE** — seed reads `.HC` from the FAT32 ESP via UEFI; C `redsea`/`virtio_blk`/HAL deleted | seed has no FS/block driver; C = `main.c`+`seed/*`+`kheap.c`+`symbols.c`+`uefi/*` |
 | **P3** | Kernel correctness | ✅ **DONE** — timer IRQ, preemptive scheduler, SMP, BSOD, sovereign handover (doc 2 §P3) | timer IRQ fires; real preemptive scheduler; one allocator/table/HAL; kernel faults reach BSOD |
 | **P4** | Rendering unification (merges) | ✅ **DONE** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes) + **P4.7 ✅** (OBJ mesh ingestion: streaming parser + quad triangulation rendering through the one pipeline; + **D14** redeclared-local type-flag root fix, **D15** struct-member array `N*M` dimension root fix in both `Compiler.HC` and the C seed) + **P4.8 ✅** (merge/delete/verify: one damage tracker + one present + `apps/Theme.HC` theme owner; dead-code purge; **determinism gate** proving `0xD28836F` byte-identical on 1 vs 4 cores — doc 2 §P4, doc 3 §3.1, doc 4 D16) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM + one mesh path + one theme owner |
-| **P5** | DolDoc (real model + dissolution) | ⬜ | CDoc/CTree; windows are docs; no char grid |
+| **P5** | DolDoc (real model + dissolution) | ✅ **DONE** — `DolDoc.HC` rewritten as a genuine **CDoc/CTree** (flat index-linked `CDocNode` tree + per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set (`TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI`) incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap; **windows are documents** (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); **`WM.HC` and `Compositor.HC` DELETED** (desktop/window/damage/present/effects absorbed into DolDoc); reactive cells (`$SL`/`$DA` target= binding); `$FI` include (RedSea doc persistence); `g_doc_dirty_mask` shift fixed; new `DOLDOC: PASS` gate (doc 2 §P5, doc 4 **D17/D18/D19/D20**) | no char grid; one CDoc/CTree; windows are documents; 34 modules |
 | **P6** | Shell (action executor over a CDoc) | ⬜ | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | ⬜ | one real 40-phase suite; profilers merged |
 | **P8** | Self-hosting everything | ⬜ | boot as a document; only boot C remains |
@@ -123,9 +123,9 @@ deleted; `boot/runtime/` is now only `{kheap.c, symbols.c}` (the frozen seed sub
 ### 6.2 Dissolve
 | Dissolve | Into | Pri |
 |---|---|---|
-| `WM.HC` | DolDoc `$WIN$`/`$SPLIT$` views | P5 |
-| `Compositor.HC` | DolDoc single-pass (damage/present → GfxDevice; theme → DolDoc) | P5 |
-| char grid `g_doc_chars/fg/bg`, `g_hist_chars` | CDoc/CTree text runs | P5 |
+| `WM.HC` | DolDoc `$WIN$`/`$SPLIT$` views | ✅ P5 (deleted; desktop is a document) |
+| `Compositor.HC` | DolDoc single-pass (damage/present → GfxDevice; theme → DolDoc) | ✅ P5 (deleted; `DolDocPresent`/`DolDocDamage*`) |
+| char grid `g_doc_chars/fg/bg`, `g_hist_chars` | CDoc/CTree text runs | ✅ P5 (gone; per-char attr arena) |
 | duplicate C/.HC stacks | one each | P2/P3 |
 
 ### 6.3 Retire
@@ -139,8 +139,9 @@ deleted; `boot/runtime/` is now only `{kheap.c, symbols.c}` (the frozen seed sub
 
 ### 6.5 Files deleted (cumulative, planned)
 `FontMono.HC`, `FontVector.HC`, `GfxBackend.HC`, `VirtioGpu.HC`, `RasterTile.HC`, `PerfOverlay.HC`,
-`BenchCpu.HC`, `BenchReport.HC`, `WM.HC`, `Compositor.HC` → replaced by `Fonts.HC`, `GfxDevice.HC`, one
+`BenchCpu.HC`, `BenchReport.HC` → replaced by `Fonts.HC`, `GfxDevice.HC`, one
 `Raster`/`HolyGL`, `Telemetry.HC`, one `HolyBenchmark.HC`, DolDoc `$WIN$` views.
+**Deleted in P5:** `WM.HC`, `Compositor.HC` (folded into `DolDoc.HC`).
 
 ---
 

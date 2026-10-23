@@ -31,6 +31,12 @@ layout); Makepad/Rive/Slint/Flutter-Impeller (data-oriented UI, analytical SDF, 
 
 ## 2. DolDoc — the document/scene model (target)
 
+> **P5 STATUS — ✅ REAL.** `apps/DolDoc.HC` is now a genuine CDoc/CTree (flat index-linked `CDocNode` tree +
+> per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set is parsed; windows are
+> documents (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); `WM.HC` and `Compositor.HC` are **deleted** (absorbed).
+> Gate `DOLDOC: PASS`. The OmniTape/Living-Cell/Morton specs below remain design targets (the tree walk + the
+> single dirty rect replaced Morton dirty tiles; a command record is still emitted per node).
+
 **Canonical TempleOS model** `(from 03-design §3.2, doldoc_sovereign…, doldoc3_graphics…, ultimate_dom §1.5)`:
 a **linked tree of `CDocEntry`** (not a flat grid); two-letter commands with `+/-` flags and comma args; **per-character
 binary attribute words**; `$MA` macros; `$SP` binary sprites; `$DA` data/`DocForm()`; `$ID` trees; typed `$LK`

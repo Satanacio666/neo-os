@@ -150,15 +150,15 @@ global *pointer* declarations and keeps a bare pointer use at 8 bytes. Locked in
 
 | Claim | Reality |
 |---|---|
-| DolDoc 3.0 CDoc/CTree, per-char attrs | **[STUB]** DolDoc is a **fixed char grid** (`g_doc_chars[16384]`, 126×41), `g_doc_fg/bg`, `g_hist_chars`; not a CDoc/CTree. |
-| Full two-letter tag set `TX CR SR … FI` | **[MISSING]** only a subset (`$FG$/$BT$/$LK$/$PB$`-style) implemented. |
-| Windows are documents (`$WIN$`/`$SPLIT$`) | **[MISSING]** `WM.HC` owns 8 hardcoded windows (`g_wm_wins[8]`), window ID 2=plasma, ID 3=3D gears. |
-| Compositor dissolved into DolDoc | **[MISSING]** `Compositor.HC` separate. |
-| Shell = action executor over a CDoc; command registry | **[MISSING]** if/else ladder in `Shell.HC` (~467-751); `shell_register_cmd` dead (zero callers). |
-| No cycles (`DolDoc⇄Shell`, `WM⇄Shell`, `WM⇄Compositor`, `DolDoc⇄Compositor`) | **[MISSING]** cycles present. |
-| `g_doc_dirty_mask` bug `((U64)1<<r)` | **[PARTIAL]** reported. |
-| `Showcase.HC` flagship doc | **[GONE]/[MISSING]** not in the current 36 apps. |
-| `$EQ$`, `$GRAPH$`, `$SHADER$`, `$SP$`, CSprite/`SPT_MESH` | **[MISSING]** specs only. |
+| DolDoc 3.0 CDoc/CTree, per-char attrs | **[REAL — P5]** `DolDoc.HC` is now a genuine CDoc/CTree: flat index-linked `CDocNode` entries (`DOC_TEXT/LINK/BUTTON/DATA/SLIDER/TOGGLE/PROGRESS/TREE/BITMAP/SCENE3D/SHADER/GRAPH/MACRO/INCLUDE/ANCHOR/WINDOW/SPLIT/EQ/RULE/CARD/BOX/GLASS/SHADOW/FONT`) with a contiguous text arena and a **per-character attribute word** `g_doc_attr[fg|bg]`. The char grid is gone. |
+| Full two-letter tag set `TX CR SR … FI` | **[REAL — P5]** the whole set is parsed by `DolDocExecTag` (see doc 3 §2). |
+| Windows are documents (`$WIN$`/`$SPLIT$`) | **[REAL — P5]** `$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`; the desktop is a document (`DolDocDesktopDraw`). |
+| Compositor dissolved into DolDoc | **[REAL — P5]** `Compositor.HC` deleted; `DolDocDamage*`/`DolDocPresent`/`DolDocDrawShadow`/`DolDocDrawGlass`/`g_comp` live in `DolDoc.HC`. |
+| Shell = action executor over a CDoc; command registry | **[PARTIAL]** shell output is now a CDoc; the action protocol / command registry is P6. |
+| No cycles (`DolDoc⇄Shell`, `WM⇄Shell`, `WM⇄Compositor`, `DolDoc⇄Compositor`) | **[PARTIAL — P5]** `WM⇄Compositor` gone (both deleted). `DolDoc→Shell` (`shell_run_command` on button/link click) remains for P6. |
+| `g_doc_dirty_mask` bug `((U64)1<<r)` | **[FIXED — P5]** now `((U64)1) << r`; the P5 self-test asserts row 40 sets bit 40. |
+| `Showcase.HC` flagship doc | **[GONE]/[MISSING]** not in the current 34 apps. |
+| `$EQ$`, `$GRAPH$`, `$SHADER$`, `$SP$`, CSprite/`SPT_MESH` | **[REAL — P5]** `$EQ$` (FRAC/SQRT/SUM/INT), `$GRAPH$`/`$PL$` oscilloscope, `$SH$`/`$SHADER$` viewport, `$SP$`/`$SX$`/`$SY$` 3D scene all render through the one pipeline. |
 
 ## G. Benchmark / telemetry / harness
 

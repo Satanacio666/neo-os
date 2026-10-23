@@ -493,7 +493,7 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         doldoc_clear();
     } else if (strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
         doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Entering N-Window Desktop Manager (Preserving Document State)...\n");
-        WMEventLoop();
+        DolDocDesktopLoop();
         I64 full_w = gfx_get_canvas_width();
         I64 full_h = gfx_get_canvas_height();
         if (full_w <= 0) full_w = 1024;
@@ -506,12 +506,12 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         return;
     } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "shell") == 0) {
         doldoc_print("\n$FG,YELLOW$[CONTINUUM]$FG$ Returning to Fullscreen Sovereign DolDoc Console...\n");
-        WMExit();
+        DolDocDesktopClose();
         return;
     } else if (strcmp(cmd, "newwin") == 0) {
-        I64 off = (g_wm.count * 28) % 160;
-        I64 wid = WMCreateWindow("Dynamic Studio Window", 180 + off, 90 + off, 340, 220, 2, StudioWinDraw, StudioWinClick);
-        doldoc_printf("$FG,GREEN$[WM]$FG$ Spawned dynamic window #%lld (Total windows: %lld)\n", wid, g_wm.count);
+        I64 off = (DolDocWindowCount() * 28) % 160;
+        I64 wid = DolDocSpawnWindow("Dynamic Studio Window", 180 + off, 90 + off, 340, 220, 3);
+        doldoc_printf("$FG,GREEN$[WM]$FG$ Spawned dynamic window #%lld (Total windows: %lld)\n", wid, DolDocWindowCount());
     } else if (strncmp(cmd, "inspect", 7) == 0) {
         U8 *arg = cmd + 7;
         while (*arg == ' ') arg++;
@@ -555,11 +555,11 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         while (*targ == ' ') targ++;
         if (!*targ) targ = "next";
         ThemeSetByName(targ);
-        CompositorDamageAll();
+        DolDocDamageAll();
         doldoc_mark_all_dirty();
-        if (strstr(g_doc_chars, "Switch Live:") != 0 || strstr(g_doc_chars, "Catmull-Rom") != 0) {
+        if (DolDocTextContains("Switch Live:") || DolDocTextContains("Catmull-Rom")) {
             doldoc_printf("$FG,GREEN$[THEME]$FG$ Active Semantic Theme Skin: $FG,YELLOW$%s$FG$\n", g_theme.name);
-        } else if (strstr(g_doc_chars, "Continuum:") != 0 || strstr(g_doc_chars, "Flagship & Desktop") != 0) {
+        } else if (DolDocTextContains("Continuum:") || DolDocTextContains("Flagship & Desktop")) {
             doldoc_clear();
             ShellPrintBootBanner();
             ShellPrintPrompt();
@@ -635,11 +635,11 @@ U0 ShellRunCommand(U8 *raw_cmd) {
         bench_unified_trigger_impulse();
         doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n");
     } else if (strcmp(cmd, "compositor") == 0 || strncmp(cmd, "compositor ", 11) == 0) {
-        CompositorCmd(cmd + 10);
+        DolDocCompositorCmd(cmd + 10);
     } else if (strcmp(cmd, "perf") == 0) {
         doldoc_print("$CARD,title=\"NeoOS RivaTuner (RTSS) Hardware Telemetry\",w=96,h=4$\n");
         doldoc_printf("  Uptime: $FG,GREEN$%lld sec$FG$ | Frame Time: $FG,YELLOW$%lld us$FG$ | FPS: $FG,CYAN$%lld$FG$\n",
-                      timer_get_uptime_sec(), g_comp.frame_time_us, g_comp.fps);
+                      timer_get_uptime_sec(), DolDocGetFrameUs(), DolDocGetFps());
         doldoc_print("$HR$\n");
     } else if (strncmp(cmd, "vsync", 5) == 0) {
         U8 *arg = cmd + 5;
