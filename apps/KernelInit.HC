@@ -111,6 +111,12 @@ U0 KernelInitMain() {
     KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
+    // P7.0: peephole-optimizer telemetry (Compiler.HC optimizes every module it
+    // compiles; the C seed optimizes Compiler.HC itself).
+    KInitLog("PEEPHOLE: module runs, stack round-trips collapsed, dead moves, dead adds.");
+    doldoc_printf("[PEEPHOLE] runs=%lld roundtrips=%lld deadmoves=%lld deadadds=%lld\n",
+                  g_hc_opt_runs, g_hc_opt_roundtrips, g_hc_opt_deadmoves, g_hc_opt_deadadds);
+
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum
     g_kernel_booting = 0;
     symbols_report_unresolved();

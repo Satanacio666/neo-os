@@ -355,3 +355,214 @@ The earlier WIP **BSOD** was self-inflicted: a 9-argument `doldoc_printf` inside
 8 args.**
 
 **Research briefs** (read-only, external best-in-class) added: `docs/research/*.md` (see doc 03 §11).
+
+
+---
+
+## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC
+
+> Merged from the former `docs/05-UPSTREAM-SALVAGE-AUDIT.md` (P7.0 doc consolidation; the repo rule forbids extra `docs/*.md`). Every claim names the upstream `file:line` and the current equivalent.
+
+## 1. Provenance — what the "upstream" actually is
+
+- **There is no third-party upstream.** `36ca4b0` ("docs & core: master forensic architectural audit, defect
+  catalog & sovereign roadmap") is **also the root commit of the current repo** (`git log --oneline --reverse`
+  → `36ca4b0`, `a031e76`, `0d77b7f`, …). `/tmp/neo-upstream` is therefore the **pre-HolyC-migration original**
+  of this same project; the current repo is its HolyC migration.
+- **Docs are preserved, byte-for-byte.** All **25** upstream `docs/*.md` are byte-identical to
+  `docs/_superseded-old-docs/root/*.md` (`diff -q` over every file: 0 differences; both directories contain
+  25 `.md`). *(A prior note said 24; the verified count is 25.)* The migration dropped none of them.
+- **Files DELETED during the migration (the salvage surface):**
+  - the entire `compiler/` C tree (`jit_arm64.c/.h`, `lexer.c/.h`, `table.c/.h`);
+  - `drivers/{block,gpu,input}/*` (`virtio_blk`, `gfx_backend`, `virtio_gpu`, `keyboard`, `mouse`,
+    `virtio_input`);
+  - `fs/redsea.c/.h`;
+  - `gui/{render,wm,shell,font_ttf,font_ubuntu_mono}.c` + `gui/stb_truetype.h`;
+  - `kernel/{arch,bench,math,mem,physics,sched,symbols}/*.c` (the whole C kernel);
+  - **21 HolyC apps** (`Bench, Compositor, Editor, Filer, FontMono, FontVector, GfxBackend, HolyBenchmark3D,
+    HolyGLTest, Lexer, Menu, Showcase, SmpDemo, StdLib, Table, Top, WM, WasmJit, calc, fact`, plus the
+    `VirtioGpu.HC` app). Verified: none of these `.HC` exist in `apps/` today.
+- **Files ADDED since (the migration's gains):** `apps/{Fonts,Mesh,SelfTest,ShaderVM,Theme}.HC` (all verified
+  present); `boot/seed/*` (`seed_fs.c/.h`, `tok.h`, the frozen `jit_arm64/lexer/table` C seed);
+  `boot/runtime/*` (`kheap.c/.h`, `symbols.c/.h` — the only surviving kernel C); the harness scripts
+  (`scripts/golden-boot.sh`, `self-host-test.sh`, `p1-parity.sh`, `determinism-gate.sh`, `census-c-runtime.sh`,
+  …); and `tests/` (`census-baseline.txt`, `jit_golden/`).
+- **What survives in C today:** `boot/main.c` + `boot/seed/*` + `boot/runtime/{kheap,symbols}.c` +
+  vendored `boot/uefi/*`. Everything else in the original C tree is salvage material only.
+
+---
+
+## 2. Area A — Compiler / JIT / seed / boot / fs / kernel C
+
+| upstream `file:line` | what it is | current HolyC equivalent | action |
+|---|---|---|---|
+| `compiler/jit_arm64.c` (3739 L) | the original C JIT/compiler | `boot/seed/jit_arm64.c` (3986 L) + `apps/Compiler.HC` (3819 L) | **REFERENCE** |
+| `compiler/jit_arm64.c:799` `jit_optimize_peephole` | 3-pass peephole: stack-roundtrip collapse → `MOV`+`NOP`, dead `MOV Xn,Xn`→`NOP`, `ADD Xd,Xd,#0`→`NOP` | **absent from `apps/Compiler.HC`** (grep `peephole` = 0); the C seed still carries it (`boot/seed/jit_arm64.c:800`) | **PORT** |
+| `compiler/jit_arm64.c:752` `can_collapse_stack_roundtrip` | branch-target-safety scan (`B`/`B.cond`/`CBZ/CBNZ`/`BL`/`BLR`/`SVC`/`RET` + register-touch) | absent | **PORT** |
+| `compiler/jit_arm64.c:713` `insn_touches_reg_or_sp` | decodes whether an insn reads/writes a reg or SP | absent | **PORT** |
+| `compiler/jit_arm64.c:709-711, 869-876` | peephole counters + `[JIT OPT]` print | absent | **PORT** |
+| `compiler/jit_arm64.c:1042-1064` | F32 GL marshaling: `is_holygl_float_func` (`glVertex3f`…`glClearColor`) + `fmov`/`fcvt s,d` into **S0–S7** | **obsolete** — `apps/HolyGL.HC` takes **F64/D0–D7** (`HolyGLVertex3f(F64…)`, etc.) | **DISCARD** |
+| `kernel/arch/aarch64/smp.c:8-57` | `EFI_MP_SERVICES_PROTOCOL` struct + GUID | none | **PORT** |
+| `kernel/arch/aarch64/smp.c:115, 171-185` | `uefi_ap_trampoline` + `StartupAllAPs` — the **first** AP bring-up path | `apps/Smp.HC` only has PSCI (`PSCI_CPU_ON_64`, `apps/Smp.HC:5,144`) | **PORT** |
+| `kernel/arch/aarch64/smp.c:187-199` | PSCI `CPU_ON` fallback via HVC | `apps/Smp.HC:144` (`psci_call_hvc`) | **NONE** |
+| `kernel/sched/sched.c:51` | **64 KB** task-stack floor ("full C runtime & printf safety") | `apps/Sched.HC:164` clamps to **4096** | **REFERENCE / RAISE** |
+| `kernel/arch/aarch64/gic.h:42` | `MAX_GIC_INTERRUPTS 1024` | `apps/Gic.HC:23` = **128** | **REFERENCE / RAISE** |
+| `kernel/arch/aarch64/ffi_arm64.S` (`arm64_ffi_call`) | generic FFI call stub; **byte-identical** to ours (`diff` = 0) | `kernel/arch/aarch64/ffi_arm64.S`; **zero callers** in either tree | **DISCARD / repurpose** |
+| `kernel/sched/switch.S` (`cpu_switch_context`) | context-switch; **byte-identical** to ours (`diff` = 0) | `kernel/sched/switch.S`; registered in `boot/main.c:298` but **no runtime caller** | **DISCARD / repurpose** |
+| `fs/redsea.c` (715 L) | FS: **no** CRC, **no** uberblock, **no** atomic commit | `apps/RedSea.HC` is ahead (has CRC + uberblock + atomic commit) | **NONE** |
+| `kernel/mem/kheap.c`, `kernel/symbols/symbols.c` | C allocator + symbol table | `apps/KHeap.HC`, `apps/Symbols.HC` (sovereign owners) | **NONE** |
+| `boot/main.c`, `boot/uefi/*` (AArch64) | UEFI bootstrap | ours is equivalent or ahead (P2) | **NONE** |
+| `boot/uefi/crt_riscv64.c`, `crt_x86_64.c`, `elf_riscv64_efi.lds`, `elf_x86_64_efi.lds` | multi-arch stubs | none (AArch64-only) | **DISCARD** |
+
+**Notes / corrections.**
+- *Compiler superset.* Our seed C (`boot/seed/jit_arm64.c`, 3986 L) is larger than the upstream C (3739 L) and
+  adds `#include`, block comments, inline `asm{}`, a struct pre-scan, frame-local arrays, and forward-ref SIC
+  var cells. The **only** compiler feature present in the upstream/seed C JIT but **missing from the
+  self-hosted `apps/Compiler.HC`** is the peephole pass. The correct action is therefore to add
+  `HcOptimizePeephole()` to `Compiler.HC` and call it in `CompilerCompileAndRun` **between parse and flush**
+  (mirroring upstream call sites `compiler/jit_arm64.c:2590, 3471`).
+- *No regalloc / no far branches, either engine.* Both are stack machines; `emit_lsr` exists unused in both;
+  both use `ASR` for `>>`. Not a salvage item — a shared limitation.
+- *The `ffi`/`switch` pair.* Upstream `kernel/sched/sched.c:137` *does* call `cpu_switch_context`, but the C
+  scheduler it belongs to was a stub (`docs/04` A12) and the current repo registers `cpu_switch_context`
+  without a runtime caller. Both `.S` files are dead in the current tree; the useful future use of
+  `arm64_ffi_call` is as the seed of the **P10 HolyPort/scripting FFI**.
+
+---
+
+## 3. Area B — Render / math / GPU C (the "HolyGL sovereign unification" surface)
+
+Our HolyC rasterizer **core** is ahead (exact integer Pineda edges + top-left rule, per-pixel Z,
+perspective-correct bilinear texturing, per-fragment Blinn-Phong, deterministic golden hash `0xD28836F`), but
+the migration **regressed on everything around it**. This is the single largest salvage surface.
+
+| upstream `file:line` | what it is | current HolyC equivalent | action |
+|---|---|---|---|
+| `kernel/math/holygl.h:32`, `holygl.c:14-15,73-131` | **depth-4 projection matrix stack** + push/pop/rotate/scale | `apps/HolyGL.HC:37-41` has a single projection mat4 + 8-deep modelview stack only; **no `glPushMatrix/PopMatrix/Rotatef/Scalef` bindings** (grep = 0) | **PORT** |
+| `kernel/math/holygl.c:149` `glClear` | framebuffer clear via GL | absent | **PORT** |
+| `kernel/math/holygl.c:164` `glClearColor` | clear-colour state | absent | **PORT** |
+| `kernel/math/holygl.c:180` `glColor4f` | per-vertex **alpha** | absent (only `glColor3ub`) | **PORT** |
+| `kernel/math/holygl.c:188` `glColor3f`, `:275` `glVertex2f` | GL entry points | absent (grep = 0) | **PORT** |
+| `kernel/math/holygl.c:381` `glFlush` | GL flush | absent | **PORT** |
+| `kernel/math/math3d.c:788` `clip_triangle_near_plane` | Sutherland–Hodgman near-plane clipper (call at `:1121`, `near_w = 0.2f`) | `apps/HolyGL.HC` just **rejects** `w <= 0.05` → large-triangle popping | **PORT** |
+| `kernel/math/raster_tile.c:46-208`, `raster_tile.h:9-21` | **tile binning** + per-core L1 `tile_scratchpad_t` | `apps/RasterTile.HC:22-23` declares `TILE_W/H = 64` but **never bins** (no scratchpad, unused constants) | **PORT** |
+| `kernel/math/raster_tile.c:212` `raster_tile_triangle_neon` | per-tile NEON triangle fill | `apps/RasterTile.HC` (present, ahead) | **NONE** |
+| `kernel/math/raster_tile.c:411-445` `raster_tile_resolve_streaming` | `stnp q0..q3` **non-temporal** tile resolve direct to VRAM | `apps/Render.HC` writes spans straight to the FB | **PORT** |
+| `kernel/math/raster_tile.c:447-560` | SMP tile slicing (`raster_tile_render_range`, `wfe`/`sev`/`dmb ish`) | absent; `GFX_MODE_SMP_TILED` is only a label | **PORT** |
+| `kernel/math/math3d.c:1189-1230` | SMP parallel vertex transform (`smp_dispatch`, split job, `dmb ish`) | absent | **PORT** |
+| `kernel/math/math3d.c:869` | 16.16 fixed-point scanline engine (alt engine) | not present (ours is integer-exact) | **REFERENCE** |
+| `kernel/math/math3d.c:726` `zbuffer_clear` | **NEON** z-clear (128-byte aligned) | `apps/RasterTile.HC` uses `memset` | **PORT** |
+| `drivers/gpu/gfx_backend.h:22-25` | `ZBUFFER_PRECISION_32BIT` option | absent (16-bit only) | **PORT / REFERENCE** |
+| `gui/render.c:15` `gfx_neon_blit_nt` | NEON blit `ldp`×4 / `stnp`×4, 128 B/iter | `apps/Render.HC:592,614` uses `memcpy` | **PORT** |
+| `gui/render.c:209` `gfx_clear` | NEON fill (`dup` + `stnp`, 64 B/iter) | `apps/Render.HC` scalar | **PORT** |
+| `gui/render.c:418,463` `gfx_blend_rect` | `ld4`/`st4` byte deinterleave + `umull`/`shrn` | `apps/Render.HC` scalar | **PORT** |
+| `drivers/gpu/gfx_backend.c:98-161` | `gpu_set/get_{buffering,zprecision,raster_engine,tile_size,smp_cores,shading,culling}` | `apps/GfxDevice.HC` dropped **all** of it (grep `gpu_set` = 0) | **PORT** |
+| `drivers/gpu/gfx_backend.c:176,207,462` | `gpu_config_{open,render,click}` — 4-tab GPU config window | absent | **PORT** |
+| `drivers/gpu/virtio_gpu.c:84,145` | `send_batch2` / `send_batch3` chained descriptors | `apps/GfxDevice.HC` sends **one** command per notify | **PORT** |
+| `drivers/gpu/virtio_gpu.c:347-386,411-476` | page-flip **ping-pong** resources 1/2 (`virtio_gpu_page_flip`) | absent | **PORT** |
+| `drivers/gpu/virtio_gpu.c` (whole file) | **2D only** — no virgl/Venus/3D commands anywhere | `apps/GfxDevice.HC` (2D) | **NONE** (3D is new work — §9) |
+| `kernel/math/math3d.c:431` `texture_generate_procedural` | procedural texture generator | `apps/Math3D.HC`/`apps/ShaderVM.HC` supersede it | **REFERENCE** |
+| `kernel/math/math3d.c:324,484,611` | painter's-algorithm renderers (solid/textured/phong cube) | superseded by the one rasterizer + shader VM | **REFERENCE** |
+| `gui/wm.c` (569 L) | window model/chrome/tray/damage (`wm_handle_mouse` already a stub) | dissolved into `apps/DolDoc.HC` `$WIN$` | **NONE** |
+
+**Bottom line.** Port the *ring around* the rasterizer (GL state machine, clipper, tile binning + L1
+scratchpad + SMP slicing + `stnp` resolve, NEON 2D kernels, the GPU config plane, virtio batching/page-flip).
+The rasterizer core itself is ours and stays.
+
+---
+
+## 4. Area C — Benchmark / telemetry C
+
+| upstream `file:line` | what it is | current HolyC equivalent | action |
+|---|---|---|---|
+| `kernel/bench/bench_unified.c:56` | `s_cat_names[5]` = {Gears, Cubes, Dynamics, Sphere, Fillrate} | `apps/HolyBenchmark.HC` (166 L) | **PORT** |
+| `kernel/bench/bench_unified.c:59` | `s_var_names[8]` = {SW 1C Base, SW NEON L1, SW SMP 4C, SW DirectVRAM, HW VirtIO, HW DMA+SMP, HW Wireframe, HW VSync 60Hz} | absent — `apps/HolyBenchmark.HC:59` uses `(phase/8)%5` (engine only), **ignores `phase%8`** | **PORT** |
+| `kernel/bench/bench_unified.c:64-157` `bench_apply_suite_phase` | **actually reconfigures the driver** per variation (mode/buffering/raster-engine/cores/shading/vsync) | absent | **PORT** |
+| `kernel/bench/bench_unified.c:151-152` | **3.5 s** per phase (`cntfrq*7/2`), advance on elapsed | absent (no time limiter) | **PORT** |
+| `kernel/bench/bench_unified.c:1129` | advance when elapsed **AND** `valid_sample_count >= 15` | absent | **PORT** |
+| `kernel/bench/bench_unified.c:377-491` | `BENCH_COMPARISON.TXT`: 40-row table + 8×5 matrix + empirical winner + `profiler_get_optimization_directive` text | absent — `apps/HolyBenchmark.HC:117` writes a **fake** hard-coded "Engine 1..5 PASS" scorecard | **PORT** |
+| `kernel/bench/bench_unified.c:493-571` | `BENCH_REPORT.TXT` + `GEARS_BENCHMARK.LOG` | absent | **PORT** |
+| `kernel/bench/bench_unified.c:1204` | `render_us` synthetic fallback `2500` | — | **PURGE** |
+| `kernel/bench/bench_unified.c:150` | `freq` fallback `62500000` | — | **PURGE** |
+| `kernel/bench/profiler.c` (427 L) + `.h:6-7` | `profiler_t`: 256-bin histogram (500 µs bins), p1/p0.1 lows, jitter σ, 128-spike ring | `apps/Profiler.HC` (449 L) — core ported | **REFERENCE** |
+| `kernel/bench/profiler.c:72-122` | `profiler_mark_{logic,raster,blit,dma,wm}_{start,end}` API | **missing** from `apps/Profiler.HC` | **PORT** |
+| `kernel/bench/profiler.c:294-327` `profiler_get_optimization_directive` | code-level recommendations per bottleneck | missing | **PORT** |
+| `kernel/bench/profiler.c:330` `profiler_export_log` / `profiler_export_spikes` | log + spike dump | missing (no exports) | **PORT** |
+| `kernel/bench/perf_overlay.c` (672 L) + `.h:6-7` | `perf_stats_t`: 512-frame ring, 128 `spike_record_t` with `spike_cause_t`, **steady-state** metrics (subtract frame-0 warmup), `recent_spike_ms`, `spike_count_500ms` | `apps/PerfOverlay.HC` (366 L) — **largest gap** | **PORT** |
+| `kernel/bench/perf_overlay.c:177-350` | percentile/steady-state computation (p1/p0.1 lows, steady fps, stddev) | `apps/PerfOverlay.HC:105-106` initialises `fps_1pct_low/fps_01pct_low = 60.0` and **never recomputes them**; no steady-state | **PORT** |
+| `kernel/bench/perf_overlay.c:467,599` | `perf_export_log` / `perf_export_spike_log` | absent | **PORT** |
+| `kernel/bench/perf_overlay.c:295` | `blit_avg_ms` synthetic fallback `0.82f` | — | **PURGE** |
+| `kernel/bench/perf_overlay.c:445-446` | synthetic fallbacks `1.5f` / `0.82f` | — | **PURGE** |
+| `kernel/bench/perf_overlay.c:565` | hard-coded `"Memory Leaks: 0 bytes"` header string | — | **PURGE** |
+| PMU (`PMCR_EL0`/`PMCCNTR_EL0`) | **absent** — all timing is `cntvct_el0`/`cntfrq_el0` (both trees) | absent | **NEW** (§9) |
+
+**Synthetic constants to purge (all verified).** `perf_overlay.c:295` (`0.82f`), `:445-446` (`1.5f`/`0.82f`),
+`bench_unified.c:1204` (`render_us = 2500`), `:150` (freq fallback `62500000`), plus the current
+`apps/HolyBenchmark.HC:82-83` (`1200/400/300`) and the hard-coded scorecard at `:117`.
+
+---
+
+## 5. Area D — Fonts C
+
+| upstream `file:line` | what it is | current HolyC equivalent | action |
+|---|---|---|---|
+| `gui/font_ttf.c` (211 L) | **real TrueType** engine: bakes a 512×512 8-bit AA atlas (ASCII 32–126) | `apps/Fonts.HC` (708 L) — hand-built Bézier + boot-baked AA atlas, **no TTF** | **PORT** |
+| `gui/font_ttf.c:112-116` | `FONT_ATLAS_W/H 512`, `stbtt_bakedchar g_cdata[96]` (ASCII 32–126) | none | **PORT** |
+| `gui/font_ttf.c:132` `stbtt_BakeFontBitmap` | atlas bake | `apps/Fonts.HC:423` `FontsBakeGlyph` (4× supersample, different design) | **REFERENCE** |
+| `gui/font_ttf.c:163` `stbtt_GetBakedQuad` | **subpixel-positioned** quads, per-pixel alpha blend | absent (fixed advance) | **PORT** |
+| `gui/stb_truetype.h` (5079 L, **stb v1.26**) | full TTF rasterizer | absent | **PORT / VENDOR** |
+| `gui/stb_truetype.h:948-949, 4575, 4762` | `stbtt_GetGlyphSDF` / `stbtt_GetCodepointSDF` (dormant SDF path) | absent | **PORT** |
+| `gui/stb_truetype.h:811-814, 2317-2332` | kerning APIs (`GetKerningTable`) | absent | **PORT** |
+| `gui/font_ubuntu_mono.c` (12866 L) | embedded **UbuntuMono-R** SFNT, `g_ubuntu_mono_ttf_len = 205748` | absent | **PORT / VENDOR** |
+
+**Note.** The migration's `apps/Fonts.HC` deliberately avoided the TTF path (see `docs/04` D9: "AA via a
+baked coverage atlas, not a live SDF"). The upstream TTF engine is nonetheless the ready-made path to
+resolution-independent text; the SDF APIs are the natural bridge to the P4.6 fragment VM.
+
+---
+
+## 6. Area E — Deleted HolyC apps salvage (all under `/tmp/neo-upstream/apps/`)
+
+| upstream `file:line` | what it is | current equivalent | action |
+|---|---|---|---|
+| `WasmJit.HC` (222 L; parser `:44-58`, emitter `:85-130`, cache flush `:185`) | **the only WASM→AArch64 JIT in the repo** (LEB128 parser + i32.const/local.get/add/sub/mul/nop/end + cache flush + fn-ptr call) | nothing | **PORT (HIGH, P10)** |
+| `SmpDemo.HC` (328 L) | 4-core parallel **Mandelbrot + ray-sphere** via `smp_dispatch`, per-core `cntvct` timing | `apps/Smp.HC` (no compute demo) | **PORT (HIGH, P7)** |
+| `StdLib.HC` (338 L) | `CArray` (growable), `CDict` (djb2 `DictHashKey`, `StrDup` key isolation), self-test (`:295-329`) | only `boot/seed/table.c` (fixed **32** buckets, `boot/seed/table.h`) survives | **PORT (MED-HIGH, P8)** |
+| `GfxBackend.HC` (374 L; config API `:26-150`) | full GPU config API (mode/buffering/zprecision/raster-engine/tile-size/SMP-cores/shading/culling/tab) | `apps/GfxDevice.HC` dropped it | **PORT (P7 prereq)** |
+| `HolyGLTest.HC` (86 L; tests `:8,26,37,50`) | 4 GL conformance tests (matrix push/pop, perspective, Lambertian, Z-buffered triangle) | none | **PORT (P7/P9)** |
+| `Top.HC` (141 L; `:41-59` per-core heartbeat/load) | live per-core heartbeat + load + task table + heap range/peak | `apps/Shell.HC` `top` (leaner) | **PORT (MEDIUM)** |
+| `Editor.HC` (160 L) | syntax-highlighting editor | `apps/Shell.HC` `edit` (leaner) | **PORT (MEDIUM)** |
+| `Filer.HC` (140 L) | disk telemetry + preview | `apps/Shell.HC` `filer` (leaner) | **PORT (MEDIUM)** |
+| `Showcase.HC` (79 L) | flagship DolDoc demo | none | **PORT (MEDIUM)** |
+| `Compositor.HC` (599 L) | KolibriOS 64×64 tile-ownership/damage maps + box model | dissolved into `apps/DolDoc.HC` | **REFERENCE** |
+| `WM.HC` (1075 L) | z-order/snap/taskbar | dissolved into `apps/DolDoc.HC` `$WIN$` | **REFERENCE** |
+| `HolyBenchmark3D.HC` (89 L), `calc.HC` (142 L), `fact.HC` (88 L), `Menu.HC` (27 L), `Bench.HC` (42 L) | micro-demos / orchestrators | partial | **PORT selectively (P7/P10)** |
+| `Table.HC` (near-duplicate of `StdLib.HC`) | unified `CArray`/`CDict`/`Table` (`TABLE_BUCKETS 64`, `:6`) | deleted; `boot/seed/table.c` = 32 buckets | **REFERENCE (dedupe on port)** |
+| `FontVector.HC` (448 L), `FontMono.HC` (295 L) | Bézier + bitmap fonts | merged into `apps/Fonts.HC` | **NONE** |
+| `Lexer.HC` (887 L) | lexer | preserved inside `apps/Compiler.HC` | **NONE** |
+| `VirtioGpu.HC` (531 L) | virtio-gpu transport | preserved inside `apps/GfxDevice.HC` | **NONE** |
+
+---
+
+## 7. Directives that constrain salvage (`SKILL.md` 20 Orders + `docs/00` invariants)
+
+Salvage must be **re-created in HolyC**, never re-introduced as C, and must respect:
+
+- **No new `.c`** (Order 2; `docs/00` §2.1). Everything below lands in `.HC` (or, for the frozen seed, stays in
+  `boot/seed/`).
+- **No stubs / placeholders / mock data** (Order 2). This is why the fake `HolyBenchmark` scorecard
+  (`apps/HolyBenchmark.HC:117`) and the synthetic telemetry constants must be **replaced by the real
+  upstream logic**, not patched.
+- **No forward declarations** (`docs/04` D17) — order functions topologically or dispatch via the SIC.
+- **No UI cycles** (`DolDoc⇄Shell`, `WM⇄Shell`, `WM⇄Compositor`, `DolDoc⇄Compositor` stay broken).
+- **One pipeline, no scalar fallback** (`docs/00` §2, `docs/04` D3/D8) — the ported NEON kernels must live in
+  the ONE rasterizer, not as parallel engines.
+- **Golden hash `0xD28836F` bit-exact** after every change; **`GOLDEN BOOT: PASS`** after every change.
+- **C-runtime census must not increase** (`docs/00` §10; baseline in `tests/census-baseline.txt`) — `.HC`-only
+  ports are census-neutral; the peephole port into `Compiler.HC` adds no allocator sites.
+- **8-argument call cap** (`docs/04` D4); **no cross-module struct-member access** (use accessors);
+  **one merge/dissolve per commit** (`docs/00` §2.10).
+- **Everything verified in QEMU via screendump** (Order 20).
+
+---
+

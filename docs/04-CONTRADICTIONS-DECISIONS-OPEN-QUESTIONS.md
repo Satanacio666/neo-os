@@ -677,3 +677,51 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   integer-sized load and sets `g_hc_expr_float = 0`, so dereferencing an `F64 *` yields the raw bits as an
   integer. The VM uses `p[i]` (now correct via D13), not `*p`, so this is not exercised today; it should be
   fixed the same way (`g_hc_local_elem_float`) with a regression before any code relies on it.
+
+---
+
+## Part F — Decisions & resolutions (P7 planning, 2026-10)
+
+- **D23 — P7 reframed: "HolyGL Sovereign Unification + Real Telemetry/Benchmark".** The old ladder treated P7 as
+  "a benchmark". The forensic diff against the original C (`36ca4b0`) proved P4's "one pipeline" delivered the
+  *core*, not the *engine*: HolyGL lacks the projection matrix stack + `glClear/glColor4f/glFlush`, there is no
+  Sutherland–Hodgman near-plane clipper, `TILE_W/H=64` is declared but unused (no L1 binning, no SMP slicing),
+  `Render` uses `memcpy`/scalar instead of NEON memory kernels, and `GfxDevice` has no `gpu_*` config plane /
+  VirtIO batching / page-flip. P7 now closes all of those *and* measures the result with a real profiler and a
+  real 40-phase suite. Authoritative text: `00-MASTER-PLAN.md` §11; runbook: `02-TASKLIST.md` §P7.
+- **D24 — `tests/jit_golden/cases.json` is declared HISTORICAL.** `apps/SelfTest.HC` is the single source of
+  truth (each case run through both engines in-process). `scripts/run-jit-golden.py` becomes a thin wrapper over
+  `selftest`; no new cases are added to the JSON. "No outdated format" applies to tests and benchmarks alike.
+- **D25 — Merge `Profiler.HC` + `PerfOverlay.HC` → one `apps/Telemetry.HC`.** (P7.5.) `BenchCpu.HC` +
+  `BenchReport.HC` fold into `HolyBenchmark.HC`. This removes 3 modules (34 → 31); `apps/KernelInit.HC:111` and
+  `scripts/golden-boot.sh:25` must both change to "31". NEITHER upstream nor current code uses the ARM PMU; P7.5
+  adds it (`PMCR_EL0`/`PMCCNTR_EL0`/`PMEVCNTR*`) for instruction/memory-level profiling with minimal overhead.
+- **D26 — Peephole optimizer moved to P7.0 (mandatory).** The original `boot/seed/jit_arm64.c:800` has a 3-pass
+  peephole pass (stack round-trip collapse, dead moves, dead adds); `apps/Compiler.HC` does NOT. Every module
+  compiled after Stage 1 therefore runs unoptimized machine code. Root-fixed at P7.0 **before** benchmarking.
+  **Branch-safety constraint (critical):** `Compiler.HC` backpatches by instruction index (`HcBackpatchCbz/Cbnz/B`,
+  `HcPushLoopCtx`/`HcPatchBreaks`/`HcPatchContinues` store `g_hc_code_len` at emit time), so *deleting* emitted
+  instructions after the function is complete would corrupt every jump crossing the deletion. The peephole is
+  therefore done **on-the-fly at emit time**, guarded by `g_hc_last_target_idx` (a branch/label target may not
+  be collapsed), never as a post-pass over `g_hc_code[]`.
+- **D27 — The 5-doc rule is enforced.** `ls docs/*.md` must list exactly `00`–`04`. The P7 planning docs (`05`,
+  `06`, `07`) were merged losslessly into `01`/`03` (salvage), `00`/`02` (plan + runbook), and this Part F, then
+  deleted. No extra `.md` in `docs/`.
+- **D28 — At most 2 agents in parallel.** Never launch 3+ concurrently.
+- **D29 — Array dimensions must be a literal or a bare `#define`, NOT a constant expression.** Root-found at
+  P7.0: `U8 g_hc_target_bits[HC_CODE_CAPACITY / 8];` allocated a **1 MB** array (the `/ 8` was dropped by the
+  array-dimension parser), exhausting memory and breaking boot. Using the literal `[131072]` works. Root fix
+  pending: make `HcParseArrayDim` (and the C seed's `parse_array_dim`) fold `N * M` / `N / M` / `N + M` like the
+  struct-member array parser already does (D15). Until then, size every global array with a literal or a bare
+  `#define`.
+- **D30 — Struct function-pointer members (`Type (*fn)(...)`) are NOT safe.** Isolated at P7.0: the former
+  `TestJitP0.HC` struct-fnptr-dispatch case (`struct C { ...; I64 (*calc)(C*); }; p->calc(p, 3);`) crashes with a
+  null indirect call (`ldr x16,[x16]; blr x16`, FAR=0). This is why `Shell.HC` dispatches through a plain
+  `U64 fn_addr` member and a typed local, not a fnptr member. Root fix pending (register the member's call
+  ABI/offset correctly); until then the fnptr-dispatch test is **not** in the selftest. The other 6 former
+  `TestJitP0` cases (compound arith/bitwise, struct-member compound, for/break/continue, sizeof) were folded
+  into `apps/SelfTest.HC` and pass.
+- **P7.0 DONE (2026-10):** docs consolidated to exactly 5 files; peephole optimizer live in `Compiler.HC`
+  (`[PEEPHOLE] runs=33 roundtrips=5600`); cross-module `g_hgl.*` writes purged (now `HolyGLColorPacked`);
+  orphan `apps/TestJitP0.HC` removed; stale `p4.3-wip` branch deleted. Gate: `SELFTEST 96/96`,
+  `PARITY 64/64 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.

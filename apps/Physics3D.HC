@@ -335,7 +335,7 @@ U0 Physics3DDrawLitBox(CRigidBody *b) {
   HolyGLRotatef(b->rot_y, 0.0, 1.0, 0.0);
   HolyGLRotatef(b->rot_z, 0.0, 0.0, 1.0);
 
-  g_hgl.v_curr.color = b->color;
+  HolyGLColorPacked(b->color);
   HolyGLBegin(GL_QUADS);
   // Front
   HolyGLNormal3f(0.0, 0.0, 1.0);
@@ -386,7 +386,7 @@ U0 Physics3DRenderViewport(I64 vx, I64 vy, I64 vw, I64 vh) {
 
   // 1. Draw 3D Wire-Grid Floor at y = -1.6
   HolyGLDisable(GL_LIGHTING);
-  g_hgl.v_curr.color = 0xFF45475A;
+  HolyGLColorPacked(0xFF45475A);
   HolyGLBegin(GL_LINES);
   I64 gx_i = -4;
   while (gx_i <= 4) {
@@ -409,7 +409,7 @@ U0 Physics3DRenderViewport(I64 vx, I64 vy, I64 vw, I64 vh) {
   while (pb_i < g_phys_num_bodies) {
     CRigidBody *b = PhysicsGetBody(pb_i);
     F64 sh_r = b->size * 0.42;
-    g_hgl.v_curr.color = 0xFF07070C;
+    HolyGLColorPacked(0xFF07070C);
     HolyGLBegin(GL_QUADS);
     HolyGLVertex3f(b->pos_x - sh_r, -1.58, b->pos_z + sh_r);
     HolyGLVertex3f(b->pos_x + sh_r, -1.58, b->pos_z + sh_r);
@@ -418,7 +418,7 @@ U0 Physics3DRenderViewport(I64 vx, I64 vy, I64 vw, I64 vh) {
     HolyGLEnd();
 
     // Velocity vector line
-    g_hgl.v_curr.color = 0xFFF9E2AF;
+    HolyGLColorPacked(0xFFF9E2AF);
     HolyGLBegin(GL_LINES);
     HolyGLVertex3f(b->pos_x, b->pos_y, b->pos_z);
     HolyGLVertex3f(b->pos_x + b->vel_x * 0.25, b->pos_y + b->vel_y * 0.25, b->pos_z + b->vel_z * 0.25);

@@ -585,3 +585,72 @@ symbol-table **O(1)** shell dispatch; command output is a mounted `CDoc`; `WFE` 
 **HolyC idioms (cross-cutting).** Pointer arithmetic is **byte-based** (only `[]` scales) — the P0.7b audit;
 `#define` persists across modules; `class` (no `typedef`); no headers (whole-file compile + `#include` splice);
 all values widened to 64-bit. *(TempleOS HolyC doc; Harrison Totty analysis.)*
+
+
+---
+
+## 12. Salvage research — prioritized reuse list (from the original C repo)
+
+> Merged from the former `docs/05-UPSTREAM-SALVAGE-AUDIT.md` §8–§9. Full file-by-file audit lives in `01-REALITY-AUDIT.md` §L.
+
+## 8. Prioritized salvage list (grouped by the priority it serves)
+
+### P7 — one real 40-phase benchmark + merged telemetry
+1. **`bench_unified.c:64-157` applicator** — the only code that makes the 40 phases *mean* something; without
+   it `phase%8` is dead. Requires the GPU config setters (item 3).
+2. **`bench_unified.c:151-152,1129` per-phase time limiter + `valid_sample_count>=15`** — real phases need a
+   fixed 3.5 s window, not a frame counter.
+3. **`gfx_backend.c:98-161` GPU config setters + `GfxBackend.HC` config API** — prerequisite for every
+   variation and for the 4-tab config window.
+4. **`bench_unified.c:377-491,493-571` real exports** (`BENCH_COMPARISON.TXT` 40-row + 8×5 matrix + winner +
+   directives; `BENCH_REPORT.TXT`/`GEARS_BENCHMARK.LOG`) — replaces the fake scorecard.
+5. **`profiler.c:72-122,294-327,330` + `perf_overlay.c:177-350,467,599`** into one **`Telemetry.HC`** (per
+   `docs/00` §6.1) — restores the `mark_*` API, percentiles, steady-state, spikes, and exports.
+6. **`gui/render.c:15,209,418` NEON 2D kernels** — biggest per-frame win; feeds both the bench and the shell.
+7. **`raster_tile.c:46-208,411-445,447-560` + `math3d.c:1189-1230`** — tile binning + L1 scratchpad + `stnp`
+   resolve + SMP slicing + parallel vertex transform: this is what makes the "SW NEON L1 / SW SMP 4C"
+   variations real.
+8. **`SmpDemo.HC`** — the parallelism demo the 40-phase suite's multi-core rows need.
+9. **PURGE** the synthetic constants (§4) — Order 2 compliance.
+
+### P8 — self-hosting everything
+1. **Peephole port** (`jit_arm64.c:799/752/713/709-711/869-876`) into `apps/Compiler.HC`
+   (`HcOptimizePeephole`, called from `CompilerCompileAndRun` between parse and flush) — the one missing
+   compiler feature; improves every module the OS compiles, including itself.
+2. **`smp.c:115,171-185` EFI_MP_SERVICES path** — real UEFI hardware/RPi AP bring-up; PSCI is only a fallback.
+3. **Raise `apps/Sched.HC:164` stack floor 4096 → 65536** — deep HolyC call chains can overflow today.
+4. **Raise `apps/Gic.HC:23` `MAX_GIC_INTERRUPTS` 128 → 1024** — needed for large-SPI hardware.
+5. **`StdLib.HC`** (`CArray`/`CDict`/`StrDup`) — the growable containers the shell/telemetry need; dedupe
+   against `boot/seed/table.c` (32 buckets).
+6. **`Top.HC`/`Editor.HC`/`Filer.HC`/`Showcase.HC`** — richer shell tools than the current lean ones.
+7. **DISCARD** `boot/uefi/crt_{riscv64,x86_64}.c` + `elf_{riscv64,x86_64}_efi.lds` (AArch64-only).
+
+### P9 — GPU provider
+1. **`virtio_gpu.c:84,145` batching + `:347-386,411-476` page-flip** into `apps/GfxDevice.HC` — the 2D
+   transport improvements that exist; prerequisite for any 3D provider work.
+2. **REFERENCE** `math3d.c:869` (16.16 engine), `:726` (NEON z-clear), `gfx_backend.h:22-25` (32-bit Z).
+3. **NEW (not salvageable):** virgl/Venus/3D — upstream was 2D-only.
+
+### P10 — run anything + MCU cluster
+1. **`WasmJit.HC`** — the only WASM→ARM64 JIT; the natural first rung of the "porting ladder" and the base of
+   `HolyPort`.
+2. **`ffi_arm64.S` `arm64_ffi_call`** — repurpose as the scripting/HolyPort FFI seed (currently dead).
+3. **REFERENCE** `Compositor.HC` tile-ownership/damage maps + `WM.HC` snapping/z-order for the `Surface`/tile
+   abstractions that scale down to the MCU cluster.
+4. **PORT selectively** `HolyBenchmark3D.HC`/`calc.HC`/`fact.HC`/`Menu.HC`/`Bench.HC` as P10 demos.
+
+---
+
+## 9. Not salvageable / must build new
+
+- **virtio-gpu 3D (virgl / Venus).** Upstream `drivers/gpu/virtio_gpu.c` is **2D only**; there is no 3D command
+  anywhere in the original tree. The P9 3D provider is greenfield.
+- **PMU hardware telemetry.** Neither tree touches `PMCR_EL0`/`PMCCNTR_EL0`; all timing is `cntvct_el0`/
+  `cntfrq_el0`. Cycle-accurate instruction/memory counters (the "minimal hardware usage" ask) are new work.
+- **HolyPort (SDL/raylib-like runtime).** No equivalent upstream; only the dead `ffi_arm64.S` is a usable seed.
+- **MCU cluster.** No `Surface`/`remote`/offload code upstream; the P10 cluster is new (the render/tile
+  abstractions are the only reusable shape).
+- **Optimizing compiler backend (SSA + regalloc) and far-branch thunks.** Neither engine has them; they are
+  new compiler work, not salvage.
+- **Multi-arch support (RISC-V/x86_64).** The upstream `crt_*/elf_*` files are stub toolchain glue for an
+  AArch64-only OS — discard.

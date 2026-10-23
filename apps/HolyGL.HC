@@ -268,6 +268,12 @@ U0 HolyGLColor3ub(U32 r, U32 g, U32 b) {
   g_hgl.v_curr.color = 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 }
 
+// P7.0: set the current vertex colour from a packed 0xAARRGGBB value. Exported so
+// callers (Gears3D, Physics3D, Mesh) never touch g_hgl directly — sovereign rule.
+U0 HolyGLColorPacked(U32 argb) {
+  g_hgl.v_curr.color = argb;
+}
+
 U0 HolyGLTexCoord2f(F64 u, F64 v) {
   g_hgl.v_curr.u = u;
   g_hgl.v_curr.v = v;

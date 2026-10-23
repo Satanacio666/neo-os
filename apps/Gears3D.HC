@@ -214,7 +214,7 @@ U0 Gears3DRenderMesh(CGearMesh *gear, F64 tx, F64 ty, F64 tz, F64 rot_z) {
     CGearVertex *v2 = &gear->vertices[tri->v2];
 
     HolyGLNormal3f(tri->nx, tri->ny, tri->nz);
-    g_hgl.v_curr.color = tri->color;
+    HolyGLColorPacked(tri->color);
     HolyGLVertex3f(v0->x, v0->y, v0->z);
     HolyGLVertex3f(v1->x, v1->y, v1->z);
     HolyGLVertex3f(v2->x, v2->y, v2->z);

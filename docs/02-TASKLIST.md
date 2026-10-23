@@ -1056,3 +1056,682 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
       dispatch + `WFE` idle verified.
 - [ ] **Sweep — cross-module accessor rule.** Purge direct `g_hgl.*` writes (`Gears3D.HC`, `Physics3D.HC`) and
       any other cross-module struct-member access; route through exported accessors. Add a static check.
+
+
+---
+
+## P7 — Execution blueprint (one-shot runbook)
+
+> **STATUS (2026-10):** **P7.0 ✅ DONE** — docs consolidated to exactly 5 files; peephole optimizer live in
+> `Compiler.HC` (`[PEEPHOLE] runs=33 roundtrips=5600`); cross-module `g_hgl.*` writes purged
+> (`HolyGLColorPacked`); orphan `apps/TestJitP0.HC` removed (6 useful cases folded into `SelfTest.HC`); stale
+> `p4.3-wip` branch deleted. Gate: `SELFTEST 96/96`, `PARITY 64/64 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`,
+> `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`. **Next: P7.1 (HolyGL GL 1.3 surface + conformance).**
+>
+> Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
+
+
+> **Scope.** This is the *execution* blueprint for the single next priority, **P7**. It is deliberately
+> prescriptive: an engineer who follows it top-to-bottom should land P7 in one clean pass with no open
+> design questions. Every anchor was verified against `/home/user/neo-os` @ `HEAD d657e70` (P0–P6 done)
+> and upstream `/tmp/neo-upstream` @ `36ca4b0`.
+>
+> Sibling docs written in parallel: `docs/05-UPSTREAM-SALVAGE-AUDIT.md`, `docs/06-PERFECTED-PRIORITY-PLAN.md`.
+> This file depends only on `docs/00-MASTER-PLAN.md` §3/§5/§6.5/§9.4, `docs/02-TASKLIST.md` §P7, and the tree.
+>
+> **Hard constraints honoured by every step:** no new `.c` files; no stubs/placeholders/mock data; no
+> forward declarations; one render pipeline only (no scalar fallback); golden 2D hash `0xD28836F`
+> bit-exact; C-runtime census never increases; 8-argument call cap; no cross-module struct-member access
+> (use exported accessors); all verification in QEMU via screendump.
+
+---
+
+## 1. Objective
+
+Make the NeoOS graphics + measurement stack **sovereign and real**:
+
+1. **HolyGL** becomes a complete GL 1.3-class immediate-mode state machine (projection stack depth 4 +
+   modelview depth 16 + the full `gl*` binding surface + `glClear/glClearColor/glColor4f/glFlush`) with a
+   near-plane Sutherland–Hodgman clipper, feeding the **one** NEON rasterizer.
+2. The **one** rasterizer gains real **L1 tile binning** with per-core scratchpads and a **`stnp` streaming
+   resolve**, dispatched across **SMP cores** (`wfe`/`sev`/`dmb ish`), making `GFX_MODE_SMP_TILED` real.
+3. The GPU config plane becomes real (5 knobs, each with a real reader); VirtIO-GPU gains **batch2/batch3**
+   and a **page-flip ping-pong**; optional 32-bit-Z tile kernel.
+4. **Telemetry** merges `Profiler.HC` + `PerfOverlay.HC` into one `apps/Telemetry.HC`: a `mark_*` stage API,
+   histogram percentiles (1 %/0.1 % low), steady-state, a spike ring with causes, optimization directives,
+   and **real ARM PMU counters** (`PMCR_EL0`/`PMCCNTR_EL0`/`PMEVCNTR*`).
+5. `HolyBenchmark.HC` becomes a **real 40-phase suite** (5 categories × 8 variations, 3.5 s `cntvct_el0`
+   limiter, per-phase metrics, real export files), absorbing `BenchCpu.HC` + `BenchReport.HC`, with the
+   integer-LCG `BenchCpuMathNeon` replaced by real NEON and all synthetic constants purged.
+6. `apps/SelfTest.HC` stays the single source of truth: it grows `GL`, `TILE`, `TELEMETRY`, `BENCH` gates,
+   wired into `scripts/golden-boot.sh`.
+
+---
+
+## 2. Exit gate (exact strings)
+
+After the final step, **all** of the following must hold on a normal boot. Strings are exact and greppable.
+
+| Gate | Exact expected string | Produced by |
+|---|---|---|
+| Golden boot | `GOLDEN BOOT: PASS` | `scripts/golden-boot.sh` |
+| Battery | `SELFTEST: <a>/<b> PASS` with `a == b` and `a >= 74` | `apps/SelfTest.HC:SelfTestRun` |
+| Engine parity | `engine parity: <n>/<n> agree, 0 diff` | `apps/SelfTest.HC` |
+| Twins | `TWINS: 5/5` | `apps/SelfTest.HC` |
+| Symbols | `SYMS: <n> symbols, 0 unresolved` | `apps/SelfTest.HC` |
+| Golden frame | `RENDER: PASS (golden=0xD28836F)` | `apps/SelfTest.HC:SelfTestRender` |
+| Census | `CENSUS: PASS` | `scripts/census-c-runtime.sh` |
+| Self-host | `SELF-HOST: PASS` | `scripts/self-host-test.sh` |
+| Determinism | `DETERMINISM: PASS` | `scripts/determinism-gate.sh` |
+| **New** GL conformance | `GL: PASS` | `apps/SelfTest.HC:SelfTestGL` |
+| **New** tile raster | `TILE: PASS` | `apps/SelfTest.HC:SelfTestTile` |
+| **New** telemetry | `TELEMETRY: PASS` | `apps/SelfTest.HC:SelfTestTelemetry` |
+| **New** benchmark | `BENCH: PASS` | `apps/SelfTest.HC:SelfTestBench` |
+
+Unchanged subsystem gates that must stay green: `RASTER: PASS`, `KHEAP: PASS`, `TEXTURE: PASS`,
+`FONTS: PASS`, `3D: PASS`, `3D-GEARS: PASS`, `SHADING: PASS`, `SHADERVM: PASS`, `MESH: PASS`,
+`DOLDOC: PASS`, `SHELL: PASS`, `TICK/SCHED/BSOD/SMP/SOVEREIGN: PASS`, `HALCACHE: PASS`, `FSRT: PASS`.
+
+---
+
+## 3. Preconditions (before touching anything)
+
+1. `git status` clean at `d657e70`; `git bundle create /home/user/project/neo-os.bundle --all` (P7 baseline).
+2. `scripts/golden-boot.sh` prints `GOLDEN BOOT: PASS` **before** any edit. Record the baseline:
+   `RENDER: PASS (golden=0xD28836F)`, `SELFTEST: 87/87 PASS`, `PARITY: 56/56`, `TWINS: 5/5`,
+   `SYMS: … 0 unresolved`, `CENSUS: PASS`. Freeze `tests/census-baseline.txt` (do **not** run `--write`).
+   Capture the current UART `renderbench` output (`apps/Render.HC:743`) as the P7.0 perf baseline.
+3. Confirm `tests/census-baseline.txt` is exactly: `kmalloc 55`, `kfree 52`, `symbols_register 38`,
+   `symbols_lookup 26`, `symbols_is_defined 1`, `symbols_var_cell 1`, `symbols_sic_cell 1`,
+   `symbols_count 1`, `symbols_unresolved_count 1`, `jit_compile_and_run 5` (**total 181**).
+4. Snapshot (read-only): `git rev-parse HEAD`; the `KERNEL-INIT` module list (`apps/KernelInit.HC:56-108`);
+   the count literal `ALL 34 HOLYC SUBSYSTEMS` (`apps/KernelInit.HC:111`, gated at `scripts/golden-boot.sh:25`).
+5. Tooling: `aarch64-linux-gnu-as` + `aarch64-linux-gnu-objdump` (regenerate `.s` words; command at
+   `scripts/raster_span.s:7-9`); QEMU + the `/api/neo-os/stream` screendump endpoint live.
+6. **Do not** start the dev server or run the build unless a step explicitly needs a gate; the gate rebuilds.
+
+---
+
+## 4. Global laws, made operational
+
+| Law | Operational rule for P7 |
+|---|---|
+| No new `.c` | All new code is `.HC` + `.s`. Edit an existing `boot/seed/*.c` only if an intrinsic parity edit is required; never create a `.c`. |
+| No stubs/mocks/placeholders | Every knob has a real reader; every counter reads real hardware; unsupported values are *rejected with a diagnostic*, never silently ignored. |
+| No forward declarations | Never write `Type name(args);` (D17). HolyC resolves forward *references* via the symbol table. |
+| One pipeline | 3D and tile rendering both funnel through `RasterTriangleZCore → RasterRow → RasterSpanNEON`. The 2D golden path uses the **solid** branch (`tex_ptr==0 && gmode==0`). |
+| Golden hash | `g_render_golden = 0x0D28836F` (`apps/SelfTest.HC:327`). The scene (`apps/Render.HC:718`) is drawn **only** through the immediate `RasterTriangleZ` path. See §7. |
+| Census | Never add a `kmalloc(`/`kfree(`/`symbols_*(`/`jit_compile_and_run(` call site in `apps/*.HC`. Use static BSS buffers and existing accessors. See §7. |
+| 8-arg cap | Every new function has ≤ 8 parameters. Cross a boundary with a descriptor struct passed by pointer, or with globals. |
+| Cross-module access | Never read/write another module's struct members. Add an exported accessor. Existing violations to fix: `apps/Gears3D.HC:217`, `apps/Physics3D.HC:338,389,412,421` (write `g_hgl.v_curr.color`). |
+| Compiler quirks | Follow §8 (D17–D21 + arithmetic/declaration rules). |
+
+---
+
+## 5. Step-by-step sequence P7.0 → P7.9
+
+Each step lists **files touched**, **exact anchors**, **port source**, **assembly**, **golden-hash risk**,
+**census risk**, **verify**. Do the steps in order; commit + bundle after each green step.
+
+---
+
+### P7.0 — Recon / baseline freeze
+
+- **Goal.** Freeze the P7 baseline so every later step is a diff against a known-good tree.
+- **Files touched.** None (record in the PR/commit body).
+- **Actions.** Run `scripts/golden-boot.sh`; capture `/tmp/golden-boot.png`. Run UART `renderbench` and
+  record the three lines (Z-raster tri/s + Kpix/s, Textured tri/s + Kpix/s, Canvas Mpix/s). Record
+  `SELFTEST/PARITY/TWINS/SYMS/CENSUS/DETERMINISM` exactly. Bundle.
+- **Golden-hash risk.** None. **Census risk.** None.
+- **Verify.** `GOLDEN BOOT: PASS` reproduced twice (rules out flake).
+
+---
+
+### P7.1 — HolyGL GL 1.3 surface completion + GL conformance
+
+**Goal.** Complete the GL state machine; add a conformance gate; keep per-fragment Blinn-Phong.
+
+- **Files touched.** `apps/HolyGL.HC`; `apps/SelfTest.HC` (new `SelfTestGL`); `apps/Shell.HC` (optional
+  `glconform` command).
+- **Exact anchors (`apps/HolyGL.HC`).** `class GLVertex` :23-34; `class HolyGLContext` :36-65 (`CMat4
+  projection` :38, `CMat4 modelview_stack[8]` :40, `I64 modelview_sp` :41); `g_hgl` :67; `HolyGLInit`
+  :117-158; `HolyGLUpdateMVP` :160-162; matrix ops `HolyGLMatrixMode` :187, `HolyGLLoadIdentity` :191,
+  `HolyGLPushMatrix` :200, `HolyGLPopMatrix` :207, `HolyGLTranslatef` :215, `HolyGLRotatef` :224,
+  `HolyGLScalef` :234, `HolyGLPerspective` :239; bindings :451-463; accessor :539.
+- **Edits.**
+  1. **Struct.** Replace `CMat4 projection;` with `CMat4 projection_stack[4];` + `I64 projection_sp;`.
+     Widen `CMat4 modelview_stack[8]` → `[16]`. Add `F64 clear_r; F64 clear_g; F64 clear_b; F64 clear_a;`
+     (one initialized var per declaration).
+  2. **Current-matrix helper** (port `holygl.c:60-65`):
+     `CMat4* HolyGLCurrentMatrix() { if (g_hgl.matrix_mode == GL_PROJECTION) return &g_hgl.projection_stack[g_hgl.projection_sp]; return &g_hgl.modelview_stack[g_hgl.modelview_sp]; }`
+  3. **Push/Pop** (port `holygl.c:73-99`): projection depth 4, modelview depth 16, operating on the current
+     mode; keep `HolyGLUpdateMVP()` after each mutation.
+  4. **LoadIdentity / Translatef / Scalef / Perspective** operate on `HolyGLCurrentMatrix()`
+     (port `holygl.c:67-138`). `Mat4Mul(out,out,&x)` is alias-safe (temp, `apps/Math3D.HC:287-309`).
+  5. **Rotatef.** Keep the existing per-axis dispatch (:224-232) but apply it to the current matrix
+     (`Mat4RotateX/Y/Z(current, …)`). This preserves exact `3D-GEARS` geometry (unit-axis callers).
+  6. **Add bindings** (thin forwarders): `glPushMatrix`, `glPopMatrix`, `glRotatef`, `glScalef`,
+     `glColor3f`, `glColor4f`, `glClear`, `glClearColor`, `glFlush`, `glVertex2f`.
+  7. **`glClear(mask)`** (port `holygl.c:149-162`): `#define GL_COLOR_BUFFER_BIT 0x4000` and
+     `#define GL_DEPTH_BUFFER_BIT 0x0100` at the top; colour bit → `gfx_clear(colour from clear_rgba)`,
+     depth bit → `RasterClearZ()`.
+  8. **`glClearColor(r,g,b,a)`** stores the F64s; **`glColor4f`** sets `g_hgl.v_curr.color` exactly like
+     `holygl.c:180-186`; `glColor3f` forwards with alpha 1.
+  9. **`glFlush()`** → `gfx_dirty_expand(vp_x,vp_y,vp_w,vp_h)` (same as `HolyGLEnd` :437-440).
+  10. Leave `HolyGLSubmitTriangle`'s `w <= 0.05` reject (:292) for now; P7.2 replaces it.
+- **Port source.** `kernel/math/holygl.c:60-186`, `:381`.
+- **Assembly.** None.
+- **Golden-hash risk.** **None** — the 2D golden scene never touches HolyGL. Risk is to `3D`/`3D-GEARS`;
+  keep Rotatef axis semantics and re-verify.
+- **Census risk.** None.
+- **Verify.** Add `SelfTestGL()` (expand `HolyGLTest.HC`'s 4 assertions): (1) modelview push/translate/pop
+  isolation (`HolyGLTest.HC:8-24`); (2) projection stack depth 4 (push/translate/pop, `projection_sp`
+  returns to 0, top translation intact); (3) modelview depth 16 (17th push is a no-op, no OOB); (4)
+  `gluPerspective` `m[14]≈-1`, `m[5]>0` (`HolyGLTest.HC:26-35`); (5) `glColor4f(1,0,0,0.5)` →
+  `0x80FF0000`; (6) `glClear` colour/depth effects; (7) a lit triangle increments `HolyGLGetTrisRendered()`
+  (`HolyGLTest.HC:50-76`). Print `GL: PASS`. Call from `SelfTestRun`.
+  Gates: `GL: PASS`, `3D-GEARS: PASS`, `3D: PASS`, `SHADING: PASS`, `RENDER: PASS (0xD28836F)`.
+
+---
+
+### P7.2 — Near-plane Sutherland–Hodgman clipper + NEON memory kernels
+
+**Goal.** Clip triangles against `w >= near` (1–2 output triangles) instead of rejecting; add NEON
+blit/blend/clear in `Render.HC`.
+
+- **Files touched.** `apps/HolyGL.HC` (clipper + integration); `apps/Render.HC` (NEON kernels + use);
+  new `scripts/render_neon.s`; `apps/GfxDevice.HC` (route `GfxDeviceFastClear`).
+- **Exact anchors.** `HolyGLSubmitTriangle` :290-365 (reject :292); `HolyGLVertex3f` triangle emission
+  :414-430; `RenderDrawRect` :308-343 (scalar row fill :333-342); `gfx_blend_rect` :484-530;
+  `gfx_swap_buffers` :587-595; `gfx_swap_rect` :596-618; `GfxDeviceFastClear` :562-579.
+- **Edits.**
+  1. **Clipper** (port `kernel/math/math3d.c:775-866`): add `HolyGLLerpVertex(GLVertex *out, GLVertex *a,
+     GLVertex *b, F64 t)` and `I64 HolyGLClipNear(GLVertex in[3], F64 near_w, GLVertex out[2][3])`.
+     `out` is a local array in `HolyGLVertex3f` (2×3×sizeof(GLVertex) = 480 B — within the 4080 B frame).
+  2. **Integrate.** In `HolyGLVertex3f`, when a triangle's 3-vertex buffer fills, clip then submit each
+     output triangle via `HolyGLSubmitTriangle`. **Remove** the early reject at :292 (the clipper guarantees
+     `w >= 0.05`). Keep the `cross <= 0` cull (:309).
+  3. **NEON memory kernels.** Write `scripts/render_neon.s` (source-of-truth) and embed its words via
+     `asm { … }` in `apps/Render.HC` (pattern `apps/RasterTile.HC:374-503`):
+     - `RenderNeonFill(U32 *dst, I64 count, U32 color)` — 8 px/iter (`dup v0.4s,w2; stp q0,q0,[x0],#32`),
+       scalar tail. Replaces the row loop :333-342 and backs `GfxDeviceFastClear`.
+     - `RenderNeonBlit(U32 *dst, U32 *src, I64 bytes)` — port `gui/render.c:15-35` (8×`ldp`/`stnp`, 128 B/iter),
+       used by `gfx_swap_buffers`/`gfx_swap_rect`.
+     - `RenderNeonBlendRect(U32 *dst, I64 n, U32 premul, U32 inv_a)` — 8-lane SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+       with the exact `+128 >>8` math, must equal `apps/Render.HC:511-529`.
+  4. **Expose** `RenderNeonFill`; `GfxDeviceFastClear` calls it (removes the 8× scalar unroll at
+     `apps/GfxDevice.HC:562-579`).
+- **Port source.** `kernel/math/math3d.c:775-866`; `gui/render.c:15-35,209,418-530`.
+- **Assembly.** `scripts/render_neon.s` (new).
+- **Golden-hash risk.** `gfx_clear` is in the golden scene; the NEON fill stores the same `U32` per pixel →
+  byte-identical result, hash unchanged. `gfx_blend_rect` is **not** in the golden scene but must stay
+  bit-exact. `gfx_swap_*` is not part of `RenderHashBuffer`. The clipper touches 3D submission only.
+- **Census risk.** None.
+- **Verify.** `GL: PASS` (add: a triangle with one vertex at `w=0.02` yields 2 clipped triangles and
+  non-zero coverage), `3D: PASS`, `3D-GEARS: PASS`, `RENDER: PASS (0xD28836F)`, `CENSUS: PASS`.
+
+---
+
+### P7.3 — L1 tile binning + per-core scratchpad + `stnp` streaming resolve
+
+**Goal.** Add a real tiled scene API that reuses the **one** kernel, with per-core L1 scratchpads and a
+non-temporal resolve. The immediate `RasterTriangleZ` path stays byte-identical.
+
+- **Files touched.** `apps/RasterTile.HC`; new `scripts/tile_resolve.s`; `apps/SelfTest.HC` (`SelfTestTile`).
+- **Exact anchors.** `I64 TILE_W = 64; I64 TILE_H = 64;` :22-23 (**currently unused** — the hook);
+  `g_zbuf` globals :25-28; `g_raster_fb/pitch/cw` :36-38; `RasterTriangleZ` :711-766; `RasterRow` :670-708;
+  `RasterSpanBlocks` :529-601; `RasterInit` :285-301; `RasterClearZ` :303-307.
+- **Edits.**
+  1. **Bit-exact hoist.** Extract the body of `RasterTriangleZ` :711-766 into
+     `I64 RasterTriangleZCore(I64 x0,I64 y0,I64 x1,I64 y1,I64 x2,I64 y2, U32 color)` (7 args) using the
+     globals `g_raster_fb`, `g_raster_pitch`, `g_zbuf`, `g_zbuf_w`, `g_zbuf_h` — **no** `RasterInit()`,
+     **no** `GfxDeviceTarget()`. `RasterTriangleZ` becomes: `RasterInit(); if(!g_zbuf) return 0;
+     g_raster_fb = GfxDeviceTarget(); if(!g_raster_fb) return 0; g_raster_pitch = gfx_get_canvas_pitch();
+     return RasterTriangleZCore(…);`
+  2. **Static scene storage** (BSS, census-neutral):
+     `#define RASTER_MAX_SCENE_TRIS 4096`, `#define RASTER_MAX_TRIS_PER_TILE 256`,
+     `#define RASTER_MAX_TILES (48*32)`; `class CRasterTri { F64 x[3]; F64 y[3]; I64 z[3]; U32 color;
+     I64 min_tx; I64 max_tx; I64 min_ty; I64 max_ty; }`; `class CRasterBin { U16 idx[RASTER_MAX_TRIS_PER_TILE];
+     I64 count; }`; `CRasterTri g_rs_tris[RASTER_MAX_SCENE_TRIS]; CRasterBin g_rs_bins[RASTER_MAX_TILES];`
+     plus scalar globals `g_rs_tri_count/g_rs_cols/g_rs_rows/g_rs_tile_size/g_rs_target/g_rs_pitch/g_rs_clear`;
+     `U32 g_tile_color[4][64*64];` and `U16 g_tile_depth[4][64*64];`. All global — never local.
+  3. **API** (≤ 8 args each): `RasterSceneBegin(I64 vx,I64 vy,I64 vw,I64 vh, U32 clear)`;
+     `RasterSceneAddTriangle(CRasterVertex *v, U32 color)` (2 args; cull port `raster_tile.c:159-162`,
+     bbox port `:185-195`, bin port `:197-206`); `RasterSceneEnd()`.
+  4. **`RasterRenderTile(t)`**: clear `g_tile_color[core]` (NEON fill) and `g_tile_depth[core]` to `0xFFFF`;
+     save `g_raster_fb/pitch/cw` + `g_zbuf/g_zbuf_w/g_zbuf_h`, point them at the scratchpad with `cw=ch=64`;
+     call `RasterTriangleZCore(local coords)` per binned tri (local = world − tile origin); restore.
+  5. **`RasterTileResolve`**: copy tile rows to `g_rs_target` with `stnp` from `scripts/tile_resolve.s`
+     (port `raster_tile.c:411-444`), clipped to screen/viewport and to the partial last tile. The
+     *rasterization* is still `RasterSpanNEON`; only the tile→target copy is a new kernel.
+- **Port source.** `kernel/math/raster_tile.c:46-209`, `:411-444`.
+- **Assembly.** `scripts/tile_resolve.s` (new).
+- **Golden-hash risk.** **None iff** `RenderGoldenScene` never calls `RasterScene*` (it does not — it calls
+  `RasterTriangleZ`, `apps/Render.HC:736`). Prove the hoist with `RENDER: PASS (0xD28836F)` + `RASTER: PASS`
+  **before** adding tiling.
+- **Census risk.** None (BSS only).
+- **Verify.** `SelfTestTile()`: (1) a fixed triangle through the tiled path vs the immediate path must be
+  pixel- and Z-identical; (2) a triangle straddling 4 tiles resolves with `gaps == 0` (mirror
+  `apps/RasterTile.HC:787-803`); (3) an off-screen triangle writes no guard word past the scratchpad.
+  Print `TILE: PASS`. Call from `SelfTestRun`. Gates: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
+  `RASTER: PASS`, `CENSUS: PASS`.
+
+### P7.4 — SMP tile dispatch + SMP parallel vertex transform; make `GFX_MODE_SMP_TILED` real
+
+**Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
+transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.
+
+- **Files touched.** `apps/Smp.HC` (async dispatch); `apps/RasterTile.HC` (SMP end); `apps/Math3D.HC`
+  (parallel transform); `apps/Mesh.HC` (use it); `apps/GfxDevice.HC` (mode read).
+- **Exact anchors.** `apps/Smp.HC` `SmpDispatch` :169-201 (blocking), `SmpIsJobDone` :203, `SmpWaitJob`
+  :209, `smp_dispatch` :260; `apps/GfxDevice.HC` `GFX_MODE_SMP_TILED` :15, `GfxDeviceSetMode` :497-507,
+  `GfxDeviceGetMode` :509; `apps/Math3D.HC` `Mat4MulVec4` :366-375; `apps/Mesh.HC` `MeshRender`.
+- **Edits.**
+  1. **`apps/Smp.HC`:** add `I64 SmpDispatchAsync(U32 core_id, U64 fn, U64 arg)` — identical to `SmpDispatch`
+     :169 but **without** the completion spin (sets `j->pending=1`, `__sev()`, returns 0/-1). `SmpWaitJob`
+     remains the join. Reuses `CSmpJob`; no new allocation.
+  2. **`apps/RasterTile.HC`:** add `class CTileJob { I64 start; I64 end; I64 core; };`,
+     `CTileJob g_tile_jobs[4];`, `U0 RasterTileWorker(U64 arg)` (renders its tile range into
+     `g_tile_color[core]`/`g_tile_depth[core]`, then `__dmb_ish()` and marks `core = -core - 1`), and
+     `U0 RasterSceneEndSmp()`: read cores from the config plane; if `<= 1` render all tiles on core 0; else
+     compute `per = (total + cores - 1) / cores`, `SmpDispatchAsync` cores 1..n-1, render slice 0 on core 0,
+     then `while (g_tile_jobs[c].core >= 0) __wfe();` and a final `__dmb_ish()`. Tiles are disjoint →
+     deterministic regardless of core count.
+  3. **`RasterSceneEnd`** selects: `if (GfxDeviceGetMode()==GFX_MODE_SMP_TILED) RasterSceneEndSmp(); else`
+     single-core. Honour `RASTER_ENGINE_SCANLINE` (P7.5) by falling back to the immediate per-triangle path.
+  4. **`apps/Math3D.HC`:** port `math3d.c:1189-1232` as `U0 Math3DTransformParallel(CVec3 *in, CVec4 *out,
+     I64 count, CMat4 *mvp)` — split at `count/2`, dispatch the second half to core 1 via `SmpDispatch`,
+     transform the first half locally. Guard `count < 8` or core offline → scalar loop.
+  5. **`apps/Mesh.HC`:** in `MeshRender`, batch-transform into a static `CVec4 g_mesh_xform[MESH_MAX_V]`
+     via `Math3DTransformParallel`, then feed the transformed vertices through the same submit path.
+  6. **Fix cross-module violations:** replace `g_hgl.v_curr.color = …` at `apps/Gears3D.HC:217` and
+     `apps/Physics3D.HC:338,389,412,421` with `HolyGLColor3ub(...)` / a new exported
+     `HolyGLSetCurrentColor(U32)`.
+- **Port source.** `kernel/math/raster_tile.c:447-556`; `kernel/math/math3d.c:1189-1232`.
+- **Assembly.** None new (`__dmb_ish`/`__sev`/`__wfe` already exist, `apps/Compiler.HC:2273-2276`).
+- **Golden-hash risk.** None (golden path is immediate + IRQ-masked). **Determinism risk is real:** the SMP
+  tile test must equal the single-core result byte-for-byte; `DETERMINISM: PASS` must hold.
+- **Census risk.** None.
+- **Verify.** Extend `SelfTestTile` with an SMP sub-test (1 vs 4 cores, byte-compare) → `TILE: PASS`.
+  `SMP: PASS`, `DETERMINISM: PASS`, `RENDER: PASS (0xD28836F)`. Manual: UART `render smp` then `renderbench`.
+
+---
+
+### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong (+ optional 32-bit Z)
+
+**Goal.** Real GPU knobs, batched VirtIO submission, dual-resource page-flip.
+
+- **Files touched.** `apps/GfxDevice.HC` (config plane, batch2/3, page-flip); `apps/RasterTile.HC` (knob
+  readers); `apps/HolyGL.HC` (culling reader); `apps/Shell.HC` (`gpuconfig` command).
+- **Exact anchors.** `apps/GfxDevice.HC` `CGfxDeviceState` :24-31, `g_gdev` :33, `VirtioGpuSendCmd` :191-238,
+  `VirtioGpuInit` :240-425, `VirtioGpuFlushRect` :427-473, `GfxDeviceSetMode` :497; `apps/HolyGL.HC`
+  `g_hgl.cull_face` :46, `HolyGLEnable/Disable` :164/172.
+- **Edits.**
+  1. **Config plane** (port `drivers/gpu/gfx_backend.c:98-163`): `class CGpuConfig { I64 zprecision; I64
+     raster_engine; I64 tile_size; I64 smp_cores; I64 culling; };` + `CGpuConfig g_gpu_cfg;` +
+     `gpu_set_zprecision/get`, `gpu_set_raster_engine/get`, `gpu_set_tile_size/get`, `gpu_set_smp_cores/get`,
+     `gpu_set_culling/get`. Every setter has a **real reader**: `RasterSceneBegin/End` reads `raster_engine`,
+     `tile_size`, `smp_cores`; `RasterSceneAddTri` reads `culling`. `gpu_set_zprecision` accepts 16; for 32 it
+     **returns an error and leaves the value at 16** unless P7.5c landed (honest rejection, never a silent
+     stub); `GpuConfigPrintDolDoc` shows `32-bit Z: unsupported` in that case.
+  2. **Batch2/Batch3** (port `virtio_gpu.c:84-200`): batch3 has 12 params → exceeds the 8-arg cap. Add
+     `class CVirtioBatch { U64 cmd[3]; U32 cmd_sz[3]; U64 resp[3]; U32 resp_sz[3]; };` and
+     `I64 VirtioGpuSendBatchN(CVirtioBatch *b, I64 n)` (2 args), with `VirtioGpuSendBatch2/3` wrappers.
+     `VirtioGpuFlushRect` :452-471 becomes one batch2 (transfer + flush). Descriptors 0..5, two avail entries.
+  3. **Page-flip ping-pong** (port `virtio_gpu.c:368-387`, `:409-451`): in `VirtioGpuInit`, create resource 2
+     for `gfx_get_frontbuffer()` and attach backing (mirrors resource 1). Add `I64 VirtioGpuPageFlip(I64
+     resource_id)` issuing batch3 (transfer→scanout→flush) and flipping `g_s_active_scanout`. `GfxPresent`
+     :541 calls it in GPU mode when not zero-RAM.
+  4. **Shell:** register `gpuconfig` (`apps/Shell.HC:1010-1058`) → `GpuConfigPrintDolDoc()` rendering the 5
+     knobs + current values as a `$CARD$`.
+- **Port source.** `drivers/gpu/gfx_backend.c:98-163,679-697`; `drivers/gpu/virtio_gpu.c:84-200,368-451`.
+- **Assembly.** None.
+- **Golden-hash risk.** None (config affects the tile/3D/bench path only). **Census risk.** None.
+- **Verify.** `GfxDeviceSelfTest` passes; `SelfTestTile` toggles `gpu_set_tile_size(32)` and re-runs the tile
+  equality check (proves the knob is read); `SelfTestBench` asserts `gpu_set_smp_cores(1)` vs `(4)` yields
+  identical tile output. Manual: `render gpu` screenshot with no fault; `VirtioGpuIsAvailable()==1`.
+
+#### P7.5c — Optional 32-bit Z tile kernel (start only after P7.0–P7.9 are green)
+
+- Derive `scripts/raster_span32.s` mechanically from `scripts/raster_span.s`: `ZLANE` emits
+  `ins v28.s[k], w0` (8×.4s) instead of `ins v28.h[k], w0`; the depth compare becomes two `cmhi v30.4s` +
+  an AND; `zb_ptr` advances 32 B/block; the Z clear writes `0xFFFFFFFF`. Embed as `RasterSpanNEON32` in
+  `apps/RasterTile.HC`; `RasterRenderTile` selects it when `gpu_get_zprecision()==32` and uses
+  `U32 g_tile_depth32[4][64*64]`. The immediate/golden path stays 16-bit and never selects it.
+  Gate: `TILE: PASS` at zprecision 16 **and** 32.
+
+---
+
+### P7.6 — Merge `Profiler.HC` + `PerfOverlay.HC` → `apps/Telemetry.HC` + real ARM PMU
+
+**Goal.** One telemetry engine with a `mark_*` API, percentiles, spike ring + causes, optimization
+directives, and PMU counters. Delete the two old modules.
+
+- **Files touched.** New `apps/Telemetry.HC`; delete `apps/Profiler.HC`, `apps/PerfOverlay.HC`;
+  `apps/KernelInit.HC` (Stage 6); `apps/Compiler.HC` (PMU intrinsics); `apps/SelfTest.HC`
+  (`SelfTestTelemetry`); `apps/HolyBenchmark.HC` (call sites); `apps/Gears3D.HC`/`apps/Physics3D.HC`
+  (accessor fix); `scripts/golden-boot.sh` (module count, P7.8).
+- **Exact anchors.** `apps/Profiler.HC` `CProfilerSpike` :16-27, `CProfiler` :29-86, `g_prof` :88,
+  `ProfilerInit` :102, `ProfilerPhaseReset` :143, `ProfilerDiagnoseBottleneck` :148, `ProfilerComputeMetrics`
+  :168 (percentiles :201-239), `ProfilerRecordFrame` :242, `ProfilerWriteLogs` :309 (kmalloc :310).
+  `apps/PerfOverlay.HC` `CSpikeRecord` :17-26, `CPerfOverlay` :28-66, `g_perf` :68, `PerfOverlayInit` :82,
+  `PerfOverlayRecordBlit/SmpWait/WmOverhead` :125/129/133, `PerfOverlayRecordFrame` :137, `PerfOverlayDraw`
+  :219. `apps/KernelInit.HC:97-108` (Stage 6), count literal :111. `apps/Compiler.HC` `HcIsIntrinsic`
+  :2261-2270, `HcEmitIntrinsic` :2272-2293.
+- **Edits.**
+  1. **`apps/Telemetry.HC`** — one module:
+     - `CTelemetry` (merge of `CProfiler` + `CPerfOverlay`: 256-bin histogram, 128-spike ring, 64-record
+       cause ring). Global `CTelemetry g_tel;`.
+     - **`mark_*` API** (port `profiler.c:57-116`): `TelemetryBeginFrame`, `TelemetryMarkLogicStart/End`,
+       `TelemetryMarkRasterStart/End`, `TelemetryMarkBlitStart/End`, `TelemetryMarkDmaStart/End`,
+       `TelemetryMarkWmStart/End`, `TelemetryRecordSmpWait(I64)`, `TelemetryEndFrame`.
+     - **Percentiles** (port `profiler.c:224` + `Profiler.HC:201-239`): compute FPS avg, **1 % low**,
+       **0.1 % low** (currently never computed in `PerfOverlay.HC`), min/max/stddev once, in
+       `TelemetryComputeMetrics`.
+     - **Spike ring with causes** (merge `CProfilerSpike` + `CSpikeRecord`; cause enum `PerfOverlay.HC:8-15`
+       + `BOTTLENECK_*` `Profiler.HC:8-14`).
+     - **Optimization directive** (port `profiler.c:294-327`): `U8* TelemetryDirective(I64 bottleneck)`.
+     - **Logs with static buffers:** `U8 g_tel_log[16384];` (removes the `kmalloc` at `Profiler.HC:310` and
+       `kfree` at :372). `TelemetryWriteLogs()` writes `BENCH_PROFILER.LOG` + `BENCH_SPIKES.LOG` via
+       `redsea_write_file`.
+     - **HUD:** `TelemetryDraw(I64 ox, I64 oy)` (port `PerfOverlay.HC:219-296`) with a real 1 %-low readout.
+  2. **PMU** (real hardware). Add intrinsics to `apps/Compiler.HC` (`HcIsIntrinsic` :2261 + `HcEmitIntrinsic`
+     :2272). Encoding: `MRS X0,<sysreg> = 0xD5300000 | op0<<19 | op1<<16 | CRn<<12 | CRm<<8 | op2<<5`;
+     `MSR = 0xD5100000 | …`. Verify each word with `aarch64-linux-gnu-as` before embedding (pattern
+     `scripts/raster_span.s:7-9`).
+
+     | name | MRS word | MSR word |
+     |---|---|---|
+     | `__mrs_pmcr` / `__msr_pmcr` (PMCR_EL0) | `0xD54B9C00` | `0xD51B9C00` |
+     | `__mrs_pmccntr` / `__msr_pmccntr` (PMCCNTR_EL0) | `0xD54B9D00` | `0xD51B9D00` |
+     | `__mrs_pmevcntr0` / `__msr_pmevcntr0` (PMEVCNTR0_EL0) | `0xD54BE800` | `0xD51BE800` |
+     | `__mrs_pmevtyper0` / `__msr_pmevtyper0` (PMEVTYPER0_EL0) | `0xD54BEC00` | `0xD51BEC00` |
+     | `__msr_pmcntenset` (PMCNTENSET_EL0) | — | `0xD51B9C20` |
+     | `__msr_pmcntenclr` (PMCNTENCLR_EL0) | — | `0xD51B9C40` |
+
+     `TelemetryPmuInit()`: `__msr_pmcr` with `E=1|P=1|C=1|D=1|LC=1`; program `PMEVTYPER0=0x08`
+     (`INST_RETIRED`), `PMEVTYPER1=0x03` (`L1D_CACHE_REFILL`), `PMEVTYPER2=0x10` (`BR_MIS_PRED`);
+     `__msr_pmcntenset` with `0x80000007`. `TelemetryPmuProbe()`: read `PMCCNTR_EL0`, run a fixed loop, read
+     again; if it did not advance, set `g_tel.pmu_available = 0` and keep `CNTVCT_EL0` deltas authoritative
+     (honest fallback — QEMU TCG may not implement PMU counters). `TelemetryPmuSnapshot()` fills
+     `cycles/inst/l1d/br`.
+     **Seed parity:** the C seed (`boot/seed/jit_arm64.c:1005+`) compiles **only** `Compiler.HC` (P2.7), which
+     does not call PMU intrinsics → a seed edit is **not required**. Add them to the seed only if the parity
+     corpus later gains a PMU case (existing-file edit, allowed).
+  3. **`apps/KernelInit.HC` Stage 6** (:97-108): replace `Profiler.HC` + `PerfOverlay.HC` with `Telemetry.HC`.
+     Update the count literal :111 from `34` to `31` (34 − 1 telemetry − 2 bench merges).
+  4. **Call-site updates.** Replace `ProfilerInit`/`PerfOverlayInit`/`ProfilerRecordFrame`/
+     `PerfOverlayRecordFrame`/`PerfOverlayDraw`/`ProfilerWriteLogs`/`g_prof.fps_avg` in `apps/HolyBenchmark.HC`
+     (rewritten in P7.7) with `Telemetry*`. `rg -n 'g_prof|g_perf|Profiler|PerfOverlay' apps/` → zero outside
+     `Telemetry.HC`.
+  5. **Cross-module fix** (as P7.4 item 6).
+- **Port source.** `kernel/bench/profiler.c:57-116,224,294-327,329,386`;
+  `kernel/bench/perf_overlay.c:189-195,238-249`.
+- **Assembly.** None new (PMU is `__mrs_*`/`__msr_*`).
+- **Golden-hash risk.** None.
+- **Census risk.** **Decreases** kmalloc/kfree by 1 each (static log buffer) → gate prints `[DOWN]`, still
+  `CENSUS: PASS`. Do **not** re-baseline yet.
+- **Verify.** `SelfTestTelemetry()`: (1) `mark_*` records 100 frames → `valid_sample_count==95` (warmup 5);
+  (2) `fps_1pct_low > 0` and `fps_01pct_low > 0`; (3) a forced 65 ms frame lands in the spike ring with a
+  cause; (4) `TelemetryDirective(BOTTLENECK_CPU_RASTER)` is non-empty; (5) `TelemetryPmuInit()` +
+  `TelemetryPmuProbe()` reports without faulting; (6) `TelemetryWriteLogs()` writes both files. Print
+  `TELEMETRY: PASS`. Call from `SelfTestRun`. Gates: `TELEMETRY: PASS`, `CENSUS: PASS`, `SELF-HOST: PASS`.
+
+---
+
+### P7.7 — Real 40-phase suite in `HolyBenchmark.HC` (absorb `BenchCpu` + `BenchReport`)
+
+**Goal.** A real 40-phase suite with a 3.5 s limiter, per-phase metric capture, real export files; real NEON
+CPU bench; purge synthetic constants and write-only state.
+
+- **Files touched.** `apps/HolyBenchmark.HC` (rewrite); delete `apps/BenchCpu.HC`, `apps/BenchReport.HC`;
+  new `scripts/bench_neon.s`; `apps/SelfTest.HC` (`SelfTestBench`); `apps/Shell.HC` (`benchreport`).
+- **Exact anchors.** `apps/HolyBenchmark.HC` `g_bench_*` :4-9, `bench_unified_tick_and_draw` :33-90 (the
+  `phase%8` bug: `eng = (g_bench_phase / 8) % 5` :59 ignores the variation), fake scorecard :112-119.
+  `apps/BenchCpu.HC` `BenchCpuSieve` :4, `BenchCpuMatrixMul` :32, `BenchCpuPointerChasing` :68,
+  `BenchCpuMathNeon` :94 (**integer LCG — BEN-01**), `BenchCpuMemBandwidth` :105, `BenchCpuRunAll` :126.
+  `apps/BenchReport.HC` `BenchReportMain` :4.
+- **Edits.**
+  1. **Static records** (BSS): `class CBenchRec { U8 name[48]; F64 fps_avg; F64 fps_1pct; F64 ft_ms;
+     F64 render_ms; F64 blit_ms; F64 jitter_ms; I64 bottleneck; };` + `CBenchRec g_bench_records[40];` +
+     phase-state globals. **Remove** `g_bench_mode` (write-only). `U8 g_bench_buf[8192];` static.
+  2. **Names** (port `bench_unified.c:56-62`): categories `Gears, Cubes, Dynamics, Sphere, Fillrate`;
+     variations `SW 1C Base, SW NEON L1, SW SMP 4C, SW DirectVRAM, HW VirtIO, HW DMA+SMP, HW Wireframe,
+     HW VSync 60Hz`.
+  3. **Applicator** `BenchApplyPhase(I64 phase)` (port `bench_unified.c:64-157`): `cat=phase/8`, `var=phase%8`;
+     set the config plane (`gpu_set_raster_engine`, `gpu_set_tile_size(64)`, `gpu_set_smp_cores`,
+     `gpu_set_culling`, `GfxDeviceSetMode`, `GfxDeviceSetBuffering`, `GfxDeviceSetShading`, `gfx_vsync_set`).
+     `TelemetryPhaseReset(5)`. 3.5 s limiter: `g_bench_dur = (__mrs_cntfrq()*7)/2`, `g_bench_t0 = __mrs_cntvct()`.
+  4. **`BenchTickAndDraw()`** (fix :33-90): honour `var = g_bench_phase % 8` (var 6 → wireframe, var 7 → vsync,
+     var 3 → zero-RAM, var 5 → GPU+SMP). Render the category scene (`Gears3DRenderViewport`, cubes,
+     `Physics3DRenderViewport`, sphere via `HolyGLRenderCubeAt`/`MeshRender`, `DolDocRenderShaderNode(…,"plasma")`)
+     through the tile/GPU path, bracketing stages with `TelemetryMark*`. Replace synthetic
+     `PerfOverlayRecordFrame(dt, r, 1200)` / `ProfilerRecordFrame(…,1200,400,300)` with **real** measured
+     `blit_us` (around `GfxPresent`) and `dma_us` (around `VirtioGpuPageFlip`). **Delete** `1200/400/300` (BEN-02).
+  5. **Phase loop:** when `__mrs_cntvct() - g_bench_t0 >= g_bench_dur`, capture the record from `g_tel`,
+     advance phase, re-apply. After phase 39, export.
+  6. **CPU bench** (fold `BenchCpu.HC` in): keep `BenchCpuSieve`/`MatrixMul`/`PointerChasing`/`MemBandwidth`
+     verbatim; **replace `BenchCpuMathNeon` :94** with `BenchMathNeon(U32 *src, I64 n, F64 *out)` whose words
+     come from `scripts/bench_neon.s` (2×`.2d` `fmla` dot-product over a static `F64 g_bench_v[4096]`), plus a
+     scalar cross-check matching to `1e-9`. No allocation.
+  7. **Exports** (static `g_bench_buf`): `BENCH_COMPARISON.TXT` (40 rows: `Ph | Category | Variation | Avg FPS
+     | 1% Low | Avg FT | Render | Blit | Jitter | Bottleneck [WINNER]` + 8×5 FPS matrix + winner; port
+     `bench_unified.c:377-491`); `BENCH_REPORT.TXT` (port `:493-564`); `BENCH_PROFILER.LOG` + `BENCH_SPIKES.LOG`
+     (from `TelemetryWriteLogs`). All via `redsea_write_file`.
+  8. **`BenchReportMain`** (fold `BenchReport.HC:4` in) reads the four files into static
+     `U8 g_bench_view[32768]` (removes the kmalloc at `BenchReport.HC:9`).
+  9. **Shell:** `benchreport` → `BenchReportMain()`.
+- **Port source.** `kernel/bench/bench_unified.c:56-157,377-564`.
+- **Assembly.** `scripts/bench_neon.s` (new).
+- **Golden-hash risk.** None (separate path). **Note:** the full suite takes 40×3.5 s = 140 s → the golden
+  gate must **not** run it; `SelfTestBench` runs a short 2-phase smoke version.
+- **Census risk.** Decreases kmalloc/kfree (static buffers). Never add a `kmalloc` in the suite.
+- **Verify.** `SelfTestBench()`: `BenchApplyPhase(0)` and `(2)` produce different records (variation honoured);
+  `BenchMathNeon` matches the scalar cross-check; the four files exist and are non-empty. Print `BENCH: PASS`.
+  Manual full run: UART `bench` → screenshots (P7.9). Gates: `BENCH: PASS`, `CENSUS: PASS`.
+
+---
+
+### P7.8 — Rebuild the tests: `SelfTest.HC` is the source of truth; wire the new gates
+
+**Goal.** All new gates live in `apps/SelfTest.HC`; `scripts/golden-boot.sh` asserts them.
+
+- **Files touched.** `apps/SelfTest.HC`; `scripts/golden-boot.sh`; `tests/jit_golden/cases.json` (mark
+  historical); `docs/02-TASKLIST.md` (matrix numbers only).
+- **Exact anchors.** `apps/SelfTest.HC` gate calls :986-1009, summary :1011-1018; `scripts/golden-boot.sh`
+  `check()` :14, selftest block :40-232, module-count check :25, census :234, self-host :237, determinism :240.
+- **Edits.**
+  1. `SelfTestRun` (`apps/SelfTest.HC:851`): after `SelfTestStructPtrScale()` (:999) insert `SelfTestTile();`;
+     after `SelfTestRender()` (:1007) insert `SelfTestGL(); SelfTestTelemetry(); SelfTestBench();`. Keep them
+     in the fresh-compiler-state window (all before the sentinel).
+  2. `scripts/golden-boot.sh`: after the `SHELL: PASS` block (:225-231) add four grep blocks for `GL: `,
+     `TILE: `, `TELEMETRY: `, `BENCH: ` (same pattern as the others, checking `PASS`). Update line 25:
+     `check "all 34 subsystems" 1 "$(count 'ALL 34 HOLYC SUBSYSTEMS')"` →
+     `check "all 31 subsystems" 1 "$(count 'ALL 31 HOLYC SUBSYSTEMS')"`.
+  3. `tests/jit_golden/cases.json`: mark **historical / superseded by `apps/SelfTest.HC`** (top-of-file note
+     or rename the directory). Ensure `scripts/golden-boot.sh` does **not** invoke `run-jit-golden.py` (it
+     already does not — keep it that way).
+  4. At the very end (after all decreases are in) run `scripts/census-c-runtime.sh --write` once to re-baseline
+     the (lower) counts, then re-run the gate. Optional; the gate passes without it.
+- **Golden-hash risk.** None. **Census risk.** Re-baselining must be **last** and only to a **lower** total.
+- **Verify.** `GOLDEN BOOT: PASS` with all four new gate lines `[PASS]`, plus the unchanged gates.
+
+---
+
+### P7.9 — Visual proof (screendumps only, never host desktop)
+
+- **Goal.** Screenshots for each benchmark category, the GPU config window, the GL conformance scene, and the
+  telemetry HUD.
+- **Files touched.** New `scripts/p7-screenshots.sh` (allowed; not `.c`); output to `docs/images/p7-*.png`.
+- **Actions.** Boot via `scripts/run-viewer-vm.sh`; for each of `bench` phase categories, `gpuconfig`,
+  `glconform`, `perf`, capture via the existing `/api/neo-os/stream` endpoint (mechanism as
+  `scripts/golden-boot.sh:251-258`). Save `p7-bench-gears.png`, `p7-bench-cubes.png`, `p7-bench-dynamics.png`,
+  `p7-bench-sphere.png`, `p7-bench-fillrate.png`, `p7-gpuconfig.png`, `p7-glconform.png`,
+  `p7-telemetry-hud.png`.
+- **Golden-hash risk.** None. **Census risk.** None.
+- **Verify.** Each PNG is non-empty and shows the expected scene; the final gate run is still `GOLDEN BOOT: PASS`.
+
+---
+
+## 6. Assembly plan (every NEON kernel to add)
+
+All `.s` files are **source-of-truth, not built** (pattern: `scripts/raster_span.s:1-13`). Regenerate the
+instruction words with:
+
+```
+aarch64-linux-gnu-as -o /tmp/x.o scripts/<file>.s
+aarch64-linux-gnu-objdump -d /tmp/x.o | awk '/^[ ]*[0-9a-f]+:/{print "0x"$2}' | tr a-f A-F
+```
+
+then embed them in the `.HC` function as `asm { … }` (pattern: `apps/RasterTile.HC:374-503`,
+`apps/ShaderVM.HC` `ShaderOp4`). The block must **not** contain `ret` (the compiler emits the prologue/epilogue)
+and must preserve the ABI registers it uses (`x19`–`x28`, `v8`–`v31` as needed) exactly like `RasterSpanNEON`.
+
+| Kernel | Source-of-truth `.s` | Embedded in | Purpose | Correctness test |
+|---|---|---|---|---|
+| `RasterSpanNEON` (existing: solid/textured/shaded) | `scripts/raster_span.s` | `apps/RasterTile.HC:374` | THE one span kernel | `RENDER: PASS`, `RASTER: PASS`, `TEXTURE/SHADING: PASS` |
+| `RenderNeonFill` | `scripts/render_neon.s` (new) | `apps/Render.HC` (`RenderDrawRect` fill, `GfxDeviceFastClear`) | 8-px/iter colour fill | golden hash + `GfxDeviceSelfTest` Test 4 |
+| `RenderNeonBlit` | `scripts/render_neon.s` (new) | `apps/Render.HC` (`gfx_swap_buffers`/`gfx_swap_rect`) | 128 B/iter `ldp`/`stnp` copy | byte-compare copied region vs `memcpy` |
+| `RenderNeonBlendRect` | `scripts/render_neon.s` (new) | `apps/Render.HC` (`gfx_blend_rect`) | 8-lane SRC_ALPHA blend | compare vs scalar `:511-529` byte-for-byte |
+| `RasterTileResolve` | `scripts/tile_resolve.s` (new) | `apps/RasterTile.HC` | `stnp` tile→target streaming | `TILE: PASS` pixel equality |
+| `RasterSpanNEON32` (optional P7.5c) | `scripts/raster_span32.s` (new) | `apps/RasterTile.HC` | 32-bit-Z tile span | `TILE: PASS` at zprecision 16 & 32 |
+| `BenchMathNeon` | `scripts/bench_neon.s` (new) | `apps/HolyBenchmark.HC` | real NEON FMA compute (BEN-01 fix) | `BENCH: PASS` vs scalar cross-check |
+
+**SMP primitives** use existing intrinsics, no new asm: `__wfe` (`Compiler.HC:2273`), `__sev` (:2274),
+`__dmb_ish` (:2275), `__dsb_sy` (:2276), `__isb` (:2277). **PMU** uses the new `__mrs_*`/`__msr_*`
+intrinsics added in P7.6. **No kernel is ever duplicated** — the tile path reuses `RasterSpanNEON`; only the
+tile→target copy, the memory ops, and the optional 32-bit-Z variant are new.
+
+---
+
+## 7. Golden-hash protection protocol (2D path stays bit-exact)
+
+1. **Single owner.** `g_render_golden = 0x0D28836F` lives at `apps/SelfTest.HC:327`; only `SelfTestRender`
+   (`apps/SelfTest.HC:585`) hashes and asserts it. Never change the constant.
+2. **Forced solid branch.** `RenderGoldenScene` (`apps/Render.HC:718`) calls `RasterDisableTexture()` +
+   `RasterDisableGouraud()` (:721-722) before drawing. In `RasterSpanNEON` the solid path runs **only** when
+   `tex_ptr==0` (`scripts/raster_span.s:447-459`) **and** `gmode==0`; the byte-identical store is
+   `zip1/zip2 + bsl` over `v31`. No P7 change may alter this branch.
+3. **Immediate path only.** The golden scene's triangle uses `RasterTriangleZ` directly
+   (`apps/Render.HC:736`). It never enters `HolyGLVertex3f`, the clipper, or `RasterScene*`. Therefore
+   P7.1–P7.5 cannot touch it.
+4. **The P7.3 hoist is behaviour-preserving.** `RasterTriangleZ` → `RasterTriangleZCore` only moves
+   `RasterInit()`/target resolution into the wrapper; the core body (Pineda edges, top-left rule, exact
+   64-bit Z `SDIV`, `CMHI.8H`, `BSL`) is unchanged. **Prove it** with `RENDER: PASS (0xD28836F)` and
+   `RASTER: PASS` immediately after the hoist, *before* adding any tiling.
+5. **NEON memory kernels must be byte-identical.** `gfx_clear`/`RenderDrawRect` fill stores the same `U32`
+   per pixel (result identical). `gfx_blend_rect` keeps the exact `+128 >>8` math. `gfx_swap_*` is not part
+   of `RenderHashBuffer` (which reads the target before any swap).
+6. **IRQ mask.** `SelfTestRender` masks `DAIF` around the render + hash (`apps/SelfTest.HC:586-593`), so a
+   preemptive writer cannot perturb the golden frame. Do not remove that mask.
+7. **New tiling/SMP only on 3D/benchmark.** The `RasterScene*` API is called only from the 3D viewports and
+   the benchmark; never from `RenderGoldenScene`, `RenderBench`, or any 2D `gfx_*` primitive.
+8. **Determinism.** The golden hash must be byte-identical on 1 vs 4 cores (`DETERMINISM: PASS`). Tile
+   rendering is deterministic because tiles write disjoint pixels in row-major tile order, and each core
+   has a private scratchpad.
+
+---
+
+## 8. Census-neutrality protocol
+
+The census (`scripts/census-c-runtime.sh`) counts **call sites** of `kmalloc`, `kfree`, `symbols_register`,
+`symbols_lookup`, `symbols_is_defined`, `symbols_var_cell`, `symbols_sic_cell`, `symbols_count`,
+`symbols_unresolved_count`, `jit_compile_and_run` across `apps/*.HC` and fails if any count **increases** vs
+`tests/census-baseline.txt` (181). Rules for P7:
+
+1. **Static BSS, never heap, for new state.** Tile scratchpads (`g_tile_color/g_tile_depth`), scene
+   triangle/bin arrays, telemetry log buffers (`g_tel_log[16384]`), bench records (`g_bench_records[40]`),
+   the bench report view (`g_bench_view[32768]`), and mesh transform buffers are all file-scope globals.
+2. **Reuse existing accessors, do not add allocations.** The texture path already reuses the `CTexture2D`
+   pool; the tile path reuses `RasterSpanNEON`; the benchmark reuses `redsea_write_file` (not a census
+   symbol) for exports.
+3. **Merges reduce counts, never increase.** `Telemetry.HC` replaces the `kmalloc`/`kfree` in
+   `ProfilerWriteLogs` (`Profiler.HC:310/372`) with a static buffer; the merged benchmark replaces
+   `BenchReport.HC:9`'s `kmalloc` with a static buffer. These produce `[DOWN]` lines — accepted.
+4. **Never introduce `symbols_*` or `jit_compile_and_run` call sites.** Cross-module calls go through
+   exported functions resolved at load time, not through `symbols_lookup`.
+5. **Check after every step.** Run `scripts/census-c-runtime.sh` (or the gate) after each step; any
+   `[FAIL] … (increased)` is a hard stop.
+6. **Re-baseline once, last.** Only at the end of P7.8, and only to a **lower** total, run
+   `scripts/census-c-runtime.sh --write`. If in doubt, leave the baseline at 181 (the gate accepts
+   decreases).
+
+---
+
+## 9. Compiler-workaround checklist (do not re-introduce parser/codegen bugs)
+
+| # | Rule | Why |
+|---|---|---|
+| D17 | **Never write a function prototype** `Type name(args);`. Define the function; HolyC resolves forward *references* via the symbol table. | A prototype is parsed as an empty definition and silently breaks the real one. |
+| D18 | **One initialized variable per declaration.** `U8 a = 1; U8 b = 2;` — never `U8 a = 1, b = 2;`. | Comma-separated *initialized* declarations bind only the first declarator. |
+| D19 | Compiler caps are `HC_MAX_FUNCS 512`, `HC_MAX_EPILOGUES 512`. A module with >512 functions/returns must be split. | Larger ceilings are the root fix; do not shrink them. |
+| D20 | **Declare a global before the first function that touches it.** Put all new `class`/global declarations at the top of the module. | A global used before its declaration is implicitly sized to 8 bytes and corrupts memory. |
+| D21 | **Mask a power-of-two hash; never signed-`%` a `U64`.** Use `& (BUCKETS - 1)`. | `U64 % 128` cast to `I64` is negative → OOB bucket read. |
+| A1 | **8-argument hard cap.** A function with >8 parameters is a compile error. Cross boundaries with a descriptor struct pointer or globals. | X0–X7 only; no stack spill. |
+| A2 | **No `F64` compound assign / `++`.** Write `x = x + 1.0;`. | Float compound-assign and increment hard-error. |
+| A3 | **No `F64 *p` deref.** Use `p[i]`. | `*p` on an F64 pointer is unsupported. |
+| A4 | **Local frame ≤ 4080 B.** Large arrays (scratchpads, records, transform buffers) must be globals. | The prologue `SUB SP,SP,#n` is bounded. |
+| A5 | **No `strtod`/`atof`.** Parse numbers with integer/`F64` arithmetic. | Not implemented. |
+| A6 | **One pipeline / no scalar fallback.** New rendering code goes through `RasterTriangleZCore → RasterRow → RasterSpanNEON`. | Project law. |
+| A7 | **No cross-module struct-member access.** Add an exported accessor (e.g. `HolyGLSetCurrentColor`, `RasterGetCores`). | Project law; prevents layout coupling. |
+| A8 | **Never `doldoc_printf` from inside the rasterizer.** Diagnostics are globals read after the draw. | A 9-arg print previously failed the module to compile and left dangling symbols → BSOD. |
+
+**Per-module compile sanity.** After each step, the boot log must show `[KERNEL-INIT] <module> compiled, res = 0`
+and zero `undefined identifier` / `COMPILER.HC] internal error` / `unresolved reference` lines (the gate already
+asserts these at `scripts/golden-boot.sh:26-30`).
+
+---
+
+## 10. Definition of done (mapped to `scripts/golden-boot.sh`)
+
+Run `scripts/golden-boot.sh`; it must print `GOLDEN BOOT: PASS`. The checklist below maps each required
+outcome to the exact gate line the script already checks (or the new one P7.8 adds).
+
+- [ ] `check "shell active"` → `DolDocShell active` appears once.
+- [ ] `check "all 31 subsystems"` → `ALL 31 HOLYC SUBSYSTEMS` (updated from 34 in P7.8).
+- [ ] `check "exceptions"` → 0 `Synchronous Exception`.
+- [ ] `check "undefined identifiers"` → 0 `undefined identifier`.
+- [ ] `check "compiler internal errors"` → 0 `COMPILER.HC] internal error`.
+- [ ] `check "C JIT errors"` → 0 `[JIT] Error`.
+- [ ] `check "unresolved forward refs"` → 0 `unresolved reference`.
+- [ ] Boot-log `RASTER: PASS` (single rasterizer boot check, `apps/RasterTile.HC:768`).
+- [ ] `SELFTEST: <a>/<b> PASS` with `a == b` and `a >= 74`.
+- [ ] `engine parity: <n>/<n> agree, 0 diff` and `PARITY: <n>/<n>`.
+- [ ] `TWINS: 5/5`.
+- [ ] `SYMS: <n> symbols, 0 unresolved`.
+- [ ] `HALCACHE: PASS`, `FSRT: PASS`, `KERNEL:`, `TICK: PASS`, `SCHED: PASS`, `BSOD: PASS`, `SMP: PASS`,
+      `SOVEREIGN: PASS`.
+- [ ] `RENDER: PASS (golden=0xD28836F)`.
+- [ ] `PTRSCALE: PASS`, `ARRAY2D: PASS`, `PTRSCALE2: PASS`, `KHEAP: PASS`, `TEXTURE: PASS`, `FONTS: PASS`,
+      `3D: PASS`, `3D-GEARS: PASS`, `SHADING: PASS`, `SHADERVM: PASS`, `MESH: PASS`, `DOLDOC: PASS`,
+      `SHELL: PASS`.
+- [ ] **New** `GL: PASS`, `TILE: PASS`, `TELEMETRY: PASS`, `BENCH: PASS` (added in P7.8).
+- [ ] `CENSUS: PASS` (no count increased; decreases allowed).
+- [ ] `SELF-HOST: PASS`.
+- [ ] `DETERMINISM: PASS` (golden hash byte-identical on 1 vs 4 cores).
+- [ ] Screenshot saved (non-empty PNG).
+- [ ] `git bundle create /home/user/project/neo-os.bundle --all` after the final green commit.
+
+---
+
+## 11. Risk register (watch-list)
+
+| Risk | Where | Mitigation |
+|---|---|---|
+| Golden hash drifts | `RasterTriangleZCore` hoist, NEON fill | Prove the hoist with `RENDER: PASS` before adding tiling; keep NEON fills byte-exact. |
+| `3D-GEARS` geometry changes | P7.1 Rotatef / matrix stacks | Keep the per-axis dispatch; re-verify `3D-GEARS: PASS`. |
+| SMP tile nondeterminism | P7.4 | Disjoint per-tile scratchpads; SMP test compares to single-core; `DETERMINISM: PASS`. |
+| PMU absent under QEMU TCG | P7.6 | `TelemetryPmuProbe()` falls back to `CNTVCT_EL0`; no gate depends on nonzero PMU counts. |
+| Census increase | P7.3/P7.6/P7.7 | Static BSS only; run the census after every step. |
+| Module count mismatch | P7.6/P7.8 | Update `KernelInit.HC:111` literal **and** `golden-boot.sh:25` together. |
+| `bench` blocks the gate | P7.7 | Gate runs `SelfTestBench` (2-phase smoke), never the full 140 s suite. |
+| 8-arg cap on batch3/clipper | P7.2/P7.5 | Descriptor structs (`CVirtioBatch`, `CRasterVertex`) passed by pointer. |
+| Stale `g_prof`/`g_perf` refs | P7.6 | `rg -n 'g_prof|g_perf|Profiler|PerfOverlay' apps/` must be empty outside `Telemetry.HC`. |
+| `tests/jit_golden` re-enters the gate | P7.8 | Keep `golden-boot.sh` free of `run-jit-golden.py`; mark the JSON historical. |
+
+---
+
+*End of P7 execution blueprint. One priority, one clean pass. Land each step green, commit, bundle; never
+leave the tree red.*
+
+

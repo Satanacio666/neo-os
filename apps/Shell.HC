@@ -543,7 +543,7 @@ U0 ShellCmd_help(U8 *a, U8 *r) {
     doldoc_print("\n$CARD,title=\"NeoOS Sovereign Pure HolyC Shell Console & Command Reference\",w=110,h=8$\n");
     doldoc_print("  $FG,YELLOW$Flagship & UI :$FG$ $FG,CYAN$shader [0..3]$FG$ (Shadertoy IDE), $FG,CYAN$wm$FG$ (Desktop), $FG,CYAN$newwin$FG$, $FG,CYAN$inspect$FG$ (Morphic Halos)\n");
     doldoc_print("  $FG,YELLOW$Themes & Skins:$FG$ $FG,CYAN$theme <mocha|latte|tokyo|nord|temple|cyberpunk>$FG$, $FG,CYAN$compositor$FG$\n");
-    doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$run TestJitP0.HC$FG$\n");
+    doldoc_print("  $FG,YELLOW$Compiler/Debug:$FG$ $FG,CYAN$uf <symbol>$FG$ (ARM64 Disasm), $FG,CYAN$src <file.HC>$FG$, $FG,CYAN$run Compiler.HC$FG$, $FG,CYAN$selftest$FG$ (JIT battery)\n");
     doldoc_print("  $FG,YELLOW$3D & Bench    :$FG$ $FG,CYAN$bench$FG$, $FG,CYAN$renderbench$FG$ (tri/s, Mpix/s), $FG,CYAN$shadervm$FG$ (raymarch), $FG,CYAN$gears$FG$, $FG,CYAN$physics$FG$, $FG,CYAN$holygl$FG$, $FG,CYAN$perf$FG$, $FG,CYAN$mem$FG$\n");
     doldoc_print("  $FG,YELLOW$RedSea Disk   :$FG$ $FG,CYAN$ls$FG$, $FG,CYAN$filer$FG$ (interactive), $FG,CYAN$cd$FG$, $FG,CYAN$mkdir$FG$, $FG,CYAN$rm$FG$, $FG,CYAN$cat$FG$, $FG,CYAN$save$FG$, $FG,CYAN$edit$FG$\n");
     doldoc_print("  $FG,YELLOW$System        :$FG$ $FG,CYAN$top$FG$ (live monitor), $FG,CYAN$selftest$FG$, $FG,CYAN$jitmap$FG$, $FG,CYAN$clear$FG$, $FG,CYAN$reboot$FG$\n");

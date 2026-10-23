@@ -984,6 +984,13 @@ U0 SelfTestRun() {
     SelfTestCheck("f64_int_cast2", "(I64)((F64)9 + 0.5);", 9);
     SelfTestCheck("f64_global_if", "F64 nn = 1.0; if (nn < 2.0) nn = 3.0; nn;", 4613937818241073152);
     SelfTestInclude();
+    // P7.0: folded from the former orphan apps/TestJitP0.HC.
+    SelfTestCheck("compound_arith", "I64 ca = 100; ca += 20; ca -= 10; ca *= 2; ca /= 4; ca %= 10; ca;", 5);
+    SelfTestCheck("compound_bitwise", "I64 cb = 0x0F; cb |= 0xF0; cb &= 0x33; cb ^= 0x03; cb <<= 2; cb >>= 1; cb;", 96);
+    SelfTestCheck2("struct_member_compound", 70, "struct CIT { I64 id; I64 value; }", "CIT it; it.id = 42; it.value = 10; it.value += 25; it.value *= 2; it.value;");
+    SelfTestCheck("loop_break_continue", "I64 s = 0; for (I64 i = 0; i < 20; i = i + 1) { if (i == 5) continue; if (i == 15) break; s += i; } s;", 100);
+    SelfTestCheck("sizeof_i64", "sizeof(I64);", 8);
+    SelfTestCheck("sizeof_struct", "struct SZ { I64 a; I64 b; I64 c; }; sizeof(SZ);", 24);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();

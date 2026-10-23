@@ -28,6 +28,16 @@ check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
 check "C JIT errors"        0 "$(count '\[JIT\] Error')"
 check "unresolved forward refs" 0 "$(count 'unresolved reference')"
+# P7.0: the peephole optimizer must have run on every module Compiler.HC compiles.
+pline="$(grep -a '\[PEEPHOLE\] runs=' "$LOG" 2>/dev/null | tail -1)"
+pruns="$(printf '%s' "$pline" | sed -n 's/.*runs=\([0-9]*\).*/\1/p')"
+prt="$(printf '%s' "$pline" | sed -n 's/.*roundtrips=\([0-9]*\).*/\1/p')"
+if [ "${pruns:-0}" -ge 30 ] && [ "${prt:-0}" -gt 0 ]; then
+    echo "  [PASS] $pline (peephole optimizer active)"
+else
+    echo "  [FAIL] peephole: ${pline:-<none>} (want runs>=30 and roundtrips>0)"
+    fail=1
+fi
 # RASTER: is printed by RasterTile.HC's boot self-check (Stage 5), i.e. in $LOG.
 raline="$(grep -a 'RASTER: ' "$LOG" 2>/dev/null | tail -1)"
 if printf '%s' "$raline" | grep -aq 'PASS'; then

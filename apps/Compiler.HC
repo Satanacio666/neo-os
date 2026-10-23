@@ -151,6 +151,9 @@ I64   g_hc_code_len;
 I64   g_hc_pool_offset;
 U64   g_hc_unit_main;
 
+// P7.0: branch-target bitmap for the peephole optimizer (1 bit per instruction).
+U8    g_hc_target_bits[131072];
+
 // Function Prologue/Epilogue Dynamic Frame Patching
 I64   g_hc_pro_sub_idx;
 I64   g_hc_epi_patches[HC_MAX_EPILOGUES];
@@ -801,6 +804,189 @@ U0 HcEmitPush(I64 reg) {
 U0 HcEmitPop(I64 reg) {
     // ldr x(reg), [sp], #16
     HcEmit(0xF84107E0 | reg);
+}
+
+// ------------------------------------------------------------------------------
+// P7.0: Peephole optimizer (ported from boot/seed/jit_arm64.c:800).
+//
+// NOP-BASED: it NEVER deletes or inserts instructions, so the index-based branch
+// backpatching in HcBackpatchCbz/Cbnz/B and the break/continue stacks (which
+// record g_hc_code_len at emit time) stays exactly valid. Deleting emitted
+// instructions after the fact would shift every jump crossing the deletion.
+//
+//   Pass 1  STR X0,[SP,#-16]! ... LDR X0,[SP],#16  -> NOP / NOP (X0 round-trip)
+//           STR X0,[SP,#-16]! ... LDR X1,[SP],#16  -> MOV X1,X0 / NOP (retarget)
+//   Pass 2  MOV Xd, Xd                              -> NOP (dead move)
+//   Pass 3  ADD Xd, Xd, #0                          -> NOP (redundant zero add)
+// ------------------------------------------------------------------------------
+I64 g_hc_opt_roundtrips = 0;
+I64 g_hc_opt_deadmoves = 0;
+I64 g_hc_opt_deadadds = 0;
+I64 g_hc_opt_runs = 0;
+
+// True if `insn` reads or writes general register `reg`, or touches SP. Deliberate
+// over-approximation: a false positive only rejects a collapse (safe).
+I64 HcInsnTouches(U32 insn, I64 reg) {
+    if (insn == 0xD503201F) return 0; // NOP is harmless
+    // MOVZ / MOVK: immediate in [20:5], only Rd in [4:0] is a register.
+    if ((insn & 0x7F800000) == 0x52800000 || (insn & 0x7F800000) == 0x72800000) {
+        U32 rd = insn & 0x1F;
+        if (rd == reg) return 1;
+        if (rd == 31) return 1; // SP
+        return 0;
+    }
+    // MOV reg (ORR Xd, XZR, Xm).
+    if ((insn & 0xFFE0FFE0) == 0xAA0003E0) {
+        U32 rd = insn & 0x1F;
+        U32 rm = (insn >> 16) & 0x1F;
+        if (rd == reg || rm == reg) return 1;
+        if (rd == 31 || rm == 31) return 1;
+        return 0;
+    }
+    // Single-register load/store.
+    if ((insn & 0x0A000000) == 0x08000000 || (insn & 0x38000000) == 0x38000000) {
+        U32 rt = insn & 0x1F;
+        U32 rn = (insn >> 5) & 0x1F;
+        if (rt == reg || rn == reg) return 1;
+        if (rn == 31) return 1; // SP base
+        return 0;
+    }
+    // Standard 3-register data processing.
+    U32 rd2 = insn & 0x1F;
+    U32 rn2 = (insn >> 5) & 0x1F;
+    U32 rm2 = (insn >> 16) & 0x1F;
+    if (rd2 == reg || rn2 == reg || rm2 == reg) return 1;
+    if (rn2 == 31) return 1; // SP
+    return 0;
+}
+
+// May the push at `p` and the pop at `q` be collapsed? The intervening window
+// must contain no branch/call/SVC/RET, must not touch `reg` or SP, and no branch
+// may target (p, q].
+I64 HcCanCollapse(I64 p, I64 q, I64 reg) {
+    if (q <= p || (q - p) > 40) return 0;
+    I64 k = p + 1;
+    while (k < q) {
+        U32 insn = g_hc_code[k];
+        if (insn == 0xD503201F) { k = k + 1; continue; }
+        if ((insn & 0xFFFFFC1F) == 0xD63F0000) return 0; // BLR
+        if ((insn & 0xFC000000) == 0x94000000) return 0; // BL
+        if ((insn & 0xFFE0001F) == 0xD4000001) return 0; // SVC
+        if (insn == 0xD65F03C0) return 0;                // RET
+        if ((insn & 0xFC000000) == 0x14000000) return 0; // B
+        if ((insn & 0xFF000010) == 0x54000000) return 0; // B.cond
+        if ((insn & 0x7E000000) == 0x34000000) return 0; // CBZ / CBNZ
+        if (HcInsnTouches(insn, reg)) return 0;
+        k = k + 1;
+    }
+    k = p + 1;
+    while (k <= q) {
+        if (g_hc_target_bits[k >> 3] & (1 << (k & 7))) return 0;
+        k = k + 1;
+    }
+    return 1;
+}
+
+U0 HcOptimizePeephole(I64 start, I64 end) {
+    if (g_hc_error) return;
+    if (end - start < 2) return;
+    g_hc_opt_runs = g_hc_opt_runs + 1;
+
+    I64 z = 0;
+    while (z < 131072) { g_hc_target_bits[z] = 0; z = z + 1; }
+
+    // Build the branch-target bitmap for [start, end).
+    I64 b = start;
+    while (b < end) {
+        U32 insn = g_hc_code[b];
+        I64 tgt = -1;
+        if ((insn & 0xFC000000) == 0x14000000) {          // B
+            I64 imm = insn & 0x03FFFFFF;
+            if (imm & 0x02000000) imm = imm - 0x04000000;
+            tgt = b + imm;
+        } else if ((insn & 0xFF000010) == 0x54000000) {   // B.cond
+            I64 imm = (insn >> 5) & 0x7FFFF;
+            if (imm & 0x40000) imm = imm - 0x80000;
+            tgt = b + imm;
+        } else if ((insn & 0x7E000000) == 0x34000000) {   // CBZ / CBNZ
+            I64 imm = (insn >> 5) & 0x7FFFF;
+            if (imm & 0x40000) imm = imm - 0x80000;
+            tgt = b + imm;
+        }
+        if (tgt >= 0 && tgt < 131072 * 8) {
+            g_hc_target_bits[tgt >> 3] = g_hc_target_bits[tgt >> 3] | (1 << (tgt & 7));
+        }
+        b = b + 1;
+    }
+
+    I64 pass = 0;
+    while (pass < 4) {
+        I64 changed = 0;
+
+        // Pass 1: stack round-trip collapse.
+        I64 p = start;
+        while (p < end) {
+            if (g_hc_code[p] == 0xF81F0FE0) { // STR X0, [SP, #-16]!
+                I64 q = p + 1;
+                while (q < end && (q - p) <= 40) {
+                    U32 qi = g_hc_code[q];
+                    if (qi == 0xF84107E0) { // LDR X0, [SP], #16
+                        if (HcCanCollapse(p, q, 0)) {
+                            g_hc_code[p] = 0xD503201F;
+                            g_hc_code[q] = 0xD503201F;
+                            g_hc_opt_roundtrips = g_hc_opt_roundtrips + 1;
+                            changed = 1; p = q; break;
+                        }
+                    } else if (qi == 0xF84107E1) { // LDR X1, [SP], #16
+                        if (HcCanCollapse(p, q, 1)) {
+                            g_hc_code[p] = 0xAA0003E1; // MOV X1, X0 (X0 still holds the pushed value here)
+                            g_hc_code[q] = 0xD503201F;
+                            g_hc_opt_roundtrips = g_hc_opt_roundtrips + 1;
+                            changed = 1; p = q; break;
+                        }
+                    }
+                    q = q + 1;
+                }
+            }
+            p = p + 1;
+        }
+
+        // Pass 2: dead moves (MOV Xd, Xd -> NOP).
+        I64 k = start;
+        while (k < end) {
+            U32 insn = g_hc_code[k];
+            if ((insn & 0xFFE0FFFF) == 0xAA0003E0) {
+                U32 rm = (insn >> 16) & 0x1F;
+                U32 rd = insn & 0x1F;
+                if (rm == rd) {
+                    g_hc_code[k] = 0xD503201F;
+                    g_hc_opt_deadmoves = g_hc_opt_deadmoves + 1;
+                    changed = 1;
+                }
+            }
+            k = k + 1;
+        }
+
+        // Pass 3: redundant zero adds (ADD Xd, Xd, #0 -> NOP).
+        k = start;
+        while (k < end) {
+            U32 insn = g_hc_code[k];
+            if ((insn & 0xFFC00000) == 0x91000000) {
+                I64 imm12 = (insn >> 10) & 0xFFF;
+                U32 rn = (insn >> 5) & 0x1F;
+                U32 rd = insn & 0x1F;
+                if (imm12 == 0 && rn == rd) {
+                    g_hc_code[k] = 0xD503201F;
+                    g_hc_opt_deadadds = g_hc_opt_deadadds + 1;
+                    changed = 1;
+                }
+            }
+            k = k + 1;
+        }
+
+        if (!changed) break;
+        pass = pass + 1;
+    }
 }
 
 U0 HcEmitAddrLocal(I64 reg, I64 offset) {
@@ -3684,6 +3870,9 @@ I64 CompilerCompileAndRun(U8 *src) {
         if (exp_buf) kfree(exp_buf);
         return -1;
     }
+
+    // P7.0: peephole-optimize the freshly emitted module (NOP-based, index-safe).
+    HcOptimizePeephole(start_idx, g_hc_code_len);
 
     I64 emitted_insns = g_hc_code_len - start_idx;
     g_hc_pool_offset = g_hc_code_len;

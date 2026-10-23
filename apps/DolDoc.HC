@@ -2350,7 +2350,7 @@ U0 DolDocDesktopMouse() {
                     else if (mx >= d_x + 424 && mx <= d_x + 478) { ThemeApply(5); DolDocDamageAll(); }
                 } else if (my >= d_y + 112 && my <= d_y + 134) {
                     if (mx >= d_x + 130 && mx <= d_x + 204) DolDocPushAction(DOC_ACT_RUN, -1, 0, "run Compiler.HC");
-                    else if (mx >= d_x + 210 && mx <= d_x + 284) DolDocPushAction(DOC_ACT_RUN, -1, 0, "run TestJitP0.HC");
+                    else if (mx >= d_x + 210 && mx <= d_x + 284) DolDocPushAction(DOC_ACT_RUN, -1, 0, "selftest");
                     else if (mx >= d_x + 290 && mx <= d_x + 344) DolDocPushAction(DOC_ACT_RUN, -1, 0, "bench");
                     else if (mx >= d_x + 410 && mx <= d_x + 478) DolDocPushAction(DOC_ACT_RUN, -1, 0, "mem");
                 } else if (my >= d_y + 148 && my <= d_y + 170) {
