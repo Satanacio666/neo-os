@@ -11,9 +11,15 @@
 > (The 20 mandates in §1–§20 below are the standing law; some name modules that were later dissolved — the
 > canonical, current truth is always `docs/00`–`docs/04`, not the mandate text.)
 
-**Repository:** `/home/user/neo-os` (git repo, branch `main`). **Delivery bundle:** `/home/user/project/neo-os.bundle`.
-(`/home/user/project/neo-os-docs/` is a **stale pre-consolidation doc dump — ignore it**; the canonical docs are
-in `/home/user/neo-os/docs/`.)
+**Repository layout.** The OS (HolyC + the C bootstrap) lives at the repo root: `apps/` (the 34 `.HC` modules),
+`boot/` (the only C: `main.c` + `seed/` + `runtime/` + `uefi/`), `kernel/` (assembly), `docs/` (canonical docs),
+`scripts/` (build + verification harness), `tests/`, `screenshots/`, `Makefile`. The **browser console** lives at
+`harness/` (a standalone Next.js app — see `harness/README.md`).
+
+**In this E2B container specifically:** the repo is `/home/user/neo-os` (branch `main`); the delivery bundle is
+`/home/user/project/neo-os.bundle`; the preview/dev-server shell is `/home/user/project`. Ignore the stale
+pre-consolidation dump `/home/user/project/neo-os-docs/` and `neo-os-src.tar.gz` — the canonical docs are in
+`/home/user/neo-os/docs/`.
 
 ### Canonical documentation — exactly 5 files (never add/rename `docs/*.md`)
 - `docs/00-MASTER-PLAN.md` — vision, invariants (§2), the P0→P10 ladder (§3), the P7→P11 priority plan (§11).
@@ -41,6 +47,7 @@ python3 scripts/neo_uart.py --sentinel '<<<NEO-DONE:selftest>>>' --timeout 175 '
 bash scripts/golden-boot.sh                 # THE gate -> must print "GOLDEN BOOT: PASS"
 ```
 - UART log: `/tmp/neo-os-serial.log`. Drive the REPL by sending lines to the socket (see `scripts/uart-repl.py`).
+- **Browser console (optional, for humans):** `cd harness && bun install && bun run dev` → `http://localhost:3000/neo-os`.
 - **Screenshots are mandatory** for any visual change; `golden-boot.sh` saves `/tmp/golden-boot.png` from the
   dev-server stream. Never verify visuals from a host desktop.
 - Do **not** start the dev server (port 4000); it is already running. Do **not** restart the VM if the sandbox

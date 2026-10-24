@@ -22,22 +22,19 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 
 ---
 
-## 📚 Architectural Manifestos & Deep Dives
+## 📚 Documentation
 
-- [**Master Catalog of Outstanding Defects, Shortcomings & Code Critique**](docs/OUTSTANDING_DEFECTS_AND_CODE_CRITIQUE.md): Authoritative, unsparing forensic audit detailing every stub, defect, and architectural hypocrisy currently in the codebase.
-- [**Master Future Implementations & Execution Roadmap**](docs/FUTURE_IMPLEMENTATIONS_MASTER_ROADMAP.md): Prioritized, step-by-step master checklist covering all future implementations across 6 development phases.
-- [**Sovereign Architectural Dossier & Complete Blueprint**](docs/neo_os_grand_forensic_dossier_and_sovereign_blueprint.md): Complete ground-truth file-by-file inventory (215 files, 75k LOC), system critique, and sovereign blueprint.
-- [**The Unified Shell-DolDoc Symbiosis & Sovereign Compositor Blueprint**](docs/shell_doldoc_symbiosis_and_sovereign_compositor_blueprint.md): Deep architectural specification on how the Shell maintains 100% of its CLI/REPL identity while DolDoc becomes the sovereign compositor and graphics substrate.
-- [**DolDoc Sovereign Unified Continuum Master Specification**](docs/doldoc_sovereign_unified_continuum_master_specification.md): Technical specification dissolving the window manager, shell, and compositor into a unified OmniTape display journal with Morton 64x64 L1 cache-resident tiles.
-- [**Grand Architectural Consolidation Encyclopedia**](docs/neo_os_grand_consolidation_encyclopedia.md): Comprehensive synthesis of system pipelines, files, findings, and architectural history.
-- [**Consolidated Defect, Design-Change & Fix Record**](docs/neo_os_consolidated_defect_record.md): Authoritative problem-only register documenting defects, integration gaps, JIT compiler limits, and concrete fixes.
-- [**Exhaustive Post-Mortem & Root Cause Analysis**](docs/exhaustive_architectural_post_mortem.md): Architectural post-mortem covering bottlenecks, hardware traps, TCG host contention, and JIT struct reflection fixes.
-- [**HolyGL Sovereign Unified Master Architecture**](docs/holygl_sovereign_unified_master_architecture.md): Sovereign OpenGL state machine, L1 tiled NEON rasterization, matrix stacks, and Ring 0 HolyC graphics continuum.
-- [**Complete Render Stack Master Evaluation**](docs/complete_render_stack_master_evaluation.md): Deep-dive into memory topologies, scanline vs. tiled SIMD rasterization, non-temporal streaming stores, and double-buffering.
-- [**Single-Core Sovereign Master Audit**](docs/single_core_sovereign_master_audit.md): Systematic single-core benchmarking, frame timing rigor, and CPU budget allocation.
-- [**NeoOS Formal Architecture Specification**](docs/neo_os_architecture_specification.md): Technical specification of the Single Address Space OS, memory layouts, scheduler, and compiler reflection.
-- [**Ring 0 Native Embeddings Engine Manifesto**](docs/ring0_embeddings_engine_manifesto.md): Conceptual design manifesto proposing a pure C/NEON deterministic vector engine and HNSW semantic dispatch directly in Ring 0.
-- [**Walkthrough & Empirical Verification Gallery**](docs/walkthrough.md): The comparison matrix, live host execution proofs, and gallery of subsystems in action.
+The documentation was consolidated to **exactly five canonical files** (the older 44 planning docs were merged
+losslessly into them and archived under `docs/_superseded-old-docs/`):
+
+- [**docs/00 — Master Plan**](docs/00-MASTER-PLAN.md): vision, invariants, and the full **P0 → P10 priority ladder**.
+- [**docs/01 — Reality Audit**](docs/01-REALITY-AUDIT.md): verified claim-by-claim reality of the code, plus the upstream salvage audit (§L).
+- [**docs/02 — Task List & Runbooks**](docs/02-TASKLIST.md): the per-phase task list and the **executable P7 runbooks**.
+- [**docs/03 — Ideas & Research**](docs/03-IDEAS-AND-RESEARCH.md): every idea, design, and research direction.
+- [**docs/04 — Contradictions, Decisions & Open Questions**](docs/04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md): every decision `D1…D33`.
+
+Also: [`AGENTS.md`](AGENTS.md) (standing directives + **§0 START HERE** — current state and the exact build/test loop),
+[`SKILL.md`](SKILL.md) (the 20 sovereign mandates), and the [`harness/`](harness/README.md) browser console.
 
 ## Features
 
@@ -273,6 +270,18 @@ qemu-system-aarch64 \
   -serial stdio
 ```
 
+### Web console (browser harness)
+
+[`harness/`](harness/README.md) is a Next.js app that drives the guest in a browser — live framebuffer streaming,
+keyboard/pointer input, a UART console, and VM start/stop — over the QEMU VNC + UART sockets that
+`scripts/run-viewer-vm.sh` creates.
+
+```bash
+cd harness
+bun install
+bun run dev        # http://localhost:3000/neo-os
+```
+
 ---
 
 ## Shell Commands Reference
@@ -436,62 +445,39 @@ GOP VRAM write (direct, Zero-RAM mode)
 
 ```
 neo-os/
-├── boot/
-│   ├── main.c              # UEFI EFI_MAIN entry point, boot sequence
+├── apps/                   # 100% pure HolyC suite — 34 modules, JIT-compiled at boot
+│   ├── KernelInit.HC       # boot orchestrator: loads every module from RedSea
+│   ├── Compiler.HC         # self-hosting HolyC compiler (AArch64 JIT, peephole optimizer)
+│   ├── HolyGL.HC           # OpenGL-style 3D state machine (matrix stacks, lighting)
+│   ├── RasterTile.HC       # the ONE tiled NEON rasterizer (Z, textures, Blinn-Phong)
+│   ├── Render.HC           # framebuffer, damage tracker, single present
+│   ├── GfxDevice.HC        # the ONE GPU device (virtio-gpu)
+│   ├── DolDoc.HC           # CDoc/CTree document engine (windows are documents)
+│   ├── Shell.HC            # O(1) action-executor shell (FNV-1a registry)
+│   ├── Math3D.HC Gears3D.HC Mesh.HC Physics3D.HC ShaderVM.HC ShaderEditor.HC
+│   ├── Fonts.HC Theme.HC HalPlatform.HC KHeap.HC Symbols.HC
+│   ├── Sched.HC Smp.HC Gic.HC Timer.HC Exceptions.HC
+│   ├── VirtioBlk.HC VirtioInput.HC Keyboard.HC Mouse.HC RedSea.HC
+│   ├── BenchCpu.HC BenchReport.HC HolyBenchmark.HC PerfOverlay.HC Profiler.HC
+│   ├── SelfTest.HC         # in-guest regression battery + engine parity (the `selftest` gate)
+│   └── cube.obj sphere.obj GUIDE.TXT README.TXT
+├── boot/                   # the ONLY C (bootstrap; each piece retires to .HC)
+│   ├── main.c              # UEFI entry point + boot sequence + seed bring-up
+│   ├── seed/               # the C JIT seed (lexer.c, jit_arm64.c, table.c, tok.h, seed_fs.c)
+│   ├── runtime/            # C runtime substrate (kheap.c, symbols.c) — retired at handover
 │   └── uefi/               # UEFI protocol headers + linker script
-├── compiler/
-│   ├── lexer.c/h           # HolyC tokenizer (keywords, char literals)
-│   ├── jit_arm64.c/h       # AArch64 JIT: parser, codegen, self-tests
-│   └── table.c/h           # Symbol table
-├── gui/
-│   ├── render.c/h          # GOP framebuffer, Zero-RAM mode, swap functions
-│   ├── wm.c/h              # Window manager, DolDoc terminal
-│   ├── shell.c/h           # Interactive shell + all commands
-│   ├── menu.c/h            # Boot menu
-│   ├── font8x16.h          # Bitmap font
-│   ├── font_ttf.c/h        # TrueType font rasterizer
-│   └── stb_truetype.h      # STB TrueType library
-├── kernel/
-│   ├── arch/               # AArch64 SMP, PSCI, exception vectors
-│   ├── mem/                # kmalloc/kfree, page allocator
-│   ├── sched/              # Cooperative + preemptive scheduler
-│   ├── math/
-│   │   ├── math3d.c        # 3D pipeline: matrices, rasterizer, near-clip
-│   │   └── gears3d.c       # Gear mesh generation (CCW winding)
-│   ├── bench/
-│   │   └── bench3d.c       # 3D benchmark: dual-viewport cubes
-│   ├── physics/            # (WIP) physics subsystem
-│   └── symbols/            # Runtime symbol table for JIT
-├── drivers/
-│   ├── input/              # VirtIO Input (keyboard/tablet) & UEFI input fallback
-│   ├── block/              # VirtIO Block MMIO driver (virtio_blk.c/h)
-│   └── gpu/                # VirtIO GPU MMIO 2D driver (virtio_gpu.c/h) & GOP fallback
-├── fs/
-│   └── redsea.c/h          # RedSea 64-bit contiguous block filesystem
-├── apps/                   # 100% Pure Sovereign HolyC Application Suite
-│   ├── HolyGL.HC           # Sovereign 3D graphics pipeline & matrix stack
-│   ├── WM.HC               # Sovereign Window Manager & desktop event loop
-│   ├── Compositor.HC       # Scene-graph compositor & damage blitter
-│   ├── Shell.HC            # Interactive DolDoc 2.0 shell & autocomplete
-│   ├── DolDoc.HC           # DolDoc 2.0 text-as-geometry engine
-│   ├── RasterTile.HC       # Juan Pineda L1-cache tiled SIMD rasterizer
-│   ├── Gears.HC            # 3D GLXGears involute gear engine
-│   ├── Physics3D.HC        # 3D Newtonian multi-body rigid dynamics
-│   ├── SmpDemo.HC          # 4-core parallel task dispatch benchmark
-│   ├── Filer.HC            # RedSea directory navigator & launcher
-│   ├── Editor.HC           # Full-screen code editor with disk writeback
-│   ├── GrMath.HC           # 4x4 transformation matrices & 3D vector math
-│   ├── Compiler.HC         # Stage-1 self-hosting HolyC compiler prototype
-│   ├── WasmJit.HC          # WebAssembly AArch64 JIT compiler prototype
-│   ├── StdLib.HC           # CArray dynamic arrays & CDict hash maps
-│   ├── Top.HC              # Live CPU topology & system monitor
-│   ├── GpuConfig.HC        # VirtIO-GPU resolution & scanout configurator
-│   ├── HolyBenchmark.HC    # Unified benchmark suite launcher
-│   ├── FontVector.HC       # Quadratic Bézier vector font math evaluator
-│   └── ShaderEditor.HC     # Real-time procedural acrylic glass shader
-├── scripts/                # Verification harnesses (test_p8_holygl.py, etc.)
-├── screenshots/            # Verified QEMU screendumps
-└── Makefile
+├── kernel/                 # the remaining assembly
+│   ├── arch/aarch64/       # vectors.S, smp_entry.S, ffi_arm64.S
+│   └── sched/switch.S      # context switch
+├── gui/                    # font8x16.h (bitmap font)
+├── docs/                   # canonical docs 00–04 (+ research/, images/, _superseded-old-docs/)
+├── harness/                # browser console (Next.js): framebuffer stream, VNC input, UART, VM control
+├── scripts/                # build + verification harness (golden-boot.sh, run-viewer-vm.sh, neo_uart.py, …)
+├── tests/                  # census-baseline.txt + jit_golden/cases.json
+├── screenshots/            # verified QEMU screendumps
+├── AGENTS.md SKILL.md      # directives + §0 START HERE
+├── Makefile  README.md  LICENSE
+└── build/                  # (gitignored) BOOTAA64.EFI, disk.img, redsea.img
 ```
 
 ---

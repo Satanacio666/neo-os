@@ -15,3 +15,11 @@ build/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Web console harness (Next.js) — see harness/.gitignore for the full list
+harness/node_modules/
+harness/.next/
+harness/out/
+harness/*.tsbuildinfo
+harness/.env
+harness/.env*.local
