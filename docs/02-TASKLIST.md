@@ -1087,13 +1087,24 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > (`HolyGLModelviewMBits`/`HolyGLProjectionMBits`). Gate: `GL: PASS`, `3D: PASS`, `3D-GEARS: PASS`,
 > `SHADING: PASS`, `TEXTURE: PASS`, `MESH: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 99/99`,
 > `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
-> **Next: P7.2 (near-plane clipper + NEON memory kernels).**
+>
+> **P7.2 NEAR-PLANE CLIPPER + NEON MEMORY KERNELS (2026-10) ✅ DONE.** Sutherland–Hodgman near-plane clipper
+> (`HolyGLLerpVertex`/`HolyGLClipNear`/`HolyGLSubmitClipped`, wired into `HolyGLVertex3f`) → `CLIP: PASS`. NEON
+> memory kernels in `scripts/render_neon.s`, embedded via `asm { … }` in `apps/Render.HC`: `RenderNeonFill`
+> (8 px/iter, backs `RenderDrawRect`/`gfx_clear`), `RenderNeonBlit` (64 B/iter, backs `gfx_swap_*`),
+> `RenderNeonBlendRect` (128-bit `UMULL`/`UMLAL`/`SHRN`, 4 px/iter, backs `gfx_blend_rect`). `SelfTestNeonMem()`
+> → `NEONMEM: PASS` (bit-exact vs scalar, incl. `n = 11` body+tail); `golden-boot.sh` gained the `NEONMEM`
+> assertion. **Root fix (D36):** the first blend loop decremented with `sub` before `b.ne` — AArch64 `SUB` does
+> not set `NZCV`, so the loop never terminated and hung the shell; fixed with `subs`. Gate: `CLIP: PASS`,
+> `NEONMEM: PASS`, `GL: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `PARITY 70/70 (0 diff)`,
+> `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
+> **Next: P7.3 (L1 tile binning + per-core scratchpad + `stnp` streaming resolve).**
 >
 > Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
 >
 > **P7 step index (authoritative numbering — `docs/00` §11 mirrors it):**
 > **P7.0** recon/baseline ✅ · **P7.1** HolyGL GL 1.3 surface ✅ (`GL: PASS`) · **P7.2** near-plane clipper + NEON
-> memory kernels (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve (`TILE`) · **P7.4** SMP tile
+> memory kernels ✅ (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve (`TILE`) · **P7.4** SMP tile
 > dispatch + parallel vertex transform (`DETERMINISM`) · **P7.5** GPU config plane + VirtIO batch/page-flip +
 > 32-bit Z (`GPUCFG`) · **P7.6** merged `Telemetry.HC` + ARM PMU (`TELEMETRY`) · **P7.7** real 40-phase suite
 > (`BENCH`) · **P7.8** rebuilt tests / wire gates (`P7.8: PASS`) · **P7.9** GL conformance + visual proof
@@ -1347,41 +1358,38 @@ capture `/tmp/golden-boot.png`. **Commit + refresh the bundle.**
 
 ---
 
-### P7.2 — Near-plane Sutherland–Hodgman clipper + NEON memory kernels
+### P7.2 — Near-plane Sutherland–Hodgman clipper + NEON memory kernels — ✅ **DONE** (`f9ed993`, `8c68497`, `dead6b4`, this checkpoint)
 
 **Goal.** Clip triangles against `w >= near` (1–2 output triangles) instead of rejecting; add NEON
 blit/blend/clear in `Render.HC`.
 
-- **Files touched.** `apps/HolyGL.HC` (clipper + integration); `apps/Render.HC` (NEON kernels + use);
-  new `scripts/render_neon.s`; `apps/GfxDevice.HC` (route `GfxDeviceFastClear`).
-- **Exact anchors.** `HolyGLSubmitTriangle` :290-365 (reject :292); `HolyGLVertex3f` triangle emission
-  :414-430; `RenderDrawRect` :308-343 (scalar row fill :333-342); `gfx_blend_rect` :484-530;
-  `gfx_swap_buffers` :587-595; `gfx_swap_rect` :596-618; `GfxDeviceFastClear` :562-579.
-- **Edits.**
-  1. **Clipper** (port `kernel/math/math3d.c:775-866`): add `HolyGLLerpVertex(GLVertex *out, GLVertex *a,
-     GLVertex *b, F64 t)` and `I64 HolyGLClipNear(GLVertex in[3], F64 near_w, GLVertex out[2][3])`.
-     `out` is a local array in `HolyGLVertex3f` (2×3×sizeof(GLVertex) = 480 B — within the 4080 B frame).
-  2. **Integrate.** In `HolyGLVertex3f`, when a triangle's 3-vertex buffer fills, clip then submit each
-     output triangle via `HolyGLSubmitTriangle`. **Remove** the early reject at :292 (the clipper guarantees
-     `w >= 0.05`). Keep the `cross <= 0` cull (:309).
-  3. **NEON memory kernels.** Write `scripts/render_neon.s` (source-of-truth) and embed its words via
-     `asm { … }` in `apps/Render.HC` (pattern `apps/RasterTile.HC:374-503`):
-     - `RenderNeonFill(U32 *dst, I64 count, U32 color)` — 8 px/iter (`dup v0.4s,w2; stp q0,q0,[x0],#32`),
-       scalar tail. Replaces the row loop :333-342 and backs `GfxDeviceFastClear`.
-     - `RenderNeonBlit(U32 *dst, U32 *src, I64 bytes)` — port `gui/render.c:15-35` (8×`ldp`/`stnp`, 128 B/iter),
-       used by `gfx_swap_buffers`/`gfx_swap_rect`.
-     - `RenderNeonBlendRect(U32 *dst, I64 n, U32 premul, U32 inv_a)` — 8-lane SRC_ALPHA/ONE_MINUS_SRC_ALPHA
-       with the exact `+128 >>8` math, must equal `apps/Render.HC:511-529`.
-  4. **Expose** `RenderNeonFill`; `GfxDeviceFastClear` calls it (removes the 8× scalar unroll at
-     `apps/GfxDevice.HC:562-579`).
-- **Port source.** `kernel/math/math3d.c:775-866`; `gui/render.c:15-35,209,418-530`.
-- **Assembly.** `scripts/render_neon.s` (new).
+- **Files touched (as built).** `apps/HolyGL.HC` (clipper + integration); `apps/Render.HC` (NEON kernels +
+  use); new `scripts/render_neon.s`; `apps/SelfTest.HC` (`SelfTestClip`, `SelfTestNeonMem`);
+  `scripts/golden-boot.sh` (`CLIP`/`NEONMEM` asserts). `GfxDeviceFastClear` routing was **not** needed — the
+  NEON fill already backs `RenderDrawRect`, which is the golden `gfx_clear` path.
+- **Built.**
+  1. **Clipper** (`apps/HolyGL.HC`): `HolyGLLerpVertex` + `HolyGLClipNear` (clip `d = z + w - 0.001 >= 0`,
+     interpolating every attribute) + `HolyGLSubmitClipped` (fan 3→1, 4→2), wired into every `HolyGLVertex3f`
+     triangle path; the old `w <= 0.05` reject is now only a `w <= 0` safety net. → `CLIP: PASS`.
+  2. **NEON memory kernels** (`scripts/render_neon.s` → `asm { … }` in `apps/Render.HC`, pattern
+     `apps/RasterTile.HC:374`):
+     - `RenderNeonFill(U32 *dst, I64 count, U32 color)` — 8 px/iter (`dup v0.4s,w2; stp q0,q0,[x0],#32`) +
+       scalar tail; backs `RenderDrawRect`.
+     - `RenderNeonBlit(U32 *dst, U32 *src, I64 bytes)` — 64 B/iter (`ldr q`/`str q`) + scalar byte tail; used
+       by `gfx_swap_buffers`/`gfx_swap_rect`.
+     - `RenderNeonBlendRect(U32 *dst, I64 n, U32 color, U32 a)` — **128-bit NEON** SRC_ALPHA/ONE_MINUS_SRC_ALPHA,
+       4 px/iter (16 channels) `UMULL`/`UMLAL`/`SHRN` + scalar 1-px tail; bit-exact with the scalar `+128 >>8`
+       math in `gfx_blend_rect`.
+- **Root cause of the earlier hang (D36).** The first blend attempt used `sub x1, x1, #1` before `b.ne`; in
+  AArch64 `SUB` does **not** set `NZCV`, so `b.ne` read a stale `Z` and the loop never terminated. Fixed with
+  `subs`. The kernel was also rewritten from the scalar 1-px loop to the real 128-bit SIMD body.
 - **Golden-hash risk.** `gfx_clear` is in the golden scene; the NEON fill stores the same `U32` per pixel →
-  byte-identical result, hash unchanged. `gfx_blend_rect` is **not** in the golden scene but must stay
-  bit-exact. `gfx_swap_*` is not part of `RenderHashBuffer`. The clipper touches 3D submission only.
-- **Census risk.** None.
-- **Verify.** `GL: PASS` (add: a triangle with one vertex at `w=0.02` yields 2 clipped triangles and
-  non-zero coverage), `3D: PASS`, `3D-GEARS: PASS`, `RENDER: PASS (0xD28836F)`, `CENSUS: PASS`.
+  byte-identical result, hash unchanged (verified). `gfx_blend_rect` is not in the golden scene but stays
+  bit-exact (`SelfTestNeonMem`). `gfx_swap_*` is not part of `RenderHashBuffer`.
+- **Census risk.** None (`CENSUS: PASS (181)`).
+- **Verified.** `CLIP: PASS`, `NEONMEM: PASS` (incl. `n = 11` body+tail), `GL: PASS`, `3D: PASS`,
+  `3D-GEARS: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `PARITY 70/70 (0 diff)`, `CENSUS 181`,
+  `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
 
 ---
 

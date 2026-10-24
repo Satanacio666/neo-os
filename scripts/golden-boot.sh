@@ -201,6 +201,13 @@ else
         echo "  [FAIL] near-plane clipper: ${clipline:-<none>} (want CLIP: PASS)"
         fail=1
     fi
+    nml="$(printf '%s\n' "$out" | grep -a 'NEONMEM: ' | tail -1)"
+    if printf '%s' "$nml" | grep -aq 'PASS'; then
+        echo "  [PASS] $nml (NEON fill/blit/blend bit-exact vs scalar)"
+    else
+        echo "  [FAIL] NEON memory kernels: ${nml:-<none>} (want NEONMEM: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

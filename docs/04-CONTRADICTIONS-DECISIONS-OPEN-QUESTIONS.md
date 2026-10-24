@@ -789,17 +789,26 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (reproduced: the boot stalls at `Sovereign Handover: Loading holyc/KernelInit.HC`). `Exceptions.HC` installs
   the NeoOS table at Stage 1 (module 5) exactly as before; early faults stay reported by the firmware's own
   `Synchronous Exception` handler. Gate: `GOLDEN BOOT: PASS`.
-- **D36 — P7.2 near-plane clipper DONE; NEON memory kernels DEFERRED (open).** The Sutherland–Hodgman
-  near-plane clipper landed: `HolyGLLerpVertex` + `HolyGLClipNear` (clip against `d = z + w - 0.001 >= 0`,
-  interpolating every attribute) + `HolyGLSubmitClipped` (fan-triangulate 3→1, 4→2), wired into every
-  `HolyGLVertex3f` triangle path; the old `w<=0.05` reject is now only a `w<=0` safety net. `SelfTestClip`
-  (`CLIP: PASS`) proves a near-crossing triangle is clipped and still covers pixels while a fully-behind
-  triangle covers none. `SelfTestGL`'s lit-triangle case now uses a real perspective (an identity projection
-  gives `z+w<0`, so the clipper correctly rejects it). Gate: `GL: PASS`, `CLIP: PASS`, `RENDER: PASS (0xD28836F)`.
-  **NEON memory kernels (`scripts/render_neon.s`):** `RenderNeonFill` is **LANDED** — it backs `RenderDrawRect`
-  (the golden path via `gfx_clear`) and is bit-exact (`RENDER: PASS (0xD28836F)`, `GL: PASS`, `CLIP: PASS`).
-  **Deferred:** `RenderNeonBlit` (`gfx_swap_buffers`/`gfx_swap_rect`) and `RenderNeonBlendRect`
-  (`gfx_blend_rect`) — wiring those into `apps/Render.HC` **hung the shell at startup** (boot stalls after the
-  DolDocShell banner, before `DolDocShell active`); reverting just those two call sites restored a green boot,
-  so the regression is in the blit/blend wiring and must be root-caused before re-landing. The golden 2D hash is
-  unaffected either way. Tracked here as the remaining P7.2 item.
+- **D36 — P7.2 near-plane clipper + NEON memory kernels — DONE; the blend hang was a missing `S` flag
+  (ROOT-FIXED).** The Sutherland–Hodgman near-plane clipper landed: `HolyGLLerpVertex` + `HolyGLClipNear` (clip
+  against `d = z + w - 0.001 >= 0`, interpolating every attribute) + `HolyGLSubmitClipped` (fan-triangulate
+  3→1, 4→2), wired into every `HolyGLVertex3f` triangle path; the old `w<=0.05` reject is now only a `w<=0`
+  safety net. `SelfTestClip` (`CLIP: PASS`) proves a near-crossing triangle is clipped and still covers pixels
+  while a fully-behind triangle covers none.
+  **NEON memory kernels (`scripts/render_neon.s`):** all three are **LANDED** and bit-exact —
+  `RenderNeonFill` (8 px/iter `dup`/`stp`, backs `RenderDrawRect` → the golden `gfx_clear` path),
+  `RenderNeonBlit` (64 B/iter `ldr q`/`str q`, backs `gfx_swap_buffers`/`gfx_swap_rect`), and
+  `RenderNeonBlendRect` (128-bit NEON SRC_ALPHA/ONE_MINUS_SRC_ALPHA, 4 px/iter via `UMULL`/`UMLAL`/`SHRN`,
+  backs `gfx_blend_rect`).
+  **Root cause of the earlier startup hang.** The first `RenderNeonBlendRect` was a scalar 1-px loop whose
+  counter decrement was `sub x1, x1, #1` immediately before `b.ne`. In AArch64 **`SUB` does not write the
+  condition flags** — only `SUBS` does — so `b.ne` tested a stale `Z` and the loop **never terminated**,
+  sweeping memory until the VM stalled (boot hung right after the DolDocShell banner). Root-fixed by using
+  `subs` for every loop counter (fill/blit already used `cmp`/`subs`). The kernel was then rewritten to the
+  real 128-bit SIMD body; the intermediate fits U16 because `color_byte,dst_byte <= 255` and `a + inv_a = 255`
+  (`<= 255*255 = 65025`; `+128 = 65153 < 65536`). Locked by `SelfTestNeonMem` → `NEONMEM: PASS` (fill/blit/blend
+  vs the scalar reference, incl. `n = 11` to exercise the 4-px body + the 1..3 px tail).
+  **Invariant (new):** in any `asm {}` NEON loop, the decrement feeding a conditional branch must be `subs`
+  (or be followed by `cmp`) — a bare `sub` leaves the flags stale. Gate: `GL: PASS`, `CLIP: PASS`,
+  `NEONMEM: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS: PASS (181)`, `DETERMINISM: PASS`,
+  `GOLDEN BOOT: PASS`.

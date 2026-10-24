@@ -62,7 +62,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P4** | Rendering unification (merges) | ✅ **DONE** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes) + **P4.7 ✅** (OBJ mesh ingestion: streaming parser + quad triangulation rendering through the one pipeline; + **D14** redeclared-local type-flag root fix, **D15** struct-member array `N*M` dimension root fix in both `Compiler.HC` and the C seed) + **P4.8 ✅** (merge/delete/verify: one damage tracker + one present + `apps/Theme.HC` theme owner; dead-code purge; **determinism gate** proving `0xD28836F` byte-identical on 1 vs 4 cores — doc 2 §P4, doc 3 §3.1, doc 4 D16) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM + one mesh path + one theme owner |
 | **P5** | DolDoc (real model + dissolution) | ✅ **DONE** — `DolDoc.HC` rewritten as a genuine **CDoc/CTree** (flat index-linked `CDocNode` tree + per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set (`TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI`) incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap; **windows are documents** (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); **`WM.HC` and `Compositor.HC` DELETED** (desktop/window/damage/present/effects absorbed into DolDoc); reactive cells (`$SL`/`$DA` target= binding); `$FI` include (RedSea doc persistence); `g_doc_dirty_mask` shift fixed; new `DOLDOC: PASS` gate (doc 2 §P5, doc 4 **D17/D18/D19/D20**) | no char grid; one CDoc/CTree; windows are documents; 34 modules |
 | **P6** | Shell (action executor over a CDoc) | ✅ **DONE** — `Shell.HC` is now an **O(1) action executor**: FNV-1a `CShellCmd` registry (`shell_register_cmd`/`ShellFindCmd`, real hash dispatch replacing the ~50-branch if/else ladder); the **action protocol** `DOC_ACT_{RUN,OPEN,SET,CLONE,FOCUS}` (ring queue in `DolDoc.HC` + `DolDocPushAction`/`DolDocPollAction`/`ShellDrainActions`); **the `DolDoc → Shell` cycle is broken** (DolDoc has 0 `shell_run_command`/`shell_poll` references; it emits actions and calls a Shell-registered pump via a function pointer); shell output is a CDoc; `top`/`filer`/`edit` tools render interactive CDoc (buttons/progress/line-numbered text); `WFE` idle; new `SHELL: PASS` gate (doc 2 §P6, doc 4 **D21**) | no cycles; shell output is a CDoc |
-| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) — next **P7.2** | one real 40-phase suite; profilers merged |
+| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) + **P7.2 ✅** (near-plane clipper `CLIP: PASS` + NEON memory kernels `NEONMEM: PASS`) — next **P7.3** | one real 40-phase suite; profilers merged |
 | **P8** | Self-hosting everything | ⬜ | boot as a document; only boot C remains |
 | **P9** | GPU provider | ⬜ | virtio-gpu 3D / native |
 | **P10** | Run anything + MCU cluster | ⬜ | `HolyPort` + `Surface`/`remote` |
@@ -295,10 +295,11 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **Status at authoring:** P0–P6 DONE and committed. HEAD `d657e70`. Remaining ladder: **P7 Benchmark**,
 > **P8 Self-hosting**, **P9 GPU provider**, **P10 Run anything + MCU cluster**.
 >
-> **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅ DONE** (HolyGL GL 1.3 surface — `GL: PASS`;
-> D34 cross-stage F64 finding); **next = P7.2** (runbook in `02-TASKLIST.md` §P7.2). Frozen gate:
-> `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`,
-> `GOLDEN BOOT: PASS`.
+> **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅ + P7.2 ✅ DONE** (HolyGL GL 1.3 surface —
+> `GL: PASS`; near-plane clipper — `CLIP: PASS`; NEON memory kernels fill/blit/blend — `NEONMEM: PASS`; D34
+> cross-stage F64 finding; D36 `sub`/`subs` blend-hang root fix); **next = P7.3** (runbook in
+> `02-TASKLIST.md` §P7.3). Frozen gate: `SELFTEST 101/101`, `PARITY 70/70 (0 diff)`, `CENSUS 181`,
+> `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.
 
 ---
 
@@ -470,31 +471,32 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   unit-axis `Rotatef`, so the new current-matrix semantics are byte-identical for them. Full anchor-by-anchor
   runbook: `02-TASKLIST.md` §P7.1.
 
-### P7.2 — Near-plane clipper + NEON memory kernels (b)
+### P7.2 — Near-plane clipper + NEON memory kernels (b) — ✅ **DONE**
 
 - **Purpose.** Stop *rejecting* geometry that crosses the near plane (the single biggest visual correctness gap:
   objects clip out instead of being clipped), and make the memory paths (present/blend/clear) as fast as the
   original's NEON kernels so the benchmark's memory-bandwidth bottleneck is real, not synthetic.
-- **Deliverables.**
-  - **Sutherland–Hodgman near-plane clipper** in `apps/HolyGL.HC`: clip each triangle's clip-space polygon
-    against `w = 0.05`, re-triangulate the resulting 3–4 vertex polygon, then submit through
-    `HolyGLSubmitTriangle`. Replaces the `w <= 0.05` early-return at `HolyGL.HC:292`.
-  - **`scripts/neon_mem.s`** — hand-encoded kernels, wired into `apps/Render.HC`/`apps/GfxDevice.HC`:
-    - `NeonBlitNT` — 128-byte unrolled `ldp q0..q7` / `stnp q0..q7` streaming blit (row + full + dirty-rect).
-    - `NeonBlendRect` — `ld4 {v0-v3}.8b` byte-deinterleave ARGB, exact `/255` blend, `st4` (replaces scalar
-      `gfx_blend_rect`).
-    - `NeonClear` — `dup v.4s, col` / `stnp` fill (replaces scalar `gfx_clear`).
-  - Route `gfx_swap_buffers`/`gfx_swap_rect`/`gfx_blend_rect`/`gfx_clear` through the NEON kernels; keep the
-    scalar path only for unaligned head/tail.
-- **Salvage folded in.** `gui/render.c` `gfx_neon_blit_nt` (ldp/stnp, 8×128-bit), the `ld4/st4` blend
-  (`render.c:463-488`), and the `dup/stnp` clear (`render.c:210-224`). The original had no clipper — this is
-  **new work**, specified against the standard Sutherland–Hodgman algorithm.
-- **Exit gate.** `SelfTestClipper()` → `CLIP: PASS` (a triangle crossing `w=0.05` yields a non-degenerate clipped
-  polygon with correct screen area); `SelfTestMemKernels()` → `NEONMEM: PASS` (NEON blit/blend/clear produce
-  byte-identical output to the scalar reference on aligned+unaligned rows); `RENDER: PASS (0xD28836F)`;
-  `CENSUS: PASS (181)`.
-- **Risks/ordering.** Depends on P7.1. Clipping changes the golden 2D path? No — the 2D golden scene is
-  axis-aligned and never crosses the near plane, so `0xD28836F` is safe; verify anyway.
+- **Deliverables (as built).**
+  - **Sutherland–Hodgman near-plane clipper** in `apps/HolyGL.HC`: `HolyGLLerpVertex` + `HolyGLClipNear` (clip
+    each triangle's clip-space polygon against `d = z + w - 0.001 >= 0`, interpolating every attribute) +
+    `HolyGLSubmitClipped` (fan 3→1, 4→2), wired into every `HolyGLVertex3f` triangle path. The old `w <= 0.05`
+    reject is now only a `w <= 0` safety net. → `CLIP: PASS`.
+  - **`scripts/render_neon.s`** (source of truth; words embedded via `asm { … }` in `apps/Render.HC`):
+    - `RenderNeonFill(U32 *dst, I64 count, U32 color)` — 8 px/iter (`dup v0.4s,w2; stp q0,q0,[x0],#32`) + scalar
+      tail. Backs `RenderDrawRect` (the golden path via `gfx_clear`).
+    - `RenderNeonBlit(U32 *dst, U32 *src, I64 bytes)` — 64 B/iter (`ldr q`/`str q`) + scalar byte tail. Used by
+      `gfx_swap_buffers`/`gfx_swap_rect`.
+    - `RenderNeonBlendRect(U32 *dst, I64 n, U32 color, U32 a)` — **128-bit NEON** SRC_ALPHA/ONE_MINUS_SRC_ALPHA,
+      4 px/iter (16 channels) via `UMULL`/`UMLAL`/`SHRN`, scalar 1-px tail; bit-exact with the scalar
+      `+128 >>8` math. Replaces the scalar row loop in `gfx_blend_rect`.
+  - Route `gfx_swap_buffers`/`gfx_swap_rect`/`gfx_blend_rect`/`gfx_clear` through the NEON kernels; scalar only
+    for unaligned head/tail.
+- **Exit gate (met).** `SelfTestClip()` → `CLIP: PASS`; `SelfTestNeonMem()` → `NEONMEM: PASS` (fill/blit/blend
+  byte-identical to the scalar reference, incl. `n = 11` exercising the 4-px body + 1..3 px tail);
+  `RENDER: PASS (0xD28836F)`; `SELFTEST 101/101`; `CENSUS: PASS (181)`; `DETERMINISM: PASS`.
+- **Risks/ordering.** Depends on P7.1. The 2D golden scene is axis-aligned and never crosses the near plane, so
+  `0xD28836F` is unchanged (verified). **See doc 04 D36** for the deferred-then-root-fixed blend history
+  (the `sub`/`subs` flag bug that hung the shell).
 
 ### P7.3 — L1 tile binning + per-core scratchpad + `stnp` streaming resolve (c)
 

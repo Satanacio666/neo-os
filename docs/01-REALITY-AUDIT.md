@@ -453,9 +453,9 @@ the migration **regressed on everything around it**. This is the single largest 
 | `kernel/math/math3d.c:869` | 16.16 fixed-point scanline engine (alt engine) | not present (ours is integer-exact) | **REFERENCE** |
 | `kernel/math/math3d.c:726` `zbuffer_clear` | **NEON** z-clear (128-byte aligned) | `apps/RasterTile.HC` uses `memset` | **PORT** |
 | `drivers/gpu/gfx_backend.h:22-25` | `ZBUFFER_PRECISION_32BIT` option | absent (16-bit only) | **PORT / REFERENCE** |
-| `gui/render.c:15` `gfx_neon_blit_nt` | NEON blit `ldp`×4 / `stnp`×4, 128 B/iter | `apps/Render.HC:592,614` uses `memcpy` | **PORT** |
-| `gui/render.c:209` `gfx_clear` | NEON fill (`dup` + `stnp`, 64 B/iter) | `apps/Render.HC` scalar | **PORT** |
-| `gui/render.c:418,463` `gfx_blend_rect` | `ld4`/`st4` byte deinterleave + `umull`/`shrn` | `apps/Render.HC` scalar | **PORT** |
+| `gui/render.c:15` `gfx_neon_blit_nt` | NEON blit `ldp`×4 / `stnp`×4, 128 B/iter | `RenderNeonBlit` (`scripts/render_neon.s`): 64 B/iter `ldr q`/`str q` + byte tail; backs `gfx_swap_buffers`/`gfx_swap_rect` | ✅ **DONE (P7.2)** |
+| `gui/render.c:209` `gfx_clear` | NEON fill (`dup` + `stnp`, 64 B/iter) | `RenderNeonFill` (8 px/iter `dup`/`stp` + scalar tail); backs `RenderDrawRect`/`gfx_clear` | ✅ **DONE (P7.2)** |
+| `gui/render.c:418,463` `gfx_blend_rect` | `ld4`/`st4` byte deinterleave + `umull`/`shrn` | `RenderNeonBlendRect` (128-bit `UMULL`/`UMLAL`/`SHRN`, 4 px/iter, bit-exact `+128>>8`); backs `gfx_blend_rect` | ✅ **DONE (P7.2)** |
 | `drivers/gpu/gfx_backend.c:98-161` | `gpu_set/get_{buffering,zprecision,raster_engine,tile_size,smp_cores,shading,culling}` | `apps/GfxDevice.HC` dropped **all** of it (grep `gpu_set` = 0) | **PORT** |
 | `drivers/gpu/gfx_backend.c:176,207,462` | `gpu_config_{open,render,click}` — 4-tab GPU config window | absent | **PORT** |
 | `drivers/gpu/virtio_gpu.c:84,145` | `send_batch2` / `send_batch3` chained descriptors | `apps/GfxDevice.HC` sends **one** command per notify | **PORT** |

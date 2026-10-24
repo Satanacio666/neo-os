@@ -1050,6 +1050,78 @@ U0 SelfTestClip() {
     else doldoc_printf("CLIP: FAIL (clip_ink=%lld behind_ink=%lld)\n", ink, ink2);
 }
 
+// P7.2: NEON memory kernels (scripts/render_neon.s). Each kernel must be byte-identical
+// to its scalar reference, including a length that is not a multiple of the vector width
+// (exercises the SIMD body + the 1..3 element tail). Uses private buffers only, so the
+// golden frame is untouched. Prints NEONMEM: PASS / NEONMEM: FAIL.
+U0 SelfTestNeonMem() {
+    I64 ok = 1;
+    U8 *why = "ok";
+    I64 i = 0;
+
+    // (1) RenderNeonFill: 8-px vector body + scalar tail, n = 19.
+    U32 fbuf[24];
+    i = 0;
+    while (i < 24) { fbuf[i] = 0; i++; }
+    RenderNeonFill(fbuf, 19, 0xFF3DAEE9);
+    i = 0;
+    while (i < 19) {
+        if (fbuf[i] != 0xFF3DAEE9) { ok = 0; why = "fill_body"; }
+        i++;
+    }
+    if (fbuf[19] != 0 || fbuf[23] != 0) { ok = 0; why = "fill_overrun"; }
+
+    // (2) RenderNeonBlit: 64-byte vector body + byte tail, bytes = 150.
+    U8 bsrc[160];
+    U8 bdst[160];
+    i = 0;
+    while (i < 160) { bsrc[i] = (U8)((i * 7 + 3) & 0xFF); bdst[i] = 0; i++; }
+    RenderNeonBlit(bdst, bsrc, 150);
+    i = 0;
+    while (i < 150) {
+        if (bdst[i] != bsrc[i]) { ok = 0; why = "blit_body"; }
+        i++;
+    }
+    if (bdst[150] != 0 || bdst[159] != 0) { ok = 0; why = "blit_overrun"; }
+
+    // (3) RenderNeonBlendRect: n = 11 (two 4-px SIMD quads + a 3-px tail) must match the
+    // scalar SRC_ALPHA/ONE_MINUS_SRC_ALPHA reference element-for-element, and leave the
+    // elements past n untouched.
+    U32 gbuf[16];
+    U32 gref[16];
+    U32 col = 0x80402010;
+    I64 n = 11;
+    U32 a = (col >> 24) & 0xFF;
+    U32 inv_a = 255 - a;
+    U32 src_r = ((col >> 16) & 0xFF) * a + 128;
+    U32 src_g = ((col >> 8)  & 0xFF) * a + 128;
+    U32 src_b = ((col)       & 0xFF) * a + 128;
+    i = 0;
+    while (i < 16) { gbuf[i] = (U32)(0x10203040 + i * 0x01020305); i++; }
+    i = 0;
+    while (i < 16) { gref[i] = gbuf[i]; i++; }
+    i = 0;
+    while (i < n) {
+        U32 dst = gref[i];
+        U32 r = (src_r + ((dst >> 16) & 0xFF) * inv_a) >> 8;
+        U32 g = (src_g + ((dst >> 8)  & 0xFF) * inv_a) >> 8;
+        U32 b = (src_b + ((dst)       & 0xFF) * inv_a) >> 8;
+        gref[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        i++;
+    }
+    RenderNeonBlendRect(gbuf, n, col, a);
+    if (gbuf[0] != 0xFF302828) { ok = 0; why = "blend_pixel0"; }
+    i = 0;
+    while (i < n) {
+        if (gbuf[i] != gref[i]) { ok = 0; why = "blend_body"; }
+        i++;
+    }
+    if (gbuf[11] != gref[11] || gbuf[15] != gref[15]) { ok = 0; why = "blend_overrun"; }
+
+    if (ok != 0) doldoc_print("NEONMEM: PASS\n");
+    else doldoc_printf("NEONMEM: FAIL (%s)\n", why);
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1224,6 +1296,7 @@ U0 SelfTestRun() {
     SelfTestTexture();
     SelfTestGL();
     SelfTestClip();
+    SelfTestNeonMem();
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();

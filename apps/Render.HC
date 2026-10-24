@@ -323,14 +323,18 @@ I64 RenderNeonBlit(U32 *dst, U32 *src, I64 bytes) {
   }
 }
 
-// Per-pixel SRC_ALPHA/ONE_MINUS_SRC_ALPHA: out_c = (src_c + dst_c*inv_a) >> 8,
-// alpha 0xFF; src_r/g/b are premultiplied (src_channel*alpha + 128).
-I64 RenderNeonBlendRect(U32 *dst, I64 n, U32 src_r, U32 src_g, U32 src_b, U32 inv_a) {
+// P7.2 — 128-bit NEON SRC_ALPHA/ONE_MINUS_SRC_ALPHA blend (source of truth:
+// scripts/render_neon.s). 4 pixels/iter (16 channels) via UMULL/UMLAL/SHRN, scalar
+// 1-pixel tail. Bit-exact with the scalar reference in gfx_blend_rect:
+//   src_c = color_c*a + 128;  out_c = (src_c + dst_c*inv_a) >> 8;  alpha = 0xFF.
+// `subs` (not `sub`) drives the loop — a missing S leaves Z stale and hangs.
+I64 RenderNeonBlendRect(U32 *dst, I64 n, U32 color, U32 a) {
   asm {
-    0xaa0103e6 0xb40002e1 0xb9400007 0x12001ce8 0x1b057d08 0x0b040108 0x53087d08 0x12001d08
-    0x53083ce9 0x1b057d29 0x0b030129 0x53087d29 0x12001d29 0x2a092108 0x53105ce9 0x1b057d29
-    0x0b020129 0x53087d29 0x12001d29 0x2a094108 0x32081d08 0xb8004408 0xd1000421 0x54fffd61
-    0xaa0603e0
+    0xaa0103e6 0xb4000421 0x52801fe4 0x4b030084 0x4e040c41 0x4e010c62 0x4e010c83 0x4f048405
+    0xd342fc25 0xb40001c5 0x3dc00000 0x2e22c024 0x6e22c026 0x4e658484 0x4e6584c6 0x2e238004
+    0x6e238006 0x0f088480 0x4f0884c0 0x4f0777e0 0x3c810400 0xf10004a5 0x54fffe81 0x92400421
+    0xb4000141 0xbd400000 0x2e22c024 0x4e658484 0x2e238004 0x0f088480 0x0f0777e0 0xbc004400
+    0xf1000421 0x54ffff01 0xaa0603e0
   }
 }
 
@@ -533,23 +537,11 @@ U0 gfx_blend_rect(I64 bx, I64 by, I64 bw, I64 bh, U32 col) {
   U32 *buf = RenderGetTargetBuffer();
   if (!buf) return;
 
-  U32 inv_a = 255 - a;
-  U32 src_r = ((col >> 16) & 0xFF) * a + 128;
-  U32 src_g = ((col >> 8)  & 0xFF) * a + 128;
-  U32 src_b = ((col)       & 0xFF) * a + 128;
-
+  // P7.2: the row loop is the NEON kernel (bit-exact with the former scalar loop).
   I64 ry = min_y;
   while (ry < max_y) {
-    I64 rx = min_x;
     I64 row_off = ry * g_canv.pitch;
-    while (rx < max_x) {
-      U32 dst = buf[row_off + rx];
-      U32 r = (src_r + ((dst >> 16) & 0xFF) * inv_a) >> 8;
-      U32 g = (src_g + ((dst >> 8)  & 0xFF) * inv_a) >> 8;
-      U32 b = (src_b + ((dst)       & 0xFF) * inv_a) >> 8;
-      buf[row_off + rx] = 0xFF000000 | (r << 16) | (g << 8) | b;
-      rx++;
-    }
+    RenderNeonBlendRect(&buf[row_off + min_x], max_x - min_x, col, a);
     ry++;
   }
 }
