@@ -56,7 +56,7 @@ A from-scratch JIT compiler targeting native **ARM64 machine code**, inspired by
 | **Functions** | Define and call functions from the REPL/scripts |
 | **Character literals** | `'A'`, `'\n'`, `'\t'`, `'\0'` |
 | **Branch backpatching** | CBZ/CBNZ/B.cond placeholders patched after code generation |
-| **Self-test suite** | 7 built-in tests validated on live hardware via `jittest` |
+| **Self-test suite** | `selftest` runs the in-guest battery (99 checks) + two-engine parity, twins, symbols — validated on live hardware |
 
 **Example HolyC scripts:**
 ```c
@@ -122,12 +122,13 @@ NeoOS:        CPU → VRAM GOP framebuffer directly (0 copies, 0 ms blit latency
 
 ---
 
-### 🪟 Window Manager (DolDoc-inspired)
+### 🪟 Documents (DolDoc 3.0 — no separate window manager)
 
-- Multiple overlapping windows with titles, borders, and client areas
-- Per-window dirty-rect swapping — only changed regions refreshed
-- Drag, resize, snap-to-grid, minimize/restore
-- DolDoc terminal with colored rich text, hyperlinks, and interactive buttons
+- **Windows are documents**: a `CDoc`/`CTree` scene graph (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); the old
+  `WM.HC` and `Compositor.HC` were dissolved into `DolDoc.HC` in P5
+- Per-character attributes (`$FG`/`$BG`/…), the full two-letter tag set, macros/forms/anchors/links/trees
+- One damage tracker + one present; reactive cells and an action protocol (`DOC_ACT_*`)
+- The shell is an inline document (`$REPL$`) over an O(1) FNV-1a command registry
 
 ---
 
@@ -230,10 +231,9 @@ make clean
 make run
 ```
 
-Boots in ~10 seconds and automatically:
-1. Runs `jittest` — 7 HolyC JIT self-tests (all PASS)
-2. Activates `zeroram on` — direct VRAM rendering (saves 3.14 MB RAM)
-3. Launches `bench3d` — dual-viewport 3D rotating cubes
+Boots in ~30 seconds: the C seed JIT compiles the 34 HolyC modules from RedSea, then the sovereign
+`DolDocShell` starts. Run `selftest` at the prompt for the full in-guest regression battery, or
+`bash scripts/golden-boot.sh` for the one-shot gate (which also captures a screenshot).
 
 ### Headless (screendump via QEMU monitor)
 
@@ -291,7 +291,7 @@ bun run dev        # http://localhost:3000/neo-os
 | Command | Description |
 |---------|-------------|
 | `holygl` | Run sovereign pure HolyC 3D matrix stack & rotating cube benchmark (`apps/HolyGL.HC`) |
-| `gears` | Launch 3D GLXGears involute gear demo (`apps/Gears.HC`) |
+| `gears` | Launch 3D GLXGears involute gear demo (`apps/Gears3D.HC`) |
 | `physics` | Launch 3D Newtonian multi-body rigid dynamics (`apps/Physics3D.HC`) |
 | `explode` | Trigger dynamic explosion impulse on polyhedra |
 | `impulse` | Apply dynamic directional collision impulse to bodies |
@@ -302,11 +302,11 @@ bun run dev        # http://localhost:3000/neo-os
 
 | Command | Description |
 |---------|-------------|
-| `run <script>` | Compile and run a HolyC script from RedSea disk (e.g. `run HolyGL.HC`, `run SmpDemo.HC`) |
+| `run <script>` | Compile and run a HolyC script from RedSea disk (e.g. `run HolyGL.HC`, `run Mesh.HC`) |
 | `jittest` | Run HolyC JIT self-tests on live AArch64 machine code |
-| `smp` | Launch 4-core parallel task dispatch benchmark (`apps/SmpDemo.HC`) |
-| `filer` | Open interactive RedSea directory file manager (`apps/Filer.HC`) |
-| `edit <file>` | Open syntax-highlighted code editor (`apps/Editor.HC`) |
+| `smp` | Launch the 4-core parallel dispatch benchmark (`apps/Smp.HC`) |
+| `filer` | Open the interactive RedSea file manager (a CDoc tool in `apps/DolDoc.HC`) |
+| `edit <file>` | Open the syntax-highlighted CDoc editor (`apps/Shell.HC`) |
 | `save <file>` | Save edited text buffer back to RedSea disk |
 
 ### System & Memory
@@ -332,16 +332,14 @@ bun run dev        # http://localhost:3000/neo-os
 ```
 UEFI Firmware
     └─► EFI_MAIN  (boot/main.c)
-            ├─ GOP framebuffer setup (gfx_init)
-            ├─ Kernel heap init (kheap_init)
-            ├─ SMP: bring up cores 1-3 via PSCI CPU_ON
-            ├─ Window Manager init (wm_init)
-            ├─ DolDoc terminal init
-            ├─ Shell init
-            ├─ jittest        ← HolyC JIT self-tests (7/7 PASS)
-            ├─ zeroram on     ← Direct-VRAM mode activated
-            ├─ bench3d        ← 3D cubes auto-start
-            └─ Main event loop
+            ├─ GOP framebuffer + kernel heap (boot/runtime)
+            ├─ C seed JIT (boot/seed) loads & compiles KernelInit.HC from the FAT ESP
+            ├─ KernelInit.HC loads the other 33 .HC modules from RedSea and
+            │     JIT-compiles each (peephole pass per module)
+            ├─ HalPlatform.HC + SMP: bring up cores 1–3 via PSCI CPU_ON
+            ├─ Sovereign handover: KHeap.HC + Symbols.HC own kmalloc/kfree/symbols_*
+            ├─ Timer IRQ armed @ 1000 Hz; interrupts enabled
+            └─ DolDocShellEventLoop()  ← the interactive document shell
 ```
 
 ### Memory Layout (flat SASOS, 64-bit)
@@ -366,10 +364,10 @@ UEFI Firmware
 HolyC Source Text
     │
     ▼
-Lexer (compiler/lexer.c)
+Lexer (boot/seed/lexer.c)  —  and, once self-hosted, apps/Compiler.HC
     │  Tokens: numbers, identifiers, keywords, char literals
     ▼
-Recursive Descent Parser + Code Generator (compiler/jit_arm64.c)
+Recursive Descent Parser + Code Generator (boot/seed/jit_arm64.c → apps/Compiler.HC)
     │
     │  parse_expr()       → ternary ?:
     │  parse_logical()    → && ||
