@@ -38,26 +38,28 @@ pre-consolidation dump `/home/user/project/neo-os-docs/` and `neo-os-src.tar.gz`
   `docs/research/neo-audit/*.md`.
 
 ### Build / run / test — the only sanctioned loop
+All commands are run **from the repo root** (the directory that contains `Makefile`).
 ```bash
-cd /home/user/neo-os
 make all                                    # build BOOTAA64.EFI + disk.img + redsea.img
-./scripts/run-viewer-vm.sh restart          # boot QEMU (VNC :5900, UART socket, log below)
+./scripts/run-viewer-vm.sh restart          # boot QEMU (VNC :5900, UART socket, serial log)
 sleep 40; grep -a 'DolDocShell active' /tmp/neo-os-serial.log   # wait for the shell
 python3 scripts/neo_uart.py --sentinel '<<<NEO-DONE:selftest>>>' --timeout 175 'selftest'
 bash scripts/golden-boot.sh                 # THE gate -> must print "GOLDEN BOOT: PASS"
 ```
+- **Requirements:** an `aarch64-linux-gnu-*` toolchain, `qemu-system-aarch64`, `dosfstools`/`mtools`, Python 3,
+  Node (for the UART bridge + harness). See `README.md` §"Build Requirements".
 - UART log: `/tmp/neo-os-serial.log`. Drive the REPL by sending lines to the socket (see `scripts/uart-repl.py`).
 - **Browser console (optional, for humans):** `cd harness && bun install && bun run dev` → `http://localhost:3000/neo-os`.
 - **Screenshots are mandatory** for any visual change; `golden-boot.sh` saves `/tmp/golden-boot.png` from the
-  dev-server stream. Never verify visuals from a host desktop.
-- Do **not** start the dev server (port 4000); it is already running. Do **not** restart the VM if the sandbox
-  memory watchdog killed it — ask the user.
+  preview stream. Never verify visuals from a host desktop.
+- Do **not** restart the VM if the sandbox memory watchdog killed it — ask the user.
 
 ### Persist after every green step
 ```bash
 git add -A && git commit -m "<phase>: <what + why>"
-git bundle create /home/user/project/neo-os.bundle --all     # refresh the delivery bundle
 ```
+- **In the E2B container only:** also refresh the delivery bundle —
+  `git bundle create /home/user/project/neo-os.bundle --all` (a plain clone needs nothing extra).
 
 ### Hard invariants (full list in `docs/00` §2)
 1. **Golden hash bit-exact:** `RENDER: PASS (0xD28836F)`, identical on 1 vs 4 cores.
