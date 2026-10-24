@@ -732,3 +732,22 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   merely *begins* with an array index (`a[0] + b[1];`), and marks F64 array elements as float. Gate:
   `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`,
   `GOLDEN BOOT: PASS`.
+- **D31 — P7.1 HolyGL matrix semantics (DECIDED, runbook READY).** HolyGL gets **two real matrix stacks** —
+  PROJECTION depth **4**, MODELVIEW depth **16** (upstream `holygl.h:31-32`) — replacing the single
+  `modelview`/`projection` + `modelview_stack[8]`. `HolyGLCurrentMatrix()` selects by `matrix_mode`; every
+  `LoadIdentity/Translate/Scalef/Rotatef/Perspective/Push/Pop` operates on the current matrix. `Perspective`
+  **post-multiplies** (`curr = curr * persp`, matching upstream) because `Mat4Perspective` overwrites its output.
+  A pre-flight audit confirmed every caller (`Gears3D`/`Mesh`/`Physics3D`/`SelfTest3D`) uses
+  `MatrixMode(PROJECTION); LoadIdentity(); Perspective(…)` then `MatrixMode(MODELVIEW); …` with **unit-axis**
+  `Rotatef`, so the new semantics are byte-identical for them; the 2D golden hash `0xD28836F` is untouched (it
+  never enters HolyGL). Full spec: `02-TASKLIST.md` §P7.1.
+- **D32 — P7.1 `glColor4f` packs alpha; solid-fill blending is deferred (DECIDED).** `glColor4f` sets the packed
+  `0xAARRGGBB` vertex colour (so `glColor4f(1,0,0,0.5) == 0x80FF0000`), matching upstream `holygl.c:180-186`.
+  The ONE rasterizer currently applies `RasterBlendSrcAlpha` only on the **textured** span; the solid span
+  writes the colour directly. Enabling per-vertex alpha blending on the solid path is **out of scope for P7.1**
+  (it would need a NEON solid-blend variant and risks the byte-exact 3D scenes); the P7.1 test asserts the packed
+  value, not a blend. Solid-alpha blending is revisited with the NEON memory kernels in P7.2/P7.3.
+- **D33 — P7.1 `glClear` clears the whole canvas (DECIDED).** Upstream cleared only the viewport rect via
+  `raster_tile_begin_scene`. Our `gfx_clear` clears the full framebuffer; P7.1 uses `gfx_clear` for the
+  `GL_COLOR_BUFFER_BIT` path (documented simplification) and `RasterClearZ()` for `GL_DEPTH_BUFFER_BIT`. A
+  viewport-rect clear can be added with the GPU config plane in P7.4.

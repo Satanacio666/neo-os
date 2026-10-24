@@ -1196,50 +1196,126 @@ Each step lists **files touched**, **exact anchors**, **port source**, **assembl
 
 ---
 
-### P7.1 — HolyGL GL 1.3 surface completion + GL conformance
+### P7.1 — HolyGL GL 1.3 surface completion + GL conformance (one-shot runbook)
 
-**Goal.** Complete the GL state machine; add a conformance gate; keep per-fragment Blinn-Phong.
+> **STATUS: READY (pre-flight audit done).** Complete, executable spec — no open questions. Freeze numbers are
+> post-P7.0-audit: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`.
 
-- **Files touched.** `apps/HolyGL.HC`; `apps/SelfTest.HC` (new `SelfTestGL`); `apps/Shell.HC` (optional
-  `glconform` command).
-- **Exact anchors (`apps/HolyGL.HC`).** `class GLVertex` :23-34; `class HolyGLContext` :36-65 (`CMat4
-  projection` :38, `CMat4 modelview_stack[8]` :40, `I64 modelview_sp` :41); `g_hgl` :67; `HolyGLInit`
-  :117-158; `HolyGLUpdateMVP` :160-162; matrix ops `HolyGLMatrixMode` :187, `HolyGLLoadIdentity` :191,
-  `HolyGLPushMatrix` :200, `HolyGLPopMatrix` :207, `HolyGLTranslatef` :215, `HolyGLRotatef` :224,
-  `HolyGLScalef` :234, `HolyGLPerspective` :239; bindings :451-463; accessor :539.
-- **Edits.**
-  1. **Struct.** Replace `CMat4 projection;` with `CMat4 projection_stack[4];` + `I64 projection_sp;`.
-     Widen `CMat4 modelview_stack[8]` → `[16]`. Add `F64 clear_r; F64 clear_g; F64 clear_b; F64 clear_a;`
-     (one initialized var per declaration).
-  2. **Current-matrix helper** (port `holygl.c:60-65`):
-     `CMat4* HolyGLCurrentMatrix() { if (g_hgl.matrix_mode == GL_PROJECTION) return &g_hgl.projection_stack[g_hgl.projection_sp]; return &g_hgl.modelview_stack[g_hgl.modelview_sp]; }`
-  3. **Push/Pop** (port `holygl.c:73-99`): projection depth 4, modelview depth 16, operating on the current
-     mode; keep `HolyGLUpdateMVP()` after each mutation.
-  4. **LoadIdentity / Translatef / Scalef / Perspective** operate on `HolyGLCurrentMatrix()`
-     (port `holygl.c:67-138`). `Mat4Mul(out,out,&x)` is alias-safe (temp, `apps/Math3D.HC:287-309`).
-  5. **Rotatef.** Keep the existing per-axis dispatch (:224-232) but apply it to the current matrix
-     (`Mat4RotateX/Y/Z(current, …)`). This preserves exact `3D-GEARS` geometry (unit-axis callers).
-  6. **Add bindings** (thin forwarders): `glPushMatrix`, `glPopMatrix`, `glRotatef`, `glScalef`,
-     `glColor3f`, `glColor4f`, `glClear`, `glClearColor`, `glFlush`, `glVertex2f`.
-  7. **`glClear(mask)`** (port `holygl.c:149-162`): `#define GL_COLOR_BUFFER_BIT 0x4000` and
-     `#define GL_DEPTH_BUFFER_BIT 0x0100` at the top; colour bit → `gfx_clear(colour from clear_rgba)`,
-     depth bit → `RasterClearZ()`.
-  8. **`glClearColor(r,g,b,a)`** stores the F64s; **`glColor4f`** sets `g_hgl.v_curr.color` exactly like
-     `holygl.c:180-186`; `glColor3f` forwards with alpha 1.
-  9. **`glFlush()`** → `gfx_dirty_expand(vp_x,vp_y,vp_w,vp_h)` (same as `HolyGLEnd` :437-440).
-  10. Leave `HolyGLSubmitTriangle`'s `w <= 0.05` reject (:292) for now; P7.2 replaces it.
-- **Port source.** `kernel/math/holygl.c:60-186`, `:381`.
-- **Assembly.** None.
-- **Golden-hash risk.** **None** — the 2D golden scene never touches HolyGL. Risk is to `3D`/`3D-GEARS`;
-  keep Rotatef axis semantics and re-verify.
-- **Census risk.** None.
-- **Verify.** Add `SelfTestGL()` (expand `HolyGLTest.HC`'s 4 assertions): (1) modelview push/translate/pop
-  isolation (`HolyGLTest.HC:8-24`); (2) projection stack depth 4 (push/translate/pop, `projection_sp`
-  returns to 0, top translation intact); (3) modelview depth 16 (17th push is a no-op, no OOB); (4)
-  `gluPerspective` `m[14]≈-1`, `m[5]>0` (`HolyGLTest.HC:26-35`); (5) `glColor4f(1,0,0,0.5)` →
-  `0x80FF0000`; (6) `glClear` colour/depth effects; (7) a lit triangle increments `HolyGLGetTrisRendered()`
-  (`HolyGLTest.HC:50-76`). Print `GL: PASS`. Call from `SelfTestRun`.
-  Gates: `GL: PASS`, `3D-GEARS: PASS`, `3D: PASS`, `SHADING: PASS`, `RENDER: PASS (0xD28836F)`.
+**Goal.** Make HolyGL a *complete* GL 1.3 state machine — two real matrix stacks (PROJECTION depth 4,
+MODELVIEW depth 16), the missing `gl*` bindings, clear/colour/flush semantics — and prove it with a new
+`SelfTestGL()` → `GL: PASS` gate. Keep the existing (better-than-original) per-fragment Blinn-Phong. The 2D
+golden hash `0xD28836F` must not move.
+
+**Files touched.** `apps/HolyGL.HC` (primary); `apps/SelfTest.HC` (`SelfTestGL`); `scripts/golden-boot.sh`
+(`GL: PASS` check); docs 00/01/02/04. No new `.c`; no assembly.
+
+**Pre-flight audit (already completed — do NOT re-derive).**
+- **Matrix callers** (all use `MatrixMode(PROJECTION); LoadIdentity(); Perspective(…); MatrixMode(MODELVIEW);
+  LoadIdentity(); Translate/Rotate/Scalef`, `Push/Pop` around per-object transforms, **unit-axis `Rotatef`**):
+  `Gears3D.HC:204-248`, `Mesh.HC:319-374`, `Physics3D.HC:332-385`, `SelfTest.HC:446-448`,
+  `HolyGL.HC:551-621`. ⇒ the new current-matrix semantics are **byte-identical** for every caller.
+- **`g_hgl.*` readers outside HolyGL:** none (only a comment in `Compiler.HC:2214`). The struct reshape is safe.
+- **RasterTile accessors available:** `RasterClearZ()` (`RasterTile.HC:303`), `RasterSetTexture`,
+  `RasterSetBlend`, `RasterSetDepthTest`, `RasterEnablePhong`, `RasterDisableGouraud`.
+- **Render accessors available:** `gfx_clear(U32)` (`Render.HC:584`), `gfx_dirty_expand(x,y,w,h)` (`:458`),
+  `gfx_get_canvas_width/height/pitch` (`:432/436/440`), `RenderGetTargetBuffer()`.
+- **Math3D available:** `Mat4Identity`, `Mat4Copy`, `Mat4Mul(out,a,b)` (**alias-safe**, `Math3D.HC:287`),
+  `Mat4Translate/Scale/RotateX/RotateY/RotateZ` (all alias-safe: `out = out * T`),
+  `Mat4Perspective(out,…)` (**overwrites `out`** — see edit 6).
+- **Upstream reference:** `kernel/math/holygl.c:56-189` (`glMatrixMode`/`holygl_current_matrix`/`glLoadIdentity`/
+  `glPushMatrix`/`glPopMatrix`/`glTranslatef`/`glRotatef`/`glScalef`/`gluPerspective`/`glClear`/`glClearColor`/
+  `glColor4f`/`glColor3f`), `kernel/math/holygl.h:27-32` (`GL_COLOR_BUFFER_BIT 0x4000`,
+  `GL_DEPTH_BUFFER_BIT 0x0100`, `HOLYGL_MODELVIEW_STACK_DEPTH 16`, `HOLYGL_PROJECTION_STACK_DEPTH 4`).
+
+**Exact edits to `apps/HolyGL.HC` (current anchors).**
+
+1. **Defines** — after `:21` (`GL_LIGHTING`) add:
+   `#define GL_COLOR_BUFFER_BIT 0x00004000` and `#define GL_DEPTH_BUFFER_BIT 0x00000100`.
+2. **Struct `HolyGLContext` (`:36-65`)** — replace the three matrix fields + single stack with:
+   ```hc
+   CMat4 modelview_stack[16];
+   I64   modelview_sp;
+   CMat4 projection_stack[4];
+   I64   projection_sp;
+   CMat4 mvp;
+   ```
+   (delete `CMat4 modelview; CMat4 projection; CMat4 modelview_stack[8]; I64 modelview_sp;`). Add four
+   clear-colour scalars near `light_x/y/z` (one per declaration — D18):
+   `F64 clear_r; F64 clear_g; F64 clear_b; F64 clear_a;`.
+3. **`HolyGLInit` (`:117-158`)** — replace the `modelview`/`projection` identities with
+   `Mat4Identity(&g_hgl.modelview_stack[0]); Mat4Identity(&g_hgl.projection_stack[0]);`, set
+   `g_hgl.modelview_sp = 0; g_hgl.projection_sp = 0;`, and
+   `g_hgl.clear_r = 0.0; g_hgl.clear_g = 0.0; g_hgl.clear_b = 0.0; g_hgl.clear_a = 1.0;`.
+4. **New helpers** (just before `HolyGLUpdateMVP` `:160`):
+   ```hc
+   CMat4* HolyGLCurrentMatrix() {
+     if (g_hgl.matrix_mode == GL_PROJECTION) return &g_hgl.projection_stack[g_hgl.projection_sp];
+     return &g_hgl.modelview_stack[g_hgl.modelview_sp];
+   }
+   CMat4* HolyGLModelview() { return &g_hgl.modelview_stack[g_hgl.modelview_sp]; }
+   ```
+5. **`HolyGLUpdateMVP` (`:160-162`)** → `Mat4Mul(&g_hgl.mvp, &g_hgl.projection_stack[g_hgl.projection_sp],
+   &g_hgl.modelview_stack[g_hgl.modelview_sp]);`.
+6. **Matrix ops (`:187-242`)** — rewrite on `HolyGLCurrentMatrix()`:
+   - `HolyGLLoadIdentity`: `Mat4Identity(HolyGLCurrentMatrix()); HolyGLUpdateMVP();`
+   - `HolyGLPushMatrix`: per mode — `PROJECTION` `if (projection_sp < 3) { Mat4Copy(&stack[sp+1],&stack[sp]); sp++; }`;
+     `MODELVIEW` `if (modelview_sp < 15) { … }`; then `HolyGLUpdateMVP();`
+   - `HolyGLPopMatrix`: decrement the current mode's `_sp` if `> 0`; `HolyGLUpdateMVP();`
+   - `HolyGLTranslatef`: `Mat4Translate(HolyGLCurrentMatrix(), tx,ty,tz); HolyGLUpdateMVP();`
+   - `HolyGLRotatef`: keep the `±0.3` per-axis dispatch but target `CMat4* m = HolyGLCurrentMatrix();`
+     (`Mat4RotateX/Y/Z(m, ±angle_deg)`); `HolyGLUpdateMVP();`
+   - `HolyGLScalef`: `Mat4Scale(HolyGLCurrentMatrix(), sx,sy,sz); HolyGLUpdateMVP();`
+   - `HolyGLPerspective`: **must post-multiply** (upstream `curr = curr * persp`):
+     `CMat4 persp; Mat4Perspective(&persp, fovy, aspect, z_near, z_far);`
+     `Mat4Mul(HolyGLCurrentMatrix(), HolyGLCurrentMatrix(), &persp); HolyGLUpdateMVP();`
+7. **`HolyGLViewNormal` (`:250-255`)** — `CMat4 *mv = HolyGLModelview();` (was `&g_hgl.modelview`).
+8. **New vertex/clear/flush functions** (near the colour functions `:257-286`):
+   - `HolyGLColor4f(r,g,b,a)`: clamp all four to [0,1]; pack `(ia<<24)|(ir<<16)|(ig<<8)|ib` into
+     `g_hgl.v_curr.color` (upstream `holygl.c:180-186`).
+   - `HolyGLClearColor(r,g,b,a)`: store the four F64s.
+   - `HolyGLClear(mask)`: colour bit → pack `clear_rgba` and `gfx_clear(packed)`; depth bit → `RasterClearZ()`.
+   - `HolyGLFlush()`: `gfx_dirty_expand(g_hgl.vp_x, g_hgl.vp_y, g_hgl.vp_w, g_hgl.vp_h);`
+9. **New bindings** (after `:469`): `glPushMatrix`, `glPopMatrix`, `glRotatef`, `glScalef`, `glColor3f`
+   (→ `HolyGLColor3f`), `glColor4f`, `glVertex2f` (→ `HolyGLVertex2f`), `glClear`, `glClearColor`,
+   `glClearDepth` (→ `HolyGLClearDepth`, single Z buffer), `glFlush`.
+10. **New read-only accessors** (so `SelfTest.HC` never touches `g_hgl`): `I64 HolyGLGetModelviewSP()`,
+    `I64 HolyGLGetProjectionSP()`, `I64 HolyGLGetMatrixMode()`, `U32 HolyGLGetCurrentColor()`,
+    `F64 HolyGLGetProjectionM(I64 idx)` (returns `projection_stack[projection_sp].m[idx]`),
+    `F64 HolyGLGetModelviewM(I64 idx)`.
+11. **Leave** `HolyGLSubmitTriangle`'s `w <= 0.05` reject (`:298`) for P7.2. Keep per-fragment Blinn-Phong.
+
+**Add `SelfTestGL()` to `apps/SelfTest.HC`** (model on `SelfTest3D` `:435` / `SelfTestTexture` `:701`; call it
+in `SelfTestRun` right after `SelfTestTexture()` `:1016`). Save/restore GL state (wireframe off,
+`GfxDeviceSetShading(0)`, disable LIGHTING/TEXTURE_2D/BLEND/CULL_FACE), restore the viewport, re-clear so later
+tests are unaffected. Assertions (all via accessors):
+1. **MODELVIEW push/translate/pop isolation** — identity → `glPushMatrix(); glTranslatef(5,0,0); glPopMatrix();`
+   → `HolyGLGetModelviewM(12) == 0.0`.
+2. **PROJECTION depth 4** — `MatrixMode(PROJECTION)`; 4×`glPushMatrix()` → `HolyGLGetProjectionSP() == 3`; a
+   5th is a no-op (still 3); 4×`glPopMatrix()` → 0.
+3. **MODELVIEW depth 16** — 16×push → `HolyGLGetModelviewSP() == 15`; 17th no-op.
+4. **`gluPerspective` shape** — after `LoadIdentity(); gluPerspective(45,1.33,1,100);` →
+   `HolyGLGetProjectionM(14) == -1.0` and `HolyGLGetProjectionM(5) > 0.0` (`Math3D.HC:377-394`).
+5. **`glColor4f(1,0,0,0.5)`** → `HolyGLGetCurrentColor() == 0x80FF0000`.
+6. **`glClear`** — `glClearColor(0.25,0.5,0.75,1.0); glClear(GL_COLOR_BUFFER_BIT);` → a sampled framebuffer
+   pixel equals `0xFF4080BF`; `glClear(GL_DEPTH_BUFFER_BIT)` → a known far pixel is depth-writable afterwards.
+7. **Lit triangle increments tris** — `glEnable(GL_LIGHTING); glBegin(GL_TRIANGLES); …3 verts…; glEnd();` →
+   `HolyGLGetTrisRendered()` increased.
+Print `GL: PASS` on success, `GL: FAIL (…)` otherwise.
+
+**`scripts/golden-boot.sh`** — add a `GL: PASS` assertion alongside the existing `3D`/`SHADING`/`TEXTURE`
+checks; raise the SELFTEST floor from 99 to the new total (≥100).
+
+**Port source.** `kernel/math/holygl.c:56-189`, `:381`; depths from `holygl.h:27-32`.
+
+**Golden-hash risk.** **None** — the 2D golden scene (`SelfTestRender`) uses `gfx_*`, never HolyGL. The 3D
+scenes use opaque colours and unit-axis rotations, so their pixels are unchanged; re-verify `3D: PASS`,
+`3D-GEARS: PASS`, `SHADING: PASS`, `TEXTURE: PASS`, `MESH: PASS` byte-for-byte. **Census risk.** None (new code
+is `.HC`→`.HC`).
+
+**Verify (one boot).** `make all` → `./scripts/run-viewer-vm.sh restart` → UART `selftest` → assert `GL: PASS`,
+`3D: PASS`, `3D-GEARS: PASS`, `SHADING: PASS`, `TEXTURE: PASS`, `MESH: PASS`, `RENDER: PASS (0xD28836F)`,
+`SELFTEST a/b` (a==b, ≥100), `PARITY n/n (0 diff)`; then `bash scripts/golden-boot.sh` → `GOLDEN BOOT: PASS`;
+capture `/tmp/golden-boot.png`. **Commit + refresh the bundle.**
 
 ---
 
