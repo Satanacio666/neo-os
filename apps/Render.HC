@@ -314,6 +314,26 @@ I64 RenderNeonFill(U32 *dst, I64 count, U32 color) {
   }
 }
 
+// 64 B/iter unaligned-safe blit (`ldr q`/`str q`), scalar byte tail.
+I64 RenderNeonBlit(U32 *dst, U32 *src, I64 bytes) {
+  asm {
+    0xaa0203e3 0xf101005f 0x540001cb 0x3dc00020 0x3dc00421 0x3dc00822 0x3dc00c23 0x91010021
+    0x3d800000 0x3d800401 0x3d800802 0x3d800c03 0x91010000 0xd1010042 0xf101005f 0x54fffe8a
+    0xb40000a2 0x38401424 0x38001404 0xf1000442 0x54ffffa1 0xaa0303e0
+  }
+}
+
+// Per-pixel SRC_ALPHA/ONE_MINUS_SRC_ALPHA: out_c = (src_c + dst_c*inv_a) >> 8,
+// alpha 0xFF; src_r/g/b are premultiplied (src_channel*alpha + 128).
+I64 RenderNeonBlendRect(U32 *dst, I64 n, U32 src_r, U32 src_g, U32 src_b, U32 inv_a) {
+  asm {
+    0xaa0103e6 0xb40002e1 0xb9400007 0x12001ce8 0x1b057d08 0x0b040108 0x53087d08 0x12001d08
+    0x53083ce9 0x1b057d29 0x0b030129 0x53087d29 0x12001d29 0x2a092108 0x53105ce9 0x1b057d29
+    0x0b020129 0x53087d29 0x12001d29 0x2a094108 0x32081d08 0xb8004408 0xd1000421 0x54fffd61
+    0xaa0603e0
+  }
+}
+
 U0 RenderDrawRect(I64 rx, I64 ry, I64 rw, I64 rh, U32 rcol) {
   if (rw <= 0 || rh <= 0) return;
   if (g_canv.width == 0) RenderInit();
@@ -594,7 +614,7 @@ U0 gfx_swap_buffers() {
   U32 *target = RenderGetTargetBuffer();
   if (target && target != g_canv.front_buffer) {
     I64 total_bytes = g_canv.pitch * g_canv.height * 4;
-    memcpy(g_canv.front_buffer, target, total_bytes);
+    RenderNeonBlit(g_canv.front_buffer, target, total_bytes);
   }
   RenderDirtyReset();
 }
@@ -614,9 +634,9 @@ U0 gfx_swap_rect(I64 rx, I64 ry, I64 rw, I64 rh) {
     I64 sr_y = ry;
     while (sr_y < ry + rh) {
       I64 byte_off = (sr_y * g_canv.pitch + rx) * 4;
-      U8 *dst_line = front_bytes + byte_off;
-      U8 *src_line = back_bytes  + byte_off;
-      memcpy(dst_line, src_line, line_bytes);
+      U32 *dst_line = (U32 *)(front_bytes + byte_off);
+      U32 *src_line = (U32 *)(back_bytes  + byte_off);
+      RenderNeonBlit(dst_line, src_line, line_bytes);
       sr_y++;
     }
   }

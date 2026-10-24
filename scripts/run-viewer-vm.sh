@@ -19,7 +19,10 @@ QEMU_ARGS=(
   -accel tcg,thread=single,tb-size=512
   -cpu cortex-a72
   -smp "${NEO_SMP:-4}"
-  -m 1024
+  # Dev default is 256 MB: NeoOS's working set is tiny (it sizes its heap/JIT pool from
+  # the UEFI map), and QEMU's host RSS tracks the guest's *touched* RAM — so a smaller
+  # guest means a smaller host footprint. Override with NEO_GUEST_MB for benchmarks.
+  -m "${NEO_GUEST_MB:-256}"
   -bios "$QEMU_BIOS"
   -device ramfb
   -device virtio-gpu-device,xres=1024,yres=768

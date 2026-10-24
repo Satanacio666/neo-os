@@ -80,13 +80,13 @@ RenderNeonBlendRect:
     add     w8, w8, w4
     lsr     w8, w8, #8
     and     w8, w8, #0xFF
-    and     w9, w7, #0xFF00         // G
+    ubfx    w9, w7, #8, #8          // G
     mul     w9, w9, w5
     add     w9, w9, w3
     lsr     w9, w9, #8
     and     w9, w9, #0xFF
     orr     w8, w8, w9, lsl #8
-    and     w9, w7, #0xFF0000       // R
+    ubfx    w9, w7, #16, #8         // R
     mul     w9, w9, w5
     add     w9, w9, w2
     lsr     w9, w9, #8
