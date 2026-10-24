@@ -3,7 +3,7 @@
 sem precisar do bridge em node). Também tira screendump do DolDocShell."""
 import os, signal, socket, subprocess, sys, time
 
-ROOT = "/var/minis/workspace/neo-os"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UART = "/tmp/neo-uart.sock"
 MON = "/tmp/neo-mon5.sock"
 LOG = "/tmp/gate-serial.log"

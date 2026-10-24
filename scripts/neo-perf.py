@@ -4,7 +4,7 @@ Uso: neo-perf.py <rotulo> [args extras do QEMU...]
 """
 import os, subprocess, sys, time, signal
 
-ROOT = "/var/minis/workspace/neo-os"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 label = sys.argv[1]
 extra = sys.argv[2:]
 log = "/tmp/perf-%s.log" % label
@@ -48,6 +48,29 @@ def strip_defaults(argv, keys):
 keys = {extra[i] for i in range(0, len(extra) - 1, 2) if extra[i].startswith("-")}
 args = strip_defaults(base, keys) + extra
 
+
+# P0.3 — o cluster A76 (cpu4) cai para ~53% sob carga sustentada; sem anotar o
+# clock, a mesma medição varia 2x (33 s vs 75 s no mesmo binário).
+def big_clock():
+    try:
+        cur = int(open("/sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq").read())
+        mx = int(open("/sys/devices/system/cpu/cpu4/cpufreq/cpuinfo_max_freq").read())
+        return cur, mx
+    except Exception:
+        return 0, 0
+
+
+def report_clock(tag):
+    cur, mx = big_clock()
+    if not mx:
+        print("   clock: indisponível")
+        return
+    pct = 100.0 * cur / mx
+    flag = "" if pct >= 80 else "   <-- ATENCAO: throttle, medicao NAO confiavel"
+    print("   clock %s: %.2f GHz de %.2f GHz (%.0f%%)%s"
+          % (tag, cur / 1e6, mx / 1e6, pct, flag))
+
+
 MILESTONES = [
     ("uefi-gop", "GOP FrameBufferBase"),
     ("kinit", "Compiling and Executing KernelInit.HC"),
@@ -79,12 +102,14 @@ while time.time() < deadline:
         break
 
 print("== %s ==" % label)
+report_clock("inicio")
 for name, _ in MILESTONES:
     if name in seen:
         print("   %-12s %6.1f s" % (name, seen[name]))
 if not seen:
     print("   (nenhum marco)")
     print("   stderr:", (p.stderr.read(400).decode(errors="replace") if p.stderr else "")[:300])
+report_clock("fim")
 print("   linhas no serial: %d" % text.count("\n"))
 print("   ultimo: %s" % (text.strip().splitlines()[-1][:90] if text.strip() else "(vazio)"))
 try:

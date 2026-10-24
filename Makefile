@@ -3,11 +3,43 @@
 # Target: UEFI Application (BOOTAA64.EFI)
 
 ARCH = aarch64
-CC = aarch64-linux-gnu-gcc
-AS = aarch64-linux-gnu-as
-LD = aarch64-linux-gnu-ld
-OBJCOPY = aarch64-linux-gnu-objcopy
-AR = aarch64-linux-gnu-ar
+
+# ---------------------------------------------------------------------------
+# P1.1 — Toolchain selection.
+#
+# x86_64 host  : the GNU cross toolchain (aarch64-linux-gnu-*).
+# AArch64 host : the NATIVE toolchain works and produces identical objects —
+#                the output is AArch64 ELF either way, the prebuilt objects in
+#                boot/uefi are AArch64 ELF, and binutils supports the
+#                pei-aarch64-little target used to emit BOOTAA64.EFI.
+#                (Validated on a POCO X3 Pro running Alpine under PRoot.)
+#
+# Override on the command line when needed:  make all CC=clang AS=llvm-as
+# ---------------------------------------------------------------------------
+UNAME_M    := $(shell uname -m)
+HAVE_CROSS := $(shell command -v aarch64-linux-gnu-gcc 2>/dev/null)
+
+ifeq ($(UNAME_M),aarch64)
+  ifeq ($(HAVE_CROSS),)
+    CC ?= gcc
+    AS ?= as
+    LD ?= ld
+    OBJCOPY ?= objcopy
+    AR ?= ar
+  else
+    CC ?= aarch64-linux-gnu-gcc
+    AS ?= aarch64-linux-gnu-as
+    LD ?= aarch64-linux-gnu-ld
+    OBJCOPY ?= aarch64-linux-gnu-objcopy
+    AR ?= aarch64-linux-gnu-ar
+  endif
+else
+  CC ?= aarch64-linux-gnu-gcc
+  AS ?= aarch64-linux-gnu-as
+  LD ?= aarch64-linux-gnu-ld
+  OBJCOPY ?= aarch64-linux-gnu-objcopy
+  AR ?= aarch64-linux-gnu-ar
+endif
 
 # Locate a FAT image tool across distros (dosfstools ships mkfs.vfat or mkfs.fat).
 MKFS_VFAT := $(shell command -v mkfs.vfat 2>/dev/null || command -v mkfs.fat 2>/dev/null \
