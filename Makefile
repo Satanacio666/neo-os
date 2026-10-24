@@ -40,7 +40,7 @@ OBJS_C = $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C))
 OBJS_S = $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_S))
 ALL_OBJS = $(OBJS_C) $(OBJS_S)
 
-CFLAGS = -fshort-wchar -fno-strict-aliasing -ffreestanding -fno-stack-protector \
+CFLAGS = -fshort-wchar -fno-strict-aliasing -funsigned-char -ffreestanding -fno-stack-protector \
          -fno-stack-check -I$(UEFI_DIR) -Ikernel -Iboot/seed -Igui -Idrivers -Ifs -D__aarch64__ \
          -Wno-builtin-declaration-mismatch -fpic -fPIC -O2 -Wall -MMD -MP
 

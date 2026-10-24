@@ -773,3 +773,19 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
      correct — only the read-side flag was missing. Locked by `SelfTestCheck f64_ptr_out_param` (2.5 →
      `0x4004000000000000`) and `f64_struct_array_member_read` (1.5+2.5 = 4.0 → `0x4010000000000000`), 0 parity
      diff. Gate: `GL: PASS`.
+- **D35 — The kernel heap must be executable: `EfiLoaderData` → `EfiLoaderCode` + clear `SCTLR_EL1.WXN`
+  (ROOT-FIXED, boot).** The self-hosted compiler kmallocs its 4 MB machine-code buffer
+  (`g_hc_code = kmalloc(HC_CODE_CAPACITY*4)`, `Compiler.HC:418`) from the seed heap and `BLR`s into it. The heap
+  was allocated **`EfiLoaderData`** (`boot/main.c`), which strict EDK2 2024/2025 firmwares map **execute-never**
+  (and/or set `SCTLR_EL1.WXN`), so the first `BLR` into freshly compiled code raised an Instruction Abort — the
+  EDK2 `Synchronous Exception` whose target lands inside `heap + 0x47CC98` (the JIT buffer `g_hc_code` living in
+  the heap). **Fix:** allocate the heap **`EfiLoaderCode`** (executable) and clear **`SCTLR_EL1.WXN`** (bit 19)
+  in `boot/main.c` before the JIT runs; the kernel execution stack stays `EfiLoaderData` (data, NX). Also added
+  `-funsigned-char` to `CFLAGS`.
+  **Rejected, with cause (do NOT re-add):** installing the NeoOS vector table (`VBAR_EL1`) *early* in
+  `boot/main.c`. NeoOS runs **entirely under UEFI Boot Services** — it never calls `ExitBootServices` — so the
+  firmware's own exception handling must stay live for the whole boot. Stealing `VBAR_EL1` early routed a
+  firmware exception (an SError during the ESP FAT read) into our not-yet-populated table and **halted the boot**
+  (reproduced: the boot stalls at `Sovereign Handover: Loading holyc/KernelInit.HC`). `Exceptions.HC` installs
+  the NeoOS table at Stage 1 (module 5) exactly as before; early faults stay reported by the firmware's own
+  `Synchronous Exception` handler. Gate: `GOLDEN BOOT: PASS`.

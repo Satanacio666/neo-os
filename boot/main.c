@@ -150,6 +150,18 @@ static void boot_probe_memory(void) {
            (unsigned long long)(s_jit_code_pool_size / (1024 * 1024)));
 }
 
+// SASOS: guarantee the kernel heap stays writable AND executable in EL1. UEFI maps
+// EfiLoaderCode writable+executable before ExitBootServices, but a strict firmware
+// may set SCTLR_EL1.WXN (bit 19) so that writable pages are execute-never. Clear it.
+static void boot_make_heap_executable(void) {
+    uint64_t sctlr;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr &= ~(1ULL << 19); // WXN = 0
+    asm volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    asm volatile("dsb sy" ::: "memory");
+    asm volatile("isb" ::: "memory");
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -204,9 +216,14 @@ int main(int argc, char **argv)
     // Size the heap / JIT pool from the real UEFI memory map.
     boot_probe_memory();
 
-    // 2. Allocate Physical Memory Pools via UEFI Boot Services
+    // 2. Allocate Physical Memory Pools via UEFI Boot Services.
+    // SASOS ROOT FIX: the kernel heap holds JIT-emitted machine code (the self-hosted
+    // compiler kmallocs its 4 MB g_hc_code buffer from here and `BLR`s into it), so it
+    // MUST be allocated as EfiLoaderCode (executable). With EfiLoaderData, strict
+    // EDK2 2024/2025 firmwares map the pages XN (and/or SCTLR_EL1.WXN=1) and the
+    // first `BLR` into freshly compiled code raises an Instruction Abort.
     efi_physical_address_t heap_phys = 0;
-    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, s_kernel_heap_size / 4096, &heap_phys);
+    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderCode, s_kernel_heap_size / 4096, &heap_phys);
     if (EFI_ERROR(h_status) || !heap_phys) {
         printf("FATAL: Could not allocate kernel heap!\n");
         return 1;
@@ -236,6 +253,19 @@ int main(int argc, char **argv)
     // 4. Initialize Cold-Boot JIT & Dynamic Symbol Registry (SIC Engine)
     symbols_init();
     jit_init();
+
+    // SASOS root hardening: the kernel heap must be writable AND executable in EL1
+    // (it holds JIT-emitted code). It is allocated EfiLoaderCode above; clear
+    // SCTLR_EL1.WXN so a strict firmware cannot make those writable pages NX.
+    //
+    // NOTE (do NOT steal VBAR_EL1 here): NeoOS runs ENTIRELY under UEFI Boot Services
+    // (it never calls ExitBootServices), so the firmware's own exception handling must
+    // remain active for the whole boot. Installing our vector table early makes any
+    // firmware exception (e.g. an SError during a FAT read) land in our not-yet-
+    // populated table and halt. Exceptions.HC installs the NeoOS table at Stage 1
+    // (module 5) exactly as before.
+    boot_make_heap_executable();
+    printf("[BOOT] SCTLR_EL1.WXN cleared (SASOS executable heap).\r\n");
 
     // Register Tier-0 Hardware Pointers & Vector Trampoline Table
     symbols_register("g_uefi_fb", (void*)&g_uefi_fb, SYM_VAR);
