@@ -283,16 +283,25 @@ fi
 
 echo "== screenshot =="
 rm -f "$SHOT"
-# NOTE: the python reader breaks after the first frame, so curl is killed by
-# SIGPIPE (rc 141). Under `set -o pipefail` that would spuriously fail the gate, so
-# the pipeline's rc is intentionally ignored and the saved file is verified instead.
-curl -sN --max-time 12 http://localhost:4000/api/neo-os/stream 2>/dev/null | python3 -c "
-import sys,json,base64
-for line in sys.stdin:
-    if line.startswith('data: '):
-        o=json.loads(line[6:]); open('$SHOT','wb').write(base64.b64decode(o['png']))
-        print('  saved', o['width'],'x',o['height'],'->','$SHOT'); break
-" || true
+# Take the framebuffer straight from QEMU's own monitor (no preview app / viewer
+# needed — the Next.js preview server is intentionally disabled for RAM).
+python3 - "$SHOT" <<'PY'
+import socket, sys, os, time
+shot = sys.argv[1]
+mon = os.environ.get("NEO_MON_SOCK", "/tmp/neo-os-mon.sock")
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(8)
+    s.connect(mon)
+    time.sleep(0.3)
+    s.sendall(("screendump " + shot + "\n").encode())
+    time.sleep(1.5)
+    s.close()
+    if os.path.exists(shot) and os.path.getsize(shot) > 0:
+        print("  saved", os.path.getsize(shot), "bytes ->", shot)
+except Exception as e:
+    print("  monitor screendump failed:", e)
+PY
 if [ -s "$SHOT" ]; then
     echo "  [PASS] screenshot captured"
 else
