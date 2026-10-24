@@ -796,9 +796,10 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (`CLIP: PASS`) proves a near-crossing triangle is clipped and still covers pixels while a fully-behind
   triangle covers none. `SelfTestGL`'s lit-triangle case now uses a real perspective (an identity projection
   gives `z+w<0`, so the clipper correctly rejects it). Gate: `GL: PASS`, `CLIP: PASS`, `RENDER: PASS (0xD28836F)`.
-  **Deferred:** the 128-bit NEON memory kernels (`RenderNeonFill`/`Blit`/`BlendRect`, assembled source
-  `scripts/render_neon.s`). The asm assembled and the fill/blit unit checks passed, but wiring them into
-  `RenderDrawRect`/`gfx_swap_buffers`/`gfx_blend_rect` **hung the shell at startup** (boot stalls after the
-  DolDocShell banner, before `DolDocShell active`); reverting `apps/Render.HC` restored a green boot, so the
-  regression is in that wiring and must be root-caused before re-landing. The golden 2D hash `0xD28836F` is
+  **NEON memory kernels (`scripts/render_neon.s`):** `RenderNeonFill` is **LANDED** — it backs `RenderDrawRect`
+  (the golden path via `gfx_clear`) and is bit-exact (`RENDER: PASS (0xD28836F)`, `GL: PASS`, `CLIP: PASS`).
+  **Deferred:** `RenderNeonBlit` (`gfx_swap_buffers`/`gfx_swap_rect`) and `RenderNeonBlendRect`
+  (`gfx_blend_rect`) — wiring those into `apps/Render.HC` **hung the shell at startup** (boot stalls after the
+  DolDocShell banner, before `DolDocShell active`); reverting just those two call sites restored a green boot,
+  so the regression is in the blit/blend wiring and must be root-caused before re-landing. The golden 2D hash is
   unaffected either way. Tracked here as the remaining P7.2 item.

@@ -305,6 +305,15 @@ U0 RenderDrawLine(I64 lx0, I64 ly0, I64 lx1, I64 ly1, U32 lcol) {
   }
 }
 
+// P7.2 — 128-bit NEON row fill (source of truth: scripts/render_neon.s). Caller-saved
+// regs only, no internal `ret` (the HolyC asm{} wrapper supplies prologue/epilogue).
+I64 RenderNeonFill(U32 *dst, I64 count, U32 color) {
+  asm {
+    0xaa0103e3 0xf100203f 0x540000cb 0x4e040c40 0xac810000 0xd1002021 0xf100203f 0x54ffffaa
+    0xb4000081 0xb8004402 0xf1000421 0x54ffffc1 0xaa0303e0
+  }
+}
+
 U0 RenderDrawRect(I64 rx, I64 ry, I64 rw, I64 rh, U32 rcol) {
   if (rw <= 0 || rh <= 0) return;
   if (g_canv.width == 0) RenderInit();
@@ -332,12 +341,8 @@ U0 RenderDrawRect(I64 rx, I64 ry, I64 rw, I64 rh, U32 rcol) {
 
   I64 row_y = min_y;
   while (row_y < max_y) {
-    I64 col_x = min_x;
     I64 row_offset = row_y * g_canv.pitch;
-    while (col_x < max_x) {
-      buf[row_offset + col_x] = rcol;
-      col_x++;
-    }
+    RenderNeonFill(&buf[row_offset + min_x], max_x - min_x, rcol);
     row_y++;
   }
 }
