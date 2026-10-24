@@ -1078,6 +1078,14 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > `GOLDEN BOOT: PASS`. **Next: P7.1 (HolyGL GL 1.3 surface + conformance).**
 >
 > Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
+>
+> **P7 step index (authoritative numbering — `docs/00` §11 mirrors it):**
+> **P7.0** recon/baseline ✅ · **P7.1** HolyGL GL 1.3 surface (`GL: PASS`) · **P7.2** near-plane clipper + NEON
+> memory kernels (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve (`TILE`) · **P7.4** SMP tile
+> dispatch + parallel vertex transform (`DETERMINISM`) · **P7.5** GPU config plane + VirtIO batch/page-flip +
+> 32-bit Z (`GPUCFG`) · **P7.6** merged `Telemetry.HC` + ARM PMU (`TELEMETRY`) · **P7.7** real 40-phase suite
+> (`BENCH`) · **P7.8** rebuilt tests / wire gates (`P7.8: PASS`) · **P7.9** GL conformance + visual proof
+> (`GLCONFORMANCE`, screendumps). **Each step ends with the global gate green (`GOLDEN BOOT: PASS`).**
 
 
 > **Scope.** This is the *execution* blueprint for the single next priority, **P7**. It is deliberately
@@ -1198,7 +1206,7 @@ Each step lists **files touched**, **exact anchors**, **port source**, **assembl
 
 ---
 
-### P7.1 — HolyGL GL 1.3 surface completion + GL conformance (one-shot runbook)
+### P7.1 — HolyGL GL 1.3 surface completion (one-shot runbook)
 
 > **STATUS: READY (pre-flight audit done).** Complete, executable spec — no open questions. Freeze numbers are
 > post-P7.0-audit: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`.
@@ -1647,8 +1655,13 @@ CPU bench; purge synthetic constants and write-only state.
 
 ### P7.9 — Visual proof (screendumps only, never host desktop)
 
-- **Goal.** Screenshots for each benchmark category, the GPU config window, the GL conformance scene, and the
-  telemetry HUD.
+- **Goal.** Build the full GL 1.3 conformance battery and capture screenshots for each benchmark category, the
+  GPU config window, the GL conformance scene, and the telemetry HUD.
+- **Conformance module (new work).** `apps/HolyGLConformance.HC` — the full GL 1.3 battery from `docs/00` §P7.9
+  (matrix stacks both modes, clear semantics, vertex alpha, perspective-correct texturing, near-plane clipping
+  area, all primitive modes, depth/cull toggles, lighting, textures+blend, `glFlush`), invoked by
+  `SelfTest.HC` as `SelfTestGLConformance()` → `GLCONFORMANCE: PASS (n/n)` and wired into `golden-boot.sh` in
+  P7.8.
 - **Files touched.** New `scripts/p7-screenshots.sh` (allowed; not `.c`); output to `docs/images/p7-*.png`.
 - **Actions.** Boot via `scripts/run-viewer-vm.sh`; for each of `bench` phase categories, `gpuconfig`,
   `glconform`, `perf`, capture via the existing `/api/neo-os/stream` endpoint (mechanism as

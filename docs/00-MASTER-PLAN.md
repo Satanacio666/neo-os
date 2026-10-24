@@ -435,14 +435,14 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   - New gate script `scripts/p7-verify.sh` that runs the full P7 gate (see P7 exit) and is called by
     `scripts/golden-boot.sh`.
 - **Salvage folded in.** The original `holygl.h` GL surface inventory and `gfx_backend.h` config-plane inventory
-  (from `docs/01-REALITY-AUDIT.md` §L) are the checklist for P7.1/P7.4.
+  (from `docs/01-REALITY-AUDIT.md` §L) are the checklist for P7.1/P7.5.
 - **Exit gate.** `scripts/p7-verify.sh` prints `P7.0: PASS`; all frozen numbers recorded; the JSON is tagged
   historical.
 - **Risks/ordering.** Must run first; nothing else starts until the baseline is frozen.
 
 ### P7.1 — GL surface completion (a)
 
-- **Purpose.** Make HolyGL a *complete* GL 1.3 API surface, not a partial one, so the conformance test in P7.8
+- **Purpose.** Make HolyGL a *complete* GL 1.3 API surface, not a partial one, so the conformance test in P7.9
   has a full target and the benchmark variations have real toggles to flip.
 - **Deliverables.**
   - **`apps/HolyGL.HC`:** two matrix stacks — **PROJECTION depth 4** and **MODELVIEW depth 16** (today one
@@ -463,7 +463,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   stacks push/pop to depth, `gluPerspective` shape, `glColor4f` packed alpha, `glClear` colour+depth, a lit
   triangle increments `tris_rendered`); `3D`/`3D-GEARS`/`SHADING`/`TEXTURE`/`MESH`/`RENDER: PASS (0xD28836F)`
   unchanged; `CENSUS: PASS (181)`.
-- **Risks/ordering.** Must precede P7.2 (the clipper emits vertices into this surface) and P7.8 (conformance).
+- **Risks/ordering.** Must precede P7.2 (the clipper emits vertices into this surface) and P7.9 (conformance).
   Two stacks risk a regression in `Gears3D`/`Mesh`/`Physics3D` callers — **pre-flight audit already done**: every
   caller uses `MatrixMode(PROJECTION); LoadIdentity(); Perspective(...)` then `MatrixMode(MODELVIEW); …` with
   unit-axis `Rotatef`, so the new current-matrix semantics are byte-identical for them. Full anchor-by-anchor
@@ -495,31 +495,41 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
 - **Risks/ordering.** Depends on P7.1. Clipping changes the golden 2D path? No — the 2D golden scene is
   axis-aligned and never crosses the near plane, so `0xD28836F` is safe; verify anyway.
 
-### P7.3 — L1 tile binning + per-core scratchpad + SMP tile slicing (c)
+### P7.3 — L1 tile binning + per-core scratchpad + `stnp` streaming resolve (c)
 
-- **Purpose.** Make `TILE_W/H = 64` and `GFX_MODE_SMP_TILED` **real**: bin triangles into tiles, rasterize each
-  tile in a per-core L1 scratchpad, slice tiles across the 4 cores, and stream the resolved tiles out with
-  `stnp`. This is what turns the benchmark's "SW NEON L1" and "SW SMP 4C" variations into measured differences.
+- **Purpose.** Make `TILE_W/H = 64` **real**: bin triangles into tiles, rasterize each tile in a per-core L1
+  scratchpad, and stream the resolved tiles out with `stnp`.
 - **Deliverables.**
   - **`apps/RasterTile.HC`:** a real L1 binner — tile queue per frame, per-core `tile_scratchpad_t`
     (64×64 color + 16-bit Z = 24 KB, cache-line aligned) in `apps/Smp.HC`; `RasterTileBeginScene`/`AddTriangle`/
     `EndScene`; a **streaming resolve** (`stnp` tiles into the framebuffer) replacing the full-frame writeback.
-  - **SMP slicing:** `apps/Smp.HC` dispatches tile ranges to cores 1–3 with per-core scratchpads; one generic
-    worker loop (P3 already deleted the copy-paste workers) takes a tile range. Deterministic order: tiles
-    resolved row-major so 1-vs-4-core output is byte-identical.
   - `RasterTile` becomes the **only** tiled path (the full-screen `RasterRow` scan is the same code with a
     full-screen tile). No second rasterizer.
 - **Salvage folded in.** `kernel/math/raster_tile.c` (`tile_scratchpad_t s_scratchpads[SMP_MAX_CORES]`,
-  `raster_tile_render_range`, `tile_worker_smp`, `raster_tile_resolve_streaming`) — the *structure* is reused;
-  the *math* stays ours (real per-pixel Z + NEON span, which the original lacked).
-- **Exit gate.** `DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)`; `TILE: PASS` (binner assigns the
-  correct tile set to a known triangle; per-core scratchpads non-overlapping); `renderbench` shows a measured
-  SMP speedup on 4 vs 1 cores in the benchmark (P7.6); `CENSUS: PASS (181)`.
-- **Risks/ordering.** Depends on P7.2 (memory kernels) and P7.1 (surface). Determinism is the hard gate — the
-  scratchpad→framebuffer resolve must be order-independent. This is the highest-risk P7 sub-step; keep the
-  full-screen scan as the fallback *path* (not a scalar rasterizer) until SMP slicing is proven byte-identical.
+  `raster_tile_resolve_streaming`) — the *structure* is reused; the *math* stays ours (real per-pixel Z + NEON
+  span, which the original lacked).
+- **Exit gate.** `TILE: PASS` (binner assigns the correct tile set to a known triangle; per-core scratchpads
+  non-overlapping); `RENDER: PASS (0xD28836F)`; `CENSUS: PASS (181)`.
+- **Risks/ordering.** Depends on P7.1–P7.2. Keep the full-screen scan as the fallback *path* (not a scalar
+  rasterizer) until tiling is proven byte-identical.
 
-### P7.4 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong + 32-bit Z (d)
+### P7.4 — SMP tile dispatch + SMP parallel vertex transform (d)
+
+- **Purpose.** Make `GFX_MODE_SMP_TILED` **real**: slice tile ranges across cores 1–3 (each with its own
+  scratchpad) and run the vertex transform in parallel. This turns the benchmark's "SW NEON L1" and "SW SMP 4C"
+  variations into measured differences.
+- **Deliverables.**
+  - **SMP slicing:** `apps/Smp.HC` dispatches tile ranges to cores 1–3 with per-core scratchpads; one generic
+    worker loop (P3 already deleted the copy-paste workers) takes a tile range. Deterministic order: tiles
+    resolved row-major so 1-vs-4-core output is byte-identical.
+  - SMP parallel vertex transform for the mesh/gears paths.
+- **Salvage folded in.** `kernel/math/raster_tile.c` (`raster_tile_render_range`, `tile_worker_smp`).
+- **Exit gate.** `DETERMINISM: PASS (1 vs 4 cores identical: 0xD28836F)`; a measured SMP speedup on 4 vs 1 cores
+  in the benchmark (P7.7); `CENSUS: PASS (181)`.
+- **Risks/ordering.** Depends on P7.3. Determinism is the hard gate — the scratchpad→framebuffer resolve must be
+  order-independent. **This is the highest-risk P7 sub-step.**
+
+### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong + 32-bit Z (e)
 
 - **Purpose.** Give the benchmark a real config plane to reconfigure (so variations are genuine), batch the
   VirtIO command stream (so HW latency is measured honestly), add zero-copy page-flip, and make 32-bit Z a real
@@ -544,11 +554,11 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
 - **Risks/ordering.** Depends on P7.3 (tile size/cores must be real first). Batch3 must preserve response
   ordering; a batch failure must not leave a half-issued frame. This step lands the **plumbing P9 reuses**.
 
-### P7.5 — Merged `Telemetry.HC` with ARM PMU + all-level profiling (e)
+### P7.6 — Merged `Telemetry.HC` with ARM PMU + all-level profiling (f)
 
 - **Purpose.** Replace the two partial telemetry modules with **one** engine that profiles at **frame / stage /
   subsystem / instruction / memory** level, uses the ARM PMU with **minimal hardware usage**, detects **spikes**
-  with a cause, and emits **instruction & memory optimization directives**. This is what makes the P7.6 benchmark
+  with a cause, and emits **instruction & memory optimization directives**. This is what makes the P7.7 benchmark
   real and is the owner's explicit "profiler at ALL levels" requirement.
 - **Deliverables.**
   - **`apps/Telemetry.HC`** (new; **delete** `apps/Profiler.HC` + `apps/PerfOverlay.HC`; load in `KernelInit.HC`
@@ -584,11 +594,11 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   spike with the correct cause; (4) the PMU reads a strictly increasing `INST_RETIRED` and `CPU_CYCLES` across a
   known loop, with a CPI in the expected band; (5) the directive string is non-empty and cause-consistent;
   (6) logs serialize to RedSea. `CENSUS: PASS (181)` (fixed-cap globals, no new allocator sites).
-- **Risks/ordering.** Depends on P7.2–P7.4 (stages must exist to mark). PMU availability on QEMU TCG must be
+- **Risks/ordering.** Depends on P7.2–P7.5 (stages must exist to mark). PMU availability on QEMU TCG must be
   probed (`PMCR_EL0.N` / `ID_AA64DFR0_EL1`); if a counter is unavailable, `Telemetry.HC` must fall back to
   `cntvct_el0` **without** breaking the gate — but never fabricate a PMU number (no mock data).
 
-### P7.6 — Real 40-phase suite (f)
+### P7.7 — Real 40-phase suite (g)
 
 - **Purpose.** Replace the degraded `apps/HolyBenchmark.HC` (which ignores `phase%8`, has no time limiter, and
   writes a **fake hard-coded scorecard**) with the real design: **40 phases = 5 categories × 8 driver/architectural
@@ -599,7 +609,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
     suite). `BenchUnifiedStart`/`BenchApplySuitePhase`/`BenchUnifiedTick`.
   - **Categories (5):** Gears, Cubes, Dynamics, Sphere, Fillrate. **Variations (8):** SW 1C Base, SW NEON L1,
     SW SMP 4C, SW DirectVRAM, HW VirtIO, HW DMA+SMP, HW Wireframe, HW VSync 60Hz. Phase `p` = category `p/8`,
-    variation `p%8` — `BenchApplySuitePhase(p)` reconfigures the **real** `GfxDevice` config plane (P7.4) and
+    variation `p%8` — `BenchApplySuitePhase(p)` reconfigures the **real** `GfxDevice` config plane (P7.5) and
     scheduler.
   - **Time limiter:** each phase runs until `read_cntvct() - phase_start >= freq*7/2` (3.5 s).
   - **Per-phase metrics (from `Telemetry.HC`):** avg FPS, 1% low, 0.1% low, frame-time avg/min/max, jitter σ,
@@ -619,11 +629,11 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   raster stage; HW VSync clamps to ~60 FPS; DirectVRAM lowers the blit stage). `BENCH: PASS` asserts:
   all 40 records non-empty, the 8×5 matrix complete, a winner named, and **no record is a constant** across
   variations. `CENSUS: PASS (181)`.
-- **Risks/ordering.** Depends on P7.4 (config plane) and P7.5 (telemetry). A 40×3.5 s run is ~140 s of guest
+- **Risks/ordering.** Depends on P7.5 (config plane) and P7.6 (telemetry). A 40×3.5 s run is ~140 s of guest
   time — the host gate must allow it (headless `run-viewer-vm.sh`, QEMU screendump only). The suite must be
   interruptible (`stopbench`) so the gate never hangs.
 
-### P7.7 — Rebuilt tests & benchmarks — no outdated format (g)
+### P7.8 — Rebuilt tests & benchmarks — no outdated format (h)
 
 - **Purpose.** Ensure there is exactly **one** test source of truth and **one** benchmark, both current, so no
   future step can pass against a stale battery or a fake report.
@@ -639,10 +649,10 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
 - **Salvage folded in.** The original's export set (`BENCH_COMPARISON.TXT`, `BENCH_REPORT.TXT`,
   `BENCH_PROFILER.LOG`, `BENCH_SPIKES.LOG`) and its matrix-table format.
 - **Exit gate.** Adding any test requires editing **only** `apps/SelfTest.HC`; no host script polls a log for
-  size-stability; the JSON is not referenced by any gate. `P7.7: PASS`.
-- **Risks/ordering.** Do this *before* P7.8 so the conformance test lands in the one runner.
+  size-stability; the JSON is not referenced by any gate. `P7.8: PASS`.
+- **Risks/ordering.** Do this *before* P7.9 so the conformance test lands in the one runner.
 
-### P7.8 — OpenGL conformance test + visual proof (h)
+### P7.9 — OpenGL conformance test + visual proof (i)
 
 - **Purpose.** Prove — not claim — that NeoOS implements the full GL 1.3 surface the owner asked for, with a
   real test covering every capability and a screendump as visual evidence.
