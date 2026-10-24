@@ -10,8 +10,9 @@
 //     <<<NEO-DONE:selftest>>>
 // The summary line is the sentinel the host greps for.
 //
-// The 74 active cases are the exact corpus from tests/jit_golden/cases.json
-// (1 additional case is `known` and reported separately, not counted).
+// The active cases are the in-guest corpus (a superset of tests/jit_golden/
+// cases.json); `known` cases are reported separately and not counted toward the
+// pass total. The frozen floor is enforced by scripts/golden-boot.sh.
 // ==============================================================================
 
 // P4.3: GL enum values used by SelfTestTexture. SelfTest.HC is compiled at Stage 1,
