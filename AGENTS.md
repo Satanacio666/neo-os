@@ -11,6 +11,8 @@
 > (The 20 mandates in §1–§20 below are the standing law; some name modules that were later dissolved — the
 > canonical, current truth is always `docs/00`–`docs/04`, not the mandate text.)
 
+**Remote:** `https://github.com/Satanacio666/neo-os` (branch `main`). Clone it and start at this file's §0.
+
 **Repository layout.** The OS (HolyC + the C bootstrap) lives at the repo root: `apps/` (the 34 `.HC` modules),
 `boot/` (the only C: `main.c` + `seed/` + `runtime/` + `uefi/`), `kernel/` (assembly), `docs/` (canonical docs),
 `scripts/` (build + verification harness), `tests/`, `screenshots/`, `Makefile`. The **browser console** lives at
