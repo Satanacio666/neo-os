@@ -28,14 +28,15 @@ pre-consolidation dump `/home/user/project/neo-os-docs/` and `neo-os-src.tar.gz`
 - `docs/01-REALITY-AUDIT.md` — verified claim-by-claim reality of the code (what is REAL/PARTIAL/STUB/MISSING).
 - `docs/02-TASKLIST.md` — the per-phase task list **and the execution runbooks** (P7 blueprint, §P7.0–§P7.8).
 - `docs/03-IDEAS-AND-RESEARCH.md` — ideas and research.
-- `docs/04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md` — contradictions + every decision `D1…D33` + open questions.
+- `docs/04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md` — contradictions + every decision `D1…D34` + open questions.
 
 ### Current state (2026-10)
-- **P0–P6 ✅ DONE. P7.0 ✅ DONE. P7.0-audit ✅ DONE** (D29 + D30 root-fixed, golden gate hardened).
-- **NEXT STEP = P7.1** — HolyGL GL 1.3 surface completion + GL conformance. Complete one-shot runbook:
-  `docs/02-TASKLIST.md` §"P7.1 — HolyGL GL 1.3 surface completion (one-shot runbook)".
+- **P0–P6 ✅ DONE. P7.0 ✅ DONE. P7.0-audit ✅ DONE. P7.1 ✅ DONE** (HolyGL GL 1.3 surface — two matrix stacks,
+  clear/colour/flush, missing bindings, `SelfTestGL` → `GL: PASS`; D34 cross-stage F64 finding).
+- **NEXT STEP = P7.2** — near-plane Sutherland–Hodgman clipper + NEON memory kernels. Runbook:
+  `docs/02-TASKLIST.md` §"P7.2 — Near-plane Sutherland–Hodgman clipper + NEON memory kernels".
 - Frozen gate (must stay green): `GOLDEN BOOT: PASS`, `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`,
-  `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `RENDER: PASS (0xD28836F)`.
+  `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `RENDER: PASS (0xD28836F)`, `GL: PASS`.
 - The 4 detailed read-only audit reports (P1/P3/P4/P5-P7.0 findings) are archived at
   `docs/research/neo-audit/*.md`.
 

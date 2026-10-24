@@ -39,6 +39,8 @@
 #define GL_TEXTURE_MAG_FILTER   0x2800
 #define GL_SRC_ALPHA            0x0302
 #define GL_ONE_MINUS_SRC_ALPHA  0x0303
+#define GL_COLOR_BUFFER_BIT     0x00004000
+#define GL_DEPTH_BUFFER_BIT     0x00000100
 
 I64 g_selftest_pass = 0;
 I64 g_selftest_total = 0;
@@ -849,6 +851,141 @@ U0 SelfTestTexture() {
     else doldoc_print("TEXTURE: FAIL\n");
 }
 
+// P7.1: HolyGL GL 1.3 state-machine surface. Proves the two real matrix stacks
+// (MODELVIEW depth 16, PROJECTION depth 4), gl* bindings, clear/colour/flush
+// semantics — all through exported accessors (no direct g_hgl access). Prints
+// GL: PASS / GL: FAIL (<stage>).
+U0 SelfTestGL() {
+    I64 ok = 1;
+    U8 *why = "ok";
+
+    I64 W = gfx_get_canvas_width();
+    I64 H = gfx_get_canvas_height();
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
+
+    // Deterministic unlit state: only GL state is under test.
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    HolyGLViewport(0, 0, W, H);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    // 1. MODELVIEW push/translate/pop isolation: the translate must not leak.
+    glPushMatrix();
+    glTranslatef(5.0, 0.0, 0.0);
+    glPopMatrix();
+    if (HolyGLModelviewMBits(12) != 0) { ok = 0; why = "mv_pop_isolation"; }
+
+    // 2. PROJECTION stack depth 4 (sp 0..3); a 5th push is a no-op.
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glPushMatrix();
+    glPushMatrix();
+    glPushMatrix();
+    glPushMatrix();
+    if (HolyGLGetProjectionSP() != 3) { ok = 0; why = "proj_depth4"; }
+    glPushMatrix();
+    if (HolyGLGetProjectionSP() != 3) { ok = 0; why = "proj_depth_overflow"; }
+    glPopMatrix();
+    glPopMatrix();
+    glPopMatrix();
+    glPopMatrix();
+    if (HolyGLGetProjectionSP() != 0) { ok = 0; why = "proj_depth_underflow"; }
+
+    // 3. MODELVIEW stack depth 16 (sp 0..15); a 17th push is a no-op.
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    I64 mp = 0;
+    while (mp < 16) { glPushMatrix(); mp = mp + 1; }
+    if (HolyGLGetModelviewSP() != 15) { ok = 0; why = "mv_depth16"; }
+    glPushMatrix();
+    if (HolyGLGetModelviewSP() != 15) { ok = 0; why = "mv_depth_overflow"; }
+    mp = 0;
+    while (mp < 16) { glPopMatrix(); mp = mp + 1; }
+    if (HolyGLGetModelviewSP() != 0) { ok = 0; why = "mv_depth_underflow"; }
+
+    // 4. gluPerspective shape: post-multiplied onto the current identity matrix, so
+    // m[14] == -1.0 (IEEE bits 0xBFF0000000000000) and m[5] == f = cos/sin(22.5deg) > 0.
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, 1.333333, 1.0, 100.0);
+    if (HolyGLProjectionMBits(14) != -4616189618054758400) { ok = 0; why = "persp_m14"; }
+    if (HolyGLProjectionMBits(5) <= 0) { ok = 0; why = "persp_m5"; }
+    glLoadIdentity();
+
+    // 5. glColor4f packs (a,r,g,b) with round-to-nearest: 1,0,0,0.5 -> 0x80FF0000.
+    glColor4f(1.0, 0.0, 0.0, 0.5);
+    if (HolyGLGetCurrentColor() != 0x80FF0000) { ok = 0; why = "color4f_pack"; }
+
+    // 6a. glClear(GL_COLOR_BUFFER_BIT) fills with the stored clear colour.
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glClearColor(0.25, 0.5, 0.75, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (fb[(H / 2) * pit + (W / 2)] != 0xFF4080BF) { ok = 0; why = "clear_color"; }
+
+    // 6b. glClear(GL_DEPTH_BUFFER_BIT) makes the Z buffer far-writable again: a far
+    // triangle rejected before the depth clear must be accepted after it.
+    glClearColor(0.0, 0.0, 0.0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    RasterSetDepthTest(1);
+    RasterDisableGouraud();
+    RasterSetZ(10000, 10000, 10000);
+    RasterTriangleZ(200, 200, 400, 200, 300, 400, 0xFFFF0000);
+    RasterSetZ(60000, 60000, 60000);
+    RasterTriangleZ(200, 200, 400, 200, 300, 400, 0xFF00FF00);
+    if (fb[300 * pit + 300] != 0xFFFF0000) { ok = 0; why = "depth_reject"; }
+    glClear(GL_DEPTH_BUFFER_BIT);
+    RasterSetZ(60000, 60000, 60000);
+    RasterTriangleZ(200, 200, 400, 200, 300, 400, 0xFF00FF00);
+    if (fb[300 * pit + 300] != 0xFF00FF00) { ok = 0; why = "depth_writable"; }
+
+    // 7. A lit triangle submitted through the GL pipeline increments the counter.
+    glEnable(GL_LIGHTING);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(0.0, 0.0, -5.0);
+    I64 t0 = HolyGLGetTrisRendered();
+    glBegin(GL_TRIANGLES);
+    glColor3ub(200, 200, 200);
+    glNormal3f(0.0, 0.0, 1.0);
+    glVertex3f(-1.0, -1.0, 0.0);
+    glVertex3f( 1.0, -1.0, 0.0);
+    glVertex3f( 0.0,  1.0, 0.0);
+    glEnd();
+    if (HolyGLGetTrisRendered() <= t0) { ok = 0; why = "lit_tri_count"; }
+
+    // ---- restore the shared GL state so later tests are unaffected ----
+    glDisable(GL_LIGHTING);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    RasterSetDepthTest(1);
+    RasterDisableGouraud();
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    HolyGLViewport(0, 0, W, H);
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    doldoc_mark_all_dirty();
+
+    if (ok != 0) doldoc_print("GL: PASS\n");
+    else doldoc_printf("GL: FAIL (%s)\n", why);
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1014,6 +1151,7 @@ U0 SelfTestRun() {
     SelfTestStructPtrScale();
     SelfTestHeap();
     SelfTestTexture();
+    SelfTestGL();
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();

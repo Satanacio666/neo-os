@@ -62,7 +62,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P4** | Rendering unification (merges) | ✅ **DONE** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes) + **P4.7 ✅** (OBJ mesh ingestion: streaming parser + quad triangulation rendering through the one pipeline; + **D14** redeclared-local type-flag root fix, **D15** struct-member array `N*M` dimension root fix in both `Compiler.HC` and the C seed) + **P4.8 ✅** (merge/delete/verify: one damage tracker + one present + `apps/Theme.HC` theme owner; dead-code purge; **determinism gate** proving `0xD28836F` byte-identical on 1 vs 4 cores — doc 2 §P4, doc 3 §3.1, doc 4 D16) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM + one mesh path + one theme owner |
 | **P5** | DolDoc (real model + dissolution) | ✅ **DONE** — `DolDoc.HC` rewritten as a genuine **CDoc/CTree** (flat index-linked `CDocNode` tree + per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set (`TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI`) incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap; **windows are documents** (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); **`WM.HC` and `Compositor.HC` DELETED** (desktop/window/damage/present/effects absorbed into DolDoc); reactive cells (`$SL`/`$DA` target= binding); `$FI` include (RedSea doc persistence); `g_doc_dirty_mask` shift fixed; new `DOLDOC: PASS` gate (doc 2 §P5, doc 4 **D17/D18/D19/D20**) | no char grid; one CDoc/CTree; windows are documents; 34 modules |
 | **P6** | Shell (action executor over a CDoc) | ✅ **DONE** — `Shell.HC` is now an **O(1) action executor**: FNV-1a `CShellCmd` registry (`shell_register_cmd`/`ShellFindCmd`, real hash dispatch replacing the ~50-branch if/else ladder); the **action protocol** `DOC_ACT_{RUN,OPEN,SET,CLONE,FOCUS}` (ring queue in `DolDoc.HC` + `DolDocPushAction`/`DolDocPollAction`/`ShellDrainActions`); **the `DolDoc → Shell` cycle is broken** (DolDoc has 0 `shell_run_command`/`shell_poll` references; it emits actions and calls a Shell-registered pump via a function pointer); shell output is a CDoc; `top`/`filer`/`edit` tools render interactive CDoc (buttons/progress/line-numbered text); `WFE` idle; new `SHELL: PASS` gate (doc 2 §P6, doc 4 **D21**) | no cycles; shell output is a CDoc |
-| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅** (D29/D30 root-fixed, gate hardened) — next **P7.1** | one real 40-phase suite; profilers merged |
+| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) — next **P7.2** | one real 40-phase suite; profilers merged |
 | **P8** | Self-hosting everything | ⬜ | boot as a document; only boot C remains |
 | **P9** | GPU provider | ⬜ | virtio-gpu 3D / native |
 | **P10** | Run anything + MCU cluster | ⬜ | `HolyPort` + `Surface`/`remote` |
@@ -295,9 +295,10 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **Status at authoring:** P0–P6 DONE and committed. HEAD `d657e70`. Remaining ladder: **P7 Benchmark**,
 > **P8 Self-hosting**, **P9 GPU provider**, **P10 Run anything + MCU cluster**.
 >
-> **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ DONE** (D29/D30 root-fixed, gate hardened); **next = P7.1**
-> (runbook in `02-TASKLIST.md` §P7.1). Frozen gate: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`,
-> `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.
+> **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅ DONE** (HolyGL GL 1.3 surface — `GL: PASS`;
+> D34 cross-stage F64 finding); **next = P7.2** (runbook in `02-TASKLIST.md` §P7.2). Frozen gate:
+> `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`,
+> `GOLDEN BOOT: PASS`.
 
 ---
 
@@ -440,7 +441,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   historical.
 - **Risks/ordering.** Must run first; nothing else starts until the baseline is frozen.
 
-### P7.1 — GL surface completion (a)
+### P7.1 — GL surface completion (a) ✅ DONE (2026-10)
 
 - **Purpose.** Make HolyGL a *complete* GL 1.3 API surface, not a partial one, so the conformance test in P7.9
   has a full target and the benchmark variations have real toggles to flip.

@@ -20,6 +20,9 @@
 #define GL_CULL_FACE      0x0B44
 #define GL_LIGHTING       0x0B50
 
+#define GL_COLOR_BUFFER_BIT 0x00004000
+#define GL_DEPTH_BUFFER_BIT 0x00000100
+
 class GLVertex {
   F64 x;
   F64 y;
@@ -34,11 +37,11 @@ class GLVertex {
 };
 
 class HolyGLContext {
-  CMat4 modelview;
-  CMat4 projection;
-  CMat4 mvp;
-  CMat4 modelview_stack[8];
+  CMat4 modelview_stack[16];
   I64   modelview_sp;
+  CMat4 projection_stack[4];
+  I64   projection_sp;
+  CMat4 mvp;
 
   I64   matrix_mode;
   I64   primitive_mode;
@@ -50,6 +53,11 @@ class HolyGLContext {
   F64   light_x;
   F64   light_y;
   F64   light_z;
+
+  F64   clear_r;
+  F64   clear_g;
+  F64   clear_b;
+  F64   clear_a;
 
   GLVertex v_curr;
   GLVertex v_queue[16];
@@ -115,10 +123,11 @@ U0 HolyGLClearDepth() {
 }
 
 U0 HolyGLInit() {
-  Mat4Identity(&g_hgl.modelview);
-  Mat4Identity(&g_hgl.projection);
+  Mat4Identity(&g_hgl.modelview_stack[0]);
+  Mat4Identity(&g_hgl.projection_stack[0]);
   Mat4Identity(&g_hgl.mvp);
   g_hgl.modelview_sp = 0;
+  g_hgl.projection_sp = 0;
   g_hgl.matrix_mode = GL_MODELVIEW;
   g_hgl.primitive_mode = 0;
   g_hgl.depth_test = 1;
@@ -130,6 +139,11 @@ U0 HolyGLInit() {
   g_hgl.light_x = 0.4472;
   g_hgl.light_y = 0.6324;
   g_hgl.light_z = 0.6324;
+
+  g_hgl.clear_r = 0.0;
+  g_hgl.clear_g = 0.0;
+  g_hgl.clear_b = 0.0;
+  g_hgl.clear_a = 1.0;
 
   g_hgl.v_count = 0;
   g_hgl.v_curr.color = 0xFFFFFFFF;
@@ -157,8 +171,19 @@ U0 HolyGLInit() {
   HolyGLClearDepth();
 }
 
+// The matrix the current matrix_mode edits (GL 1.3 semantics: two independent
+// stacks). PROJECTION depth 4, MODELVIEW depth 16.
+CMat4* HolyGLCurrentMatrix() {
+  if (g_hgl.matrix_mode == GL_PROJECTION) return &g_hgl.projection_stack[g_hgl.projection_sp];
+  return &g_hgl.modelview_stack[g_hgl.modelview_sp];
+}
+
+CMat4* HolyGLModelview() {
+  return &g_hgl.modelview_stack[g_hgl.modelview_sp];
+}
+
 U0 HolyGLUpdateMVP() {
-  Mat4Mul(&g_hgl.mvp, &g_hgl.projection, &g_hgl.modelview);
+  Mat4Mul(&g_hgl.mvp, &g_hgl.projection_stack[g_hgl.projection_sp], &g_hgl.modelview_stack[g_hgl.modelview_sp]);
 }
 
 U0 HolyGLEnable(I64 cap) {
@@ -189,55 +214,63 @@ U0 HolyGLMatrixMode(I64 mode) {
 }
 
 U0 HolyGLLoadIdentity() {
-  if (g_hgl.matrix_mode == GL_MODELVIEW) {
-    Mat4Identity(&g_hgl.modelview);
-  } else {
-    Mat4Identity(&g_hgl.projection);
-  }
+  Mat4Identity(HolyGLCurrentMatrix());
   HolyGLUpdateMVP();
 }
 
 U0 HolyGLPushMatrix() {
-  if (g_hgl.matrix_mode == GL_MODELVIEW && g_hgl.modelview_sp < 7) {
-    Mat4Copy(&g_hgl.modelview_stack[g_hgl.modelview_sp], &g_hgl.modelview);
-    g_hgl.modelview_sp++;
+  if (g_hgl.matrix_mode == GL_PROJECTION) {
+    if (g_hgl.projection_sp < 3) {
+      Mat4Copy(&g_hgl.projection_stack[g_hgl.projection_sp + 1], &g_hgl.projection_stack[g_hgl.projection_sp]);
+      g_hgl.projection_sp++;
+    }
+  } else {
+    if (g_hgl.modelview_sp < 15) {
+      Mat4Copy(&g_hgl.modelview_stack[g_hgl.modelview_sp + 1], &g_hgl.modelview_stack[g_hgl.modelview_sp]);
+      g_hgl.modelview_sp++;
+    }
   }
+  HolyGLUpdateMVP();
 }
 
 U0 HolyGLPopMatrix() {
-  if (g_hgl.matrix_mode == GL_MODELVIEW && g_hgl.modelview_sp > 0) {
-    g_hgl.modelview_sp--;
-    Mat4Copy(&g_hgl.modelview, &g_hgl.modelview_stack[g_hgl.modelview_sp]);
-    HolyGLUpdateMVP();
+  if (g_hgl.matrix_mode == GL_PROJECTION) {
+    if (g_hgl.projection_sp > 0) g_hgl.projection_sp--;
+  } else {
+    if (g_hgl.modelview_sp > 0) g_hgl.modelview_sp--;
   }
+  HolyGLUpdateMVP();
 }
 
 U0 HolyGLTranslatef(F64 tx, F64 ty, F64 tz) {
-  if (g_hgl.matrix_mode == GL_MODELVIEW) {
-    Mat4Translate(&g_hgl.modelview, tx, ty, tz);
-  } else {
-    Mat4Translate(&g_hgl.projection, tx, ty, tz);
-  }
+  Mat4Translate(HolyGLCurrentMatrix(), tx, ty, tz);
   HolyGLUpdateMVP();
 }
 
 U0 HolyGLRotatef(F64 angle_deg, F64 x, F64 y, F64 z) {
-  if (x > 0.3) Mat4RotateX(&g_hgl.modelview, angle_deg);
-  else if (x < -0.3) Mat4RotateX(&g_hgl.modelview, -angle_deg);
-  if (y > 0.3) Mat4RotateY(&g_hgl.modelview, angle_deg);
-  else if (y < -0.3) Mat4RotateY(&g_hgl.modelview, -angle_deg);
-  if (z > 0.3) Mat4RotateZ(&g_hgl.modelview, angle_deg);
-  else if (z < -0.3) Mat4RotateZ(&g_hgl.modelview, -angle_deg);
+  CMat4 *m = HolyGLCurrentMatrix();
+  if (x > 0.3) Mat4RotateX(m, angle_deg);
+  else if (x < -0.3) Mat4RotateX(m, -angle_deg);
+  if (y > 0.3) Mat4RotateY(m, angle_deg);
+  else if (y < -0.3) Mat4RotateY(m, -angle_deg);
+  if (z > 0.3) Mat4RotateZ(m, angle_deg);
+  else if (z < -0.3) Mat4RotateZ(m, -angle_deg);
   HolyGLUpdateMVP();
 }
 
 U0 HolyGLScalef(F64 sx, F64 sy, F64 sz) {
-  Mat4Scale(&g_hgl.modelview, sx, sy, sz);
+  Mat4Scale(HolyGLCurrentMatrix(), sx, sy, sz);
   HolyGLUpdateMVP();
 }
 
+// Post-multiply the projection onto the current matrix (upstream glMatrixMode
+// semantics: `curr = curr * persp`), so a preceding LoadIdentity is a no-op and
+// composable projections work.
 U0 HolyGLPerspective(F64 fovy, F64 aspect, F64 z_near, F64 z_far) {
-  Mat4Perspective(&g_hgl.projection, fovy, aspect, z_near, z_far);
+  CMat4 persp;
+  CMat4 *cur = HolyGLCurrentMatrix();
+  Mat4Perspective(&persp, fovy, aspect, z_near, z_far);
+  Mat4Mul(cur, cur, &persp);
   HolyGLUpdateMVP();
 }
 
@@ -248,7 +281,7 @@ U0 HolyGLPerspective(F64 fovy, F64 aspect, F64 z_near, F64 z_far) {
 // modelview (no lighting). Used to feed per-vertex normals to the per-fragment
 // Blinn-Phong stage in the ONE rasterizer.
 U0 HolyGLViewNormal(F64 nx, F64 ny, F64 nz, F64 *ox, F64 *oy, F64 *oz) {
-  CMat4 *mv = &g_hgl.modelview;
+  CMat4 *mv = HolyGLModelview();
   *ox = mv->m[0] * nx + mv->m[1] * ny + mv->m[2]  * nz;
   *oy = mv->m[4] * nx + mv->m[5] * ny + mv->m[6]  * nz;
   *oz = mv->m[8] * nx + mv->m[9] * ny + mv->m[10] * nz;
@@ -272,6 +305,47 @@ U0 HolyGLColor3ub(U32 r, U32 g, U32 b) {
 // callers (Gears3D, Physics3D, Mesh) never touch g_hgl directly — sovereign rule.
 U0 HolyGLColorPacked(U32 argb) {
   g_hgl.v_curr.color = argb;
+}
+
+// P7.1: full RGBA colour with round-to-nearest packing (a,r,g,b) -> 0xAARRGGBB.
+U0 HolyGLColor4f(F64 r, F64 g, F64 b, F64 a) {
+  if (r < 0.0) r = 0.0; if (r > 1.0) r = 1.0;
+  if (g < 0.0) g = 0.0; if (g > 1.0) g = 1.0;
+  if (b < 0.0) b = 0.0; if (b > 1.0) b = 1.0;
+  if (a < 0.0) a = 0.0; if (a > 1.0) a = 1.0;
+  U32 ia = (U32)(a * 255.0 + 0.5);
+  U32 ir = (U32)(r * 255.0 + 0.5);
+  U32 ig = (U32)(g * 255.0 + 0.5);
+  U32 ib = (U32)(b * 255.0 + 0.5);
+  g_hgl.v_curr.color = (ia << 24) | (ir << 16) | (ig << 8) | ib;
+}
+
+U0 HolyGLClearColor(F64 r, F64 g, F64 b, F64 a) {
+  g_hgl.clear_r = r;
+  g_hgl.clear_g = g;
+  g_hgl.clear_b = b;
+  g_hgl.clear_a = a;
+}
+
+// GL 1.3 clear: colour bit fills the whole target with the stored clear colour;
+// depth bit resets the single full-screen Z buffer to far.
+U0 HolyGLClear(I64 mask) {
+  if ((mask & GL_COLOR_BUFFER_BIT) != 0) {
+    F64 r = g_hgl.clear_r; if (r < 0.0) r = 0.0; if (r > 1.0) r = 1.0;
+    F64 g = g_hgl.clear_g; if (g < 0.0) g = 0.0; if (g > 1.0) g = 1.0;
+    F64 b = g_hgl.clear_b; if (b < 0.0) b = 0.0; if (b > 1.0) b = 1.0;
+    F64 a = g_hgl.clear_a; if (a < 0.0) a = 0.0; if (a > 1.0) a = 1.0;
+    U32 ia = (U32)(a * 255.0 + 0.5);
+    U32 ir = (U32)(r * 255.0 + 0.5);
+    U32 ig = (U32)(g * 255.0 + 0.5);
+    U32 ib = (U32)(b * 255.0 + 0.5);
+    gfx_clear((ia << 24) | (ir << 16) | (ig << 8) | ib);
+  }
+  if ((mask & GL_DEPTH_BUFFER_BIT) != 0) RasterClearZ();
+}
+
+U0 HolyGLFlush() {
+  gfx_dirty_expand(g_hgl.vp_x, g_hgl.vp_y, g_hgl.vp_w, g_hgl.vp_h);
 }
 
 U0 HolyGLTexCoord2f(F64 u, F64 v) {
@@ -467,6 +541,17 @@ U0 glVertex3f(F64 x, F64 y, F64 z) { HolyGLVertex3f(x, y, z); }
 U0 glEnd() { HolyGLEnd(); }
 U0 glEnable(I64 cap) { HolyGLEnable(cap); }
 U0 glDisable(I64 cap) { HolyGLDisable(cap); }
+U0 glPushMatrix() { HolyGLPushMatrix(); }
+U0 glPopMatrix() { HolyGLPopMatrix(); }
+U0 glRotatef(F64 angle_deg, F64 x, F64 y, F64 z) { HolyGLRotatef(angle_deg, x, y, z); }
+U0 glScalef(F64 sx, F64 sy, F64 sz) { HolyGLScalef(sx, sy, sz); }
+U0 glColor3f(F64 r, F64 g, F64 b) { HolyGLColor3f(r, g, b); }
+U0 glColor4f(F64 r, F64 g, F64 b, F64 a) { HolyGLColor4f(r, g, b, a); }
+U0 glVertex2f(F64 x, F64 y) { HolyGLVertex2f(x, y); }
+U0 glClear(I64 mask) { HolyGLClear(mask); }
+U0 glClearColor(F64 r, F64 g, F64 b, F64 a) { HolyGLClearColor(r, g, b, a); }
+U0 glClearDepth() { HolyGLClearDepth(); }
+U0 glFlush() { HolyGLFlush(); }
 
 // ------------------------------------------------------------------------------
 // P4.3: Texture object API
@@ -543,6 +628,25 @@ U0 HolyGLBindRasterTexture() {
 
 // --- cross-module accessors (no direct g_hgl access from other modules) ---
 I64 HolyGLGetTrisRendered() { return g_hgl.tris_rendered; }
+I64 HolyGLGetModelviewSP() { return g_hgl.modelview_sp; }
+I64 HolyGLGetProjectionSP() { return g_hgl.projection_sp; }
+I64 HolyGLGetMatrixMode() { return g_hgl.matrix_mode; }
+U32 HolyGLGetCurrentColor() { return g_hgl.v_curr.color; }
+// Matrix-element reads cross the unit boundary as raw IEEE-754 bits (I64). HolyGL
+// is Stage 5 but SelfTest is Stage 1, and the compiler only tracks F64-ness within
+// a unit (and earlier ones): a cross-stage F64 return reads X0 instead of D0, and
+// F64 *out-params / F64 arithmetic on these short bodies are likewise unreliable.
+// Reading the 8 raw bytes as an I64 is exact and unit-safe.
+I64 HolyGLModelviewMBits(I64 idx) {
+  CMat4 *mm = &g_hgl.modelview_stack[g_hgl.modelview_sp];
+  I64 *bits = (I64*)&mm->m[idx];
+  return *bits;
+}
+I64 HolyGLProjectionMBits(I64 idx) {
+  CMat4 *pm = &g_hgl.projection_stack[g_hgl.projection_sp];
+  I64 *bits = (I64*)&pm->m[idx];
+  return *bits;
+}
 
 // ------------------------------------------------------------------------------
 // 3D Polyhedral Rotating Cube Demonstrator

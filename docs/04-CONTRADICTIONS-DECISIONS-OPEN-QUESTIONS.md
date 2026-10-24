@@ -751,3 +751,15 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `raster_tile_begin_scene`. Our `gfx_clear` clears the full framebuffer; P7.1 uses `gfx_clear` for the
   `GL_COLOR_BUFFER_BIT` path (documented simplification) and `RasterClearZ()` for `GL_DEPTH_BUFFER_BIT`. A
   viewport-rect clear can be added with the GPU config plane in P7.4.
+- **D34 — Cross-stage F64 is unusable; matrix reads cross as raw IEEE-754 bits — ROOT-FIXED (P7.1).** The
+  compiler tracks a function's return-floatness only **within its own unit and earlier ones**
+  (`HcPrescanFuncs` → `g_hc_fnf_*`, `Compiler.HC:3732`; `HcFuncIsFloat` at the call site, `:2031`). `SelfTest.HC`
+  is **Stage 1** but `HolyGL.HC` is **Stage 5**, so a Stage-1 caller of a Stage-5 `F64`-returning function reads
+  the result from **X0** instead of **D0** (observed: the element *address* — `m[5]`/`m[14]` came back 72 bytes
+  apart). An `F64 *out` parameter across that boundary is likewise unreliable (writes don't land), and even short
+  F64 probe bodies mis-store. **Fix:** the P7.1 matrix accessors return the element's raw 64-bit pattern as an
+  `I64` — `HolyGLModelviewMBits`/`HolyGLProjectionMBits` (`I64 *bits = (I64*)&m[idx]; return *bits;`) — which is
+  exact and unit-safe; the F64 comparison happens in the unit that owns the type. **Invariant:** a cross-stage
+  interface must not pass or return `F64` (use I64 bits or an I64-returning predicate). Existing callers are
+  unaffected — they pass `I64`/`F64` **arguments** to `HolyGL*`, and F64 arguments arrive correctly (verified).
+  Gate: `GL: PASS`.

@@ -187,6 +187,13 @@ else
         echo "  [FAIL] texture pipeline: ${txline:-<none>} (want TEXTURE: PASS)"
         fail=1
     fi
+    glline="$(printf '%s\n' "$out" | grep -a 'GL: ' | tail -1)"
+    if printf '%s' "$glline" | grep -aq 'PASS'; then
+        echo "  [PASS] $glline (GL 1.3 matrix stacks + clear/colour/flush)"
+    else
+        echo "  [FAIL] holygl surface: ${glline:-<none>} (want GL: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

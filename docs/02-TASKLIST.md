@@ -1075,12 +1075,24 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > past 255 chars (`SHELL_MAX_LINE`, now 1024). `golden-boot.sh` gained `set -o pipefail` (the census gate could
 > never fail before), SELFTEST floor raised to 99, and the screenshot stage no longer trips on curl SIGPIPE.
 > Gate: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`,
-> `GOLDEN BOOT: PASS`. **Next: P7.1 (HolyGL GL 1.3 surface + conformance).**
+> `GOLDEN BOOT: PASS`.
+>
+> **P7.1 HOLYGL GL 1.3 SURFACE (2026-10) ✅ DONE.** Two real matrix stacks (MODELVIEW depth 16, PROJECTION
+> depth 4) driven by `HolyGLCurrentMatrix()`; post-multiplied `gluPerspective`; `glClear`/`glClearColor`
+> (colour + depth), `glColor4f` (round-to-nearest RGBA), `glFlush`, and the missing bindings
+> (`glPushMatrix`/`glPopMatrix`/`glRotatef`/`glScalef`/`glColor3f`/`glColor4f`/`glVertex2f`/`glClear`/
+> `glClearColor`/`glClearDepth`/`glFlush`). New `SelfTestGL()` → `GL: PASS`; `golden-boot.sh` gained a `GL: PASS`
+> assertion. **Compiler finding (D34):** a cross-stage `F64` boundary is unusable (the compiler tracks
+> return-floatness only within a unit and earlier ones), so the matrix accessors cross as raw IEEE-754 bits
+> (`HolyGLModelviewMBits`/`HolyGLProjectionMBits`). Gate: `GL: PASS`, `3D: PASS`, `3D-GEARS: PASS`,
+> `SHADING: PASS`, `TEXTURE: PASS`, `MESH: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 99/99`,
+> `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
+> **Next: P7.2 (near-plane clipper + NEON memory kernels).**
 >
 > Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
 >
 > **P7 step index (authoritative numbering — `docs/00` §11 mirrors it):**
-> **P7.0** recon/baseline ✅ · **P7.1** HolyGL GL 1.3 surface (`GL: PASS`) · **P7.2** near-plane clipper + NEON
+> **P7.0** recon/baseline ✅ · **P7.1** HolyGL GL 1.3 surface ✅ (`GL: PASS`) · **P7.2** near-plane clipper + NEON
 > memory kernels (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve (`TILE`) · **P7.4** SMP tile
 > dispatch + parallel vertex transform (`DETERMINISM`) · **P7.5** GPU config plane + VirtIO batch/page-flip +
 > 32-bit Z (`GPUCFG`) · **P7.6** merged `Telemetry.HC` + ARM PMU (`TELEMETRY`) · **P7.7** real 40-phase suite
@@ -1206,10 +1218,16 @@ Each step lists **files touched**, **exact anchors**, **port source**, **assembl
 
 ---
 
-### P7.1 — HolyGL GL 1.3 surface completion (one-shot runbook)
+### P7.1 — HolyGL GL 1.3 surface completion (one-shot runbook) ✅ DONE (2026-10)
 
-> **STATUS: READY (pre-flight audit done).** Complete, executable spec — no open questions. Freeze numbers are
-> post-P7.0-audit: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`.
+> **STATUS: ✅ DONE (2026-10).** Implemented and certified — `GL: PASS` with the global gate green. Frozen
+> numbers post-P7.1: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `RENDER: PASS (0xD28836F)`.
+> **Implementation note (D34):** the runbook's `F64 HolyGLGetProjectionM(I64)` accessors are **not realisable**
+> across the Stage1↔Stage5 boundary — the compiler only knows a function's F64 return-ness within its own unit
+> (and earlier ones), so `SelfTest.HC` (Stage 1) reads X0 instead of D0, and an `F64 *out` param does not land.
+> Matrix elements cross as raw IEEE-754 bits via `HolyGLModelviewMBits`/`HolyGLProjectionMBits` (I64) — exact
+> and unit-safe. Everything else landed verbatim. `SelfTestGL` is a standalone `GL: PASS` gate line (like
+> `3D`/`SHADING`), so the SELFTEST corpus stays **99** (the runbook's "≥100" assumed GL was counted; it is not).
 
 **Goal.** Make HolyGL a *complete* GL 1.3 state machine — two real matrix stacks (PROJECTION depth 4,
 MODELVIEW depth 16), the missing `gl*` bindings, clear/colour/flush semantics — and prove it with a new
