@@ -991,6 +991,13 @@ U0 SelfTestRun() {
     SelfTestCheck("loop_break_continue", "I64 s = 0; for (I64 i = 0; i < 20; i = i + 1) { if (i == 5) continue; if (i == 15) break; s += i; } s;", 100);
     SelfTestCheck("sizeof_i64", "sizeof(I64);", 8);
     SelfTestCheck("sizeof_struct", "struct SZ { I64 a; I64 b; I64 c; }; sizeof(SZ);", 24);
+    // D29 ROOT FIX: array dimensions must fold constant expressions (* / + - << >>).
+    SelfTestCheck("array_dim_const_expr", "I64 ad[16 / 2]; I64 bd[2 * 3 + 1]; ad[0] = 7; bd[6] = 5; ad[0] + bd[6];", 12);
+    SelfTestCheck("array_dim_shift_sub", "I64 cd[1 << 3]; I64 ed[10 - 4]; cd[7] = 3; ed[5] = 9; cd[7] + ed[5];", 12);
+    // D30 ROOT FIX: indirect dispatch through a struct function-pointer MEMBER.
+    // (The former "failure" was the shell silently truncating >255-char input, not a
+    // codegen defect; this locks the pattern in for both engines.)
+    SelfTestCheck("fnptr_member_dispatch", "struct FDM { I64 v; I64 (*calc)(FDM *item, I64 m); }; I64 FDMmul(FDM *it, I64 m) { if (!it) return 0; return it->v * m; } I64 FDMrun() { FDM x; x.v = 70; x.calc = &FDMmul; FDM *p = &x; return p->calc(p, 3); } FDMrun();", 210);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();

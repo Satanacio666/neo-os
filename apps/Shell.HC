@@ -5,7 +5,13 @@
 //            Inspector (src), Theme/Shader/Window Control & Direct HolyC JIT REPL
 // ==============================================================================
 
-#define SHELL_MAX_LINE    256
+// D30 ROOT FIX: the interactive line buffer was 256 bytes, so any command longer
+// than 255 chars was SILENTLY truncated (ShellPoll dropped the overflow). A pasted
+// multi-statement unit (e.g. a struct + functions + a trailing call) lost its tail,
+// which read as a mysterious "call sequence absent / wrong result" compiler defect.
+// Size the line to a full small module unit; the compiler, lexer and REPL wrapper
+// all handle it. Keep the history arena in sync (SHELL_HISTORY_MAX * SHELL_MAX_LINE).
+#define SHELL_MAX_LINE    1024
 #define SHELL_HISTORY_MAX 16
 // P0.7: module source buffer. 128 KB silently truncated large modules (see
 // KernelInit.HC HC_MODULE_MAX); 1 MB never truncates a .HC source.
@@ -20,7 +26,7 @@
 #define KEY_BACKSPACE     8
 #define KEY_ENTER         10
 #define KEY_TAB           9
-#define SHELL_HISTORY_BUF 4096
+#define SHELL_HISTORY_BUF 16384
 
 // ============================================================================
 // P6: FNV-1a command registry — O(1) verb dispatch (replaces the if/else ladder)

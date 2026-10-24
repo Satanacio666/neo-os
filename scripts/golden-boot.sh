@@ -5,6 +5,10 @@
 # battery with a SINGLE in-guest command (`selftest`, apps/SelfTest.HC) framed by
 # a sentinel — no per-case UART round trips. Self-host stays a second command.
 set -u
+# P0-7.0 audit root fix: without pipefail a failing left-hand command in a pipeline
+# (e.g. the census script) was masked by the trailing `tail -1`, so the gate could
+# never fail on it. Fail the whole pipeline on any stage's non-zero exit.
+set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG=/tmp/neo-os-serial.log
 SHOT="${1:-/tmp/golden-boot.png}"
@@ -57,10 +61,10 @@ else
     line="$(printf '%s\n' "$out" | grep -a 'SELFTEST: ' | tail -1)"
     res="${line##*SELFTEST: }"; res="${res%% *}"       # "74/74"
     a="${res%%/*}"; b="${res##*/}"
-    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" -ge 74 ] 2>/dev/null; then
+    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" -ge 99 ] 2>/dev/null; then
         echo "  [PASS] SELFTEST = $res"
     else
-        echo "  [FAIL] SELFTEST = ${res:-<none>} (want a==b and a>=74)"
+        echo "  [FAIL] SELFTEST = ${res:-<none>} (want a==b and a>=99)"
         printf '%s\n' "$out" | grep -a '\[SELFTEST\] FAIL' | head -5
         fail=1
     fi
@@ -242,7 +246,12 @@ else
 fi
 
 echo "== .HC -> C runtime census =="
-"$ROOT/scripts/census-c-runtime.sh" | tail -1 || fail=1
+census_out="$("$ROOT/scripts/census-c-runtime.sh")"; census_rc=$?
+printf '%s\n' "$census_out" | tail -1
+if [ "$census_rc" -ne 0 ]; then
+    echo "  [FAIL] census-c-runtime.sh rc=$census_rc (count changed / over budget)"
+    fail=1
+fi
 
 echo "== compiler self-host =="
 "$ROOT/scripts/self-host-test.sh" || fail=1
@@ -259,13 +268,23 @@ else
 fi
 
 echo "== screenshot =="
+rm -f "$SHOT"
+# NOTE: the python reader breaks after the first frame, so curl is killed by
+# SIGPIPE (rc 141). Under `set -o pipefail` that would spuriously fail the gate, so
+# the pipeline's rc is intentionally ignored and the saved file is verified instead.
 curl -sN --max-time 12 http://localhost:4000/api/neo-os/stream 2>/dev/null | python3 -c "
 import sys,json,base64
 for line in sys.stdin:
     if line.startswith('data: '):
         o=json.loads(line[6:]); open('$SHOT','wb').write(base64.b64decode(o['png']))
         print('  saved', o['width'],'x',o['height'],'->','$SHOT'); break
-" || fail=1
+" || true
+if [ -s "$SHOT" ]; then
+    echo "  [PASS] screenshot captured"
+else
+    echo "  [FAIL] screenshot not captured"
+    fail=1
+fi
 
 echo
 if [ $fail -eq 0 ]; then echo "GOLDEN BOOT: PASS"; else echo "GOLDEN BOOT: FAIL"; fi

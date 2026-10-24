@@ -1065,8 +1065,17 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > **STATUS (2026-10):** **P7.0 ✅ DONE** — docs consolidated to exactly 5 files; peephole optimizer live in
 > `Compiler.HC` (`[PEEPHOLE] runs=33 roundtrips=5600`); cross-module `g_hgl.*` writes purged
 > (`HolyGLColorPacked`); orphan `apps/TestJitP0.HC` removed (6 useful cases folded into `SelfTest.HC`); stale
-> `p4.3-wip` branch deleted. Gate: `SELFTEST 96/96`, `PARITY 64/64 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`,
-> `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`. **Next: P7.1 (HolyGL GL 1.3 surface + conformance).**
+> `p4.3-wip` branch deleted.
+>
+> **P7.0 AUDIT + D29/D30 ROOT FIX (2026-10) ✅ DONE.** A 4-agent read-only audit of P0→P7.0 found: **D29** (array
+> dimensions folded only `*`/`+`) — root-fixed in both engines with a precedence-climbing dim parser
+> (`HcParseArrayDim*` / seed `parse_array_dim*`); the C seed's statement parser now falls through to the generic
+> expression parser for statements that merely *begin* with an index (`a[0] + b[1];`) and marks F64 array
+> elements float; **D30** was **not** a codegen bug — it was the interactive shell silently truncating input
+> past 255 chars (`SHELL_MAX_LINE`, now 1024). `golden-boot.sh` gained `set -o pipefail` (the census gate could
+> never fail before), SELFTEST floor raised to 99, and the screenshot stage no longer trips on curl SIGPIPE.
+> Gate: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`,
+> `GOLDEN BOOT: PASS`. **Next: P7.1 (HolyGL GL 1.3 surface + conformance).**
 >
 > Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
 

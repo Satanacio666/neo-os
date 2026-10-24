@@ -152,7 +152,9 @@ I64   g_hc_pool_offset;
 U64   g_hc_unit_main;
 
 // P7.0: branch-target bitmap for the peephole optimizer (1 bit per instruction).
-U8    g_hc_target_bits[131072];
+// D29 ROOT-FIXED: this dimension is now a constant EXPRESSION (HC_CODE_CAPACITY/8),
+// folded by HcParseArrayDim — no more literal workaround.
+U8    g_hc_target_bits[HC_CODE_CAPACITY / 8];
 
 // Function Prologue/Epilogue Dynamic Frame Patching
 I64   g_hc_pro_sub_idx;
@@ -2497,6 +2499,57 @@ U0 HcParseExpr() {
 }
 
 // ------------------------------------------------------------------------------
+// P7.0 / D29 ROOT FIX: array-dimension constant-expression parser.
+//
+// Every array dimension (`Type name[N]`, `Type name[N*M]`, struct-member arrays)
+// must fold constant expressions. Before this, three separate inline parsers in
+// this file (and two in the C seed) folded only `*` and `+`, so `[HC_CODE_CAPACITY/8]`
+// dropped the `/8` (silently allocating 8x the intended bytes) and `-`/`<<`/`>>`
+// were left unconsumed. This single helper folds `* / % + - << >>` with C
+// precedence, unary `+/-`, and parentheses. `#define` macros are already
+// substituted to TOK_NUMBER by the lexer. Call it with the `[` already consumed;
+// it stops at (but does not consume) the closing `]`.
+// ------------------------------------------------------------------------------
+I64 HcDimPrec(I64 tok) {
+    if (tok == TOK_STAR || tok == TOK_SLASH || tok == TOK_PERCENT) return 5;
+    if (tok == TOK_PLUS || tok == TOK_MINUS) return 4;
+    if (tok == TOK_SHL || tok == TOK_SHR) return 3;
+    return -1;
+}
+
+I64 HcParseArrayDimExpr(I64 min_prec) {
+    I64 v = 0;
+    if (g_hc_tok == TOK_MINUS) { HcLexNext(); v = 0 - HcParseArrayDimExpr(6); }
+    else if (g_hc_tok == TOK_PLUS) { HcLexNext(); v = HcParseArrayDimExpr(6); }
+    else if (g_hc_tok == TOK_LPAREN) { HcLexNext(); v = HcParseArrayDimExpr(0); if (g_hc_tok == TOK_RPAREN) HcLexNext(); }
+    else if (g_hc_tok == TOK_NUMBER) { v = g_hc_tok_val; HcLexNext(); }
+    while (1) {
+        I64 prec = HcDimPrec(g_hc_tok);
+        if (prec < min_prec) break;
+        I64 op = g_hc_tok;
+        HcLexNext();
+        I64 r = HcParseArrayDimExpr(prec + 1);
+        if (op == TOK_STAR) v = v * r;
+        else if (op == TOK_SLASH) { if (r != 0) v = v / r; else g_hc_error = 1; }
+        else if (op == TOK_PERCENT) { if (r != 0) v = v % r; else g_hc_error = 1; }
+        else if (op == TOK_PLUS) v = v + r;
+        else if (op == TOK_MINUS) v = v - r;
+        else if (op == TOK_SHL) v = v << r;
+        else if (op == TOK_SHR) v = v >> r;
+    }
+    return v;
+}
+
+// Parse one dimension between `[` and `]` (the `[` already consumed). An empty
+// `[]` yields 1. Consumes the closing `]`.
+I64 HcParseArrayDim() {
+    I64 dim = 1;
+    if (g_hc_tok != TOK_RBRACKET) dim = HcParseArrayDimExpr(0);
+    if (g_hc_tok == TOK_RBRACKET) HcLexNext();
+    return dim;
+}
+
+// ------------------------------------------------------------------------------
 // Struct / Class Definition Parser & Assignment Helper
 // ------------------------------------------------------------------------------
 U0 HcParseStructDef() {
@@ -2584,28 +2637,10 @@ U0 HcParseStructDef() {
                 I64 is_a = 0;
                 if (g_hc_tok == TOK_LBRACKET) {
                     HcLexNext();
-                    I64 acnt = 1;
-                    if (g_hc_tok == TOK_NUMBER) {
-                        acnt = g_hc_tok_val;
-                        HcLexNext();
-                    }
-                    // D15 ROOT FIX: a member array dimension may be a constant
-                    // expression of the form N, N*M or N+M (macros are already
-                    // substituted by the lexer), exactly like the local-array
-                    // (HcParseLocalDecl) and global-array parsers. Before this,
-                    // `I64 fv[MESH_MAX_T * 3]` recorded only MESH_MAX_T elements and
-                    // left `* 3]` for the outer member loop to skip, so every
-                    // FOLLOWING member's offset (fni, ft) and the struct's total size
-                    // were wrong (CMesh: 28704 instead of 53280 bytes).
-                    while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
-                        I64 m_dim_op = g_hc_tok;
-                        HcLexNext();
-                        I64 m_dim_f = 1;
-                        if (g_hc_tok == TOK_NUMBER) { m_dim_f = g_hc_tok_val; HcLexNext(); }
-                        if (m_dim_op == TOK_STAR) acnt = acnt * m_dim_f;
-                        else                      acnt = acnt + m_dim_f;
-                    }
-                    if (g_hc_tok == TOK_RBRACKET) HcLexNext();
+                    // D29 ROOT FIX: a member array dimension may be any constant
+                    // expression (N, N*M, N/M, N+M, N-M, N<<M, N>>M, parentheses),
+                    // exactly like the local-array and global-array parsers.
+                    I64 acnt = HcParseArrayDim();
                     field_bytes = elem_sz * acnt;
                     is_a = 1;
                 }
@@ -2808,19 +2843,11 @@ U0 HcParseStatement() {
                     I64 arr_cnt = 1;
                     while (g_hc_tok == TOK_LBRACKET) {
                         HcLexNext();
-                        I64 dim = 1;
-                        if (g_hc_tok == TOK_NUMBER) { dim = g_hc_tok_val; HcLexNext(); }
-                        while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
-                            I64 dim_op = g_hc_tok;
-                            HcLexNext();
-                            I64 dim_f = 1;
-                            if (g_hc_tok == TOK_NUMBER) { dim_f = g_hc_tok_val; HcLexNext(); }
-                            if (dim_op == TOK_STAR) dim = dim * dim_f; else dim = dim + dim_f;
-                        }
+                        // D29 ROOT FIX: any constant expression as the dimension.
+                        I64 dim = HcParseArrayDim();
                         arr_cnt = arr_cnt * dim;
                         if (l_ndim < 4) l_dims[l_ndim] = dim;
                         l_ndim = l_ndim + 1;
-                        if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                     }
                     I64 arr_elem_sz = (is_p > 0) ? 8 : base_scale;
                     // P4.6 root fix: HcAddLocalTyped records the element floatness
@@ -3459,19 +3486,11 @@ U0 HcParseProgram() {
                 while (g_hc_tok == TOK_LBRACKET) {
                     g_has_bracket = 1;
                     HcLexNext();
-                    I64 dim = 1;
-                    if (g_hc_tok == TOK_NUMBER) { dim = g_hc_tok_val; HcLexNext(); }
-                    while (g_hc_tok == TOK_STAR || g_hc_tok == TOK_PLUS) {
-                        I64 dim_op = g_hc_tok;
-                        HcLexNext();
-                        I64 dim_f = 1;
-                        if (g_hc_tok == TOK_NUMBER) { dim_f = g_hc_tok_val; HcLexNext(); }
-                        if (dim_op == TOK_STAR) dim = dim * dim_f; else dim = dim + dim_f;
-                    }
+                    // D29 ROOT FIX: any constant expression as the dimension.
+                    I64 dim = HcParseArrayDim();
                     g_count *= dim;
                     if (g_ndim < 4) g_dims[g_ndim] = dim;
                     g_ndim = g_ndim + 1;
-                    if (g_hc_tok == TOK_RBRACKET) HcLexNext();
                 }
                 // Top-level global variable declaration: Type g_var [= val];
                 U64 g_slot = symbols_lookup(fname);

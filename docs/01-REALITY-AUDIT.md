@@ -5,9 +5,9 @@
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·
 > **[SUPERSEDED]** claim overridden by a later decision. Where the docs contradict each other, both are noted.
 
-Current verified baseline (**HEAD P4.8, `main` tree clean** — updated 2026-10):
-`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 87/87` · `PARITY 56/56`
-(0 diff, 6 seed-skip) · `RENDER: PASS (golden=0xD28836F)` · `DETERMINISM: PASS (1 vs 4 cores identical:
+Current verified baseline (**HEAD post-P7.0-audit, `main` tree clean** — updated 2026-10):
+`GOLDEN BOOT: PASS` · `SELF-HOST: PASS` (Compiler.HC compiles itself) · `SELFTEST 99/99` · `PARITY 68/68`
+(0 diff, 5 seed-skip) · `CENSUS: PASS (181)` · `RENDER: PASS (golden=0xD28836F)` · `DETERMINISM: PASS (1 vs 4 cores identical:
 0xD28836F)` · `TEXTURE: PASS` · `FONTS: PASS` · `3D: PASS` ·
 `3D-GEARS: PASS (tris=800 ink=71410)` · `SHADING: PASS (phong=30 lum_max=182 gouraud=218)` ·
 `SHADERVM: PASS (14/14)` (fragment-shader VM: NEON quad, derivatives, masking) ·

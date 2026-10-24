@@ -1142,6 +1142,12 @@ static void parse_primary(lexer_t *l, code_buffer_t *cb) {
                     lexer_next(l); // eat ']'
                 }
             }
+
+            // The loaded element has the array's element type. An F64 array element
+            // is a floating-point value, so mark the expression float — exactly like
+            // the scalar variable-read path below. Without this, `a[0] + a[1]` on an
+            // `F64 a[N]` performed integer addition on the raw double bit patterns.
+            if (vt && vt->is_float) s_expr_is_float = 1;
         } else {
             // Variable Read: frame local first, then Global Symbol Table (late-bound)
             uint64_t var_ref = lookup_var_ref(ident_name);
@@ -1900,6 +1906,56 @@ static void parse_block(lexer_t *l, code_buffer_t *cb) {
     }
 }
 
+// ------------------------------------------------------------------------------
+// D29 ROOT FIX (seed): array-dimension constant-expression parser. Mirrors
+// HcParseArrayDimExpr in apps/Compiler.HC so both engines fold `* / % + - << >>`
+// with C precedence, unary +/- and parentheses. Keeps PARITY at 0 diff. The `[`
+// must already be consumed; stops at (does not consume) the closing `]`.
+// ------------------------------------------------------------------------------
+static int parse_array_dim_prec(token_type_t t) {
+    if (t == TOK_STAR || t == TOK_SLASH || t == TOK_PERCENT) return 5;
+    if (t == TOK_PLUS || t == TOK_MINUS) return 4;
+    if (t == TOK_SHL || t == TOK_SHR) return 3;
+    return -1;
+}
+
+static int parse_array_dim_expr(lexer_t *l, int min_prec) {
+    int v = 0;
+    if (lexer_peek(l).type == TOK_MINUS) { lexer_next(l); v = -parse_array_dim_expr(l, 6); }
+    else if (lexer_peek(l).type == TOK_PLUS) { lexer_next(l); v = parse_array_dim_expr(l, 6); }
+    else if (lexer_peek(l).type == TOK_LPAREN) { lexer_next(l); v = parse_array_dim_expr(l, 0); if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); }
+    else if (lexer_peek(l).type == TOK_NUMBER) { v = (int)lexer_peek(l).int_value; lexer_next(l); }
+    else if (lexer_peek(l).type == TOK_IDENT) {
+        symbol_t *s = symbols_lookup_entry(lexer_peek(l).str_value);
+        if (s && s->type == SYM_VAR && s->address) v = *(int*)s->address;
+        else if (strcmp(lexer_peek(l).str_value, "MAX_WINDOWS") == 0) v = 16;
+        lexer_next(l);
+    }
+    while (1) {
+        int prec = parse_array_dim_prec(lexer_peek(l).type);
+        if (prec < min_prec) break;
+        token_type_t op = lexer_peek(l).type;
+        lexer_next(l);
+        int r = parse_array_dim_expr(l, prec + 1);
+        if (op == TOK_STAR) v *= r;
+        else if (op == TOK_SLASH) { if (r != 0) v /= r; }
+        else if (op == TOK_PERCENT) { if (r != 0) v %= r; }
+        else if (op == TOK_PLUS) v += r;
+        else if (op == TOK_MINUS) v -= r;
+        else if (op == TOK_SHL) v <<= r;
+        else if (op == TOK_SHR) v >>= r;
+    }
+    return v;
+}
+
+// Parse one dimension between `[` and `]` (the `[` already consumed); empty -> 1.
+static int parse_array_dim(lexer_t *l) {
+    int dim = 1;
+    if (lexer_peek(l).type != TOK_RBRACKET) dim = parse_array_dim_expr(l, 0);
+    if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l);
+    return dim;
+}
+
 // Statements (Function Decls, Variable Decls, Assignments, If, While, For, Expressions, Classes, Format Strings)
 // Class / Struct Definition (also reused by the type pre-pass)
 static void parse_struct_def(lexer_t *l, code_buffer_t *cb) {
@@ -2009,42 +2065,8 @@ static void parse_struct_def(lexer_t *l, code_buffer_t *cb) {
                         // Check for array member: ident[size]
                         if (lexer_peek(l).type == TOK_LBRACKET) {
                             lexer_next(l); // eat '['
-                            int arr_count = 1;
-                            token_t num_tok = lexer_peek(l);
-                            if (num_tok.type == TOK_NUMBER) {
-                                arr_count = (int)num_tok.int_value;
-                                lexer_next(l);
-                            } else if (num_tok.type == TOK_IDENT) {
-                                symbol_t *c_sym = symbols_lookup_entry(num_tok.str_value);
-                                if (c_sym && c_sym->type == SYM_VAR && c_sym->address) {
-                                    arr_count = *(int*)c_sym->address;
-                                } else if (strcmp(num_tok.str_value, "MAX_WINDOWS") == 0) {
-                                    arr_count = 16;
-                                }
-                                lexer_next(l);
-                            }
-                            // D15 (seed): a member array dimension may be a constant
-                            // expression N*M / N+M, exactly like the local/global array
-                            // parser below and the self-hosted Compiler.HC. Without this
-                            // `I64 fv[MESH_MAX_T * 3]` recorded only the first factor and
-                            // left `* 3]` to desync the following members.
-                            while (lexer_peek(l).type == TOK_STAR || lexer_peek(l).type == TOK_PLUS) {
-                                token_type_t m_op = lexer_peek(l).type;
-                                lexer_next(l);
-                                int m_factor = 1;
-                                token_t mf_tok = lexer_peek(l);
-                                if (mf_tok.type == TOK_NUMBER) {
-                                    m_factor = (int)mf_tok.int_value;
-                                    lexer_next(l);
-                                } else if (mf_tok.type == TOK_IDENT) {
-                                    symbol_t *m_sym = symbols_lookup_entry(mf_tok.str_value);
-                                    if (m_sym && m_sym->type == SYM_VAR && m_sym->address) m_factor = *(int*)m_sym->address;
-                                    lexer_next(l);
-                                }
-                                if (m_op == TOK_STAR) arr_count *= m_factor;
-                                else arr_count += m_factor;
-                            }
-                            if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                            // D29 ROOT FIX: any constant expression as the dimension.
+                            int arr_count = parse_array_dim(l);
                             if (arr_count > 1) {
                                 cur_offset -= m_size;
                                 mem->size = m_size * arr_count;
@@ -2710,36 +2732,8 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
             int arr_decl_count = 0;
             if (lexer_peek(l).type == TOK_LBRACKET) {
                 lexer_next(l); // eat '['
-                token_t sz_tok = lexer_peek(l);
-                if (sz_tok.type == TOK_NUMBER) {
-                    arr_decl_count = (int)sz_tok.int_value;
-                    lexer_next(l);
-                } else if (sz_tok.type == TOK_IDENT) {
-                    symbol_t *c_sym = symbols_lookup_entry(sz_tok.str_value);
-                    if (c_sym && c_sym->type == SYM_VAR && c_sym->address) {
-                        arr_decl_count = *(int*)c_sym->address;
-                    } else if (strcmp(sz_tok.str_value, "MAX_WINDOWS") == 0) {
-                        arr_decl_count = 16;
-                    }
-                    lexer_next(l);
-                }
-                while (lexer_peek(l).type == TOK_STAR || lexer_peek(l).type == TOK_PLUS) {
-                    token_type_t op = lexer_peek(l).type;
-                    lexer_next(l);
-                    int factor = 1;
-                    token_t f_tok = lexer_peek(l);
-                    if (f_tok.type == TOK_NUMBER) {
-                        factor = (int)f_tok.int_value;
-                        lexer_next(l);
-                    } else if (f_tok.type == TOK_IDENT) {
-                        symbol_t *c_sym = symbols_lookup_entry(f_tok.str_value);
-                        if (c_sym && c_sym->type == SYM_VAR && c_sym->address) factor = *(int*)c_sym->address;
-                        lexer_next(l);
-                    }
-                    if (op == TOK_STAR) arr_decl_count *= factor;
-                    else arr_decl_count += factor;
-                }
-                if (lexer_peek(l).type == TOK_RBRACKET) lexer_next(l); // eat ']'
+                // D29 ROOT FIX: any constant expression as the dimension.
+                arr_decl_count = parse_array_dim(l);
             }
 
             if (arr_decl_count > 0) {
@@ -2973,6 +2967,37 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
         lexer_next(&lookahead);
 
         if (lookahead.current.type == TOK_LBRACKET) {
+            // Distinguish an ARRAY ELEMENT ASSIGNMENT (ident[i...], optionally
+            // followed by a .field/->field chain, then `=`/`op=`) from a plain
+            // expression statement that merely BEGINS with an array index, e.g.
+            // `a[0] + b[1];`. The lvalue path below consumes the index and emits
+            // address computation, so it must only run for true assignments;
+            // otherwise the generic expression statement (parse_expr) must see the
+            // whole expression from its first token. Before this, `a[0] + b[1];`
+            // consumed `a[0]`, left `+` for the default expression parser, and
+            // hard-errored with "Unexpected token ... in expression".
+            int arr_is_assign = 0;
+            lexer_t arr_la = *l;
+            lexer_next(&arr_la); // past ident
+            int arr_depth = 0;
+            while (arr_la.current.type != TOK_EOF) {
+                if (arr_la.current.type == TOK_LBRACKET) { arr_depth++; lexer_next(&arr_la); }
+                else if (arr_la.current.type == TOK_RBRACKET) {
+                    arr_depth--; lexer_next(&arr_la);
+                    if (arr_depth <= 0) break;
+                } else {
+                    lexer_next(&arr_la);
+                }
+            }
+            while (arr_la.current.type == TOK_DOT || arr_la.current.type == TOK_ARROW) {
+                lexer_next(&arr_la); // past '.' or '->'
+                if (arr_la.current.type == TOK_IDENT) lexer_next(&arr_la); else break;
+            }
+            if (arr_la.current.type == TOK_EQUAL || is_compound_assign_tok(arr_la.current.type)) {
+                arr_is_assign = 1;
+            }
+
+            if (arr_is_assign) {
             // Array Assignment: ident[index] = expr; or ident[i][j] = expr; or compound op
             char arr_name[64];
             strncpy(arr_name, tok.str_value, 63);
@@ -3069,6 +3094,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
 
                 if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
                 return;
+            }
             }
         } else if (lookahead.current.type == TOK_DOT || lookahead.current.type == TOK_ARROW) {
             lexer_t dot_la = *l;

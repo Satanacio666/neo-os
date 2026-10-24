@@ -314,8 +314,8 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 | Invariant | Gate string | Notes |
 |---|---|---|
 | Golden render hash bit-exact | `RENDER: PASS (0xD28836F)` | 1 vs 4 cores (`DETERMINISM: PASS`) |
-| In-guest self-test | `SELFTEST: a/b` with **a == b** and **a ≥ frozen baseline** (≥74 absolute floor; 87 at P6) | never decreases |
-| Engine parity | `PARITY: n/n (0 diff)` | both engines agree |
+| In-guest self-test | `SELFTEST: a/b` with **a == b** and **a ≥ frozen baseline** (≥99 floor, enforced by `golden-boot.sh`) | never decreases |
+| Engine parity | `PARITY: n/n (0 diff)` | both engines agree (68/68 post-P7.0-audit) |
 | `.HC`→C census | `CENSUS: PASS (181)` | **no counter may increase**; new code reuses existing sites / fixed-cap buffers |
 | Compiler self-host | `SELF-HOST: PASS` | `Compiler.HC` compiles itself |
 | Determinism | `DETERMINISM: PASS (1 vs 4 cores identical)` | |

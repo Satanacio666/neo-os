@@ -708,20 +708,27 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `06`, `07`) were merged losslessly into `01`/`03` (salvage), `00`/`02` (plan + runbook), and this Part F, then
   deleted. No extra `.md` in `docs/`.
 - **D28 — At most 2 agents in parallel.** Never launch 3+ concurrently.
-- **D29 — Array dimensions must be a literal or a bare `#define`, NOT a constant expression.** Root-found at
-  P7.0: `U8 g_hc_target_bits[HC_CODE_CAPACITY / 8];` allocated a **1 MB** array (the `/ 8` was dropped by the
-  array-dimension parser), exhausting memory and breaking boot. Using the literal `[131072]` works. Root fix
-  pending: make `HcParseArrayDim` (and the C seed's `parse_array_dim`) fold `N * M` / `N / M` / `N + M` like the
-  struct-member array parser already does (D15). Until then, size every global array with a literal or a bare
-  `#define`.
-- **D30 — Struct function-pointer members (`Type (*fn)(...)`) are NOT safe.** Isolated at P7.0: the former
-  `TestJitP0.HC` struct-fnptr-dispatch case (`struct C { ...; I64 (*calc)(C*); }; p->calc(p, 3);`) crashes with a
-  null indirect call (`ldr x16,[x16]; blr x16`, FAR=0). This is why `Shell.HC` dispatches through a plain
-  `U64 fn_addr` member and a typed local, not a fnptr member. Root fix pending (register the member's call
-  ABI/offset correctly); until then the fnptr-dispatch test is **not** in the selftest. The other 6 former
-  `TestJitP0` cases (compound arith/bitwise, struct-member compound, for/break/continue, sizeof) were folded
-  into `apps/SelfTest.HC` and pass.
+- **D29 — Array dimensions must accept any constant expression — ROOT-FIXED (Compiler.HC + C seed).** Root-found
+  at P7.0: `U8 g_hc_target_bits[HC_CODE_CAPACITY / 8];` allocated **1 MB** (the `/ 8` was dropped), exhausting
+  memory and breaking boot. Root-fixed by one precedence-climbing helper per engine
+  (`HcDimPrec`/`HcParseArrayDimExpr`/`HcParseArrayDim` in `Compiler.HC`; `parse_array_dim_prec`/
+  `parse_array_dim_expr`/`parse_array_dim` in `boot/seed/jit_arm64.c`) that folds `* / % + - << >>`, unary
+  `+/-` and parentheses, replacing the three `Compiler.HC` and two seed inline `N*M`/`N+M`-only parsers. The
+  literal workaround is gone (`[HC_CODE_CAPACITY / 8]` restored). Locked in by `SelfTestCheck`
+  `array_dim_const_expr` (`16/2`, `2*3+1`) and `array_dim_shift_sub` (`1<<3`, `10-4`), both engines.
+- **D30 — Struct function-pointer members (`Type (*fn)(...)`) — ROOT-FIXED (was NOT a codegen bug).** The former
+  "null indirect call / absent `blr`" symptom was the **interactive shell silently truncating any input longer
+  than 255 characters** (`SHELL_MAX_LINE 256`, `Shell.HC` dropped the overflow in `ShellPoll`): a pasted unit
+  like `... p->calc(p,3); }` lost its tail, so the compiler genuinely saw a shorter program. `SHELL_MAX_LINE`
+  is now 1024 (history arena resized to match). The struct-fnptr member dispatch itself was always correct —
+  locked in by `SelfTestCheck("fnptr_member_dispatch", …, 210)`. The `U64 fn_addr` member in `Shell.HC` is an
+  ordinary registry design, not a workaround. (The doc's old "missing `TOK_LPAREN`" explanation was wrong.)
 - **P7.0 DONE (2026-10):** docs consolidated to exactly 5 files; peephole optimizer live in `Compiler.HC`
   (`[PEEPHOLE] runs=33 roundtrips=5600`); cross-module `g_hgl.*` writes purged (now `HolyGLColorPacked`);
-  orphan `apps/TestJitP0.HC` removed; stale `p4.3-wip` branch deleted. Gate: `SELFTEST 96/96`,
-  `PARITY 64/64 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.
+  orphan `apps/TestJitP0.HC` removed; stale `p4.3-wip` branch deleted.
+- **P7.0 AUDIT + D29/D30 ROOT FIX (2026-10):** `golden-boot.sh` gained `set -o pipefail` (the census gate could
+  never fail before) and its SELFTEST floor was raised to 99; the screenshot stage no longer trips on curl's
+  SIGPIPE. The C seed's statement parser now falls through to the generic expression parser for a statement that
+  merely *begins* with an array index (`a[0] + b[1];`), and marks F64 array elements as float. Gate:
+  `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`,
+  `GOLDEN BOOT: PASS`.

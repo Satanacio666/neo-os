@@ -679,6 +679,30 @@
         "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);"
       ],
       "expect": "0xFFFFFFFFFFFFFFFF"
+    },
+    {
+      "name": "array_dim_const_expr",
+      "note": "D29 root fix: array dimensions fold constant expressions (/ and *+).",
+      "cmds": [
+        "I64 ad[16 / 2]; I64 bd[2 * 3 + 1]; ad[0] = 7; bd[6] = 5; ad[0] + bd[6];"
+      ],
+      "expect": "0xC"
+    },
+    {
+      "name": "array_dim_shift_sub",
+      "note": "D29 root fix: array dimensions fold << and -.",
+      "cmds": [
+        "I64 cd[1 << 3]; I64 ed[10 - 4]; cd[7] = 3; ed[5] = 9; cd[7] + ed[5];"
+      ],
+      "expect": "0xC"
+    },
+    {
+      "name": "fnptr_member_dispatch",
+      "note": "D30 root fix: indirect dispatch through a struct function-pointer member (was shell line truncation).",
+      "cmds": [
+        "struct FDM { I64 v; I64 (*calc)(FDM *item, I64 m); }; I64 FDMmul(FDM *it, I64 m) { if (!it) return 0; return it->v * m; } I64 FDMrun() { FDM x; x.v = 70; x.calc = &FDMmul; FDM *p = &x; return p->calc(p, 3); } FDMrun();"
+      ],
+      "expect": "0xD2"
     }
   ]
 }
