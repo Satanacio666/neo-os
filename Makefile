@@ -49,11 +49,18 @@ ASFLAGS = -Ikernel
 LDFLAGS = -nostdlib -shared -Bsymbolic -T $(UEFI_DIR)/elf_aarch64_efi.lds -L$(UEFI_DIR)
 LIBS = $(UEFI_DIR)/crt_aarch64.o $(UEFI_DIR)/reloc.o $(ALL_OBJS) -luefi
 
-QEMU = taskset -c 0 qemu-system-aarch64
+# Determinism first: the defaults below are what the golden gate asserts.
+# For fast interactive runs on a same-ISA host (e.g. an ARM64 phone) override
+# without touching the gate, e.g.:
+#   make run QEMU_ACCEL=thread=multi,tb-size=1024 QEMU_CPU=cortex-a76 QEMU_TASKSET=
+QEMU_TASKSET ?= taskset -c 0
+QEMU_ACCEL ?= thread=single,tb-size=512
+QEMU_CPU ?= cortex-a72
+QEMU = $(QEMU_TASKSET) qemu-system-aarch64
 QEMU_BIOS = /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 QEMU_FLAGS = -M virt,gic-version=2 \
-             -accel tcg,thread=single,tb-size=512 \
-             -cpu cortex-a72 \
+             -accel tcg,$(QEMU_ACCEL) \
+             -cpu $(QEMU_CPU) \
              -smp 4 \
              -m 1024 \
              -bios $(QEMU_BIOS) \

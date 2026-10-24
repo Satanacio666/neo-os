@@ -751,3 +751,40 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `raster_tile_begin_scene`. Our `gfx_clear` clears the full framebuffer; P7.1 uses `gfx_clear` for the
   `GL_COLOR_BUFFER_BIT` path (documented simplification) and `RasterClearZ()` for `GL_DEPTH_BUFFER_BIT`. A
   viewport-rect clear can be added with the GPU config plane in P7.4.
+- **D35 — P0.8 THE SEED HEAP MUST BE EXECUTABLE (`EfiLoaderCode`), and the Ring-0 vectors must be installed
+  before any `.HC` module runs (ROOT-FIXED, host-independent).** Found on an ARM64 host (POCO X3 Pro, Alpine
+  QEMU 9.1.2) where the boot died at `heap + 0x47CC98` — i.e. at the very first `BLR` into code emitted by the
+  self-hosted HolyC compiler.
+  - **Root cause (physical):** `apps/Compiler.HC` allocates its own executable code buffer with
+    `g_hc_code = kmalloc(HC_CODE_CAPACITY * 4)` — that is, **inside the Seed Heap**. `boot/main.c` requested the
+    Seed Heap as `EfiLoaderData`, whose pages EDK2 2024.11+/2025.x map with **PXN/UXN=1** (and `SCTLR_EL1.WXN`
+    forces write ⇒ execute-never). In a SASOS the heap *is* the code space, so the first dispatch into freshly
+    emitted ARM64 raised an **Instruction Abort (EC=0x21)** at `heap + 0x47CC98` (= `g_hc_code` base + the 4 MB
+    code-pool capacity), on **every** firmware build tested (Alpine aavmf Dec-2024 and Debian edk2 2025.02 — the
+    absolute address moved with the memory map, the heap-relative offset `0x47CC98` did not).
+  - **Why it was opaque:** the exception was taken by the *firmware's* `VBAR_EL1`, because
+    `install_vector_table()` was only called from `apps/Exceptions.HC` (module 5 of Stage 1). The serial showed
+    the firmware's `Synchronous Exception at 0x...` with no syndrome, and `scripts/crash-decode.py` had nothing
+    to decode.
+  - **Fix (root):** (1) request the Seed Heap as **`EfiLoaderCode`**; (2) clear `SCTLR_EL1.WXN` (bit 19) with
+    `dsb sy; isb` + `tlbi vmalle1`; (3) install the vectors **before the `.HC` handover** and route an
+    unhandled synchronous fault (and an unhandled SError) to a new **tier-0 reporter**
+    (`boot/main.c: neo_early_panic` via the `g_early_panic_hook` symbol) that prints `ESR_EL1` (EC + name + ISS),
+    `ELR_EL1`, `FAR_EL1`, `SPSR_EL1` and the heap-relative fault offset, then halts — never `eret`-loops.
+  - **Second root cause found while installing the vectors early (P0.8a):** with the vectors live before
+    `apps/Gic.HC` exists, an IRQ that arrives while `g_arch_vectors[1] == 0` was returned **without acknowledging
+    the GIC** → the PPI stayed asserted → **1,583,803 IRQs in 30 s** and a boot livelock. A handler may not simply
+    mask the live `SPSR_EL1`: `RESTORE_ALL` reloads `SPSR_EL1` **from the trap frame** (`[sp, #256]`). The fix
+    masks IRQs **in the saved frame** (`ldr x17,[sp,#256]; orr x17,x17,#0x80; str x17,[sp,#256]`) for both the
+    SPx and SP0 IRQ entries, so the `eret` returns with `PSTATE.I=1` until the real handler registers.
+  - **Verification (this host, Alpine QEMU 9.1.2, AAVMF Dec-2024):** boot reaches
+    `ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0` and `neo:/> [SHELL.HC] DolDocShell active`; in-guest
+    `selftest` → **`SELFTEST 99/99 PASS`**, **`PARITY 68/68`**, **`RENDER: PASS (golden=0xD28836F)`**, `BSOD`,
+    `SMP`, `SCHED`, `KHEAP`, `FONTS`, `3D`, `3D-GEARS`, `SHADING`, `SHADERVM`, `MESH`, `DOLDOC`, `SHELL` all
+    `PASS`, with **zero** unexpected `Synchronous Exception` (the only BSOD lines are the deliberate
+    `BSOD: PASS` self-test). Regression guard: `boot/main.c` asserts the memory map still reports the heap
+    region as `EfiLoaderCode` right after allocation and prints `FATAL` + halts otherwise.
+  - **Environment-independence (rule §8):** the failure reproduced with `-O0` and `-O2`, `cortex-a72`/`a76`/`max`,
+    `-smp 1`/`4`, `thread=single`/`multi`, `tb-size` 512/1024/2048, `-m` 512/1024/2048/4096, `-icount`, both
+    firmware builds, and at commits `d657e70` (P6) and `61b5546` (P7.0) — it was never a host-speed, QEMU-version
+    or toolchain artefact.

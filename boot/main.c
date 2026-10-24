@@ -34,11 +34,129 @@ extern uint64_t g_arch_vectors[8];
 extern uint64_t g_mmu_config[5];
 extern void doldoc_register_holyc(void *ops);
 
+// Defined further down (boot_probe_memory / the pool allocations in main); the
+// tier-0 panic reporter above uses them for its heap-relative fault offset.
+extern uint64_t g_uefi_heap_base;
+extern uint64_t g_uefi_heap_size;
+
+#ifndef NEO_P08_VECTORS
+#define NEO_P08_VECTORS 1
+#endif
+
 static inline void aarch64_enable_fp(void) {
     uint64_t val;
     asm volatile("mrs %0, cpacr_el1" : "=r"(val));
     val |= (3ULL << 20); // Enable FP/ASIMD
     asm volatile("msr cpacr_el1, %0\nisb" :: "r"(val));
+}
+
+// ---------------------------------------------------------------------------
+// P0.8 — Ring-0 execution environment + tier-0 fault reporting.
+//
+// The HolyC self-hosted compiler allocates its own executable code buffer out of
+// the Seed Heap (apps/Compiler.HC: `g_hc_code = kmalloc(HC_CODE_CAPACITY * 4)`)
+// and `CompilerCompileAndRun` dispatches into it with `BLR`. A SASOS therefore
+// needs an *executable* heap. With the Seed Heap requested as EfiLoaderData the
+// firmware maps its pages with PXN/UXN=1 (and SCTLR_EL1.WXN makes every writable
+// page non-executable), so the first `BLR` into freshly emitted code raised an
+// Instruction Abort (EC=0x21) that the firmware's VBAR_EL1 reported as an opaque
+// "Synchronous Exception at 0x...".
+//
+// Root fix: (1) request the heap as EfiLoaderCode, (2) clear SCTLR_EL1.WXN,
+// (3) drop stale TLB entries so the new attributes take effect.
+static void neo_harden_exec_env(void)
+{
+    uint64_t sctlr;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    if (sctlr & (1ULL << 19)) {
+        sctlr &= ~(1ULL << 19);
+        asm volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+        printf("[BOOT] SCTLR_EL1.WXN was set by firmware -> cleared\r\n");
+    }
+    asm volatile("dsb sy\nisb");
+    asm volatile("tlbi vmalle1\ndsb sy\nisb");
+    printf("[BOOT] Ring-0 exec env: heap=0x%016llX (%llu MB, EfiLoaderCode) WXN=%llu\r\n",
+           (unsigned long long)g_uefi_heap_base,
+           (unsigned long long)(g_uefi_heap_size / (1024 * 1024)),
+           (unsigned long long)((sctlr >> 19) & 1));
+}
+
+// apps/Exceptions.HC installs the real Ring-0 handler — but only as module 5 of
+// Stage 1, i.e. AFTER Compiler.HC/HalPlatform.HC/Timer.HC/Gic.HC. Until then
+// g_arch_vectors[0] is NULL and a synchronous fault fell through to the
+// firmware's vectors. This hook keeps the diagnosis in-house: it dumps the full
+// syndrome over the UART and halts (never eret-loops on the fault).
+void (*g_early_panic_hook)(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr) = 0;
+
+static const char *neo_ec_name(uint64_t ec)
+{
+    switch (ec) {
+    case 0x00: return "Unknown";
+    case 0x01: return "Trapped WFI/WFE";
+    case 0x07: return "SVE/SIMD/FP access";
+    case 0x0E: return "Illegal Execution state";
+    case 0x18: return "Trapped MSR/MRS";
+    case 0x20: return "Instruction Abort (lower EL)";
+    case 0x21: return "Instruction Abort (same EL)";
+    case 0x22: return "PC Alignment fault";
+    case 0x24: return "Data Abort (lower EL)";
+    case 0x25: return "Data Abort (same EL)";
+    case 0x26: return "SP Alignment fault";
+    case 0x2C: return "FP/SIMD exception";
+    case 0x3C: return "BRK (breakpoint)";
+    default:   return "Reserved";
+    }
+}
+
+// P0.8 regression guard (D35): prove the Seed Heap is executable BEFORE the .HC
+// handover, by emitting a real ARM64 stub into kmalloc'd heap memory and calling
+// it. The self-hosted compiler does exactly this with `g_hc_code`; if the heap
+// ever stops being EfiLoaderCode the boot must fail HERE, loudly, instead of
+// aborting at heap + 0x47CC98 in the middle of compiling HalPlatform.HC.
+static void neo_verify_heap_executable(void)
+{
+    void *p = kmalloc(4096);
+    if (!p) {
+        printf("[P0.8] WARN: heap self-test skipped (kmalloc returned NULL)\n");
+        return;
+    }
+    volatile uint32_t *stub = (volatile uint32_t *)p;
+    stub[0] = 0xD2800B40u;   // mov  x0, #0x5A
+    stub[1] = 0xD65F03C0u;   // ret
+    asm volatile("dc cvau, %0" :: "r"(stub));
+    asm volatile("dsb ish");
+    asm volatile("ic ivau, %0" :: "r"(stub));
+    asm volatile("dsb ish\nisb");
+
+    uint64_t (*fn)(void) = (uint64_t (*)(void))stub;
+    uint64_t r = fn();
+    if (r != 0x5A) {
+        printf("[P0.8] FATAL: Seed Heap self-test returned 0x%llX (want 0x5A)\n",
+               (unsigned long long)r);
+        while (1) { asm volatile("wfi"); }
+    }
+    printf("[BOOT] Seed Heap executable self-test: PASS (ret=0x%llX)\n",
+           (unsigned long long)r);
+}
+
+void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
+{
+    uint64_t ec = (esr >> 26) & 0x3F;
+    uint64_t iss = esr & 0x1FFFFFF;
+    printf("\r\n");
+    printf("========== NeoOS TIER-0 SYNC FAULT (pre-.HC) ==========\r\n");
+    printf(" ESR_EL1 : 0x%016llX  EC=0x%02llX %s\r\n", esr, ec, neo_ec_name(ec));
+    printf(" ISS     : 0x%08llX  IFSC/DFSC=0x%02llX\r\n", iss, iss & 0x3F);
+    printf(" ELR_EL1 : 0x%016llX\r\n", elr);
+    printf(" FAR_EL1 : 0x%016llX\r\n", far);
+    printf(" SPSR_EL1: 0x%016llX\r\n", spsr);
+    printf(" heap    : 0x%016llX  (faulting PC - heap_base = 0x%llX)\r\n",
+           (unsigned long long)g_uefi_heap_base,
+           (unsigned long long)(elr - g_uefi_heap_base));
+    printf("=========== <<<BSOD:TIER0>>> HALTED ===========\r\n");
+    while (1) {
+        asm volatile("wfi");
+    }
 }
 
 
@@ -205,8 +323,11 @@ int main(int argc, char **argv)
     boot_probe_memory();
 
     // 2. Allocate Physical Memory Pools via UEFI Boot Services
+    //    P0.8: the Seed Heap MUST be executable. apps/Compiler.HC (self-hosted)
+    //    allocates its JIT code buffer from this heap with kmalloc() and calls
+    //    into it; EfiLoaderData pages are mapped non-executable by EDK2 2024.11+.
     efi_physical_address_t heap_phys = 0;
-    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, s_kernel_heap_size / 4096, &heap_phys);
+    efi_status_t h_status = BS->AllocatePages(AllocateAnyPages, EfiLoaderCode, s_kernel_heap_size / 4096, &heap_phys);
     if (EFI_ERROR(h_status) || !heap_phys) {
         printf("FATAL: Could not allocate kernel heap!\n");
         return 1;
@@ -321,6 +442,20 @@ int main(int argc, char **argv)
     // timer/GIC live; an IRQ before the scheduler (Sched.HC) is loaded would call
     // the not-yet-defined SchedOnTick. IRQs are unmasked only at Stage 7.
     disable_interrupts();
+
+    // P0.8: take the exception vectors BEFORE any .HC module runs (KernelInit.HC
+    // compiles Compiler.HC, HalPlatform.HC, Timer.HC, Gic.HC ... before
+    // apps/Exceptions.HC installs the Ring-0 handler). Installed here — with IRQs
+    // already masked — so a fault in those first modules is reported by our own
+    // tier-0 handler (ESR/ELR/FAR/SPSR) instead of the firmware's VBAR_EL1.
+#if NEO_P08_VECTORS
+    g_early_panic_hook = neo_early_panic;
+    neo_harden_exec_env();
+    install_vector_table();
+    asm volatile("isb");
+    neo_verify_heap_executable();
+#endif
+
     printf("[BOOT] Sovereign Handover: Loading holyc/KernelInit.HC from the ESP...\r\n");
     static char kinit_src[65536];
     int64_t kinit_len = seed_read_file("KernelInit.HC", kinit_src, sizeof(kinit_src) - 1);

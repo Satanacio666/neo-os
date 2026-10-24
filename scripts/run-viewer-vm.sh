@@ -16,8 +16,8 @@ QEMU_BIOS=${NEO_QEMU_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 
 QEMU_ARGS=(
   -M virt,gic-version=2
-  -accel tcg,thread=single,tb-size=512
-  -cpu cortex-a72
+  -accel "tcg,${NEO_QEMU_ACCEL:-thread=single,tb-size=512}"
+  -cpu "${NEO_QEMU_CPU:-cortex-a72}"
   -smp "${NEO_SMP:-4}"
   -m 1024
   -bios "$QEMU_BIOS"
