@@ -139,6 +139,31 @@ static void neo_verify_heap_executable(void)
            (unsigned long long)r);
 }
 
+// P2.3 — Prova de ida e volta no ESP: grava, relê e compara.
+//
+// Não é fatal de propósito: um ESP pode ser legitimamente somente-leitura, e
+// nesse caso o cache de JIT (P2.4) simplesmente não é gravado — o boot segue
+// compilando normalmente. Falha aqui = aviso, nunca parada.
+static void neo_verify_esp_write(void)
+{
+    static const char pattern[] = "NEOOS-ESP-WRITE-SELFTEST-v1";
+    char back[64];
+
+    int64_t w = seed_write_file("SEEDTEST.TMP", pattern, sizeof(pattern));
+    if (w != (int64_t)sizeof(pattern)) {
+        printf("[P2.3] WARN: ESP nao gravavel (write=%lld) — cache de JIT indisponivel\r\n",
+               (long long)w);
+        return;
+    }
+    int64_t r = seed_read_file("SEEDTEST.TMP", back, sizeof(back));
+    if (r != (int64_t)sizeof(pattern) || memcmp(back, pattern, sizeof(pattern)) != 0) {
+        printf("[P2.3] FAIL: ida-e-volta no ESP nao bate (r=%lld)\r\n", (long long)r);
+        return;
+    }
+    printf("[BOOT] ESP write self-test: PASS (%lld bytes, fnv1a=0x%08X)\r\n",
+           (long long)r, seed_fnv1a(back, (size_t)r));
+}
+
 void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
 {
     uint64_t ec = (esr >> 26) & 0x3F;
@@ -430,6 +455,12 @@ int main(int argc, char **argv)
         printf("[BOOT] WARN: UEFI filesystem (ESP) unavailable; cannot read .HC sources.\r\n");
     }
     symbols_register("seed_read_file", (void*)seed_read_file, SYM_FUNC);
+    // P2.3: escrita no ESP pelo driver FAT do firmware — fundação do cache de JIT
+    // (P2.4) e da validação de ida e volta do RedSea sobre EFI_BLOCK_IO (P3.2).
+    symbols_register("seed_write_file", (void*)seed_write_file, SYM_FUNC);
+    symbols_register("seed_delete_file", (void*)seed_delete_file, SYM_FUNC);
+    symbols_register("seed_fnv1a", (void*)seed_fnv1a, SYM_FUNC);
+    neo_verify_esp_write();
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);

@@ -15,4 +15,21 @@
 int     seed_fs_init(void);
 int64_t seed_read_file(const char *name, void *buf, size_t max_bytes);
 
+/*
+ * P2.3 — Escrita no ESP pelo driver FAT do firmware.
+ *
+ * O seed não ganha um filesystem próprio: ele usa o mesmo driver FAT que o
+ * firmware usa para ler o boot loader. Isto destrava:
+ *   - P2.4 (cache de JIT): gravar o snapshot do código compilado;
+ *   - P3.2 (RedSea sobre EFI_BLOCK_IO): validar ida e volta de dados.
+ *
+ * seed_write_file() apaga e recria o arquivo (garante tamanho exato, sem sobra
+ * de uma versão maior anterior). Retorna os bytes gravados, ou -1.
+ * seed_delete_file() remove; retorna 0 se removido, -1 se não existia.
+ * seed_fnv1a() é o hash usado para validar o cache.
+ */
+int64_t seed_write_file(const char *name, const void *buf, size_t bytes);
+int     seed_delete_file(const char *name);
+uint32_t seed_fnv1a(const void *data, size_t bytes);
+
 #endif // NEO_SEED_FS_H
