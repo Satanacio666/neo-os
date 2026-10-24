@@ -1444,6 +1444,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
     } else if (tok.type == TOK_STAR) {
         lexer_next(l); // eat '*'
         int deref_scale = 8;
+        int deref_flt = 0; // D34: pointee is F64 -> value is an F64 bit pattern in X0
         if (lexer_peek(l).type == TOK_LPAREN) {
             lexer_t l_chk = *l;
             lexer_next(&l_chk); // eat '('
@@ -1461,6 +1462,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                         else if (t_type.type == TOK_TYPE_U16) deref_scale = 2;
                         else if (t_type.type == TOK_TYPE_U32) deref_scale = 4;
                         else deref_scale = 8;
+                        if (t_type.type == TOK_TYPE_F64) deref_flt = 1;
                     }
                 }
             }
@@ -1471,6 +1473,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                 var_type_t *vt = lookup_var_type(next_tok.str_value);
                 if (vt && vt->is_ptr && vt->scale > 0) {
                     deref_scale = vt->scale;
+                    if (vt->is_float) deref_flt = 1;
                 }
             } else if (next_tok.type == TOK_LPAREN) {
                 lexer_t l_chk = *l;
@@ -1480,6 +1483,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
                     var_type_t *vt = lookup_var_type(inner_tok.str_value);
                     if (vt && vt->is_ptr && vt->scale > 0) {
                         deref_scale = vt->scale;
+                        if (vt->is_float) deref_flt = 1;
                     }
                 }
             }
@@ -1494,6 +1498,7 @@ static void parse_unary(lexer_t *l, code_buffer_t *cb) {
         } else {
             emit_ldr64(cb, 0, 0);
         }
+        s_expr_is_float = deref_flt ? 1 : 0;
     } else if (tok.type == TOK_AMPERSAND) {
         lexer_next(l); // eat '&'
         token_t id = lexer_peek(l);

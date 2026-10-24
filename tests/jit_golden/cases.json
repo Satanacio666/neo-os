@@ -703,6 +703,22 @@
         "struct FDM { I64 v; I64 (*calc)(FDM *item, I64 m); }; I64 FDMmul(FDM *it, I64 m) { if (!it) return 0; return it->v * m; } I64 FDMrun() { FDM x; x.v = 70; x.calc = &FDMmul; FDM *p = &x; return p->calc(p, 3); } FDMrun();"
       ],
       "expect": "0xD2"
+    },
+    {
+      "name": "f64_ptr_out_param",
+      "note": "D34 root fix: F64 through a pointer param (`*p = <F64>`) stores D0 in Compiler.HC, X0-bits in the C seed; both must yield 2.5.",
+      "cmds": [
+        "I64 FOPset(F64 *p) { *p = 2.5; return 7; } F64 fop_x = 0.0; FOPset(&fop_x); fop_x;"
+      ],
+      "expect": "0x4004000000000000"
+    },
+    {
+      "name": "f64_struct_array_member_read",
+      "note": "D34 root fix: reading struct F64-array members must be float in both engines (1.5 + 2.5 = 4.0).",
+      "cmds": [
+        "struct FSAM { F64 m[2]; }; FSAM fsam_v; fsam_v.m[0] = 1.5; fsam_v.m[1] = 2.5; fsam_v.m[0] + fsam_v.m[1];"
+      ],
+      "expect": "0x4010000000000000"
     }
   ]
 }

@@ -2165,7 +2165,8 @@ U0 HcParseUnary() {
     if (g_hc_tok == TOK_STAR) {
         HcLexNext();
         I64 deref_sz = -1;
-        // Check for *(U8*) / *(U16*) / *(U32*) / *(I64*) cast
+        I64 deref_flt = 0; // D34: pointee is F64 -> value lives in D0
+        // Check for *(U8*) / *(U16*) / *(U32*) / *(I64*) / *(F64*) cast
         if (g_hc_tok == TOK_LPAREN) {
             I64 sv_p = g_hc_pos;
             I64 sv_t = g_hc_tok;
@@ -2175,12 +2176,14 @@ U0 HcParseUnary() {
             HcLexNext(); // eat '('
             if (HcIsTypeToken(g_hc_tok)) {
                 I64 c_sz = HcTypeTokenScale(g_hc_tok);
+                I64 c_flt = (g_hc_tok == TOK_TYPE_F64) ? 1 : 0;
                 HcLexNext();
                 if (g_hc_tok == TOK_STAR) {
                     HcLexNext();
                     if (g_hc_tok == TOK_RPAREN) {
                         HcLexNext();
                         deref_sz = c_sz;
+                        deref_flt = c_flt;
                     }
                 }
             }
@@ -2195,14 +2198,24 @@ U0 HcParseUnary() {
             I64 ptr_loc = HcFindLocalIdx(g_hc_tok_str);
             if (ptr_loc >= 0 && g_hc_local_is_ptr[ptr_loc] == 1) {
                 deref_sz = g_hc_local_scales[ptr_loc];
+                deref_flt = g_hc_local_elem_float[ptr_loc]; // F64* pointee
+            } else if (HcGlobalIsPtr(g_hc_tok_str)) {
+                deref_flt = HcGlobalIsFloat(g_hc_tok_str);
             }
         }
         if (deref_sz < 0) deref_sz = 8;
         HcOpPush(deref_sz);
+        HcOpPush(deref_flt);
         HcParseUnary();
+        deref_flt = HcOpPop();
         deref_sz = HcOpPop();
-        HcEmitLoadSized(0, 0, deref_sz);
-        g_hc_expr_float = 0; // integer-sized dereference load
+        if (deref_flt) {
+            HcEmit(0xFD400000); // ldr d0, [x0]  (F64 pointee)
+            g_hc_expr_float = 1;
+        } else {
+            HcEmitLoadSized(0, 0, deref_sz);
+            g_hc_expr_float = 0; // integer-sized dereference load
+        }
         return;
     }
     HcParsePrimary();
@@ -3215,6 +3228,7 @@ U0 HcParseStatement() {
     if (g_hc_tok == TOK_STAR) {
         HcLexNext();
         I64 st_sz = -1;
+        I64 st_flt = 0; // D34: pointee is F64 -> store D0, not X0
         if (g_hc_tok == TOK_LPAREN) {
             I64 sp_p = g_hc_pos;
             I64 sp_t = g_hc_tok;
@@ -3224,12 +3238,14 @@ U0 HcParseStatement() {
             HcLexNext();
             if (HcIsTypeToken(g_hc_tok)) {
                 I64 c_sz = HcTypeTokenScale(g_hc_tok);
+                I64 c_flt = (g_hc_tok == TOK_TYPE_F64) ? 1 : 0;
                 HcLexNext();
                 if (g_hc_tok == TOK_STAR) {
                     HcLexNext();
                     if (g_hc_tok == TOK_RPAREN) {
                         HcLexNext();
                         st_sz = c_sz;
+                        st_flt = c_flt;
                     }
                 }
             }
@@ -3244,16 +3260,23 @@ U0 HcParseStatement() {
             I64 p_loc = HcFindLocalIdx(g_hc_tok_str);
             if (p_loc >= 0 && g_hc_local_is_ptr[p_loc] == 1) {
                 st_sz = g_hc_local_scales[p_loc];
+                st_flt = g_hc_local_elem_float[p_loc]; // F64* pointee
+            } else if (HcGlobalIsPtr(g_hc_tok_str)) {
+                st_sz = 8;
+                st_flt = HcGlobalIsFloat(g_hc_tok_str);
             }
         }
         if (st_sz < 0) st_sz = 8;
         HcParseUnary(); // target address in x0
         I64 mem_assigned = (g_hc_tok == TOK_EQUAL || g_hc_tok == TOK_PLUSPLUS ||
                             g_hc_tok == TOK_MINUSMINUS || HcIsAssignOp(g_hc_tok));
-        HcFinishMemoryAssign(st_sz, 0);
+        HcFinishMemoryAssign(st_sz, st_flt);
         // A bare `*ptr;` is a dereference READ: load the pointed-to value so the
         // statement's value is the contents, not the address (matches the C JIT).
-        if (!mem_assigned) HcEmitLoadSized(0, 0, st_sz);
+        if (!mem_assigned) {
+            if (st_flt) { HcEmit(0xFD400000); g_hc_expr_float = 1; }
+            else HcEmitLoadSized(0, 0, st_sz);
+        }
         if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
         return;
     }

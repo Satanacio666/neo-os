@@ -61,10 +61,10 @@ else
     line="$(printf '%s\n' "$out" | grep -a 'SELFTEST: ' | tail -1)"
     res="${line##*SELFTEST: }"; res="${res%% *}"       # "74/74"
     a="${res%%/*}"; b="${res##*/}"
-    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" -ge 99 ] 2>/dev/null; then
+    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" -ge 101 ] 2>/dev/null; then
         echo "  [PASS] SELFTEST = $res"
     else
-        echo "  [FAIL] SELFTEST = ${res:-<none>} (want a==b and a>=99)"
+        echo "  [FAIL] SELFTEST = ${res:-<none>} (want a==b and a>=101)"
         printf '%s\n' "$out" | grep -a '\[SELFTEST\] FAIL' | head -5
         fail=1
     fi

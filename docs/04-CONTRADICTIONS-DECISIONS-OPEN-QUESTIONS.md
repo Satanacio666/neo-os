@@ -751,15 +751,25 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `raster_tile_begin_scene`. Our `gfx_clear` clears the full framebuffer; P7.1 uses `gfx_clear` for the
   `GL_COLOR_BUFFER_BIT` path (documented simplification) and `RasterClearZ()` for `GL_DEPTH_BUFFER_BIT`. A
   viewport-rect clear can be added with the GPU config plane in P7.4.
-- **D34 — Cross-stage F64 is unusable; matrix reads cross as raw IEEE-754 bits — ROOT-FIXED (P7.1).** The
-  compiler tracks a function's return-floatness only **within its own unit and earlier ones**
-  (`HcPrescanFuncs` → `g_hc_fnf_*`, `Compiler.HC:3732`; `HcFuncIsFloat` at the call site, `:2031`). `SelfTest.HC`
-  is **Stage 1** but `HolyGL.HC` is **Stage 5**, so a Stage-1 caller of a Stage-5 `F64`-returning function reads
-  the result from **X0** instead of **D0** (observed: the element *address* — `m[5]`/`m[14]` came back 72 bytes
-  apart). An `F64 *out` parameter across that boundary is likewise unreliable (writes don't land), and even short
-  F64 probe bodies mis-store. **Fix:** the P7.1 matrix accessors return the element's raw 64-bit pattern as an
-  `I64` — `HolyGLModelviewMBits`/`HolyGLProjectionMBits` (`I64 *bits = (I64*)&m[idx]; return *bits;`) — which is
-  exact and unit-safe; the F64 comparison happens in the unit that owns the type. **Invariant:** a cross-stage
-  interface must not pass or return `F64` (use I64 bits or an I64-returning predicate). Existing callers are
-  unaffected — they pass `I64`/`F64` **arguments** to `HolyGL*`, and F64 arguments arrive correctly (verified).
-  Gate: `GL: PASS`.
+- **D34 — F64 across a unit boundary and F64 through a pointer — ROOT-FIXED in BOTH engines (P7.1).** P7.1's
+  telemetry separated **two** distinct defects:
+  1. **Return-floatness is per-unit.** The compiler knows a function's F64 return-ness only within its own unit
+     and earlier ones (`HcPrescanFuncs` → `g_hc_fnf_*`, `Compiler.HC:3732`; `HcFuncIsFloat` at the call site,
+     `:2031`). `SelfTest.HC` is **Stage 1** but `HolyGL.HC` is **Stage 5**, so a Stage-1 caller of a Stage-5
+     `F64`-returning function is an unresolved forward reference: `HcFuncIsFloat` returns 0 and the caller reads
+     **X0** (observed: the element *address* — `m[5]`/`m[14]` came back 72 bytes apart) instead of **D0**. This
+     is a usage constraint, not a codegen bug: a top-level prototype in the earlier unit registers the return
+     type permanently (D17 prototype support + the never-reset `g_hc_fnf_*` table). The P7.1 matrix accessors
+     therefore cross the boundary as raw IEEE-754 bits (`HolyGLModelviewMBits`/`HolyGLProjectionMBits`, `I64`) —
+     exact and unit-safe. **Invariant:** a cross-stage interface must not pass/return `F64` unless the earlier
+     unit declares a prototype.
+  2. **F64 through a pointer / struct F64-array member was not float-tracked (the real codegen bug).** The
+     unary-deref **assignment** path called `HcFinishMemoryAssign(st_sz, 0)` — hard-coding `is_float = 0` — so
+     `*out = <F64>` stored **X0** (garbage/address) instead of **D0**; the unary-deref **read** (`HcParseUnary`)
+     likewise always did an integer load. **Root-fixed** in `Compiler.HC`: `HcParseStatement` and `HcParseUnary`
+     now propagate the pointee floatness from `g_hc_local_elem_float` (F64* local/param), `HcGlobalIsFloat`
+     (F64* global) or the `(F64*)` cast, and store/load `D0` accordingly. Mirrored in the C seed's
+     `parse_unary` (`deref_flt`); the seed keeps F64 as **bits in X0**, so its `*p = <F64>` store was already
+     correct — only the read-side flag was missing. Locked by `SelfTestCheck f64_ptr_out_param` (2.5 →
+     `0x4004000000000000`) and `f64_struct_array_member_read` (1.5+2.5 = 4.0 → `0x4010000000000000`), 0 parity
+     diff. Gate: `GL: PASS`.

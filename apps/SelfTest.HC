@@ -1136,6 +1136,13 @@ U0 SelfTestRun() {
     // (The former "failure" was the shell silently truncating >255-char input, not a
     // codegen defect; this locks the pattern in for both engines.)
     SelfTestCheck("fnptr_member_dispatch", "struct FDM { I64 v; I64 (*calc)(FDM *item, I64 m); }; I64 FDMmul(FDM *it, I64 m) { if (!it) return 0; return it->v * m; } I64 FDMrun() { FDM x; x.v = 70; x.calc = &FDMmul; FDM *p = &x; return p->calc(p, 3); } FDMrun();", 210);
+    // D34 ROOT FIX: an F64 reached through a pointer or a struct F64-array member must
+    // be tracked as float in BOTH engines. Compiler.HC keeps F64 in D0 (so `*p = <F64>`
+    // must store D0), the C seed keeps it as bits in X0 (so it stores X0) — the results
+    // must agree. `f64_ptr_out_param` exercises the write, `f64_struct_array_member_read`
+    // the read (2.5 -> 0x4004000000000000, 1.5+2.5 = 4.0 -> 0x4010000000000000).
+    SelfTestCheck("f64_ptr_out_param", "I64 FOPset(F64 *p) { *p = 2.5; return 7; } F64 fop_x = 0.0; FOPset(&fop_x); fop_x;", 4612811918334230528);
+    SelfTestCheck("f64_struct_array_member_read", "struct FSAM { F64 m[2]; }; FSAM fsam_v; fsam_v.m[0] = 1.5; fsam_v.m[1] = 2.5; fsam_v.m[0] + fsam_v.m[1];", 4616189618054758400);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();
