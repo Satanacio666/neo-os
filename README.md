@@ -532,21 +532,19 @@ Running `jittest` on boot (verified on QEMU Cortex-A72 SMP):
 
 ## Engineering Roadmap & Status
 
-### Completed Milestones (Verified in Code & QEMU)
-- [x] **Phase 0–1**: AArch64 JIT Hardening & Sovereign Window Manager (`WM.HC`)
-- [x] **Phase 2**: Sovereign Interactive Shell with Autocomplete & History (`Shell.HC`)
-- [x] **Phase 3**: DolDoc 2.0 Text-as-Geometry Continuum (`DolDoc.HC`)
-- [x] **Phase 4**: Sovereign Scene-Graph Compositor & Acrylic Blitter (`Compositor.HC`)
-- [x] **Phase 5–6**: RedSea Storage Suite, Bidirectional Writeback & Editor (`Editor.HC`, `Filer.HC`)
-- [x] **Phase 7**: 4-Core SMP Multiprocessing Parallel Worker Dispatch (`SmpDemo.HC`)
-- [x] **Phase 8**: HolyGL 3D Hardware Continuum, Matrix Stack, 4D Clipping & Gears (`HolyGL.HC`)
+> **This section is superseded by the canonical docs.** The authoritative, always-current status is
+> `docs/00-MASTER-PLAN.md` §3 (the P0→P10 ladder) and `docs/02-TASKLIST.md` (per-phase tasks + P7 runbooks).
+> Older "Phase 0–N" milestone names (incl. the since-dissolved `WM.HC`, `Compositor.HC`, `SmpDemo.HC`) are
+> historical; `WM.HC`/`Compositor.HC` were deleted in P5 (DolDoc 3.0) and SMP is in `Smp.HC`.
 
-### Next Milestones
-- [ ] **Phase 9**: Self-Hosting HolyC Compiler (`apps/Compiler.HC`) — Stage-1 HolyC compiler written in HolyC, emitting AArch64 machine instructions into executable RAM pages.
-- [ ] **Preemptive Task Scheduler Migration**: True timer-interrupt preemptive timeslicing in `sched_tick()`.
-- [ ] **Physical Board Bring-up (FDT)**: Flattened Device Tree parser for Raspberry Pi 4/5 and Rockchip RK3326.
-- [ ] **VirtIO-Net Stack**: Minimal TCP/IP network driver in Ring 0 for remote shell and HTTP file transfer.
-- [ ] **VirtIO-Sound / Audio Subsystem**: Bare-metal audio driver and HolyC sound synthesizer.
+**Current state (2026-10):** P0–P6 ✅ DONE; **P7.0 ✅ DONE + P7.0-audit ✅ DONE**; **next = P7.1** (HolyGL GL 1.3
+surface completion — runbook in `docs/02-TASKLIST.md` §P7.1).
+
+**Frozen gate:** `GOLDEN BOOT: PASS` · `SELFTEST 99/99` · `PARITY 68/68 (0 diff)` · `CENSUS 181` ·
+`SELF-HOST: PASS` · `DETERMINISM: PASS (0xD28836F)` · `RENDER: PASS (0xD28836F)`.
+
+The remaining P7→P10 ladder (clipper + NEON kernels, tile binning, GPU config plane, PMU telemetry, 40-phase
+benchmark, GL conformance, GPU provider, run-anything/MCU) is specified in `docs/00` §11 and `docs/02`.
 
 ---
 

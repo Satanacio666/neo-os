@@ -286,14 +286,18 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 
 > Merged from the former `docs/06-PERFECTED-PRIORITY-PLAN.md` (P7.0 doc consolidation). Authoritative post-P6 roadmap; the P7 runbook is in `02-TASKLIST.md`.
 
-> Consolidation doc 6 of 6. **This is the authoritative roadmap** for everything after P6.
+> **This is the authoritative roadmap** for everything after P6 (merged into doc 00 §11).
 > Sources: `00-MASTER-PLAN.md` §3/§6/§8/§9, `02-TASKLIST.md` §P7–P10, `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`
 > (D1–D22 + Part D open questions), the original C repo at `/tmp/neo-upstream` (satanacio666/neo-os, HEAD
-> `36ca4b0` = our root commit), and the sibling salvage audit `docs/05-UPSTREAM-SALVAGE-AUDIT.md` (which holds the
+> `36ca4b0` = our root commit), and the sibling salvage audit `docs/01-REALITY-AUDIT.md` §L (which holds the
 > file-by-file salvage detail; this doc references it by name and does not duplicate it).
 >
 > **Status at authoring:** P0–P6 DONE and committed. HEAD `d657e70`. Remaining ladder: **P7 Benchmark**,
 > **P8 Self-hosting**, **P9 GPU provider**, **P10 Run anything + MCU cluster**.
+>
+> **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ DONE** (D29/D30 root-fixed, gate hardened); **next = P7.1**
+> (runbook in `02-TASKLIST.md` §P7.1). Frozen gate: `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`,
+> `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.
 
 ---
 
@@ -304,7 +308,7 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 - Every priority inherits the **locked invariants** below. A priority is *not* done until its gate *and* the
   global gate are green.
 - "Salvage folded in" names what from the original C is reused (never re-invented). Detailed salvage evidence is
-  in `docs/05-UPSTREAM-SALVAGE-AUDIT.md`.
+  in `docs/01-REALITY-AUDIT.md` §L.
 - **No outdated format.** The old `tests/jit_golden/cases.json` battery is **declared historical** in this
   revision. `apps/SelfTest.HC` is the **single source of truth** for tests. The benchmark must be **real**
   (time-limited, driver-reconfiguring, PMU-backed) — no synthetic constants, no fake scorecards.
@@ -431,7 +435,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   - New gate script `scripts/p7-verify.sh` that runs the full P7 gate (see P7 exit) and is called by
     `scripts/golden-boot.sh`.
 - **Salvage folded in.** The original `holygl.h` GL surface inventory and `gfx_backend.h` config-plane inventory
-  (from `docs/05-UPSTREAM-SALVAGE-AUDIT.md`) are the checklist for P7.1/P7.4.
+  (from `docs/01-REALITY-AUDIT.md` §L) are the checklist for P7.1/P7.4.
 - **Exit gate.** `scripts/p7-verify.sh` prints `P7.0: PASS`; all frozen numbers recorded; the JSON is tagged
   historical.
 - **Risks/ordering.** Must run first; nothing else starts until the baseline is frozen.
@@ -454,7 +458,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
     original `holygl.c` is exposed only as a conformance fixture (`GL_FLAT`/Gouraud), not the default.
 - **Salvage folded in.** `kernel/math/holygl.c` (`glMatrixMode`/`glPushMatrix`/`glPopMatrix`/`glClear`/
   `glClearColor`/`glColor4f`/`glFlush`) and `kernel/math/math3d.c` (post-multiply matrix helpers, already
-  root-fixed as D10). The GL 1.3 surface list is in `docs/05-UPSTREAM-SALVAGE-AUDIT.md`.
+  root-fixed as D10). The GL 1.3 surface list is in `docs/01-REALITY-AUDIT.md` §L.
 - **Exit gate.** `apps/SelfTest.HC` gains `SelfTestGL()` → `GL: PASS` (PROJECTION depth-4 and MODELVIEW depth-16
   stacks push/pop to depth, `gluPerspective` shape, `glColor4f` packed alpha, `glClear` colour+depth, a lit
   triangle increments `tris_rendered`); `3D`/`3D-GEARS`/`SHADING`/`TEXTURE`/`MESH`/`RENDER: PASS (0xD28836F)`
@@ -816,7 +820,7 @@ MCU-class targets.
     MCU nodes (offload model — whole-OS-on-MCU is not the goal).
   - **`apps/SmpDemo.HC`** (port): the SMP demonstration harness, folded into `SelfTest.HC` as a gate.
 - **Salvage folded in.** `apps/WasmJit.HC` (WASM→ARM64 JIT), `apps/SmpDemo.HC`, `apps/StdLib.HC`
-  (`CArray`/`CDict`) — all present in the original repo (see `docs/05-UPSTREAM-SALVAGE-AUDIT.md`). `HolyPort`,
+  (`CArray`/`CDict`) — all present in the original repo (see `docs/01-REALITY-AUDIT.md` §L). `HolyPort`,
   `Surface`/`remote`, and the RISC-V/FDT MCU path are **new**.
 - **Exit gate.**
   ```

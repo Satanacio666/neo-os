@@ -1082,10 +1082,12 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 
 > **Scope.** This is the *execution* blueprint for the single next priority, **P7**. It is deliberately
 > prescriptive: an engineer who follows it top-to-bottom should land P7 in one clean pass with no open
-> design questions. Every anchor was verified against `/home/user/neo-os` @ `HEAD d657e70` (P0–P6 done)
-> and upstream `/tmp/neo-upstream` @ `36ca4b0`.
+> design questions. The P7.0 anchors were first verified at `HEAD d657e70` (P0–P6 done); the **P7.1 runbook
+> below was re-verified at the post-P7.0-audit HEAD** and is the authoritative, ready-to-run spec. Upstream
+> reference: `/tmp/neo-upstream` @ `36ca4b0`.
 >
-> Sibling docs written in parallel: `docs/05-UPSTREAM-SALVAGE-AUDIT.md`, `docs/06-PERFECTED-PRIORITY-PLAN.md`.
+> The former sibling docs are now merged in-repo: the salvage audit → `docs/01-REALITY-AUDIT.md` §L; the
+> perfected priority plan → `docs/00-MASTER-PLAN.md` §11.
 > This file depends only on `docs/00-MASTER-PLAN.md` §3/§5/§6.5/§9.4, `docs/02-TASKLIST.md` §P7, and the tree.
 >
 > **Hard constraints honoured by every step:** no new `.c` files; no stubs/placeholders/mock data; no

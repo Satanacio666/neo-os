@@ -5,6 +5,64 @@
 
 ---
 
+## 0. START HERE — current state, canonical docs, and the exact workflow
+
+> **Entry point for any agent that has only container access and no prior context.** Read this first.
+> (The 20 mandates in §1–§20 below are the standing law; some name modules that were later dissolved — the
+> canonical, current truth is always `docs/00`–`docs/04`, not the mandate text.)
+
+**Repository:** `/home/user/neo-os` (git repo, branch `main`). **Delivery bundle:** `/home/user/project/neo-os.bundle`.
+(`/home/user/project/neo-os-docs/` is a **stale pre-consolidation doc dump — ignore it**; the canonical docs are
+in `/home/user/neo-os/docs/`.)
+
+### Canonical documentation — exactly 5 files (never add/rename `docs/*.md`)
+- `docs/00-MASTER-PLAN.md` — vision, invariants (§2), the P0→P10 ladder (§3), the P7→P11 priority plan (§11).
+- `docs/01-REALITY-AUDIT.md` — verified claim-by-claim reality of the code (what is REAL/PARTIAL/STUB/MISSING).
+- `docs/02-TASKLIST.md` — the per-phase task list **and the execution runbooks** (P7 blueprint, §P7.0–§P7.8).
+- `docs/03-IDEAS-AND-RESEARCH.md` — ideas and research.
+- `docs/04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md` — contradictions + every decision `D1…D33` + open questions.
+
+### Current state (2026-10)
+- **P0–P6 ✅ DONE. P7.0 ✅ DONE. P7.0-audit ✅ DONE** (D29 + D30 root-fixed, golden gate hardened).
+- **NEXT STEP = P7.1** — HolyGL GL 1.3 surface completion + GL conformance. Complete one-shot runbook:
+  `docs/02-TASKLIST.md` §"P7.1 — HolyGL GL 1.3 surface completion (one-shot runbook)".
+- Frozen gate (must stay green): `GOLDEN BOOT: PASS`, `SELFTEST 99/99`, `PARITY 68/68 (0 diff)`, `CENSUS 181`,
+  `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `RENDER: PASS (0xD28836F)`.
+- The 4 detailed read-only audit reports (P1/P3/P4/P5-P7.0 findings) are archived at
+  `docs/research/neo-audit/*.md`.
+
+### Build / run / test — the only sanctioned loop
+```bash
+cd /home/user/neo-os
+make all                                    # build BOOTAA64.EFI + disk.img + redsea.img
+./scripts/run-viewer-vm.sh restart          # boot QEMU (VNC :5900, UART socket, log below)
+sleep 40; grep -a 'DolDocShell active' /tmp/neo-os-serial.log   # wait for the shell
+python3 scripts/neo_uart.py --sentinel '<<<NEO-DONE:selftest>>>' --timeout 175 'selftest'
+bash scripts/golden-boot.sh                 # THE gate -> must print "GOLDEN BOOT: PASS"
+```
+- UART log: `/tmp/neo-os-serial.log`. Drive the REPL by sending lines to the socket (see `scripts/uart-repl.py`).
+- **Screenshots are mandatory** for any visual change; `golden-boot.sh` saves `/tmp/golden-boot.png` from the
+  dev-server stream. Never verify visuals from a host desktop.
+- Do **not** start the dev server (port 4000); it is already running. Do **not** restart the VM if the sandbox
+  memory watchdog killed it — ask the user.
+
+### Persist after every green step
+```bash
+git add -A && git commit -m "<phase>: <what + why>"
+git bundle create /home/user/project/neo-os.bundle --all     # refresh the delivery bundle
+```
+
+### Hard invariants (full list in `docs/00` §2)
+1. **Golden hash bit-exact:** `RENDER: PASS (0xD28836F)`, identical on 1 vs 4 cores.
+2. **Census:** `CENSUS: PASS (181)` — no `.HC`→C runtime call count may increase.
+3. **No new `.c`** (only `boot/main.c`, `boot/uefi/*`, `boot/seed/*`, `boot/runtime/*`).
+4. **5-doc rule:** `ls docs/*.md` is exactly `00`–`04`.
+5. **No cross-module struct access** — use accessors (`HolyGL*`, `GfxDevice*`, `DolDoc*`), never `g_hgl.*` etc.
+6. **≤8 args per call.** No stubs/mocks/placeholders. No forward declarations.
+7. **Max 2 agents in parallel; audit agents are READ-ONLY.** One merge/dissolve per commit; never leave the tree red.
+
+---
+
 ## 1. Bare-Metal AArch64 Ring-0 (EL1) Single Address Space Sovereignty
 - Everything runs in **ARMv8-A EL1 (Ring 0)** inside a **1:1 flat physical identity-mapped address space (`VA == PA`)**.
 - Zero Ring-3 isolation, zero `SVC` syscall overhead, zero address-space context-switch TLB flushes.
