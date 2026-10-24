@@ -948,9 +948,12 @@ U0 SelfTestGL() {
     if (fb[300 * pit + 300] != 0xFF00FF00) { ok = 0; why = "depth_writable"; }
 
     // 7. A lit triangle submitted through the GL pipeline increments the counter.
+    // (A real perspective is required now that the near-plane clipper is active: with
+    // an identity projection z=-5 gives w=1 and z+w<0, i.e. the triangle is behind.)
     glEnable(GL_LIGHTING);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
+    gluPerspective(45.0, 1.0, 1.0, 100.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glTranslatef(0.0, 0.0, -5.0);
@@ -984,6 +987,67 @@ U0 SelfTestGL() {
 
     if (ok != 0) doldoc_print("GL: PASS\n");
     else doldoc_printf("GL: FAIL (%s)\n", why);
+}
+
+// P7.2: near-plane Sutherland–Hodgman clipper. A triangle that crosses the near plane
+// must be CLIPPED (not rejected) and still cover pixels; a fully-behind triangle must
+// cover none (and must not wrap around / blow up). Prints CLIP: PASS / CLIP: FAIL.
+U0 SelfTestClip() {
+    HolyGLSetWireframe(0);
+    GfxDeviceSetShading(0);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    HolyGLViewport(0, 0, 512, 512);
+    HolyGLMatrixMode(GL_PROJECTION);
+    HolyGLLoadIdentity();
+    HolyGLPerspective(60.0, 1.0, 1.0, 100.0);
+    HolyGLMatrixMode(GL_MODELVIEW);
+    HolyGLLoadIdentity();
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
+
+    // (1) One vertex at/behind the near plane (z=0 -> w=0): must clip, not vanish.
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    HolyGLColor3ub(255, 255, 255);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0, -1.0, -2.0);
+    glVertex3f( 1.0, -1.0, -2.0);
+    glVertex3f( 0.0,  1.0,  0.0);
+    glEnd();
+    I64 ink = 0;
+    I64 y = 0;
+    while (y < 512) {
+        I64 x = 0;
+        while (x < 512) { if ((fb[y * pit + x] & 0xFFFFFF) != 0) ink++; x++; }
+        y++;
+    }
+
+    // (2) Fully behind the camera (all z=+1 -> w=-1): must clip away to zero coverage.
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    HolyGLColor3ub(255, 255, 255);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0, -1.0, 1.0);
+    glVertex3f( 1.0, -1.0, 1.0);
+    glVertex3f( 0.0,  1.0, 1.0);
+    glEnd();
+    I64 ink2 = 0;
+    y = 0;
+    while (y < 512) {
+        I64 x = 0;
+        while (x < 512) { if ((fb[y * pit + x] & 0xFFFFFF) != 0) ink2++; x++; }
+        y++;
+    }
+
+    gfx_clear(0xFF000000);
+    RasterClearZ();
+    doldoc_mark_all_dirty();
+    if (ink > 0 && ink2 == 0) doldoc_printf("CLIP: PASS (clip_ink=%lld behind_ink=%lld)\n", ink, ink2);
+    else doldoc_printf("CLIP: FAIL (clip_ink=%lld behind_ink=%lld)\n", ink, ink2);
 }
 
 U0 SelfTestRun() {
@@ -1159,6 +1223,7 @@ U0 SelfTestRun() {
     SelfTestHeap();
     SelfTestTexture();
     SelfTestGL();
+    SelfTestClip();
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();

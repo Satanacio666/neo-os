@@ -368,8 +368,9 @@ U0 HolyGLBegin(I64 mode) {
 // Per-vertex NDC Z is mapped to 16-bit depth and interpolated per pixel by
 // RasterTriangleZ (no more averaged z_avg).
 U0 HolyGLSubmitTriangle(GLVertex *v0, GLVertex *v1, GLVertex *v2) {
-  // Reject if any vertex is behind or at the near plane (prevents w <= 0 division blowup)
-  if (v0->w <= 0.05 || v1->w <= 0.05 || v2->w <= 0.05) return;
+  // P7.2: the near-plane clipper (HolyGLSubmitClipped) guarantees w >= near_w > 0, so
+  // this is only a cheap safety net for any direct caller; w<=0 would divide by zero.
+  if (v0->w <= 0.0 || v1->w <= 0.0 || v2->w <= 0.0) return;
 
   F64 inv_w0 = 1.0 / v0->w;
   F64 inv_w1 = 1.0 / v1->w;
@@ -461,6 +462,71 @@ U0 HolyGLVertexCopy(GLVertex *dst, GLVertex *src) {
   dst->nx = src->nx; dst->ny = src->ny; dst->nz = src->nz;
 }
 
+// P7.2 — Sutherland–Hodgman near-plane clipper. Clips a triangle in homogeneous clip
+// space against d = z + w - near_w >= 0 (under the standard perspective matrix the
+// near plane maps to z+w = 0, and d>=0 guarantees w>0), linearly interpolating every
+// attribute. Writes 0..4 vertices and returns the count (the caller fan-triangulates).
+U0 HolyGLLerpVertex(GLVertex *o, GLVertex *a, GLVertex *b, F64 t) {
+  o->x = a->x + (b->x - a->x) * t;
+  o->y = a->y + (b->y - a->y) * t;
+  o->z = a->z + (b->z - a->z) * t;
+  o->w = a->w + (b->w - a->w) * t;
+  o->u = a->u + (b->u - a->u) * t;
+  o->v = a->v + (b->v - a->v) * t;
+  o->nx = a->nx + (b->nx - a->nx) * t;
+  o->ny = a->ny + (b->ny - a->ny) * t;
+  o->nz = a->nz + (b->nz - a->nz) * t;
+  U32 ca = a->color;
+  U32 cb = b->color;
+  I64 c0 = (I64)((ca >> 24) & 0xFF) + (I64)((F64)((I64)((cb >> 24) & 0xFF) - (I64)((ca >> 24) & 0xFF)) * t);
+  I64 c1 = (I64)((ca >> 16) & 0xFF) + (I64)((F64)((I64)((cb >> 16) & 0xFF) - (I64)((ca >> 16) & 0xFF)) * t);
+  I64 c2 = (I64)((ca >> 8) & 0xFF) + (I64)((F64)((I64)((cb >> 8) & 0xFF) - (I64)((ca >> 8) & 0xFF)) * t);
+  I64 c3 = (I64)(ca & 0xFF) + (I64)((F64)((I64)(cb & 0xFF) - (I64)(ca & 0xFF)) * t);
+  o->color = ((U32)c0 << 24) | ((U32)c1 << 16) | ((U32)c2 << 8) | (U32)c3;
+}
+
+I64 HolyGLClipNear(GLVertex *in, F64 near_w, GLVertex *outv) {
+  GLVertex poly[3];
+  HolyGLVertexCopy(&poly[0], &in[0]);
+  HolyGLVertexCopy(&poly[1], &in[1]);
+  HolyGLVertexCopy(&poly[2], &in[2]);
+  I64 on = 0;
+  I64 i = 0;
+  while (i < 3) {
+    I64 j = i + 1;
+    if (j == 3) j = 0;
+    F64 di = poly[i].z + poly[i].w - near_w;
+    F64 dj = poly[j].z + poly[j].w - near_w;
+    if (di >= 0.0) {
+      HolyGLVertexCopy(&outv[on], &poly[i]);
+      on++;
+    }
+    if ((di >= 0.0 && dj < 0.0) || (di < 0.0 && dj >= 0.0)) {
+      F64 t = di / (di - dj);
+      HolyGLLerpVertex(&outv[on], &poly[i], &poly[j], t);
+      on++;
+    }
+    i++;
+  }
+  return on;
+}
+
+// Clip a triangle against the near plane and fan-triangulate the result (3 -> 1, 4 -> 2).
+U0 HolyGLSubmitClipped(GLVertex *a, GLVertex *b, GLVertex *c) {
+  GLVertex tri[3];
+  GLVertex cl[4];
+  HolyGLVertexCopy(&tri[0], a);
+  HolyGLVertexCopy(&tri[1], b);
+  HolyGLVertexCopy(&tri[2], c);
+  I64 cn = HolyGLClipNear(tri, 0.001, cl);
+  if (cn == 3) {
+    HolyGLSubmitTriangle(&cl[0], &cl[1], &cl[2]);
+  } else if (cn == 4) {
+    HolyGLSubmitTriangle(&cl[0], &cl[1], &cl[2]);
+    HolyGLSubmitTriangle(&cl[0], &cl[2], &cl[3]);
+  }
+}
+
 U0 HolyGLVertex3f(F64 x, F64 y, F64 z) {
   if (g_hgl.v_count >= 16) g_hgl.v_count = 0;
   GLVertex *v = &g_hgl.v_queue[g_hgl.v_count];
@@ -492,20 +558,20 @@ U0 HolyGLVertex3f(F64 x, F64 y, F64 z) {
     HolyGLVertexCopy(&g_hgl.v_queue[0], &g_hgl.v_queue[1]);
     g_hgl.v_count = 1;
   } else if (pm == GL_TRIANGLES && g_hgl.v_count == 3) {
-    HolyGLSubmitTriangle(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
+    HolyGLSubmitClipped(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
     g_hgl.v_count = 0;
   } else if (pm == GL_TRIANGLE_STRIP && g_hgl.v_count == 3) {
-    HolyGLSubmitTriangle(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
+    HolyGLSubmitClipped(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
     HolyGLVertexCopy(&g_hgl.v_queue[0], &g_hgl.v_queue[1]);
     HolyGLVertexCopy(&g_hgl.v_queue[1], &g_hgl.v_queue[2]);
     g_hgl.v_count = 2;
   } else if (pm == GL_TRIANGLE_FAN && g_hgl.v_count == 3) {
-    HolyGLSubmitTriangle(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
+    HolyGLSubmitClipped(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
     HolyGLVertexCopy(&g_hgl.v_queue[1], &g_hgl.v_queue[2]);
     g_hgl.v_count = 2;
   } else if (pm == GL_QUADS && g_hgl.v_count == 4) {
-    HolyGLSubmitTriangle(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
-    HolyGLSubmitTriangle(&g_hgl.v_queue[0], &g_hgl.v_queue[2], &g_hgl.v_queue[3]);
+    HolyGLSubmitClipped(&g_hgl.v_queue[0], &g_hgl.v_queue[1], &g_hgl.v_queue[2]);
+    HolyGLSubmitClipped(&g_hgl.v_queue[0], &g_hgl.v_queue[2], &g_hgl.v_queue[3]);
     g_hgl.v_count = 0;
   }
 }

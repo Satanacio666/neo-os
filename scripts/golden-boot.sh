@@ -194,6 +194,13 @@ else
         echo "  [FAIL] holygl surface: ${glline:-<none>} (want GL: PASS)"
         fail=1
     fi
+    clipline="$(printf '%s\n' "$out" | grep -a 'CLIP: ' | tail -1)"
+    if printf '%s' "$clipline" | grep -aq 'PASS'; then
+        echo "  [PASS] $clipline (near-plane Sutherland-Hodgman clipper)"
+    else
+        echo "  [FAIL] near-plane clipper: ${clipline:-<none>} (want CLIP: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

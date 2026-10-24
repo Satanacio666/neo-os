@@ -789,3 +789,16 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (reproduced: the boot stalls at `Sovereign Handover: Loading holyc/KernelInit.HC`). `Exceptions.HC` installs
   the NeoOS table at Stage 1 (module 5) exactly as before; early faults stay reported by the firmware's own
   `Synchronous Exception` handler. Gate: `GOLDEN BOOT: PASS`.
+- **D36 — P7.2 near-plane clipper DONE; NEON memory kernels DEFERRED (open).** The Sutherland–Hodgman
+  near-plane clipper landed: `HolyGLLerpVertex` + `HolyGLClipNear` (clip against `d = z + w - 0.001 >= 0`,
+  interpolating every attribute) + `HolyGLSubmitClipped` (fan-triangulate 3→1, 4→2), wired into every
+  `HolyGLVertex3f` triangle path; the old `w<=0.05` reject is now only a `w<=0` safety net. `SelfTestClip`
+  (`CLIP: PASS`) proves a near-crossing triangle is clipped and still covers pixels while a fully-behind
+  triangle covers none. `SelfTestGL`'s lit-triangle case now uses a real perspective (an identity projection
+  gives `z+w<0`, so the clipper correctly rejects it). Gate: `GL: PASS`, `CLIP: PASS`, `RENDER: PASS (0xD28836F)`.
+  **Deferred:** the 128-bit NEON memory kernels (`RenderNeonFill`/`Blit`/`BlendRect`, assembled source
+  `scripts/render_neon.s`). The asm assembled and the fill/blit unit checks passed, but wiring them into
+  `RenderDrawRect`/`gfx_swap_buffers`/`gfx_blend_rect` **hung the shell at startup** (boot stalls after the
+  DolDocShell banner, before `DolDocShell active`); reverting `apps/Render.HC` restored a green boot, so the
+  regression is in that wiring and must be root-caused before re-landing. The golden 2D hash `0xD28836F` is
+  unaffected either way. Tracked here as the remaining P7.2 item.
