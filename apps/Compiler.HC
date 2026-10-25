@@ -1166,6 +1166,81 @@ U0 HcPatchContinues(I64 lvl, I64 target_idx) {
     }
 }
 
+// P7.3 root fix (D37): parse a `#define` macro body as a constant expression that
+// may begin with `(` — e.g. `#define TILES (48 * 32)`. The old inline parser only
+// accepted a leading digit / 0x / identifier, so a parenthesized body silently
+// became 0; a global array declared `[MACRO]` was then under-allocated and its
+// later elements aliased unrelated globals (heap corruption, not a compile error).
+// Operands: `( expr )`, `0xHEX`, decimal, or another macro name; operators `* + -`
+// (left-associative; `/` excluded so a trailing `// comment` is never divided).
+I64 HcParseMacroExpr() {
+    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+    I64 v = 0;
+    if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '(') {
+        g_hc_pos++;
+        v = HcParseMacroExpr();
+        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+        if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') g_hc_pos++;
+    } else if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
+               (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
+        g_hc_pos += 2;
+        while (g_hc_pos < g_hc_len) {
+            U8 hc = g_hc_src[g_hc_pos];
+            if (hc >= '0' && hc <= '9') { v = (v << 4) | (hc - '0'); g_hc_pos++; }
+            else if (hc >= 'a' && hc <= 'f') { v = (v << 4) | (hc - 'a' + 10); g_hc_pos++; }
+            else if (hc >= 'A' && hc <= 'F') { v = (v << 4) | (hc - 'A' + 10); g_hc_pos++; }
+            else break;
+        }
+    } else if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+        while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+            v = v * 10 + (g_hc_src[g_hc_pos] - '0');
+            g_hc_pos++;
+        }
+    } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
+        U8 ref_n[64];
+        I64 rn_i = 0;
+        while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && rn_i < 63) ref_n[rn_i++] = g_hc_src[g_hc_pos++];
+        ref_n[rn_i] = 0;
+        HcFindDefine(ref_n, &v);
+    }
+    while (g_hc_pos < g_hc_len) {
+        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+        U8 dop = g_hc_src[g_hc_pos];
+        if (dop != '*' && dop != '+' && dop != '-') break;
+        g_hc_pos++;
+        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+        I64 rhs = 0;
+        if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '(') {
+            g_hc_pos++;
+            rhs = HcParseMacroExpr();
+            while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+            if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') g_hc_pos++;
+        } else if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
+                   (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
+            g_hc_pos += 2;
+            while (g_hc_pos < g_hc_len) {
+                U8 hc = g_hc_src[g_hc_pos];
+                if (hc >= '0' && hc <= '9') { rhs = (rhs << 4) | (hc - '0'); g_hc_pos++; }
+                else if (hc >= 'a' && hc <= 'f') { rhs = (rhs << 4) | (hc - 'a' + 10); g_hc_pos++; }
+                else if (hc >= 'A' && hc <= 'F') { rhs = (rhs << 4) | (hc - 'A' + 10); g_hc_pos++; }
+                else break;
+            }
+        } else if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
+            while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) { rhs = rhs * 10 + (g_hc_src[g_hc_pos] - '0'); g_hc_pos++; }
+        } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
+            U8 rn2[64];
+            I64 r2 = 0;
+            while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && r2 < 63) rn2[r2++] = g_hc_src[g_hc_pos++];
+            rn2[r2] = 0;
+            HcFindDefine(rn2, &rhs);
+        }
+        if (dop == '*') v = v * rhs;
+        else if (dop == '+') v = v + rhs;
+        else if (dop == '-') v = v - rhs;
+    }
+    return v;
+}
+
 // ------------------------------------------------------------------------------
 // Lexical Analyzer (Tokenizer with #define Preprocessor Support)
 // ------------------------------------------------------------------------------
@@ -1229,54 +1304,8 @@ U0 HcSkipWhitespaceAndComments() {
                         g_hc_pos++;
                     }
                 }
-                I64 d_val = 0;
-                if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
-                    (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
-                    g_hc_pos += 2;
-                    while (g_hc_pos < g_hc_len) {
-                        U8 hc = g_hc_src[g_hc_pos];
-                        if (hc >= '0' && hc <= '9') { d_val = (d_val << 4) | (hc - '0'); g_hc_pos++; }
-                        else if (hc >= 'a' && hc <= 'f') { d_val = (d_val << 4) | (hc - 'a' + 10); g_hc_pos++; }
-                        else if (hc >= 'A' && hc <= 'F') { d_val = (d_val << 4) | (hc - 'A' + 10); g_hc_pos++; }
-                        else break;
-                    }
-                } else if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
-                    while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
-                        d_val = d_val * 10 + (g_hc_src[g_hc_pos] - '0');
-                        g_hc_pos++;
-                    }
-                } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
-                    U8 ref_n[64];
-                    I64 rn_i = 0;
-                    while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && rn_i < 63) {
-                        ref_n[rn_i++] = g_hc_src[g_hc_pos++];
-                    }
-                    ref_n[rn_i] = 0;
-                    HcFindDefine(ref_n, &d_val);
-                }
-                // Constant-expression continuation: `#define X 6 * 7`, `#define Y N + 1`.
-                // The C JIT evaluates these, so macros must too. (`/` is deliberately
-                // excluded so a trailing `// comment` is never parsed as division.)
-                while (g_hc_pos < g_hc_len) {
-                    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
-                    U8 dop = g_hc_src[g_hc_pos];
-                    if (dop != '*' && dop != '+' && dop != '-') break;
-                    g_hc_pos++;
-                    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
-                    I64 rhs = 0;
-                    if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
-                        while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) { rhs = rhs * 10 + (g_hc_src[g_hc_pos] - '0'); g_hc_pos++; }
-                    } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
-                        U8 rn2[64];
-                        I64 r2 = 0;
-                        while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && r2 < 63) rn2[r2++] = g_hc_src[g_hc_pos++];
-                        rn2[r2] = 0;
-                        HcFindDefine(rn2, &rhs);
-                    }
-                    if (dop == '*') d_val = d_val * rhs;
-                    else if (dop == '+') d_val = d_val + rhs;
-                    else if (dop == '-') d_val = d_val - rhs;
-                }
+                // P7.3 (D37): a full constant expression, incl. a leading `(`.
+                I64 d_val = HcParseMacroExpr();
                 if (d_neg) d_val = -d_val;
                 if (def_n[0]) {
                     HcAddDefine(def_n, d_val);

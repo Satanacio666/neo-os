@@ -208,6 +208,13 @@ else
         echo "  [FAIL] NEON memory kernels: ${nml:-<none>} (want NEONMEM: PASS)"
         fail=1
     fi
+    tline="$(printf '%s\n' "$out" | grep -a 'TILE: ' | tail -1)"
+    if printf '%s' "$tline" | grep -aq 'PASS'; then
+        echo "  [PASS] $tline (tiled scene: pixel/Z-identical to immediate, no gaps)"
+    else
+        echo "  [FAIL] tiled scene: ${tline:-<none>} (want TILE: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

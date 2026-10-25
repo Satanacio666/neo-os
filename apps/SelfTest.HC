@@ -1122,6 +1122,14 @@ U0 SelfTestNeonMem() {
     else doldoc_printf("NEONMEM: FAIL (%s)\n", why);
 }
 
+// P7.3: tiled scene API — the tiled path must be pixel/Z-identical to the immediate
+// path, tile the plane with no shared-edge gaps, and never write past a scratchpad.
+// The body lives in RasterTile.HC (Stage 5) so it can see the scene types; SelfTest
+// (Stage 1) only invokes it. Prints TILE: PASS / TILE: FAIL.
+U0 SelfTestTile() {
+    RasterSelfTestTile();
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1297,6 +1305,7 @@ U0 SelfTestRun() {
     SelfTestGL();
     SelfTestClip();
     SelfTestNeonMem();
+    SelfTestTile();
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();

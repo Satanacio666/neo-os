@@ -1098,13 +1098,22 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > not set `NZCV`, so the loop never terminated and hung the shell; fixed with `subs`. Gate: `CLIP: PASS`,
 > `NEONMEM: PASS`, `GL: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `PARITY 70/70 (0 diff)`,
 > `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
-> **Next: P7.3 (L1 tile binning + per-core scratchpad + `stnp` streaming resolve).**
+> **P7.3 L1 TILE BINNING + PER-CORE SCRATCHPAD + `stnp` RESOLVE (2026-10) ✅ DONE.** `RasterTriangleZ` hoisted
+> (bit-exact) into `RasterTriangleZCore`; `RasterSceneBegin`/`RasterSceneAddTriangle`/`RasterSceneEnd` bin 64×64
+> tiles; `RasterRenderTile` renders each tile in core-0's scratchpad with local coords; `RasterTileResolve`
+> streams colour with `TileResolveRow` (`stnp`, `scripts/tile_resolve.s`) + depth to the main Z-buffer.
+> `SelfTestTile()` → `TILE: PASS` (tiled vs immediate pixel/Z-identical, 4-tile shared-edge `gaps==0`, no
+> scratchpad overrun); `golden-boot.sh` gained the `TILE` assertion. **Root fix (D37):** the `#define` parser
+> silently zeroed a parenthesized macro body (`(48 * 32)`), under-allocating `g_rs_bins` into `g_tile_color`;
+> replaced with a real constant-expression parser. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
+> `RASTER: PASS`, `SELFTEST 101/101`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
+> **Next: P7.4 (SMP tile dispatch + parallel vertex transform).**
 >
 > Merged from the former `docs/07-P7-EXECUTION-BLUEPRINT.md` (P7.0 doc consolidation). The ladder overview is in `00-MASTER-PLAN.md` §11.
 >
 > **P7 step index (authoritative numbering — `docs/00` §11 mirrors it):**
 > **P7.0** recon/baseline ✅ · **P7.1** HolyGL GL 1.3 surface ✅ (`GL: PASS`) · **P7.2** near-plane clipper + NEON
-> memory kernels ✅ (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve (`TILE`) · **P7.4** SMP tile
+> memory kernels ✅ (`CLIP`, `NEONMEM`) · **P7.3** L1 tile binning + `stnp` resolve ✅ (`TILE`) · **P7.4** SMP tile
 > dispatch + parallel vertex transform (`DETERMINISM`) · **P7.5** GPU config plane + VirtIO batch/page-flip +
 > 32-bit Z (`GPUCFG`) · **P7.6** merged `Telemetry.HC` + ARM PMU (`TELEMETRY`) · **P7.7** real 40-phase suite
 > (`BENCH`) · **P7.8** rebuilt tests / wire gates (`P7.8: PASS`) · **P7.9** GL conformance + visual proof
@@ -1393,7 +1402,19 @@ blit/blend/clear in `Render.HC`.
 
 ---
 
-### P7.3 — L1 tile binning + per-core scratchpad + `stnp` streaming resolve
+### P7.3 — L1 tile binning + per-core scratchpad + `stnp` streaming resolve — ✅ **DONE** (this checkpoint)
+
+**Built.** `RasterTriangleZCore` (hoisted bit-exact, 7 args, uses the `g_raster_fb`/`g_zbuf` globals);
+`RasterSceneBegin`/`RasterSceneAddTriangle`/`RasterSceneEnd` (64×64 binning into `g_rs_bins`, ≤8 args each);
+`RasterRenderTile` (clear + render a tile into core-0's scratchpad with local coords — Pineda edges are
+translation-invariant); `RasterTileResolve` (colour via the new `TileResolveRow` `stnp` kernel in
+`scripts/tile_resolve.s`, depth into the main Z-buffer); `RasterSelfTestTile` (called from `SelfTest.HC`'s
+`SelfTestTile`) → `TILE: PASS`. Scene types are screen-space `I64` (`CRasterVertex`/`CRasterTri`). All BSS.
+**Root fix (D37):** the `#define` handler parsed a macro body only when it began with a digit/`0x`/identifier,
+so `(48 * 32)` silently became `0` and `g_rs_bins` was under-allocated into `g_tile_color` (heap corruption,
+not a compile error); replaced with a real constant-expression parser (`HcParseMacroExpr`). Gate: `TILE: PASS`,
+`RENDER: PASS (0xD28836F)`, `RASTER: PASS`, `SELFTEST 101/101`, `CENSUS 181`, `SELF-HOST: PASS`,
+`DETERMINISM: PASS`, `GOLDEN BOOT: PASS`. Runbook below is the original spec (retained).
 
 **Goal.** Add a real tiled scene API that reuses the **one** kernel, with per-core L1 scratchpads and a
 non-temporal resolve. The immediate `RasterTriangleZ` path stays byte-identical.

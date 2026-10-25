@@ -812,3 +812,17 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (or be followed by `cmp`) — a bare `sub` leaves the flags stale. Gate: `GL: PASS`, `CLIP: PASS`,
   `NEONMEM: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS: PASS (181)`, `DETERMINISM: PASS`,
   `GOLDEN BOOT: PASS`.
+- **D37 — P7.3 L1 tile binning; the `#define` parser silently zeroed a parenthesized macro body (ROOT-FIXED).**
+  P7.3 landed the tiled scene API (`RasterSceneBegin`/`AddTriangle`/`End`, `RasterRenderTile`,
+  `RasterTileResolve`, `RasterTriangleZCore` hoist) with `SelfTestTile` → `TILE: PASS`. It exposed a real
+  compiler bug: the `#define` value parser (`Compiler.HC` `HcSkipWhitespaceAndComments`) only accepted a macro
+  body beginning with a digit, `0x`, or an identifier — a leading `(` fell through and the macro silently
+  became **0**. `#define RASTER_MAX_TILES (48 * 32)` therefore sized `CRasterBin g_rs_bins[0]`, so the binner's
+  later writes (and the tile scratchpad) **aliased unrelated globals** (`g_tile_color` overlapped `g_rs_bins`),
+  corrupting `b->count` with no compile error — the classic "silent under-allocation → heap corruption". The
+  parenthesized dimension parser (`HcParseArrayDimExpr`) was already correct; only the `#define` body parser
+  was not. **Root fix:** `HcParseMacroExpr` — a proper constant-expression parser (operands `( expr )`, `0xHEX`,
+  decimal, macro name; left-associative `* + -`; `/` excluded so a trailing `// comment` is never divided) —
+  now backs every `#define`. **Invariant:** a macro body is a constant expression, and `[MACRO]` must size the
+  global array accordingly. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS 181`,
+  `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
