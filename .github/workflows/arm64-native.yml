@@ -1,0 +1,117 @@
+name: NeoOS ARM64 (KVM nativo, grátis)
+
+# Roda em máquina ARM64 REAL do GitHub (Cobalt 100, 4 vCPU), sem emulação de CPU e
+# sem fila de capacidade. Grátis e ilimitado porque o repositório é público.
+#
+# DESCOBERTA QUE MUDA TUDO (issue actions/runner-images#14549):
+#   "On ubuntu-24.04-arm runners, /dev/kvm is available and enables KVM hardware
+#    acceleration for QEMU out of the box."
+# Ou seja: o NeoOS roda aqui com **-accel kvm**, ou seja, virtualização por
+# hardware — perto da velocidade nativa, em vez do TCG que usamos na POCO.
+#
+# Este workflow:
+#   1. comprova a arquitetura e a presença de /dev/kvm
+#   2. compila com toolchain NATIVA
+#   3. roda o gate com KVM (e cai para TCG se /dev/kvm não existir)
+#   4. compara o tempo de boot KVM vs TCG — o número que interessa
+#   5. publica artefatos (BOOTAA64.EFI, disk.img) e uma captura de tela
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  arm64-kvm:
+    name: NeoOS no ARM64 com KVM
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Arquitetura e KVM
+        id: caps
+        run: |
+          echo "### Capacidades da máquina" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          uname -a >> "$GITHUB_STEP_SUMMARY"
+          echo "nproc: $(nproc)" >> "$GITHUB_STEP_SUMMARY"
+          free -m | head -2 >> "$GITHUB_STEP_SUMMARY"
+          systemd-detect-virt >> "$GITHUB_STEP_SUMMARY"
+          if [ -e /dev/kvm ]; then
+            echo "KVM: PRESENTE" >> "$GITHUB_STEP_SUMMARY"
+            ls -l /dev/kvm >> "$GITHUB_STEP_SUMMARY"
+            echo "kvm=sim" >> "$GITHUB_OUTPUT"
+          else
+            echo "KVM: AUSENTE" >> "$GITHUB_STEP_SUMMARY"
+            echo "kvm=nao" >> "$GITHUB_OUTPUT"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dependências
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential qemu-system-arm \
+            qemu-efi-aarch64 dosfstools mtools python3
+          qemu-system-aarch64 -accel help | tee /tmp/accel.txt
+
+      - name: Build (toolchain NATIVA)
+        run: |
+          make all -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          ls -la build/
+
+      - name: Gate com KVM (se houver) e comparação com TCG
+        run: |
+          BIOS=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
+          if [ "${{ steps.caps.outputs.kvm }}" = "sim" ]; then ACCEL="-accel kvm"; else ACCEL="-accel tcg,thread=multi"; fi
+          echo "usando: $ACCEL"
+          for MODO in "kvm:$ACCEL" "tcg:-accel tcg,thread=multi,tb-size=1024"; do
+            NOME="${MODO%%:*}"; FLAGS="${MODO#*:}"
+            [ "$NOME" = "kvm" ] && [ "${{ steps.caps.outputs.kvm }}" != "sim" ] && continue
+            echo "=== $NOME ==="
+            /usr/bin/time -f "TEMPO_$NOME=%e s" timeout 420 qemu-system-aarch64 \
+              -M virt,gic-version=2 $FLAGS -cpu cortex-a76 -smp "$(nproc)" -m 2048 \
+              -bios "$BIOS" -device ramfb -device virtio-gpu-device,xres=1024,yres=768 \
+              -device virtio-keyboard-device -device virtio-tablet-device \
+              -drive file=build/disk.img,format=raw,id=d,if=none -device virtio-blk-pci,drive=d \
+              -drive file=build/redsea.img,format=raw,id=r,if=none -device virtio-blk-device,drive=r \
+              -display none -serial file:/tmp/gate-$NOME.log || true
+            echo "  shell ativa: $(grep -ac 'DolDocShell active' /tmp/gate-$NOME.log || echo 0)"
+            grep -aE 'GOP FrameBufferBase|ALL 34 HOLYC|DolDocShell active' /tmp/gate-$NOME.log | tail -3 || true
+          done
+
+      - name: Veredito e comparação
+        run: |
+          {
+            echo ""
+            echo "## Resultado"
+            echo ""
+            echo "| modo | tempo | shell | 34 módulos |"
+            echo "|---|---|---|---|"
+            for m in kvm tcg; do
+              [ -f /tmp/gate-$m.log ] || continue
+              tempo=$(grep -ao 'TEMPO_'"$m"'=[0-9.]*' /tmp/gate-$m.log 2>/dev/null | tail -1 | cut -d= -f2)
+              sh=$(grep -ac 'DolDocShell active' /tmp/gate-$m.log 2>/dev/null || echo 0)
+              mod=$(grep -ac 'ALL 34 HOLYC' /tmp/gate-$m.log 2>/dev/null || echo 0)
+              echo "| $m | ${tempo:-?} s | $sh | $mod |"
+            done
+            echo ""
+            echo '```'
+            grep -aE 'SELFTEST|PARITY|RENDER|CLIP|NEONMEM' /tmp/gate-kvm.log /tmp/gate-tcg.log 2>/dev/null | tail -10 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neos-arm64-kvm-${{ github.sha }}
+          path: |
+            build/BOOTAA64.EFI
+            build/disk.img
+            /tmp/gate-kvm.log
+            /tmp/gate-tcg.log
+            /tmp/build.log
+          if-no-files-found: warn
+          retention-days: 14
