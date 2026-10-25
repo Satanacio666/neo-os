@@ -826,8 +826,8 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   now backs every `#define`. **Invariant:** a macro body is a constant expression, and `[MACRO]` must size the
   global array accordingly. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS 181`,
   `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
-- **D38 — P7.3 deviations from the runbook (DECIDED, disclosed).** Three deliberate departures from the
-  §P7.3 spec, all behaviour-preserving, plus one documentation omission that was corrected:
+- **D38 — P7.3 deviations from the runbook (DECIDED, disclosed).** Four departures from the §P7.3 spec (all
+  behaviour-preserving), plus one documentation omission that was corrected:
   1. **Back-face cull is ported but gated off.** `RasterSceneAddTriangle` has `if (g_rs_cull != 0 && area < 0)
      return;` with `g_rs_cull = 0` and no writer — i.e. the cull exists but is dormant. Reason: the **immediate
      path does not cull** (it swaps winding on `area < 0` and renders), and §P7.3 also requires the immediate
@@ -842,6 +842,12 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   3. **The tile self-test body lives in `RasterTile.HC` (`RasterSelfTestTile`), not `SelfTest.HC`.**
      `SelfTest.HC` is Stage 1 and cannot see the Stage-5 scene types (`CRasterVertex`); it keeps a thin
      `SelfTestTile()` wrapper. Forced by module ordering, not a choice.
+  4. **The scratchpads are 1D (`g_tile_color[4 * 4096]`), not the runbook's `[4][64*64]`.** This is a
+     **workaround, not a root fix**: passing a 2D global's first index (`g_tile_color[0]`) to a function was
+     observed to yield `0` (an element-value load, not a row pointer), which produced a null-pointer write.
+     A 1D array with an explicit `&g_tile_color[0]` is unambiguous and correct. The underlying 2D-global
+     partial-index semantics were **not** root-fixed (unlike D37) — flagged here as a known compiler limitation
+     to revisit if it bites elsewhere.
   - **Omission (corrected):** `docs/01`'s port table was not updated for the P7.2 clipper or the P7.3 binning/
     resolve (still marked `PORT`); both are now `✅ DONE`. Invariant restated: a phase is not complete until its
     `docs/01` port rows and `docs/00`/`docs/02` status are reconciled.
