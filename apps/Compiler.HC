@@ -1937,6 +1937,26 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                 cur_is_float = (loc_idx >= 0) ? g_hc_local_is_float[loc_idx] : HcGlobalIsFloat(ident_name);
             } else {
                 cur_mode = 0;
+                // D39 ROOT FIX: indexing a multi-dimensional array with FEWER subscripts
+                // than it has dimensions must yield an ADDRESS (the row/sub-array base),
+                // not a value — standard C array decay. Previously `g_arr[i]` on a 2D
+                // global always loaded element [i][0] as a value, so passing `g_arr[0]`
+                // to a function produced 0 (a null-pointer write). Infer the rank from
+                // the registered per-dimension strides (stride[0] is always set; a
+                // non-zero stride[k>0] means dimension k exists).
+                if (arr_sym) {
+                    I64 nd = 1;
+                    if (loc_idx >= 0) {
+                        if (HcLocalStride(loc_idx, 1) > 0) nd = 2;
+                        if (HcLocalStride(loc_idx, 2) > 0) nd = 3;
+                        if (HcLocalStride(loc_idx, 3) > 0) nd = 4;
+                    } else {
+                        if (HcGlobalStride(ident_name, 1) > 0) nd = 2;
+                        if (HcGlobalStride(ident_name, 2) > 0) nd = 3;
+                        if (HcGlobalStride(ident_name, 3) > 0) nd = 4;
+                    }
+                    if (sub_k < nd) cur_mode = 2;
+                }
             }
         }
     }

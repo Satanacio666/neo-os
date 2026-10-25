@@ -826,8 +826,9 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   now backs every `#define`. **Invariant:** a macro body is a constant expression, and `[MACRO]` must size the
   global array accordingly. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS 181`,
   `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
-- **D38 — P7.3 deviations from the runbook (DECIDED, disclosed).** Four departures from the §P7.3 spec (all
-  behaviour-preserving), plus one documentation omission that was corrected:
+- **D38 — P7.3 deviations from the runbook (CLOSED by D39 — kept as the historical record).** Four departures
+  from the §P7.3 spec, plus one documentation omission. Items 1, 2 and 4 were subsequently resolved at the
+  root; item 3 is forced by the stage model and remains. See **D39**:
   1. **Back-face cull is ported but gated off.** `RasterSceneAddTriangle` has `if (g_rs_cull != 0 && area < 0)
      return;` with `g_rs_cull = 0` and no writer — i.e. the cull exists but is dormant. Reason: the **immediate
      path does not cull** (it swaps winding on `area < 0` and renders), and §P7.3 also requires the immediate
@@ -851,3 +852,22 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   - **Omission (corrected):** `docs/01`'s port table was not updated for the P7.2 clipper or the P7.3 binning/
     resolve (still marked `PORT`); both are now `✅ DONE`. Invariant restated: a phase is not complete until its
     `docs/01` port rows and `docs/00`/`docs/02` status are reconciled.
+- **D39 — D38's deviations closed at the root (P7.3).** Three of the four D38 departures were eliminated rather
+  than documented away:
+  1. **2D-global partial index (the real compiler bug).** `HcResolveLValue` always set `cur_mode = 0` after a
+     subscript, so `g_arr[i]` on a 2D global loaded element `[i][0]` as a **value** instead of decaying to the
+     row **address** — passing `g_arr[0]` to a function produced `0` (a null write). Root-fixed: after a
+     subscript, if fewer subscripts than the array's rank have been applied, the result is an address
+     (`cur_mode = 2`); the rank is inferred from the registered per-dimension strides
+     (`HcGlobalStride`/`HcLocalStride`). The tile scratchpads were reverted from the 1D workaround to the
+     runbook's `U32 g_tile_color[4][4096]` / `U16 g_tile_depth[4][4096]`. **Invariant:** a partial index of a
+     multi-dimensional array yields an address (C array decay), for globals and locals alike.
+  2. **Cull is now a real, tested feature.** `RasterSetCull(I64)` (GL semantics, default OFF so the tiled path
+     stays pixel-identical to the immediate path). `SelfTestTile` check (4) proves a back-facing triangle is
+     rejected and a front-facing one renders when culling is on.
+  3. **Scene types are `F64`** (`CRasterVertex`/`CRasterTri` `F64 x/y`), matching the §P7.3 spec; the integer
+     core receives truncated coords. Verified bit-identical (`TILE: PASS`, `RENDER: PASS (0xD28836F)`).
+  Item 3 of D38 (tile-test body in `RasterTile.HC`) remains, forced by the stage model — `SelfTest.HC` is
+  Stage 1 and cannot see the Stage-5 scene types; the runbook's `SelfTestTile()` entry point is preserved.
+  Gate: `GOLDEN BOOT: PASS`, `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `RASTER: PASS`, `SELFTEST 101/101`,
+  `PARITY 70/70 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`.

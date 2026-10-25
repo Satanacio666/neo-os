@@ -1105,7 +1105,10 @@ upgrade**, gated by the existing harness, and must not increase the `.HC`→C ce
 > `SelfTestTile()` → `TILE: PASS` (tiled vs immediate pixel/Z-identical, 4-tile shared-edge `gaps==0`, no
 > scratchpad overrun); `golden-boot.sh` gained the `TILE` assertion. **Root fix (D37):** the `#define` parser
 > silently zeroed a parenthesized macro body (`(48 * 32)`), under-allocating `g_rs_bins` into `g_tile_color`;
-> replaced with a real constant-expression parser. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
+> replaced with a real constant-expression parser. **Root fix (D39):** a partial index of a 2D global
+> (`g_arr[0]`) yielded a value (0), not the row address — fixed in `HcResolveLValue` (array decay); the
+> scratchpads are the runbook's 2D `[4][4096]`; the back-face cull is now real + tested (`RasterSetCull`,
+> default OFF) and the scene types are `F64` per spec. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
 > `RASTER: PASS`, `SELFTEST 101/101`, `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
 > **Next: P7.4 (SMP tile dispatch + parallel vertex transform).**
 >

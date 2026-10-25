@@ -298,7 +298,8 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **CURRENT STATUS (2026-10):** **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅ + P7.2 ✅ + P7.3 ✅ DONE** (HolyGL GL 1.3
 > surface — `GL: PASS`; near-plane clipper — `CLIP: PASS`; NEON memory kernels fill/blit/blend — `NEONMEM: PASS`;
 > L1 tile binning + per-core scratchpad + `stnp` resolve — `TILE: PASS`; D34 cross-stage F64 finding; D36
-> `sub`/`subs` blend-hang root fix; D37 parenthesized-macro-dimension root fix); **next = P7.4** (runbook in
+> `sub`/`subs` blend-hang root fix; D37 parenthesized-macro-dimension root fix; D39 2D-global partial-index
+> root fix + cull/F64 alignment); **next = P7.4** (runbook in
 > `02-TASKLIST.md` §P7.4). Frozen gate: `SELFTEST 101/101`, `PARITY 70/70 (0 diff)`, `CENSUS 181`,
 > `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `GOLDEN BOOT: PASS`.
 

@@ -58,12 +58,12 @@ U32 g_rj_color = 0;
 #define RASTER_MAX_TRIS_PER_TILE  256
 #define RASTER_MAX_TILES          (48 * 32)
 
-// Screen-space integers (the ONE kernel is integer-exact; F64 members would cross
-// the struct boundary as D0 and are unnecessary here).
-class CRasterVertex { I64 x; I64 y; I64 z; };
+// Screen-space vertices (F64 x/y per the §P7.3 spec; z is the integer depth). The
+// core is integer-exact, so the F64 coords are truncated when handed to it.
+class CRasterVertex { F64 x; F64 y; I64 z; };
 class CRasterTri {
-  I64 x[3];
-  I64 y[3];
+  F64 x[3];
+  F64 y[3];
   I64 z[3];
   U32 color;
   I64 min_tx; I64 max_tx; I64 min_ty; I64 max_ty;
@@ -81,11 +81,9 @@ I64 g_rs_pitch = 0;
 U32 g_rs_clear = 0;
 I64 g_rs_vx = 0; I64 g_rs_vy = 0; I64 g_rs_vw = 0; I64 g_rs_vh = 0;
 I64 g_rs_cull = 0;
-// 1D (not [4][N]): the self-hosted compiler mis-evaluates a partial index of a 2D
-// global array (`g_arr[0]` for the first row yields NULL), so keep them flat and
-// index per-core at `core*4096 + ...`.
-U32 g_tile_color[4 * 4096];
-U16 g_tile_depth[4 * 4096];
+// Per-core 64x64 scratchpads (core 0 used in P7.3; P7.4 fans out to cores 1-3).
+U32 g_tile_color[4][4096];
+U16 g_tile_depth[4][4096];
 
 U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
   if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
@@ -826,6 +824,10 @@ I64 TileResolveRow(U32 *dst, U32 *src, I64 n) {
   }
 }
 
+// Back-face culling for the tiled scene API (GL semantics: default OFF, so the
+// tiled path stays pixel-identical to the immediate path unless the caller opts in).
+U0 RasterSetCull(I64 en) { g_rs_cull = en ? 1 : 0; }
+
 U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   RasterInit();
   g_rs_target = GfxDeviceTarget();
@@ -848,9 +850,9 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
 U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
   if (!v) return;
   if (g_rs_tri_count >= RASTER_MAX_SCENE_TRIS) return;
-  I64 ax = v[0].x; I64 ay = v[0].y;
-  I64 bx = v[1].x; I64 by = v[1].y;
-  I64 cx = v[2].x; I64 cy = v[2].y;
+  I64 ax = (I64)v[0].x; I64 ay = (I64)v[0].y;
+  I64 bx = (I64)v[1].x; I64 by = (I64)v[1].y;
+  I64 cx = (I64)v[2].x; I64 cy = (I64)v[2].y;
   I64 area = PinedaEdge(ax, ay, bx, by, cx, cy);
   if (area == 0) return;
   if (g_rs_cull != 0 && area < 0) return;
@@ -866,10 +868,10 @@ U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
   if (max_x > vx1) max_x = vx1;
   if (max_y > vy1) max_y = vy1;
   if (min_x >= max_x || min_y >= max_y) return;
-  I64 min_tx = (min_x - g_rs_vx) / TILE_W;
-  I64 max_tx = (max_x - 1 - g_rs_vx) / TILE_W;
-  I64 min_ty = (min_y - g_rs_vy) / TILE_H;
-  I64 max_ty = (max_y - 1 - g_rs_vy) / TILE_H;
+  I64 min_tx = (min_x - g_rs_vx) / g_rs_tile_size;
+  I64 max_tx = (max_x - 1 - g_rs_vx) / g_rs_tile_size;
+  I64 min_ty = (min_y - g_rs_vy) / g_rs_tile_size;
+  I64 max_ty = (max_y - 1 - g_rs_vy) / g_rs_tile_size;
   if (min_tx < 0) min_tx = 0;
   if (min_ty < 0) min_ty = 0;
   if (max_tx >= g_rs_cols) max_tx = g_rs_cols - 1;
@@ -904,27 +906,27 @@ U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
 U0 RasterRenderTile(I64 t) {
   I64 tx = t % g_rs_cols;
   I64 ty = t / g_rs_cols;
-  I64 ox = g_rs_vx + tx * TILE_W;
-  I64 oy = g_rs_vy + ty * TILE_H;
-  RenderNeonFill(&g_tile_color[0], 4096, g_rs_clear);
-  memset(&g_tile_depth[0], 0xFF, 4096 * 2);
+  I64 ox = g_rs_vx + tx * g_rs_tile_size;
+  I64 oy = g_rs_vy + ty * g_rs_tile_size;
+  RenderNeonFill(g_tile_color[0], 4096, g_rs_clear);
+  memset(g_tile_depth[0], 0xFF, 4096 * 2);
   U32 *sv_fb = g_raster_fb;
   I64 sv_pitch = g_raster_pitch;
   I64 sv_cw = g_raster_cw;
   U16 *sv_zb = g_zbuf;
   I64 sv_zw = g_zbuf_w;
   I64 sv_zh = g_zbuf_h;
-  g_raster_fb = &g_tile_color[0]; g_raster_pitch = 64; g_raster_cw = 64;
-  g_zbuf = &g_tile_depth[0]; g_zbuf_w = 64; g_zbuf_h = 64;
+  g_raster_fb = g_tile_color[0]; g_raster_pitch = 64; g_raster_cw = 64;
+  g_zbuf = g_tile_depth[0]; g_zbuf_w = 64; g_zbuf_h = 64;
   CRasterBin *b = &g_rs_bins[t];
   I64 i = 0;
   while (i < b->count) {
     I64 ti = (I64)b->idx[i];
     CRasterTri *tr = &g_rs_tris[ti];
     RasterSetZ(tr->z[0], tr->z[1], tr->z[2]);
-    RasterTriangleZCore(tr->x[0] - ox, tr->y[0] - oy,
-                        tr->x[1] - ox, tr->y[1] - oy,
-                        tr->x[2] - ox, tr->y[2] - oy, tr->color);
+    RasterTriangleZCore((I64)tr->x[0] - ox, (I64)tr->y[0] - oy,
+                        (I64)tr->x[1] - ox, (I64)tr->y[1] - oy,
+                        (I64)tr->x[2] - ox, (I64)tr->y[2] - oy, tr->color);
     i = i + 1;
   }
   g_raster_fb = sv_fb; g_raster_pitch = sv_pitch; g_raster_cw = sv_cw;
@@ -937,8 +939,8 @@ U0 RasterTileResolve(I64 t) {
   if (!g_rs_target) return;
   I64 tx = t % g_rs_cols;
   I64 ty = t / g_rs_cols;
-  I64 ox = g_rs_vx + tx * TILE_W;
-  I64 oy = g_rs_vy + ty * TILE_H;
+  I64 ox = g_rs_vx + tx * g_rs_tile_size;
+  I64 oy = g_rs_vy + ty * g_rs_tile_size;
   I64 tw = TILE_W;
   I64 th = TILE_H;
   if (ox + tw > g_rs_vx + g_rs_vw) tw = g_rs_vx + g_rs_vw - ox;
@@ -946,10 +948,10 @@ U0 RasterTileResolve(I64 t) {
   if (tw <= 0 || th <= 0) return;
   I64 r = 0;
   while (r < th) {
-    U32 *src = &g_tile_color[r * TILE_W];
+    U32 *src = &g_tile_color[0][r * TILE_W];
     U32 *dst = &g_rs_target[(oy + r) * g_rs_pitch + ox];
     TileResolveRow(dst, src, tw);
-    U16 *zsrc = &g_tile_depth[r * TILE_W];
+    U16 *zsrc = &g_tile_depth[0][r * TILE_W];
     I64 c = 0;
     while (c < tw) {
       g_zbuf[(oy + r) * g_zbuf_w + ox + c] = zsrc[c];
@@ -1005,19 +1007,15 @@ U0 RasterSelfTestTile() {
   }
   gfx_clear(BG);
   RasterClearZ();
-  g_tile_tmpv[0].x = 30;  g_tile_tmpv[0].y = 30;  g_tile_tmpv[0].z = 100;
-  g_tile_tmpv[1].x = 200; g_tile_tmpv[1].y = 60;  g_tile_tmpv[1].z = 200;
-  g_tile_tmpv[2].x = 90;  g_tile_tmpv[2].y = 180; g_tile_tmpv[2].z = 300;
+  g_tile_tmpv[0].x = 30.0;  g_tile_tmpv[0].y = 30.0;  g_tile_tmpv[0].z = 100;
+  g_tile_tmpv[1].x = 200.0; g_tile_tmpv[1].y = 60.0;  g_tile_tmpv[1].z = 200;
+  g_tile_tmpv[2].x = 90.0;  g_tile_tmpv[2].y = 180.0; g_tile_tmpv[2].z = 300;
   RasterSceneBegin(0, 0, R, R, BG);
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterSceneEnd();
   I64 diff = 0;
   I64 immed_col = 0;
   I64 tiled_col = 0;
-  I64 fx = -1;
-  I64 fy = -1;
-  U32 fbv = 0;
-  U32 svv = 0;
   y = 0;
   while (y < R) {
     x = 0;
@@ -1026,7 +1024,7 @@ U0 RasterSelfTestTile() {
       U32 tb = g_tile_snap_fb[y * R + x];
       if (ta == COL) tiled_col = tiled_col + 1;
       if (tb == COL) immed_col = immed_col + 1;
-      if (ta != tb) { diff = diff + 1; if (fx < 0) { fx = x; fy = y; fbv = ta; svv = tb; } }
+      if (ta != tb) diff = diff + 1;
       if (g_zbuf[y * zw + x] != g_tile_snap_zb[y * R + x]) diff = diff + 1;
       x = x + 1;
     }
@@ -1039,13 +1037,13 @@ U0 RasterSelfTestTile() {
   gfx_clear(BG);
   RasterClearZ();
   RasterSceneBegin(0, 0, R, R, BG);
-  g_tile_tmpv[0].x = 60;  g_tile_tmpv[0].y = 60;  g_tile_tmpv[0].z = 1;
-  g_tile_tmpv[1].x = 120; g_tile_tmpv[1].y = 60;  g_tile_tmpv[1].z = 1;
-  g_tile_tmpv[2].x = 120; g_tile_tmpv[2].y = 120; g_tile_tmpv[2].z = 1;
+  g_tile_tmpv[0].x = 60.0;  g_tile_tmpv[0].y = 60.0;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 120.0; g_tile_tmpv[1].y = 60.0;  g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 120.0; g_tile_tmpv[2].y = 120.0; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
-  g_tile_tmpv[0].x = 60;  g_tile_tmpv[0].y = 60;  g_tile_tmpv[0].z = 1;
-  g_tile_tmpv[1].x = 120; g_tile_tmpv[1].y = 120; g_tile_tmpv[1].z = 1;
-  g_tile_tmpv[2].x = 60;  g_tile_tmpv[2].y = 120; g_tile_tmpv[2].z = 1;
+  g_tile_tmpv[0].x = 60.0;  g_tile_tmpv[0].y = 60.0;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 120.0; g_tile_tmpv[1].y = 120.0; g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 60.0;  g_tile_tmpv[2].y = 120.0; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterSceneEnd();
   I64 gaps = 0;
@@ -1061,20 +1059,56 @@ U0 RasterSelfTestTile() {
   if (gaps != 0) { ok = 0; doldoc_printf("[TILE] shared-edge gaps=%lld\n", gaps); }
 
   // (3) no write past the scratchpad: guard words after g_tile_color[0]/g_tile_depth[0].
-  g_tile_color[4096] = 0xDEADBEEF; g_tile_color[4097] = 0xDEADBEEF;
-  g_tile_depth[4096] = 0x1234;     g_tile_depth[4097] = 0x5678;
+  g_tile_color[1][0] = 0xDEADBEEF; g_tile_color[1][1] = 0xDEADBEEF;
+  g_tile_depth[1][0] = 0x1234;     g_tile_depth[1][1] = 0x5678;
   RasterSceneBegin(0, 0, R, R, BG);
-  g_tile_tmpv[0].x = 0;   g_tile_tmpv[0].y = 0;   g_tile_tmpv[0].z = 1;
-  g_tile_tmpv[1].x = 300; g_tile_tmpv[1].y = 0;   g_tile_tmpv[1].z = 1;
-  g_tile_tmpv[2].x = 0;   g_tile_tmpv[2].y = 300; g_tile_tmpv[2].z = 1;
+  g_tile_tmpv[0].x = 0.0;   g_tile_tmpv[0].y = 0.0;   g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 300.0; g_tile_tmpv[1].y = 0.0;   g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 0.0;   g_tile_tmpv[2].y = 300.0; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
-  g_tile_tmpv[0].x = 5000; g_tile_tmpv[0].y = 5000; g_tile_tmpv[0].z = 1;
-  g_tile_tmpv[1].x = 5100; g_tile_tmpv[1].y = 5000; g_tile_tmpv[1].z = 1;
-  g_tile_tmpv[2].x = 5000; g_tile_tmpv[2].y = 5100; g_tile_tmpv[2].z = 1;
+  g_tile_tmpv[0].x = 5000.0; g_tile_tmpv[0].y = 5000.0; g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 5100.0; g_tile_tmpv[1].y = 5000.0; g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 5000.0; g_tile_tmpv[2].y = 5100.0; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterRenderTile(0);
-  if (g_tile_color[4096] != 0xDEADBEEF || g_tile_color[4097] != 0xDEADBEEF) { ok = 0; doldoc_print("[TILE] color scratchpad overrun\n"); }
-  if (g_tile_depth[4096] != 0x1234 || g_tile_depth[4097] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
+  if (g_tile_color[1][0] != 0xDEADBEEF || g_tile_color[1][1] != 0xDEADBEEF) { ok = 0; doldoc_print("[TILE] color scratchpad overrun\n"); }
+  if (g_tile_depth[1][0] != 0x1234 || g_tile_depth[1][1] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
+
+  // (4) back-face cull (opt-in): a back-facing triangle is rejected, a front-facing
+  //     one still renders. Default is OFF, so checks (1)-(3) above are unaffected.
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSetCull(1);
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 30.0;  g_tile_tmpv[0].y = 30.0;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 200.0; g_tile_tmpv[1].y = 30.0;  g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 30.0;  g_tile_tmpv[2].y = 200.0; g_tile_tmpv[2].z = 1;
+  RasterSceneAddTriangle(g_tile_tmpv, COL);
+  RasterSceneEnd();
+  I64 cull_back = 0;
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) { if (fb[y * pit + x] == COL) cull_back = cull_back + 1; x = x + 1; }
+    y = y + 1;
+  }
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 30.0;  g_tile_tmpv[0].y = 30.0;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 30.0;  g_tile_tmpv[1].y = 200.0; g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 200.0; g_tile_tmpv[2].y = 30.0;  g_tile_tmpv[2].z = 1;
+  RasterSceneAddTriangle(g_tile_tmpv, COL);
+  RasterSceneEnd();
+  I64 cull_front = 0;
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) { if (fb[y * pit + x] == COL) cull_front = cull_front + 1; x = x + 1; }
+    y = y + 1;
+  }
+  RasterSetCull(0);
+  if (cull_back != 0 || cull_front == 0) { ok = 0; doldoc_printf("[TILE] cull back=%lld front=%lld\n", cull_back, cull_front); }
 
   gfx_clear(0xFF000000);
   RasterClearZ();
