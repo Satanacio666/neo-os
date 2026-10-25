@@ -52,6 +52,12 @@ U32 smp_get_core_count() {
   return SmpGetCoreCount();
 }
 
+// P7.4: cross-module-safe core-online query (callers must not touch g_smp_hc).
+I64 SmpCoreOnline(U32 core_id) {
+  if (core_id >= SMP_MAX_CORES) return 0;
+  return g_smp_hc.core_online[core_id];
+}
+
 // One generic per-core worker loop (no copy-paste). Each core owns its own job
 // slot (SmpGetJob) and idles in WFE until the BSP posts a job.
 U0 SmpWorkerLoop(U32 core_id) {
@@ -197,6 +203,22 @@ I64 SmpDispatch(U32 core_id, U64 fn, U64 arg) {
   g_smp_hc.core_heartbeat[0] = g_smp_hc.core_heartbeat[0] + 1;
 
   if (!j->completed) return -1; // timed out; the job did NOT run
+  return 0;
+}
+
+// P7.4: post a job without waiting for completion (the caller joins via SmpWaitJob
+// or its own completion flag). Reuses the same CSmpJob slot; no new allocation.
+I64 SmpDispatchAsync(U32 core_id, U64 fn, U64 arg) {
+  if (core_id == 0 || core_id >= SMP_MAX_CORES || fn == 0) return -1;
+  if (!g_smp_hc.core_online[core_id]) return -1;
+  CSmpJob *j = SmpGetJob(core_id);
+  j->completed = 0;
+  j->fn = fn;
+  j->arg = arg;
+  __dmb_ish();
+  j->pending = 1;
+  __dmb_ish();
+  __sev();
   return 0;
 }
 

@@ -1130,6 +1130,14 @@ U0 SelfTestTile() {
     RasterSelfTestTile();
 }
 
+// P7.4: the parallel vertex transform (core 1 + BSP) must equal the scalar reference
+// bit-for-bit. Body lives in Math3D.HC (Stage 5) so it can see CVec3/CVec4/CMat4.
+U0 SelfTestMath3DParallel() {
+    I64 bad = Math3DSelfTestParallel();
+    if (bad == 0) doldoc_print("MATH3DPAR: PASS\n");
+    else doldoc_printf("MATH3DPAR: FAIL (%lld)\n", bad);
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1306,6 +1314,7 @@ U0 SelfTestRun() {
     SelfTestClip();
     SelfTestNeonMem();
     SelfTestTile();
+    SelfTestMath3DParallel();
     FontsSelfTest();
     SelfTest3D();
     SelfTestShading();

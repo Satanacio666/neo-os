@@ -1461,7 +1461,15 @@ non-temporal resolve. The immediate `RasterTriangleZ` path stays byte-identical.
   Print `TILE: PASS`. Call from `SelfTestRun`. Gates: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
   `RASTER: PASS`, `CENSUS: PASS`.
 
-### P7.4 — SMP tile dispatch + SMP parallel vertex transform; make `GFX_MODE_SMP_TILED` real
+### P7.4 — SMP tile dispatch + SMP parallel vertex transform; make `GFX_MODE_SMP_TILED` real — 🟡 **PARTIAL**
+
+**Landed (verified, `GOLDEN BOOT: PASS`):** `SmpDispatchAsync` (non-blocking mailbox post, `apps/Smp.HC`),
+`SmpCoreOnline` (cross-module-safe core query), and `Math3DTransformParallel` (`apps/Math3D.HC` — splits the
+batch core-1 + BSP) with `SelfTestMath3DParallel` → `MATH3DPAR: PASS` (parallel == scalar, bit-for-bit).
+**Remaining — see doc 04 D40:** the SMP tile dispatch is blocked on a **per-core raster-state refactor** (the
+rasterizer's ~24 state globals, ~198 refs, would race across concurrent tile workers), then
+`RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the
+`MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
 
 **Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
 transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.

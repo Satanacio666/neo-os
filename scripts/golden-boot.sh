@@ -215,6 +215,13 @@ else
         echo "  [FAIL] tiled scene: ${tline:-<none>} (want TILE: PASS)"
         fail=1
     fi
+    m3line="$(printf '%s\n' "$out" | grep -a 'MATH3DPAR: ' | tail -1)"
+    if printf '%s' "$m3line" | grep -aq 'PASS'; then
+        echo "  [PASS] $m3line (parallel vertex transform == scalar reference)"
+    else
+        echo "  [FAIL] parallel vertex transform: ${m3line:-<none>} (want MATH3DPAR: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

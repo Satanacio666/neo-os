@@ -374,6 +374,75 @@ U0 Mat4MulVec4(CVec4 *out, CMat4 *m, CVec4 *v) {
   out->w = tw;
 }
 
+// P7.4: parallel vertex transform across cores. Deterministic: the range is split
+// into disjoint index slices (second half on core 1 via the SMP mailbox, first half
+// on the BSP), each slice uses the identical Mat4MulVec4 math. Falls back to a
+// scalar loop when there is only one online core or the batch is tiny.
+class CTransformJob { CVec3 *in; CVec4 *out; CMat4 *mvp; I64 start; I64 end; };
+CTransformJob g_tf_job;
+
+U0 Math3DTransformRange(CVec3 *in, CVec4 *out, CMat4 *mvp, I64 start, I64 end) {
+  I64 i = start;
+  while (i < end) {
+    CVec4 tmp;
+    tmp.x = in[i].x; tmp.y = in[i].y; tmp.z = in[i].z; tmp.w = 1.0;
+    Mat4MulVec4(&out[i], mvp, &tmp);
+    i = i + 1;
+  }
+}
+
+U0 Math3DTransformWorker(U64 arg) {
+  Math3DTransformRange(g_tf_job.in, g_tf_job.out, g_tf_job.mvp, g_tf_job.start, g_tf_job.end);
+}
+
+U0 Math3DTransformParallel(CVec3 *in, CVec4 *out, I64 count, CMat4 *mvp) {
+  if (count < 8 || SmpGetCoreCount() <= 1 || !SmpCoreOnline(1)) {
+    Math3DTransformRange(in, out, mvp, 0, count);
+    return;
+  }
+  I64 half = count / 2;
+  g_tf_job.in = in; g_tf_job.out = out; g_tf_job.mvp = mvp;
+  g_tf_job.start = half; g_tf_job.end = count;
+  __dmb_ish();
+  SmpDispatchAsync(1, (U64)&Math3DTransformWorker, 0);
+  Math3DTransformRange(in, out, mvp, 0, half);
+  I64 guard = 0;
+  while (!SmpIsJobDone(1) && guard < 200000000) guard = guard + 1;
+}
+
+// P7.4 self-test (called from apps/SelfTest.HC): the parallel path must equal the
+// scalar reference bit-for-bit. Returns the number of mismatching components.
+CVec3 g_tf_test_in[16];
+CVec4 g_tf_test_out[16];
+CVec4 g_tf_test_ref[16];
+
+I64 Math3DSelfTestParallel() {
+  CMat4 mvp;
+  Mat4Identity(&mvp);
+  Mat4Translate(&mvp, 1.5, -2.5, 3.5);
+  I64 i = 0;
+  while (i < 16) {
+    g_tf_test_in[i].x = (F64)(i * 3) - 7.0;
+    g_tf_test_in[i].y = (F64)(i * 2) + 1.0;
+    g_tf_test_in[i].z = (F64)i * 0.5;
+    CVec4 t;
+    t.x = g_tf_test_in[i].x; t.y = g_tf_test_in[i].y; t.z = g_tf_test_in[i].z; t.w = 1.0;
+    Mat4MulVec4(&g_tf_test_ref[i], &mvp, &t);
+    i = i + 1;
+  }
+  Math3DTransformParallel(g_tf_test_in, g_tf_test_out, 16, &mvp);
+  I64 bad = 0;
+  i = 0;
+  while (i < 16) {
+    if (g_tf_test_out[i].x != g_tf_test_ref[i].x) bad = bad + 1;
+    if (g_tf_test_out[i].y != g_tf_test_ref[i].y) bad = bad + 1;
+    if (g_tf_test_out[i].z != g_tf_test_ref[i].z) bad = bad + 1;
+    if (g_tf_test_out[i].w != g_tf_test_ref[i].w) bad = bad + 1;
+    i = i + 1;
+  }
+  return bad;
+}
+
 U0 Mat4Perspective(CMat4 *out, F64 fov_y_deg, F64 aspect, F64 z_near, F64 z_far) {
   Mat4Identity(out);
   if (aspect > -0.0001 && aspect < 0.0001) aspect = 1.333333;

@@ -871,3 +871,16 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   Stage 1 and cannot see the Stage-5 scene types; the runbook's `SelfTestTile()` entry point is preserved.
   Gate: `GOLDEN BOOT: PASS`, `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `RASTER: PASS`, `SELFTEST 101/101`,
   `PARITY 70/70 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`.
+- **D40 — P7.4 SMP tile dispatch needs per-core raster state (OPEN, planned).** The rasterizer keeps its
+  per-triangle state in ~24 shared globals (`g_rj_*`, `g_raster_fb/pitch/cw/min_x/max_x`, `g_zbuf*`, `g_rspan`,
+  `g_rj_shade_mode`) referenced ~198 times. Running `RasterTriangleZCore` on two cores at once (each rendering
+  its own tile range into its own scratchpad, as §P7.4 specifies) would race on that state → a non-deterministic
+  result, which would fail the required 1-vs-4-core byte-compare. So the state must become **per-core**
+  (`CRasterCtx g_rctx[4]` passed explicitly, or per-core arrays indexed by a `core` parameter) **before** the
+  parallel tile path can be turned on. **Done so far (verified; `GOLDEN BOOT: PASS`):** `SmpDispatchAsync`
+  (`apps/Smp.HC` — non-blocking mailbox post), `SmpCoreOnline` (cross-module-safe core query), and
+  `Math3DTransformParallel` (`apps/Math3D.HC` — range split core-1 + BSP) with `SelfTestMath3DParallel` →
+  `MATH3DPAR: PASS` (parallel == scalar, bit-for-bit). **Remaining:** the per-core-state refactor,
+  `RasterSceneEndSmp`/`RasterTileWorker`, the `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and
+  the `MeshRender` batch-transform wiring (the latter is ambiguous — `HolyGLVertex3f` applies the full MVP, so a
+  pre-transformed submit path is needed; deferred rather than guessed).
