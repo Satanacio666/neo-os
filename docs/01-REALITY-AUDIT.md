@@ -444,10 +444,10 @@ the migration **regressed on everything around it**. This is the single largest 
 | `kernel/math/holygl.c:180` `glColor4f` | per-vertex **alpha** | absent (only `glColor3ub`) | **PORT** |
 | `kernel/math/holygl.c:188` `glColor3f`, `:275` `glVertex2f` | GL entry points | absent (grep = 0) | **PORT** |
 | `kernel/math/holygl.c:381` `glFlush` | GL flush | absent | **PORT** |
-| `kernel/math/math3d.c:788` `clip_triangle_near_plane` | Sutherland–Hodgman near-plane clipper (call at `:1121`, `near_w = 0.2f`) | `apps/HolyGL.HC` just **rejects** `w <= 0.05` → large-triangle popping | **PORT** |
-| `kernel/math/raster_tile.c:46-208`, `raster_tile.h:9-21` | **tile binning** + per-core L1 `tile_scratchpad_t` | `apps/RasterTile.HC:22-23` declares `TILE_W/H = 64` but **never bins** (no scratchpad, unused constants) | **PORT** |
+| `kernel/math/math3d.c:788` `clip_triangle_near_plane` | Sutherland–Hodgman near-plane clipper (call at `:1121`, `near_w = 0.2f`) | `apps/HolyGL.HC` `HolyGLClipNear`/`HolyGLSubmitClipped` (clip `d = z+w-0.001 >= 0`); the `w<=0.05` reject is now only a `w<=0` safety net | ✅ **DONE (P7.2)** |
+| `kernel/math/raster_tile.c:46-208`, `raster_tile.h:9-21` | **tile binning** + per-core L1 `tile_scratchpad_t` | `apps/RasterTile.HC` `RasterSceneBegin`/`AddTriangle`/`End` (64×64 bins) + `RasterRenderTile` (core-0 scratchpad, local coords). Back-face cull is ported but **gated off** by default (`g_rs_cull`) so the tiled path stays pixel-identical to the immediate path — see doc 04 D38 | ✅ **DONE (P7.3)** |
 | `kernel/math/raster_tile.c:212` `raster_tile_triangle_neon` | per-tile NEON triangle fill | `apps/RasterTile.HC` (present, ahead) | **NONE** |
-| `kernel/math/raster_tile.c:411-445` `raster_tile_resolve_streaming` | `stnp q0..q3` **non-temporal** tile resolve direct to VRAM | `apps/Render.HC` writes spans straight to the FB | **PORT** |
+| `kernel/math/raster_tile.c:411-445` `raster_tile_resolve_streaming` | `stnp q0..q3` **non-temporal** tile resolve direct to VRAM | `apps/RasterTile.HC` `RasterTileResolve` + `TileResolveRow` (`scripts/tile_resolve.s`, 64 B/iter `stnp`) | ✅ **DONE (P7.3)** |
 | `kernel/math/raster_tile.c:447-560` | SMP tile slicing (`raster_tile_render_range`, `wfe`/`sev`/`dmb ish`) | absent; `GFX_MODE_SMP_TILED` is only a label | **PORT** |
 | `kernel/math/math3d.c:1189-1230` | SMP parallel vertex transform (`smp_dispatch`, split job, `dmb ish`) | absent | **PORT** |
 | `kernel/math/math3d.c:869` | 16.16 fixed-point scanline engine (alt engine) | not present (ours is integer-exact) | **REFERENCE** |

@@ -826,3 +826,22 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   now backs every `#define`. **Invariant:** a macro body is a constant expression, and `[MACRO]` must size the
   global array accordingly. Gate: `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `SELFTEST 101/101`, `CENSUS 181`,
   `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`, `GOLDEN BOOT: PASS`.
+- **D38 — P7.3 deviations from the runbook (DECIDED, disclosed).** Three deliberate departures from the
+  §P7.3 spec, all behaviour-preserving, plus one documentation omission that was corrected:
+  1. **Back-face cull is ported but gated off.** `RasterSceneAddTriangle` has `if (g_rs_cull != 0 && area < 0)
+     return;` with `g_rs_cull = 0` and no writer — i.e. the cull exists but is dormant. Reason: the **immediate
+     path does not cull** (it swaps winding on `area < 0` and renders), and §P7.3 also requires the immediate
+     path to stay byte-identical, so an *active* cull would make the tiled path reject triangles the immediate
+     path draws. `SelfTestTile`'s identity check therefore uses the same winding for both paths. Activating the
+     cull is a rendering-policy change (belongs with the GPU config plane / `GfxDevice` cull mode, P7.5); it is
+     **not** a stub — the gate is real, just default-off.
+  2. **Scene types are `I64`, not `F64`.** The runbook wrote `CRasterTri { F64 x[3]; F64 y[3]; I64 z[3]; }`;
+     the implementation uses `I64 x/y/z` (`CRasterVertex`/`CRasterTri`). Reason: `RasterTriangleZCore` is
+     integer-exact, so `F64` members would only add the D34 cross-struct F64 hazard with no benefit. Screen
+     coords are integers; the cast/rounding question never arises.
+  3. **The tile self-test body lives in `RasterTile.HC` (`RasterSelfTestTile`), not `SelfTest.HC`.**
+     `SelfTest.HC` is Stage 1 and cannot see the Stage-5 scene types (`CRasterVertex`); it keeps a thin
+     `SelfTestTile()` wrapper. Forced by module ordering, not a choice.
+  - **Omission (corrected):** `docs/01`'s port table was not updated for the P7.2 clipper or the P7.3 binning/
+    resolve (still marked `PORT`); both are now `✅ DONE`. Invariant restated: a phase is not complete until its
+    `docs/01` port rows and `docs/00`/`docs/02` status are reconciled.
