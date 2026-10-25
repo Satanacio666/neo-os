@@ -41,6 +41,11 @@ jobs:
           echo "nproc: $(nproc)" >> "$GITHUB_STEP_SUMMARY"
           free -m | head -2 >> "$GITHUB_STEP_SUMMARY"
           systemd-detect-virt >> "$GITHUB_STEP_SUMMARY"
+          echo "--- diagnóstico direto ---"
+          ls -l /dev/kvm 2>&1 || echo "/dev/kvm NAO EXISTE"
+          sudo modprobe kvm 2>&1 || true
+          ls -l /dev/kvm 2>&1 || echo "continua ausente apos modprobe"
+          grep -c -i kvm /proc/modules 2>/dev/null || echo "0 modulos kvm"
           if [ -e /dev/kvm ]; then
             echo "KVM: PRESENTE" >> "$GITHUB_STEP_SUMMARY"
             ls -l /dev/kvm >> "$GITHUB_STEP_SUMMARY"
@@ -63,25 +68,39 @@ jobs:
           make all -j"$(nproc)" 2>&1 | tee /tmp/build.log
           ls -la build/
 
-      - name: Gate com KVM (se houver) e comparação com TCG
+      - name: Gate — mede tempo ATÉ A SHELL (não o timeout)
         run: |
           BIOS=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
-          if [ "${{ steps.caps.outputs.kvm }}" = "sim" ]; then ACCEL="-accel kvm"; else ACCEL="-accel tcg,thread=multi"; fi
-          echo "usando: $ACCEL"
-          for MODO in "kvm:$ACCEL" "tcg:-accel tcg,thread=multi,tb-size=1024"; do
-            NOME="${MODO%%:*}"; FLAGS="${MODO#*:}"
-            [ "$NOME" = "kvm" ] && [ "${{ steps.caps.outputs.kvm }}" != "sim" ] && continue
-            echo "=== $NOME ==="
-            /usr/bin/time -f "TEMPO_$NOME=%e s" timeout 420 qemu-system-aarch64 \
-              -M virt,gic-version=2 $FLAGS -cpu cortex-a76 -smp "$(nproc)" -m 2048 \
-              -bios "$BIOS" -device ramfb -device virtio-gpu-device,xres=1024,yres=768 \
-              -device virtio-keyboard-device -device virtio-tablet-device \
-              -drive file=build/disk.img,format=raw,id=d,if=none -device virtio-blk-pci,drive=d \
-              -drive file=build/redsea.img,format=raw,id=r,if=none -device virtio-blk-device,drive=r \
-              -display none -serial file:/tmp/gate-$NOME.log || true
-            echo "  shell ativa: $(grep -ac 'DolDocShell active' /tmp/gate-$NOME.log || echo 0)"
-            grep -aE 'GOP FrameBufferBase|ALL 34 HOLYC|DolDocShell active' /tmp/gate-$NOME.log | tail -3 || true
+          # /dev/kvm ausente no ubuntu-24.04-arm (medido: só kvm+tcg no binário, sem o nó)
+          ACCEL="-accel tcg,thread=multi,tb-size=1024"
+          echo "acelerador: $ACCEL"
+          # O QEMU NÃO termina sozinho: o guest fica na shell. Então medimos o instante
+          # em que 'DolDocShell active' aparece no serial, com polling — igual ao
+          # scripts/neo-perf.py. Medir a duração do processo mede o timeout, não o boot.
+          inicio=$(date +%s.%N)
+          qemu-system-aarch64 -M virt,gic-version=2 $ACCEL -cpu cortex-a76 \
+            -smp "$(nproc)" -m 2048 -bios "$BIOS" \
+            -device ramfb -device virtio-gpu-device,xres=1024,yres=768 \
+            -device virtio-keyboard-device -device virtio-tablet-device \
+            -drive file=build/disk.img,format=raw,id=d,if=none -device virtio-blk-pci,drive=d \
+            -drive file=build/redsea.img,format=raw,id=r,if=none -device virtio-blk-device,drive=r \
+            -display none -serial file:/tmp/gate.log &
+          QPID=$!
+          SHELL_T=""
+          for i in $(seq 1 900); do
+            if grep -aq 'DolDocShell active' /tmp/gate.log 2>/dev/null; then
+              SHELL_T=$(echo "$(date +%s.%N) - $inicio" | bc); break
+            fi
+            sleep 1
           done
+          kill $QPID 2>/dev/null || true
+          wait $QPID 2>/dev/null || true
+          echo "TEMPO_ATE_SHELL=${SHELL_T:-NAO_CHEGOU} s"
+          grep -aE 'GOP FrameBufferBase|ALL 34 HOLYC|DolDocShell active' /tmp/gate.log | tail -3 || true
+          echo "--- rodando o gate completo (selftest in-guest) ---"
+          if [ -f scripts/neo-gate.py ]; then
+            timeout 900 python3 scripts/neo-gate.py 2>&1 | tail -25 || true
+          fi
 
       - name: Veredito e comparação
         run: |
@@ -91,13 +110,8 @@ jobs:
             echo ""
             echo "| modo | tempo | shell | 34 módulos |"
             echo "|---|---|---|---|"
-            for m in kvm tcg; do
-              [ -f /tmp/gate-$m.log ] || continue
-              tempo=$(grep -ao 'TEMPO_'"$m"'=[0-9.]*' /tmp/gate-$m.log 2>/dev/null | tail -1 | cut -d= -f2)
-              sh=$(grep -ac 'DolDocShell active' /tmp/gate-$m.log 2>/dev/null || echo 0)
-              mod=$(grep -ac 'ALL 34 HOLYC' /tmp/gate-$m.log 2>/dev/null || echo 0)
-              echo "| $m | ${tempo:-?} s | $sh | $mod |"
-            done
+            echo "| tempo até a shell | $(grep -ao 'TEMPO_ATE_SHELL=[0-9.]*' /tmp/gate.log 2>/dev/null | tail -1 | cut -d= -f2) s |"
+            echo "| /dev/kvm | $( [ -e /dev/kvm ] && echo presente || echo AUSENTE ) |"
             echo ""
             echo '```'
             grep -aE 'SELFTEST|PARITY|RENDER|CLIP|NEONMEM' /tmp/gate-kvm.log /tmp/gate-tcg.log 2>/dev/null | tail -10 || true
