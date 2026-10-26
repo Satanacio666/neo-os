@@ -527,21 +527,9 @@ U0 HolyGLSubmitClipped(GLVertex *a, GLVertex *b, GLVertex *c) {
   }
 }
 
-U0 HolyGLVertex3f(F64 x, F64 y, F64 z) {
-  if (g_hgl.v_count >= 16) g_hgl.v_count = 0;
-  GLVertex *v = &g_hgl.v_queue[g_hgl.v_count];
-  g_hgl.v_count++;
-  g_hgl.verts_processed = g_hgl.verts_processed + 1;
-
-  v->u = g_hgl.v_curr.u;
-  v->v = g_hgl.v_curr.v;
-  v->color = g_hgl.v_curr.color;
-  v->nx = g_hgl.v_curr.nx;
-  v->ny = g_hgl.v_curr.ny;
-  v->nz = g_hgl.v_curr.nz;
-
-  HolyGLTransformVertex(&g_hgl.mvp, x, y, z, 1.0, v);
-
+// Shared vertex emitter: `v` is already in homogeneous clip space (x,y,z,w) and
+// carries the current attributes; run primitive assembly + the submit chain.
+U0 HolyGLDispatchVertex(GLVertex *v) {
   I64 pm = g_hgl.primitive_mode;
   if (pm == GL_POINTS) {
     if (v->w > 0.05) {
@@ -575,6 +563,40 @@ U0 HolyGLVertex3f(F64 x, F64 y, F64 z) {
     g_hgl.v_count = 0;
   }
 }
+
+// Copy the current attributes into the next queue slot and return it.
+GLVertex *HolyGLNextVertex() {
+  if (g_hgl.v_count >= 16) g_hgl.v_count = 0;
+  GLVertex *v = &g_hgl.v_queue[g_hgl.v_count];
+  g_hgl.v_count++;
+  g_hgl.verts_processed = g_hgl.verts_processed + 1;
+  v->u = g_hgl.v_curr.u;
+  v->v = g_hgl.v_curr.v;
+  v->color = g_hgl.v_curr.color;
+  v->nx = g_hgl.v_curr.nx;
+  v->ny = g_hgl.v_curr.ny;
+  v->nz = g_hgl.v_curr.nz;
+  return v;
+}
+
+U0 HolyGLVertex3f(F64 x, F64 y, F64 z) {
+  GLVertex *v = HolyGLNextVertex();
+  HolyGLTransformVertex(&g_hgl.mvp, x, y, z, 1.0, v);
+  HolyGLDispatchVertex(v);
+}
+
+// P7.4 F6: submit an ALREADY clip-space vertex (x,y,z,w), skipping the MVP. The
+// Mesh front-end batch-transforms model-space vertices with Math3DTransformParallel
+// and feeds them here. Math3DTransformRange/Mat4MulVec4 compute the same
+// expressions as HolyGLTransformVertex, so the result is bit-identical.
+U0 HolyGLVertexClip(F64 x, F64 y, F64 z, F64 w) {
+  GLVertex *v = HolyGLNextVertex();
+  v->x = x; v->y = y; v->z = z; v->w = w;
+  HolyGLDispatchVertex(v);
+}
+
+// The current combined model-view-projection matrix (for batch transforms).
+U0 HolyGLGetMVP(CMat4 *out) { Mat4Copy(out, &g_hgl.mvp); }
 
 U0 HolyGLVertex2f(F64 x, F64 y) {
   HolyGLVertex3f(x, y, 0.0);

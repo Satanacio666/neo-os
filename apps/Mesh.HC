@@ -287,10 +287,30 @@ I64 MeshLoadFile(U8 *fname) {
 // ==============================================================================
 // Render through the ONE pipeline (HolyGL -> RasterTriangleZ).
 // ==============================================================================
+// P7.4 F6: batch-transform the model-space vertices to clip space in ONE parallel
+// pass (Math3DTransformParallel splits the batch across the online cores), then
+// submit the pre-transformed clip vertices via HolyGLVertexClip. Mat4MulVec4 (used
+// by Math3DTransformRange) computes the same expressions as HolyGLTransformVertex,
+// so the result is bit-identical to the old per-vertex path.
+CVec3 g_mesh_tf_in[MESH_MAX_V];
+CVec4 g_mesh_tf_out[MESH_MAX_V];
+
 U0 MeshRender(CMesh *m) {
     if (m->fcount <= 0) return;
-    HolyGLBegin(GL_TRIANGLES);
+    if (m->vcount > MESH_MAX_V) return;
     I64 i = 0;
+    while (i < m->vcount) {
+        g_mesh_tf_in[i].x = m->vx[i];
+        g_mesh_tf_in[i].y = m->vy[i];
+        g_mesh_tf_in[i].z = m->vz[i];
+        i = i + 1;
+    }
+    CMat4 mvp;
+    HolyGLGetMVP(&mvp);
+    Math3DTransformParallel(&g_mesh_tf_in[0], &g_mesh_tf_out[0], m->vcount, &mvp);
+
+    HolyGLBegin(GL_TRIANGLES);
+    i = 0;
     while (i < m->fcount) {
         I64 b = i * 3;
         I64 k = 0;
@@ -299,7 +319,8 @@ U0 MeshRender(CMesh *m) {
             I64 ni = m->fni[b + k];
             if (ni >= 0) HolyGLNormal3f(m->nx[ni], m->ny[ni], m->nz[ni]);
             HolyGLColor3ub(176, 200, 232);
-            HolyGLVertex3f(m->vx[vi], m->vy[vi], m->vz[vi]);
+            HolyGLVertexClip(g_mesh_tf_out[vi].x, g_mesh_tf_out[vi].y,
+                             g_mesh_tf_out[vi].z, g_mesh_tf_out[vi].w);
             k = k + 1;
         }
         i = i + 1;
