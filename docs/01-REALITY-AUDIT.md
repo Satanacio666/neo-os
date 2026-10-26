@@ -379,6 +379,20 @@ non-hoisted refactor (40,115,588 → 40,209,427) because HolyC locals are stack 
 baseline, inside the ≤3 % gate. Correctness is unchanged: `RENDER: PASS (0xD28836F)`, `TILE: PASS`, 1-vs-4-core
 `DETERMINISM: PASS`.
 
+### P7.4 F2 — immutable `CTriRecord` snapshot + per-producer bins + per-core frame arenas — **[REAL]**
+
+The tiled (sort-middle) path now sorts into immutable records. `CRasterTri` (F64, re-truncated per tile) is
+replaced by `CTriRecord`: the producer's F64 `CRasterVertex` is truncated to I64 **once** at submit, with the
+clamped depth and tile bin range frozen alongside it. Bins are **per-producer**
+(`g_rs_bins[4][RASTER_MAX_TILES]`, `RasterSceneAddTriangleP`), so producers can bin concurrently with no lock;
+`RasterRenderTileCore` drains producers in id order, so a tile's triangle order is deterministic. Each core
+owns a `CFrameArena` (64×64 colour + depth scratchpad + bound `CRasterCtx*`); `RasterRenderTileCore(arena,t)` /
+`RasterTileResolveCore(arena,t)` take it explicitly (BSP = arena 0, F4 = one per worker). Purely a re-layout:
+`RENDER 0xD28836F` bit-exact, `TILE: PASS`, `DETERMINISM: PASS`; the immediate path is untouched (icount
+Z-raster 40,209,426, identical to F1). The `TILE` self-test gained a fifth check (snapshot count/truncation/
+payload, a producer-1-only triangle rendering, arena distinctness + ctx binding). Heap headroom after the 4×
+bins: 25.9 MB free. See doc 04 D45.
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

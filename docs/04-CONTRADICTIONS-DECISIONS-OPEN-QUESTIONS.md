@@ -951,3 +951,23 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   recorded in doc 03 as a future option.
   Gate: `GOLDEN BOOT: PASS`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `RENDER: PASS (0xD28836F)`,
   `TILE: PASS`, `MATH3DPAR: PASS`, `HEAPINT: PASS`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D45 — P7.4 F2: immutable `CTriRecord` snapshot + per-producer bins + per-core frame arenas (DONE).**
+  The sort-middle prerequisites for F4, all in `apps/RasterTile.HC`. **(1) Immutable snapshot:** `CRasterTri`
+  (F64 coords, mutable, re-truncated per tile) is replaced by `CTriRecord` — I64 screen coords (the producer's
+  F64 `CRasterVertex` is truncated **once** at submit, not per tile per triangle), clamped depth, and the tile
+  bin range. It is frozen at submit and read-only thereafter, so the render phase reads only immutable,
+  race-free data. **(2) Per-producer bins:** `g_rs_bins[RASTER_MAX_PRODUCERS=4][RASTER_MAX_TILES]`; a new
+  `RasterSceneAddTriangleP(v, color, producer)` bins into the producer's **disjoint** set (so producers can bin
+  concurrently without a lock), and `RasterRenderTileCore` drains producers in id order — the tile's triangle
+  order is deterministic regardless of how many producers ran. `RasterSceneAddTriangle(v,color)` is producer 0.
+  **(3) Per-core frame arenas:** `CFrameArena g_frame_arenas[RC_MAX_CORES]` — a 64×64 colour + depth scratchpad,
+  the bound `CRasterCtx*`, and `tile`/`rendered` telemetry. `RasterRenderTileCore(arena,t)` /
+  `RasterTileResolveCore(arena,t)` take the arena explicitly; the BSP uses arena 0 (the `RasterRenderTile`/
+  `RasterTileResolve` wrappers), and F4 hands one arena to each tile worker so no two touch the same memory.
+  `RasterCtxInit` binds each arena to its context and asserts they are distinct (self-test). **(4)** The `TILE`
+  self-test gained a fifth check: snapshot count/truncation/payload, a producer-1-only triangle actually
+  rendering, and arena distinctness + ctx binding. **Purely a re-layout of the tiled path:** `RENDER: PASS
+  (0xD28836F)` bit-exact, `TILE: PASS`, 1-vs-4-core `DETERMINISM: PASS`; the immediate path is untouched
+  (icount Z-raster 40,209,426, identical to F1). Heap headroom after the 4× bins: 25.9 MB free.
+  Gate: `GOLDEN BOOT: PASS`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `RENDER: PASS (0xD28836F)`,
+  `TILE: PASS`, `MATH3DPAR: PASS`, `HEAPINT: PASS`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.

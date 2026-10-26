@@ -48,22 +48,34 @@ I64 g_zbuf_cap = 0;
 #define RASTER_MAX_SCENE_TRIS     4096
 #define RASTER_MAX_TRIS_PER_TILE  256
 #define RASTER_MAX_TILES          (48 * 32)
+// F2: one bin set PER PRODUCER (a producer is a geometry submitter — e.g. a core
+// building its own mesh batch). Producers bin into disjoint bin sets so they can
+// run concurrently without a lock; the render phase drains producers in id order,
+// so the tile's triangle order is deterministic regardless of how many producers
+// ran. With a single producer this is byte-identical to the old shared bin.
+#define RASTER_MAX_PRODUCERS      4
 
 // Screen-space vertices (F64 x/y per the §P7.3 spec; z is the integer depth). The
-// core is integer-exact, so the F64 coords are truncated when handed to it.
+// core is integer-exact, so the F64 coords are truncated ONCE, when the record is
+// built (below) — not per tile.
 class CRasterVertex { F64 x; F64 y; I64 z; };
-class CRasterTri {
-  F64 x[3];
-  F64 y[3];
-  I64 z[3];
+// F2: immutable per-triangle record — the frozen "sort" output of the tiled scene.
+// The producer submits F64 CRasterVertex; the record stores the coords already
+// truncated to the rasterizer's native I64 form, the clamped depth, and the tile
+// bin range. The render phase therefore reads ONLY immutable, race-free data
+// (F4: one arena per parallel tile worker, no shared mutable state).
+class CTriRecord {
+  I64 x0; I64 y0; I64 z0;
+  I64 x1; I64 y1; I64 z1;
+  I64 x2; I64 y2; I64 z2;
   U32 color;
   I64 min_tx; I64 max_tx; I64 min_ty; I64 max_ty;
 };
 class CRasterBin { U16 idx[RASTER_MAX_TRIS_PER_TILE]; I64 count; };
 
-CRasterTri  g_rs_tris[RASTER_MAX_SCENE_TRIS];
-CRasterBin  g_rs_bins[RASTER_MAX_TILES];
-I64 g_rs_tri_count = 0;
+CTriRecord  g_rs_records[RASTER_MAX_SCENE_TRIS];
+CRasterBin  g_rs_bins[RASTER_MAX_PRODUCERS][RASTER_MAX_TILES];
+I64 g_rs_record_count = 0;
 I64 g_rs_cols = 0;
 I64 g_rs_rows = 0;
 I64 g_rs_tile_size = 64;
@@ -72,9 +84,6 @@ I64 g_rs_pitch = 0;
 U32 g_rs_clear = 0;
 I64 g_rs_vx = 0; I64 g_rs_vy = 0; I64 g_rs_vw = 0; I64 g_rs_vh = 0;
 I64 g_rs_cull = 0;
-// Per-core 64x64 scratchpads (core 0 used in P7.3; P7.4 fans out to cores 1-3).
-U32 g_tile_color[4][4096];
-U16 g_tile_depth[4][4096];
 
 // ==============================================================================
 // P4.3: unified texture state. The ONE rasterizer reads ctx->tex_active; when a
@@ -210,6 +219,19 @@ U8 g_rctx_arena[RC_ARENA_BYTES];
 CRasterCtx *g_rctx = NULL;
 I64 g_rctx_ready = 0;
 
+// F2: per-core frame arena. Each core owns its 64x64 tile scratchpad (colour +
+// depth) and the raster context bound to it. The sort-middle dispatch (F4) hands
+// one arena to each tile worker so no two workers touch the same memory; the BSP
+// uses arena 0 for the single-threaded path. Colour/depth are 64x64 = TILE_W*TILE_H.
+class CFrameArena {
+  U32 color[4096];
+  U16 depth[4096];
+  CRasterCtx *ctx;   // this core's raster context (bound in RasterCtxInit)
+  I64 tile;          // tile index currently resident in the scratchpad
+  I64 rendered;      // tiles rendered by this core (telemetry / self-test)
+};
+CFrameArena g_frame_arenas[RC_MAX_CORES];
+
 // Reset one context to the documented power-on defaults (the values the old
 // globals carried as initialisers). Called for every core at init.
 U0 RasterCtxReset(CRasterCtx *ctx) {
@@ -260,7 +282,14 @@ U0 RasterCtxInit() {
                   sizeof(CRasterCtx), (U64)g_rctx & 63);
   }
   rc_i = 0;
-  while (rc_i < RC_MAX_CORES) { RasterCtxReset(&g_rctx[rc_i]); rc_i = rc_i + 1; }
+  while (rc_i < RC_MAX_CORES) {
+    RasterCtxReset(&g_rctx[rc_i]);
+    // F2: bind each core's context to its frame arena (F4: one per tile worker).
+    g_frame_arenas[rc_i].ctx = &g_rctx[rc_i];
+    g_frame_arenas[rc_i].tile = -1;
+    g_frame_arenas[rc_i].rendered = 0;
+    rc_i = rc_i + 1;
+  }
   g_rctx_ready = 1;
 }
 
@@ -935,7 +964,7 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   g_rs_vx = vx; g_rs_vy = vy; g_rs_vw = vw; g_rs_vh = vh;
   g_rs_clear = clear;
   g_rs_tile_size = TILE_W;
-  g_rs_tri_count = 0;
+  g_rs_record_count = 0;
   g_rs_cols = (vw + TILE_W - 1) / TILE_W;
   g_rs_rows = (vh + TILE_H - 1) / TILE_H;
   if (g_rs_cols < 1) g_rs_cols = 1;
@@ -943,13 +972,23 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   if (g_rs_cols > 48) g_rs_cols = 48;
   if (g_rs_rows > 32) g_rs_rows = 32;
   I64 nt = g_rs_cols * g_rs_rows;
-  I64 i = 0;
-  while (i < nt) { g_rs_bins[i].count = 0; i = i + 1; }
+  I64 p = 0;
+  while (p < RASTER_MAX_PRODUCERS) {
+    I64 i = 0;
+    while (i < nt) { g_rs_bins[p][i].count = 0; i = i + 1; }
+    p = p + 1;
+  }
 }
 
-U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
+// F2: submit a triangle on behalf of `producer` (0..RASTER_MAX_PRODUCERS-1). The
+// producer's bin set is disjoint from the others, so producers can bin in parallel
+// with no lock; the render phase drains them in id order for a deterministic result.
+U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
   if (!v) return;
-  if (g_rs_tri_count >= RASTER_MAX_SCENE_TRIS) return;
+  if (producer < 0 || producer >= RASTER_MAX_PRODUCERS) return;
+  if (g_rs_record_count >= RASTER_MAX_SCENE_TRIS) return;
+  // F2: truncate the F64 producer coords to the rasterizer's native I64 form ONCE
+  // (the same truncation the render phase used to redo per tile per triangle).
   I64 ax = (I64)v[0].x; I64 ay = (I64)v[0].y;
   I64 bx = (I64)v[1].x; I64 by = (I64)v[1].y;
   I64 cx = (I64)v[2].x; I64 cy = (I64)v[2].y;
@@ -977,18 +1016,23 @@ U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
   if (max_tx >= g_rs_cols) max_tx = g_rs_cols - 1;
   if (max_ty >= g_rs_rows) max_ty = g_rs_rows - 1;
   if (min_tx > max_tx || min_ty > max_ty) return;
-  I64 ti = g_rs_tri_count;
-  CRasterTri *t = &g_rs_tris[ti];
-  t->x[0] = v[0].x; t->y[0] = v[0].y; t->z[0] = v[0].z;
-  t->x[1] = v[1].x; t->y[1] = v[1].y; t->z[1] = v[1].z;
-  t->x[2] = v[2].x; t->y[2] = v[2].y; t->z[2] = v[2].z;
+  // F2: freeze the immutable record (I64 coords, clamped depth) and bin it into
+  // this producer's disjoint bin set.
+  I64 z0 = v[0].z; if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
+  I64 z1 = v[1].z; if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
+  I64 z2 = v[2].z; if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
+  I64 ti = g_rs_record_count;
+  CTriRecord *t = &g_rs_records[ti];
+  t->x0 = ax; t->y0 = ay; t->z0 = z0;
+  t->x1 = bx; t->y1 = by; t->z1 = z1;
+  t->x2 = cx; t->y2 = cy; t->z2 = z2;
   t->color = color;
   t->min_tx = min_tx; t->max_tx = max_tx; t->min_ty = min_ty; t->max_ty = max_ty;
   I64 ty = min_ty;
   while (ty <= max_ty) {
     I64 tx = min_tx;
     while (tx <= max_tx) {
-      CRasterBin *b = &g_rs_bins[ty * g_rs_cols + tx];
+      CRasterBin *b = &g_rs_bins[producer][ty * g_rs_cols + tx];
       if (b->count < RASTER_MAX_TRIS_PER_TILE) {
         b->idx[b->count] = (U16)ti;
         b->count = b->count + 1;
@@ -997,47 +1041,61 @@ U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
     }
     ty = ty + 1;
   }
-  g_rs_tri_count = g_rs_tri_count + 1;
+  g_rs_record_count = g_rs_record_count + 1;
 }
 
-// Render one tile into core-0's scratchpad, reusing the ONE kernel with local
+// Default producer 0 (the common single-submitter case).
+U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) { RasterSceneAddTriangleP(v, color, 0); }
+
+// Render one tile into `a`'s scratchpad, reusing the ONE kernel with local
 // (tile-relative) coordinates; the Pineda edge functions are translation-invariant,
-// so the result is bit-identical to the immediate path. The scratchpad + clip dims
-// are bound into the BSP's context (F4 will give each worker its own).
-U0 RasterRenderTile(I64 t) {
+// so the result is bit-identical to the immediate path. `a` is a per-core frame
+// arena (F2): the BSP passes arena 0, and F4 hands each tile worker its own, so
+// concurrent workers never touch the same scratchpad or context. Triangles are
+// drained from every producer's bin set in producer-id order (deterministic).
+U0 RasterRenderTileCore(CFrameArena *a, I64 t) {
   I64 tx = t % g_rs_cols;
   I64 ty = t / g_rs_cols;
   I64 ox = g_rs_vx + tx * g_rs_tile_size;
   I64 oy = g_rs_vy + ty * g_rs_tile_size;
-  CRasterCtx *ctx = &g_rctx[0];
-  RenderNeonFill(g_tile_color[0], 4096, g_rs_clear);
-  memset(g_tile_depth[0], 0xFF, 4096 * 2);
+  CRasterCtx *ctx = a->ctx;
+  RenderNeonFill(a->color, 4096, g_rs_clear);
+  memset(a->depth, 0xFF, 4096 * 2);
   U32 *sv_fb = ctx->fb;
   I64 sv_pitch = ctx->pitch;
   I64 sv_cw = ctx->cw;
   U16 *sv_zb = ctx->zbuf;
   I64 sv_zw = ctx->zbuf_w;
   I64 sv_zh = ctx->zbuf_h;
-  ctx->fb = g_tile_color[0]; ctx->pitch = 64; ctx->cw = 64;
-  ctx->zbuf = g_tile_depth[0]; ctx->zbuf_w = 64; ctx->zbuf_h = 64;
-  CRasterBin *b = &g_rs_bins[t];
-  I64 i = 0;
-  while (i < b->count) {
-    I64 ti = (I64)b->idx[i];
-    CRasterTri *tr = &g_rs_tris[ti];
-    RasterSetZ(tr->z[0], tr->z[1], tr->z[2]);
-    RasterTriangleZCore(ctx, (I64)tr->x[0] - ox, (I64)tr->y[0] - oy,
-                        (I64)tr->x[1] - ox, (I64)tr->y[1] - oy,
-                        (I64)tr->x[2] - ox, (I64)tr->y[2] - oy, tr->color);
-    i = i + 1;
+  ctx->fb = a->color; ctx->pitch = 64; ctx->cw = 64;
+  ctx->zbuf = a->depth; ctx->zbuf_w = 64; ctx->zbuf_h = 64;
+  I64 p = 0;
+  while (p < RASTER_MAX_PRODUCERS) {
+    CRasterBin *b = &g_rs_bins[p][t];
+    I64 i = 0;
+    while (i < b->count) {
+      I64 ti = (I64)b->idx[i];
+      CTriRecord *tr = &g_rs_records[ti];
+      ctx->z0 = tr->z0; ctx->z1 = tr->z1; ctx->z2 = tr->z2;
+      RasterTriangleZCore(ctx, tr->x0 - ox, tr->y0 - oy,
+                          tr->x1 - ox, tr->y1 - oy,
+                          tr->x2 - ox, tr->y2 - oy, tr->color);
+      i = i + 1;
+    }
+    p = p + 1;
   }
   ctx->fb = sv_fb; ctx->pitch = sv_pitch; ctx->cw = sv_cw;
   ctx->zbuf = sv_zb; ctx->zbuf_w = sv_zw; ctx->zbuf_h = sv_zh;
+  a->tile = t;
+  a->rendered = a->rendered + 1;
 }
 
-// Resolve one tile: colour to the target via the stnp kernel, depth to the main
-// Z-buffer, clipped to the viewport and to the partial last tile.
-U0 RasterTileResolve(I64 t) {
+// Single-threaded path: the BSP renders into arena 0.
+U0 RasterRenderTile(I64 t) { RasterRenderTileCore(&g_frame_arenas[0], t); }
+
+// Resolve one tile from `a`'s scratchpad: colour to the target via the stnp
+// kernel, depth to the main Z-buffer, clipped to the viewport and the last tile.
+U0 RasterTileResolveCore(CFrameArena *a, I64 t) {
   if (!g_rs_target) return;
   I64 tx = t % g_rs_cols;
   I64 ty = t / g_rs_cols;
@@ -1050,10 +1108,10 @@ U0 RasterTileResolve(I64 t) {
   if (tw <= 0 || th <= 0) return;
   I64 r = 0;
   while (r < th) {
-    U32 *src = &g_tile_color[0][r * TILE_W];
+    U32 *src = &a->color[r * TILE_W];
     U32 *dst = &g_rs_target[(oy + r) * g_rs_pitch + ox];
     TileResolveRow(dst, src, tw);
-    U16 *zsrc = &g_tile_depth[0][r * TILE_W];
+    U16 *zsrc = &a->depth[r * TILE_W];
     I64 c = 0;
     while (c < tw) {
       g_zbuf[(oy + r) * g_zbuf_w + ox + c] = zsrc[c];
@@ -1063,6 +1121,8 @@ U0 RasterTileResolve(I64 t) {
   }
 }
 
+U0 RasterTileResolve(I64 t) { RasterTileResolveCore(&g_frame_arenas[0], t); }
+
 U0 RasterSceneEnd() {
   if (!g_rs_target) return;
   I64 nt = g_rs_cols * g_rs_rows;
@@ -1070,8 +1130,9 @@ U0 RasterSceneEnd() {
   while (t < nt) { RasterRenderTile(t); RasterTileResolve(t); t = t + 1; }
 }
 
-// P7.3 self-test (called from apps/SelfTest.HC -> TILE: PASS). All three checks use
-// private scratch/global state, then restore a clean frame.
+// P7.3/P7.4-F2 self-test (called from apps/SelfTest.HC -> TILE: PASS). Checks the
+// tiled==immediate identity, shared-edge fill, scratchpad bounds, back-face cull,
+// and the F2 CTriRecord snapshot / per-producer bins / per-core frame arenas.
 U32 g_tile_snap_fb[256 * 256];
 U16 g_tile_snap_zb[256 * 256];
 CRasterVertex g_tile_tmpv[3];
@@ -1160,9 +1221,9 @@ U0 RasterSelfTestTile() {
   }
   if (gaps != 0) { ok = 0; doldoc_printf("[TILE] shared-edge gaps=%lld\n", gaps); }
 
-  // (3) no write past the scratchpad: guard words after g_tile_color[0]/g_tile_depth[0].
-  g_tile_color[1][0] = 0xDEADBEEF; g_tile_color[1][1] = 0xDEADBEEF;
-  g_tile_depth[1][0] = 0x1234;     g_tile_depth[1][1] = 0x5678;
+  // (3) no write past the scratchpad: guard words at the head of core 1's arena.
+  g_frame_arenas[1].color[0] = 0xDEADBEEF; g_frame_arenas[1].color[1] = 0xDEADBEEF;
+  g_frame_arenas[1].depth[0] = 0x1234;     g_frame_arenas[1].depth[1] = 0x5678;
   RasterSceneBegin(0, 0, R, R, BG);
   g_tile_tmpv[0].x = 0.0;   g_tile_tmpv[0].y = 0.0;   g_tile_tmpv[0].z = 1;
   g_tile_tmpv[1].x = 300.0; g_tile_tmpv[1].y = 0.0;   g_tile_tmpv[1].z = 1;
@@ -1173,8 +1234,8 @@ U0 RasterSelfTestTile() {
   g_tile_tmpv[2].x = 5000.0; g_tile_tmpv[2].y = 5100.0; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterRenderTile(0);
-  if (g_tile_color[1][0] != 0xDEADBEEF || g_tile_color[1][1] != 0xDEADBEEF) { ok = 0; doldoc_print("[TILE] color scratchpad overrun\n"); }
-  if (g_tile_depth[1][0] != 0x1234 || g_tile_depth[1][1] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
+  if (g_frame_arenas[1].color[0] != 0xDEADBEEF || g_frame_arenas[1].color[1] != 0xDEADBEEF) { ok = 0; doldoc_print("[TILE] color scratchpad overrun\n"); }
+  if (g_frame_arenas[1].depth[0] != 0x1234 || g_frame_arenas[1].depth[1] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
 
   // (4) back-face cull (opt-in): a back-facing triangle is rejected, a front-facing
   //     one still renders. Default is OFF, so checks (1)-(3) above are unaffected.
@@ -1211,6 +1272,31 @@ U0 RasterSelfTestTile() {
   }
   RasterSetCull(0);
   if (cull_back != 0 || cull_front == 0) { ok = 0; doldoc_printf("[TILE] cull back=%lld front=%lld\n", cull_back, cull_front); }
+
+  // (5) F2: immutable CTriRecord snapshot + per-producer bins + frame arenas.
+  //     The snapshot must store the truncated I64 coords (30.9 -> 30) and count
+  //     only accepted triangles; a triangle submitted on producer 1 must render
+  //     (the drain walks every producer's bin set); the arenas must be distinct
+  //     and each bound to its own context.
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 30.9;  g_tile_tmpv[0].y = 30.9;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 200.9; g_tile_tmpv[1].y = 60.9;  g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 90.9;  g_tile_tmpv[2].y = 180.9; g_tile_tmpv[2].z = 1;
+  RasterSceneAddTriangle(g_tile_tmpv, COL);
+  if (g_rs_record_count != 1) { ok = 0; doldoc_printf("[TILE] F2 snapshot count=%lld\n", g_rs_record_count); }
+  if (g_rs_records[0].x0 != 30 || g_rs_records[0].y0 != 30) { ok = 0; doldoc_print("[TILE] F2 snapshot truncation\n"); }
+  if (g_rs_records[0].z0 != 1 || g_rs_records[0].color != COL) { ok = 0; doldoc_print("[TILE] F2 snapshot payload\n"); }
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 40.0; g_tile_tmpv[0].y = 40.0;  g_tile_tmpv[0].z = 1;
+  g_tile_tmpv[1].x = 100.0; g_tile_tmpv[1].y = 40.0; g_tile_tmpv[1].z = 1;
+  g_tile_tmpv[2].x = 40.0; g_tile_tmpv[2].y = 100.0; g_tile_tmpv[2].z = 1;
+  RasterSceneAddTriangleP(g_tile_tmpv, COL, 1);
+  RasterSceneEnd();
+  if (fb[60 * pit + 60] != COL) { ok = 0; doldoc_print("[TILE] F2 producer-1 bin not rendered\n"); }
+  if (&g_frame_arenas[0].color[0] == &g_frame_arenas[1].color[0]) { ok = 0; doldoc_print("[TILE] F2 arenas alias\n"); }
+  if (g_frame_arenas[0].ctx != &g_rctx[0] || g_frame_arenas[1].ctx != &g_rctx[1]) { ok = 0; doldoc_print("[TILE] F2 arena ctx binding\n"); }
 
   gfx_clear(0xFF000000);
   RasterClearZ();

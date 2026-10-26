@@ -128,7 +128,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   | native GPU | remote (cluster)`. Acceleration is execution units of one model, not tiers. **[PARTIAL]** today (software only).
 - **Unified Tile Pipeline** `(from 03-design §3.6)`: frame = set of tile jobs; a *provider* executes them; SIMD =
   kernel shape, SMP = core count, GPU = a provider; all at once; no scalar fallback (AArch64 mandates NEON);
-  deterministic per tile (same on 1 vs N cores). **[MISSING]**.
+  deterministic per tile (same on 1 vs N cores). **[PARTIAL — P7.3/P7.4]** the tiled path bins into 64×64 tiles
+  and resolves non-temporally; F2 (doc 04 D45) added the sort-middle prerequisites — an immutable `CTriRecord`
+  snapshot, **per-producer bins** (a geometry submitter owns a disjoint bin set, so producers bin concurrently
+  without a lock; the drain walks producers in id order for determinism), and a per-core `CFrameArena`
+  (64×64 scratchpad + bound context). The SMP tile *dispatch* (one worker per core) is still F3+. **[MISSING]**.
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

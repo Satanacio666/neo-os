@@ -1478,9 +1478,14 @@ per-triangle globals are now one 64-byte-aligned `CRasterCtx g_rctx[]` threaded 
 alignment guard. It landed **on top of a compiler root fix** (`HcResolveLValue` deferred-offset lvalues +
 immediate-offset load/store, D43) so `ctx->field` costs 2 instructions, not 4. Bit-exact (`RENDER 0xD28836F`,
 `TILE: PASS`, `DETERMINISM: PASS`); deterministic (icount) Z-raster 41,247,142 → **40,209,427** (−3.5 %) —
-a net win. Measurement is now deterministic: `NEO_ICOUNT=1` (D42). **Remaining — see doc 04 D40:** the SMP
-tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile`
-SMP sub-test, and the `MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
+a net win. Measurement is now deterministic: `NEO_ICOUNT=1` (D42). **F2 ✅ DONE (see doc 04 D45):** the
+sort-middle prerequisites — immutable `CTriRecord` snapshot (I64 coords truncated once, not per tile),
+per-producer bins (`g_rs_bins[4][*]`, `RasterSceneAddTriangleP`, drained in producer-id order), and per-core
+`CFrameArena g_frame_arenas[]` (64×64 scratchpad + bound ctx) with `RasterRenderTileCore(arena,t)` /
+`RasterTileResolveCore(arena,t)`. Bit-exact; the `TILE` self-test now exercises snapshot/producer/arena.
+**Remaining — see doc 04 D40:** the SMP tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`,
+`GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the `MeshRender` batch-transform wiring.
+Runbook below is the original spec (retained).
 
 **Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
 transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.
