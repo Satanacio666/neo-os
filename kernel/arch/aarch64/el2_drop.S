@@ -112,6 +112,13 @@ neo_ensure_el1:
     and     x3, x1, x2
     ubfx    x2, x1, #16, #3
     bfi     x3, x2, #32, #3
+    // EPD1 (bit 23) = 1: desabilita os walks por TTBR1_EL1.
+    // BUG CORRIGIDO: o `and x3, x1, #0xffff` acima zera o bit 23, o que LIGA os
+    // walks por TTBR1_EL1 com TTBR1_EL1 = 0 (nunca inicializado). Nosso espaco de
+    // enderecos e todo TTBR0, entao hoje isso nao e exercitado — mas qualquer
+    // acesso futuro na metade alta do espaco daria translation fault. Desabilitar
+    // e o correto: nao usamos TTBR1.
+    orr     x3, x3, #(1 << 23)
     msr     tcr_el1, x3
 
     // SCTLR_EL1: bits RES1 (0x30D00800) + herda M (bit 0), C (bit 2), I (bit 12)
