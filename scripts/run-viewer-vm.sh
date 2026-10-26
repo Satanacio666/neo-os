@@ -19,6 +19,13 @@ QEMU_ARGS=(
   -accel tcg,thread=single,tb-size=512
   -cpu cortex-a72
   -smp "${NEO_SMP:-4}"
+  # P7.4 F1: deterministic measurement mode. `-icount shift=0,align=off,sleep=off`
+  # drives the guest's virtual clock from the instruction count, so CNTVCT_EL0
+  # (and therefore `renderbench`) measures WORK, not host wall-clock. Enable with
+  # NEO_ICOUNT=1; two consecutive runs must agree to <0.1%. Never used for normal
+  # runs (icount is slower).
+  ${NEO_ICOUNT:+-icount}
+  ${NEO_ICOUNT:+shift=0,align=off,sleep=off}
   # Dev default is 256 MB: NeoOS's working set is tiny (it sizes its heap/JIT pool from
   # the UEFI map), and QEMU's host RSS tracks the guest's *touched* RAM — so a smaller
   # guest means a smaller host footprint. Override with NEO_GUEST_MB for benchmarks.
