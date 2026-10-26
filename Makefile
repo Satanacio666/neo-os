@@ -65,6 +65,7 @@ SRCS_C = boot/main.c \
          boot/runtime/symbols.c \
          boot/runtime/blockio.c \
          boot/runtime/fwdesc.c \
+         boot/runtime/acpi.c \
          kernel/arch/aarch64/gicv3.c
 
 SRCS_S = kernel/sched/switch.S \

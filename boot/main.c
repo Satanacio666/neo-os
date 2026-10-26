@@ -55,6 +55,20 @@ extern int      neo_fwdesc_probe(void);
 extern int      neo_fwdesc_has_dtb(void);
 extern int      neo_fwdesc_has_acpi(void);
 extern uint32_t neo_fwdesc_fdt_size(void);
+
+/* E2 — descoberta de hardware por ACPI (boot/runtime/acpi.c) */
+extern int      acpi_discover(void *rsdp_ptr);
+extern void     acpi_report(void);
+extern uint64_t acpi_gicd_base(void);
+extern uint64_t acpi_gicr_base(void);
+extern uint64_t acpi_uart_base(void);
+extern uint32_t acpi_uart_type(void);
+extern uint32_t acpi_gic_version(void);
+extern uint32_t acpi_timer_virt(void);
+extern uint32_t acpi_timer_phys(void);
+extern uint32_t acpi_cpu_count(void);
+extern void    *g_acpi_rsdp;
+extern void    *g_fdt_blob;
 extern void     gicv3_bpr1_set(uint64_t v);
 extern uint64_t gicv3_bpr1_get(void);
 extern int      neo_pl011_available(void);
@@ -562,6 +576,19 @@ int main(int argc, char **argv)
     symbols_register("neo_fwdesc_has_dtb", (void*)neo_fwdesc_has_dtb, SYM_FUNC);
     symbols_register("neo_fwdesc_has_acpi", (void*)neo_fwdesc_has_acpi, SYM_FUNC);
     symbols_register("neo_fwdesc_fdt_size", (void*)neo_fwdesc_fdt_size, SYM_FUNC);
+
+    // E2 — descoberta por ACPI. A HAL consulta estes acessores; se a descoberta
+    // falhar ou nao existir, todos devolvem 0 e a HAL cai em defaults seguros.
+    symbols_register("acpi_discover", (void*)acpi_discover, SYM_FUNC);
+    symbols_register("acpi_report", (void*)acpi_report, SYM_FUNC);
+    symbols_register("acpi_gicd_base", (void*)acpi_gicd_base, SYM_FUNC);
+    symbols_register("acpi_gicr_base", (void*)acpi_gicr_base, SYM_FUNC);
+    symbols_register("acpi_uart_base", (void*)acpi_uart_base, SYM_FUNC);
+    symbols_register("acpi_uart_type", (void*)acpi_uart_type, SYM_FUNC);
+    symbols_register("acpi_gic_version", (void*)acpi_gic_version, SYM_FUNC);
+    symbols_register("acpi_timer_virt", (void*)acpi_timer_virt, SYM_FUNC);
+    symbols_register("acpi_timer_phys", (void*)acpi_timer_phys, SYM_FUNC);
+    symbols_register("acpi_cpu_count", (void*)acpi_cpu_count, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -591,6 +618,14 @@ int main(int argc, char **argv)
     // E o alicerce da universalidade: a partir daqui a plataforma deixa de ser
     // uma tabela escrita a mao e passa a ser lida do que o firmware descreve.
     neo_fwdesc_probe();
+
+    // E2 — Se o firmware entregou ACPI, extrai GIC/UART/timer/CPUs das tabelas.
+    // Se nao entregou (ou o parse falhar), os acessores ficam em 0 e a HAL cai em
+    // defaults seguros. Essa e a invariante da universalidade: perfil/descoberta
+    // ausente => boota igual. Nunca "boota ou nao".
+    if (neo_fwdesc_has_acpi()) {
+        if (acpi_discover(g_acpi_rsdp) == 0) acpi_report();
+    }
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
