@@ -136,7 +136,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   secondaries via `SmpDispatchAsync`; workers steal tiles from a shared cursor with a lock-free **LDAXR/STLXR**
   fetch-and-add (`RasterAtomicFetchAdd`), render into their own `CFrameArena` and resolve to the canvas.
   Output is byte-identical on 1 vs N cores (disjoint tiles, claimed once) and measures **~2.5–3.2×** MTTCG
-  wall-clock speed-up on 3 workers (doc 04 D47). GPU-provider execution of tile jobs is still open (P9).
+  wall-clock speed-up on 3 workers (doc 04 D47). **[REAL — P7.4 F5–F7]** the geometry front-end is parallel too
+  (`RasterSceneAddTrianglesParallel`: contiguous slices + per-producer bins, byte-identical to sequential), the
+  mesh path batch-transforms via `Math3DTransformParallel` (`HolyGLVertexClip`), and the SMP tiled mode is the
+  **default** (`RasterSceneEnd` reads `GfxDeviceGetMode`); see doc 04 D48–D50. GPU-provider execution of tile
+  jobs is still open (P9).
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

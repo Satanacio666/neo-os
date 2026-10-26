@@ -1007,3 +1007,41 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS` (SMP == single-threaded, byte-exact),
   `DETERMINISM: PASS (1 vs 4 cores identical)`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `SHADERVM: PASS
   (16/16)`, `CENSUS 181`, `SELF-HOST: PASS`. New `NEO_MTTCG=1` mode in `scripts/run-viewer-vm.sh`.
+- **D48 — P7.4 F5: parallel geometry front-end + the `#define` parser root fix (DONE).** `apps/RasterTile.HC`
+  now partitions a triangle batch across the online cores: `RasterSceneAddTrianglesParallel(verts, colors,
+  count)` splits `[0,count)` into **contiguous** slices (core 0 does its slice; cores 1..n-1 via
+  `SmpDispatchAsync`/`SmpWaitJob`), and each core builds the `CTriRecord`s + bins for its slice into its
+  **own producer set** (`producer = core id`). Records are per-producer (`g_rs_prod_count[]`, producer `p` owns
+  `[p*RS_TRIS_PER_PRODUCER, …)`) so the front-end is lock-free; because the slices are contiguous and
+  increasing and the back-end drains producers 0..3 in order, the rendered frame is **byte-identical to
+  sequential submission** on any core count. `TILE` self-test check 7 asserts parallel == sequential (colour
+  **and** Z, 0 diff) and that front-end workers ran. **Root bug found on the way (fixed):** the self-hosted
+  `#define` value parser (`Compiler.HC` `HcParseMacroExpr`) handled only `* + -` and was flat, so
+  `#define RS_TRIS_PER_PRODUCER (RASTER_MAX_SCENE_TRIS / RASTER_MAX_PRODUCERS)` silently evaluated to `4096`
+  (the `/` was ignored) — the seed lexer (`parse_define_expr`) handles `/` and precedence, so the two engines
+  disagreed. Rewritten as precedence climbing (`HcParseMacroP`) matching the seed: `*`/`/` bind tighter than
+  `+`/`-`, division by zero yields 0. Regressions: `SelfTestCheck` `f5_macro_div` (40/4=10), `f5_macro_prec`
+  (2+3*4=14), `f5_macro_div_chain` (100/5/2=10) + `cases.json` `macro_define_div`/`macro_define_prec`.
+  Gate: `GOLDEN BOOT: PASS`, `TILE: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `DETERMINISM: PASS`,
+  `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D49 — P7.4 F6: `MeshRender` batch vertex transform (DONE).** `apps/Mesh.HC`'s `MeshRender` no longer
+  transforms per vertex through `HolyGLVertex3f`. It packs the mesh's model-space vertices into a `CVec3`
+  batch, calls `Math3DTransformParallel` (one parallel pass across the online cores), then submits the
+  pre-transformed **clip-space** vertices via a new `HolyGLVertexClip(x,y,z,w)`. `apps/HolyGL.HC` factored the
+  primitive-assembly/submit chain into `HolyGLDispatchVertex` (shared by `HolyGLVertex3f` and
+  `HolyGLVertexClip`) and added `HolyGLGetMVP`. `Math3DTransformRange`'s `Mat4MulVec4` computes the same
+  expressions in the same order as `HolyGLTransformVertex`, so the result is **bit-identical** — `MESH: PASS
+  (ink=28177)`, `RENDER: PASS (0xD28836F)`. Gate: `GOLDEN BOOT: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`,
+  `RENDER: PASS (0xD28836F)`, `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D50 — P7.4 F7: consolidation + default SMP tiled — P7.4 COMPLETE (DONE).** The renderer now defaults to
+  the SMP tiled back-end: `GfxDeviceInit` sets `GFX_MODE_SMP_TILED` (via the setter, so name/config stay
+  consistent), and `RasterSceneEnd` routes to `RasterSceneEndSmp` by reading `GfxDeviceGetMode()` — a **single
+  source of truth** (the rasterizer keeps no second copy of the flag, and there is no boot-order hazard since
+  `GfxDevice` is compiled before `RasterTile`). The golden scene and HolyGL still use the immediate
+  `RasterTriangleZ` path, so `RENDER` stays bit-exact. **The complete sovereign gate passes in BOTH standard
+  and `-icount shift=0,align=off,sleep=off` modes:** `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact,
+  `TILE: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `SELFTEST 123/123 PASS`, `PARITY 92/92 PASS`,
+  `CENSUS: PASS (181, none increased)`, `SELF-HOST: PASS`, plus `MESH: PASS`, `MATH3DPAR: PASS`, `SHADERVM:
+  PASS (16/16)`, `HEAPINT: PASS`. **P7.4 (SMP tiled rasterization: deterministic, multi-core) is DONE** —
+  F0 SMP proof, F1 per-core `CRasterCtx`, F2 sort-middle records/bins/arenas, F3 per-core shader VM, F4 SMP
+  tile dispatch (~3× MTTCG), F5 parallel front-end, F6 mesh batch transform, F7 default-on.

@@ -1461,7 +1461,7 @@ non-temporal resolve. The immediate `RasterTriangleZ` path stays byte-identical.
   Print `TILE: PASS`. Call from `SelfTestRun`. Gates: `TILE: PASS`, `RENDER: PASS (0xD28836F)`,
   `RASTER: PASS`, `CENSUS: PASS`.
 
-### P7.4 — SMP tile dispatch + SMP parallel vertex transform; make `GFX_MODE_SMP_TILED` real — 🟡 **PARTIAL**
+### P7.4 — SMP tile dispatch + SMP parallel vertex transform; make `GFX_MODE_SMP_TILED` real — ✅ **DONE**
 
 **Landed (verified, `GOLDEN BOOT: PASS`):** `SmpDispatchAsync` (non-blocking mailbox post, `apps/Smp.HC`),
 `SmpCoreOnline` (cross-module-safe core query), and `Math3DTransformParallel` (`apps/Math3D.HC` — splits the
@@ -1492,8 +1492,13 @@ take it explicitly, public entry points delegate to context 0. `SHADERVM: PASS 1
 LDAXR/STLXR), renders into its own `CFrameArena` and resolves straight to the target; `GFX_MODE_SMP_TILED` is
 wired through `GfxDeviceSetMode` → `RasterSetSmpTiled` and routed by `RasterSceneEnd`. Tiles are disjoint and
 claimed once, so output is byte-identical on 1 vs 4 cores (`TILE` self-test check 6 + gate under `-icount`);
-measured **~2.5–3.2× MTTCG wall-clock speed-up** (`smptilebench`). **Remaining:** the `SelfTestTile` SMP sub-test
-fold-in and the `MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
+measured **~2.5–3.2× MTTCG wall-clock speed-up** (`smptilebench`).
+**F5 ✅ DONE (see doc 04 D48):** parallel geometry front-end — `RasterSceneAddTrianglesParallel` (contiguous
+slices + per-producer bins; parallel == sequential byte-exact, `TILE` check 7) + the `#define`-parser root fix
+(`/` and precedence). **F6 ✅ DONE (see doc 04 D49):** `MeshRender` batch-transforms via `Math3DTransformParallel`
+and submits through the new `HolyGLVertexClip` (bit-identical; `MESH: PASS`). **F7 ✅ DONE (see doc 04 D50):**
+`GFX_MODE_SMP_TILED` is the default and `RasterSceneEnd` reads `GfxDeviceGetMode()` (single source of truth); the
+full gate passes in standard and `-icount` modes. **P7.4 COMPLETE.** Runbook below is the original spec (retained).
 
 **Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
 transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.

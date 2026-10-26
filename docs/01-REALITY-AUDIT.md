@@ -412,10 +412,30 @@ dispatches every online secondary with `SmpDispatchAsync` and joins with `SmpWai
 from one shared cursor via `RasterAtomicFetchAdd` (AArch64 **LDAXR/STLXR** fetch-and-add), render into their own
 `CFrameArena` (`RasterRenderTileCore`) and resolve straight to the target (`RasterTileResolveCore`). Tiles are
 disjoint and claimed exactly once, so the frame is **byte-identical on 1 vs 4 cores** (colour + Z) — proven by
-the `TILE` self-test's sixth check and by the whole gate under `-icount`. `GfxDeviceSetMode(GFX_MODE_SMP_TILED)`
-calls `RasterSetSmpTiled(1)`; `RasterSceneEnd` routes accordingly (`gfx smp`). Measured with the new
-`smptilebench` command (192 tiles / 1536 tris): **~2.5–3.2×** MTTCG wall-clock speed-up on 3 workers (1 core
-~8.1–9.2 M cycles vs 4 cores ~2.8–3.2 M); `1.00×` under `-icount` (which counts work, not time). See doc 04 D47.
+the `TILE` self-test's sixth check and by the whole gate under `-icount`. `RasterSceneEnd` routes on the device
+mode (`gfx smp`; from F7 it reads `GfxDeviceGetMode()` directly). Measured with the new `smptilebench` command
+(192 tiles / 1536 tris): **~2.5–3.2×** MTTCG wall-clock speed-up on 3 workers (1 core ~8.1–9.2 M cycles vs
+4 cores ~2.8–3.2 M); `1.00×` under `-icount` (which counts work, not time). See doc 04 D47.
+
+### P7.4 F5–F7 — parallel front-end, mesh batch transform, default SMP tiled — **[REAL]**
+
+**F5** (`apps/RasterTile.HC`): `RasterSceneAddTrianglesParallel` splits a triangle batch into **contiguous**
+slices across the online cores; each core builds `CTriRecord`s + bins into its **own producer set**
+(`g_rs_prod_count[]`, producer `p` owns `[p*1024, …)`), so the front-end is lock-free and — because the slices
+are contiguous and increasing and the back-end drains producers 0..3 in order — **byte-identical to sequential
+submission** on any core count (`TILE` check 7). A genuine compiler root bug was found and fixed on the way: the
+self-hosted `#define` parser ignored `/` and was flat, so `(A / B)` evaluated to `A`; it is now precedence
+climbing matching the C seed (D48).
+
+**F6** (`apps/Mesh.HC` + `apps/HolyGL.HC`): `MeshRender` packs the model-space vertices, calls
+`Math3DTransformParallel` (one parallel pass), and submits the clip-space result through a new
+`HolyGLVertexClip` (the assembly/submit chain was factored into `HolyGLDispatchVertex`). `Mat4MulVec4` and
+`HolyGLTransformVertex` compute the same expressions, so it is bit-identical — `MESH: PASS (ink=28177)` (D49).
+
+**F7** (`apps/GfxDevice.HC`): `GFX_MODE_SMP_TILED` is now the **default**, and `RasterSceneEnd` reads the mode
+from `GfxDeviceGetMode()` (single source of truth). The complete gate passes in **standard and `-icount`** modes:
+`GOLDEN BOOT: PASS`, `RENDER 0xD28836F` bit-exact, `TILE: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`,
+`SELFTEST 123/123`, `PARITY 92/92`, `CENSUS 181`, `SELF-HOST: PASS` (D50). **P7.4 is DONE.**
 
 ---
 
