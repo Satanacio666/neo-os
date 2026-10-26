@@ -76,6 +76,18 @@ extern uint32_t acpi_cpu_count(void);
 /* E4 — descoberta por Device Tree (boot/runtime/fdt.c) */
 extern int  fdt_discover(void *blob, int only_missing);
 extern void fdt_report(void);
+
+/* E5 — identidade e perfil como dado (boot/runtime/profile.c) */
+extern const char *disco_identity(void);
+extern int      profile_load(void);
+extern void     profile_defaults(void);
+extern uint32_t profile_loaded(void);
+extern uint32_t profile_tile_size(void);
+extern uint32_t profile_morton(void);
+extern uint32_t profile_smp_cores(void);
+extern uint32_t profile_errata(void);
+extern uint32_t profile_throttle_us(void);
+extern const char *profile_name(void);
 extern void    *g_acpi_rsdp;
 extern void    *g_fdt_blob;
 extern void     gicv3_bpr1_set(uint64_t v);
@@ -608,6 +620,19 @@ int main(int argc, char **argv)
     symbols_register("acpi_virtio_base", (void*)acpi_virtio_base, SYM_FUNC);
     symbols_register("acpi_virtio_stride", (void*)acpi_virtio_stride, SYM_FUNC);
     symbols_register("acpi_virtio_slots", (void*)acpi_virtio_slots, SYM_FUNC);
+
+    // E5 — identidade e perfil. O HolyC le estes para ajustar politica (tiling,
+    // SMP, erratas) sem que a politica contamine a descoberta.
+    symbols_register("disco_identity", (void*)disco_identity, SYM_FUNC);
+    symbols_register("profile_load", (void*)profile_load, SYM_FUNC);
+    symbols_register("profile_defaults", (void*)profile_defaults, SYM_FUNC);
+    symbols_register("profile_loaded", (void*)profile_loaded, SYM_FUNC);
+    symbols_register("profile_tile_size", (void*)profile_tile_size, SYM_FUNC);
+    symbols_register("profile_morton", (void*)profile_morton, SYM_FUNC);
+    symbols_register("profile_smp_cores", (void*)profile_smp_cores, SYM_FUNC);
+    symbols_register("profile_errata", (void*)profile_errata, SYM_FUNC);
+    symbols_register("profile_throttle_us", (void*)profile_throttle_us, SYM_FUNC);
+    symbols_register("profile_name", (void*)profile_name, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -652,6 +677,15 @@ int main(int argc, char **argv)
     if (neo_fwdesc_has_dtb()) {
         if (fdt_discover(g_fdt_blob, acpi_source() != 0) == 0) fdt_report();
     }
+
+    // E5 — PERFIL COMO DADO. Precisa rodar AQUI: e uma leitura via Boot Services
+    // (FAT), e depois do drop elas nao podem mais ser feitas. E antes da
+    // pre-carga, que substitui seed_read_file pela cache de RAM.
+    //
+    // INVARIANTE: perfil ausente => defaults seguros => boota igual. Nunca
+    // "boota ou nao". Se a CORRECAO do boot depender do perfil, o sistema virou
+    // uma lista de hardware suportado com outro nome.
+    profile_load();
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);

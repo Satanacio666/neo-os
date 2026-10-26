@@ -14,6 +14,8 @@
 
 int     seed_fs_init(void);
 int64_t seed_read_file(const char *name, void *buf, size_t max_bytes);
+/* E5 — leitura por caminho completo (o perfil mora em profiles\, fora de holyc\). */
+int64_t seed_read_file_at(const char *path, void *buf, size_t max_bytes);
 
 /*
  * P1.1 / P4.3 — Pre-carga da arvore `holyc\` para RAM.

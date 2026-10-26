@@ -35,8 +35,23 @@ typedef struct {
     uint64_t virtio_base;
     uint32_t virtio_slots;
     uint32_t virtio_stride;
+    /* E5 — IDENTIDADE: chave de texto derivada SO da descoberta, nunca digitada.
+     * E o que indexa o perfil (politica) sem que a politica contamine a
+     * descoberta (fatos). Derivacao:
+     *   FDT  -> primeiro item de compatible do no raiz (ex: "linux,dummy-virt")
+     *   ACPI -> oem_id + "_" + oem_table_id do cabecalho do XSDT, saneado
+     *   nada -> "generic_aarch64"
+     * Saneada para [A-Za-z0-9_-] porque vira nome de arquivo na ESP. */
+    char identity[64];
 } discovered_platform_t;
 
 extern discovered_platform_t g_discovered_plat;
+
+/* Saneia e grava a identidade (E5). Só [A-Za-z0-9_.-] passa; o resto vira '_',
+ * porque a identidade vira NOME DE ARQUIVO na ESP: /profiles/<id>.conf.
+ * Definida em acpi.c, usada pelos dois produtores. */
+void disco_set_identity(const char *src);
+/* Devolve a identidade derivada da descoberta (nunca vazia apos a descoberta). */
+const char *disco_identity(void);
 
 #endif /* NEO_DISCOVERY_H */

@@ -158,6 +158,22 @@ uint32_t acpi_timer_virt(void)  { return g_discovered_plat.timer_virt_irq; }
 uint32_t acpi_timer_phys(void)  { return g_discovered_plat.timer_phys_irq; }
 uint32_t acpi_cpu_count(void)   { return g_discovered_plat.cpu_count; }
 
+/* E5 — IDENTIDADE. Saneia para [A-Za-z0-9_.-] porque o resultado vira NOME DE
+ * ARQUIVO na ESP (/profiles/<id>.conf); qualquer outra coisa vira '_'. */
+void disco_set_identity(const char *src) {
+    if (!src) { g_discovered_plat.identity[0] = 0; return; }
+    int i = 0;
+    for (; src[i] && i < 63; i++) {
+        char c = src[i];
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        g_discovered_plat.identity[i] = ok ? c : '_';
+    }
+    g_discovered_plat.identity[i] = 0;
+}
+
+const char *disco_identity(void) { return g_discovered_plat.identity; }
+
 /* --------------------------------------------------------------------------
  * Integridade
  * ------------------------------------------------------------------------ */
@@ -298,6 +314,18 @@ int acpi_discover(void *rsdp_ptr) {
         if (!acpi_checksum(xsdt, xsdt->length)) {
             printf("[ACPI] XSDT: CHECKSUM INVALIDO\n");
             return -1;
+        }
+        /* E5 — identidade a partir do cabecalho do XSDT: OEM ID + OEM Table ID,
+         * com o padding de espaco aparado nas duas pontas. */
+        {
+            char tmp[40]; int k = 0;
+            int e = 6; while (e > 0 && xsdt->oem_id[e - 1] == ' ') e--;
+            for (int i = 0; i < e && k < 24; i++) tmp[k++] = xsdt->oem_id[i];
+            tmp[k++] = '_';
+            e = 8; while (e > 0 && xsdt->oem_table_id[e - 1] == ' ') e--;
+            for (int i = 0; i < e && k < 38; i++) tmp[k++] = xsdt->oem_table_id[i];
+            tmp[k] = 0;
+            disco_set_identity(tmp);
         }
         printf("[ACPI] XSDT @ 0x%llX  (%u entradas de 64 bits)\n",
                (unsigned long long)rsdp->xsdt_address,

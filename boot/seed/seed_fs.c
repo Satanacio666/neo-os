@@ -136,6 +136,24 @@ int seed_preload_all(void) {
     return s_preload_count;
 }
 
+/* E5 — leitura por CAMINHO COMPLETO (ex: "profiles\\<id>.conf").
+ * seed_read_file() prefixa "holyc\\"; o perfil mora fora dessa arvore. */
+int64_t seed_read_file_at(const char *path, void *buf, size_t max_bytes) {
+    if (!s_root || !path || !buf) return -1;
+
+    wchar_t wp[256];
+    seed_ascii_to_wchar(path, wp, 256);
+
+    efi_file_handle_t *fh = NULL;
+    if (EFI_ERROR(s_root->Open(s_root, &fh, wp, EFI_FILE_MODE_READ, 0)) || !fh) return -1;
+
+    uintn_t size = (uintn_t)max_bytes;
+    efi_status_t st = fh->Read(fh, &size, buf);
+    fh->Close(fh);
+    if (EFI_ERROR(st)) return -1;
+    return (int64_t)size;
+}
+
 /* Reads "holyc\<name>" from the ESP. Returns bytes read, or -1 on error. */
 int64_t seed_read_file(const char *name, void *buf, size_t max_bytes) {
     if (!name || !buf) return -1;

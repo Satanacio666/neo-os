@@ -67,6 +67,7 @@ SRCS_C = boot/main.c \
          boot/runtime/fwdesc.c \
          boot/runtime/acpi.c \
          boot/runtime/fdt.c \
+         boot/runtime/profile.c \
          kernel/arch/aarch64/gicv3.c
 
 SRCS_S = kernel/sched/switch.S \
@@ -183,6 +184,9 @@ disk: $(TARGET_EFI)
 	@echo "Copying HolyC sources to the ESP (::/holyc) for the P2.2 bootstrap..."
 	mmd -i $(FAT_IMG) ::/holyc
 	mcopy -i $(FAT_IMG) apps/*.HC ::/holyc/
+	@echo "Instalando perfis de hardware (DADOS, nao codigo — E5)..."
+	-@mmd -i $(FAT_IMG) ::/profiles
+	-@mcopy -i $(FAT_IMG) profiles/*.conf ::/profiles/
 	@echo "Assembling $(DISK_SIZE_MB) MB image: FAT in LBA 0..$(CRASH_ZONE_LBA), crash zone from LBA $(CRASH_ZONE_LBA)"
 	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=$(DISK_SIZE_MB) status=none
 	dd if=$(FAT_IMG) of=$(DISK_IMG) conv=notrunc status=none

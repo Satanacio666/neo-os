@@ -238,6 +238,11 @@ int fdt_discover(void *blob, int only_missing) {
                         g_discovered_plat.timer_virt_irq = lv[depth].int_virt;
                     }
                 }
+                if (depth == 1) {
+                    /* E5 — o no raiz e o nivel 1; o primeiro item do compatible
+                     * dele e a identidade (ex: "linux,dummy-virt"). */
+                    if (lv[1].compat[0]) disco_set_identity(lv[1].compat);
+                }
                 depth--;
             }
 
