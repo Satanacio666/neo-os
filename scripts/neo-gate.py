@@ -71,6 +71,7 @@ print("shell ativo em: %.1fs" % shell_at if shell_at else "SHELL NAO APARECEU")
 # screendump do DolDocShell
 if os.path.exists(MON):
     m = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    m.settimeout(4)   # sem timeout o recv bloqueia para sempre (travou o CI no GitHub)
     m.connect(MON); time.sleep(0.5)
     try: m.recv(65536)
     except Exception: pass
