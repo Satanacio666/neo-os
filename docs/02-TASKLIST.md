@@ -1593,7 +1593,14 @@ scalar depth ops; window deferred). Runbook below is the original spec (retained
 
 ---
 
-### P7.6 — Merge `Profiler.HC` + `PerfOverlay.HC` → `apps/Telemetry.HC` + real ARM PMU
+### P7.6 — Merge `Profiler.HC` + `PerfOverlay.HC` → `apps/Telemetry.HC` + real ARM PMU — ✅ **DONE**
+
+**✅ DONE (see doc 04 D52).** `apps/Telemetry.HC` merges both modules (deleted) into one `CTelemetry g_tel`:
+mark_* API, FPS avg + 1 %/0.1 % lows, 128-spike ring with causes, bottleneck directive, static logs
+(census 181 → 179), RivaTuner HUD. ARM PMU intrinsics added to `Compiler.HC`; `TelemetryPmuInit` gates on
+`ID_AA64DFR0_EL1.PMUVer` and programs PMCR/PMEVTYPER0/PMCNTENSET, with an honest QEMU-TCG fallback (PMCCNTR_EL0
+read traps → `pmu_available=0`, CNTVCT authoritative). `SelfTestTelemetry` → `TELEMETRY: PASS (7/7)`. Runbook
+below is the original spec (retained).
 
 **Goal.** One telemetry engine with a `mark_*` API, percentiles, spike ring + causes, optimization
 directives, and PMU counters. Delete the two old modules.

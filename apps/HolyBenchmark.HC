@@ -78,10 +78,9 @@ U0 bench_unified_tick_and_draw() {
 
     I64 t_raster = timer_get_uptime_us() - r_start;
 
-    // Draw RivaTuner HUD Overlay below 3D viewport
-    PerfOverlayRecordFrame(dt_us, t_raster, 1200);
-    ProfilerRecordFrame(dt_us, t_logic, t_raster, 0, 1200, 400, 300);
-    PerfOverlayDraw(vx + 20, vy + vh + 12);
+    // Draw the telemetry HUD below the 3D viewport (P7.6 unified profiler+HUD).
+    TelemetryRecordFrame(dt_us, t_logic, t_raster, 0, 1200, 400, 300);
+    TelemetryDraw(vx + 20, vy + vh + 12);
 
     g_bench_frame = g_bench_frame + 1;
     if (g_bench_frame % 20 == 0) {
@@ -97,8 +96,7 @@ U0 bench_unified_start(I64 mode) {
     g_bench_last_us = timer_get_uptime_us();
     g_bench_active = 1;
 
-    ProfilerInit();
-    PerfOverlayInit();
+    TelemetryInit();
     physics3d_world_init();
 
     // Execute synchronous 10-frame warmup across engines
@@ -108,8 +106,9 @@ U0 bench_unified_start(I64 mode) {
         f++;
     }
 
-    I64 avg_fps_i = (I64)g_prof.fps_avg;
-    I64 avg_fps_d = ((I64)(g_prof.fps_avg * 10.0)) % 10;
+    F64 fps_now = TelemetryFpsAvg();
+    I64 avg_fps_i = (I64)fps_now;
+    I64 avg_fps_d = ((I64)(fps_now * 10.0)) % 10;
     if (avg_fps_i <= 0) avg_fps_i = 60;
 
     U8 *report = kmalloc(512);
@@ -118,7 +117,7 @@ U0 bench_unified_start(I64 mode) {
         redsea_write_file("BENCH_COMPARISON.TXT", report, strlen(report));
         kfree(report);
     }
-    ProfilerWriteLogs();
+    TelemetryWriteLogs();
     doldoc_printf("  $FG,GREEN$[PASS]$FG$ 40-Phase Unified 3D & GPU Pipeline Active (FPS_avg: %lld.%lld)\n",
                   avg_fps_i, avg_fps_d);
 }

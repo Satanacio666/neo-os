@@ -143,6 +143,12 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   reconfigured through ONE canonical `CGpuConfig` (`apps/GpuConfig.HC`): `tile_size` feeds the binner,
   `smp_cores` caps the dispatch, `zprecision` picks a 16/32-bit Z buffer, `buffer_mode` picks single/double/
   triple buffering, `vsync` paces presents (doc 04 D51). GPU-provider execution of tile jobs is still open (P9).
+- **Unified telemetry (profiler + HUD) + ARM PMU** `(P7.6)`: `apps/Telemetry.HC` merges the frame profiler
+  (percentiles, spike forensics, bottleneck directives, static RedSea logs) and the RivaTuner HUD into one
+  `CTelemetry g_tel`, and adds real ARMv8 PMU (PMUv3) access through new `Compiler.HC` intrinsics. On the QEMU
+  TCG target the PMU *control* registers accept writes but reading `PMCCNTR_EL0` traps (Undefined Instruction),
+  so the counters are configured but reported unusable and `CNTVCT_EL0` stays authoritative — an honest fallback,
+  never a fake number (doc 04 D52). **[REAL]**
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

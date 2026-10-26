@@ -26,7 +26,7 @@ for i in $(seq 1 40); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && brea
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"
-check "all 34 subsystems"   1 "$(count 'ALL 34 HOLYC SUBSYSTEMS')"
+check "all 33 subsystems"   1 "$(count 'ALL 33 HOLYC SUBSYSTEMS')"
 check "exceptions"          0 "$(count 'Synchronous Exception')"
 check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
@@ -236,6 +236,13 @@ else
         echo "  [PASS] $gcfline (5 GPU config knobs: read/write/clamp/restore + 1v4 tiles)"
     else
         echo "  [FAIL] GPU config plane: ${gcfline:-<none>} (want GPUCFG: PASS)"
+        fail=1
+    fi
+    telline="$(printf '%s\n' "$out" | grep -a 'TELEMETRY: ' | tail -1)"
+    if printf '%s' "$telline" | grep -aq 'PASS'; then
+        echo "  [PASS] $telline (profiler+HUD merge, percentiles, spikes, PMU probe)"
+    else
+        echo "  [FAIL] telemetry: ${telline:-<none>} (want TELEMETRY: PASS)"
         fail=1
     fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"

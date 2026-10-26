@@ -451,6 +451,17 @@ transaction) and `VirtioGpuPageFlip` (scanout switch, no framebuffer copy); `Vir
 self-hosted-compiler limitation surfaced here (a cast of a struct array member followed by indexing) and was
 avoided by typing the arena depth `U16 depth[8192]`.
 
+### P7.6 — unified telemetry (profiler + HUD) + ARM PMU — **[REAL]**
+
+`apps/Profiler.HC` + `apps/PerfOverlay.HC` are merged into one `apps/Telemetry.HC` (both deleted) with a single
+`CTelemetry g_tel`: the `mark_*` frame/stage API, FPS avg + **1 %/0.1 % lows**, a 128-spike ring with causes,
+bottleneck classification + `TelemetryDirective`, a **static** `g_tel_log[16384]` (census 181 → 179), and the
+`TelemetryDraw` HUD. ARM PMU intrinsics were added to `Compiler.HC` (encodings verified with `aarch64-as`).
+`TelemetryPmuInit` gates on `ID_AA64DFR0_EL1.PMUVer` and programs PMCR/PMEVTYPER0/PMCNTENSET — but on QEMU TCG
+cortex-a72 reading `PMCCNTR_EL0` raises Undefined Instruction, so the counters are configured and honestly
+reported unusable (`pmu_available=0`), with `CNTVCT_EL0` authoritative. `SelfTestTelemetry` → `TELEMETRY: PASS
+(7/7)`. Gate passes in standard and `-icount` modes (D52).
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

@@ -97,8 +97,8 @@ U0 KernelInitMain() {
 
     // Stage 6: Telemetry, Theme, DolDoc 3.0 (CDoc/CTree), Shell & Desktop
     KInitLog("Stage 6: Theme, DolDoc 3.0 (CDoc/CTree), Shadertoy & Desktop...");
-    KInitLoad("Profiler.HC");
-    KInitLoad("PerfOverlay.HC");
+    // P7.6: Profiler.HC + PerfOverlay.HC merged into one Telemetry.HC.
+    KInitLoad("Telemetry.HC");
     KInitLoad("BenchCpu.HC");
     KInitLoad("BenchReport.HC");
     KInitLoad("Theme.HC");
@@ -111,7 +111,7 @@ U0 KernelInitMain() {
     KInitLoad("HolyBenchmark.HC");
 
     KInitLog("======================================================");
-    KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
+    KInitLog("✦ ALL 33 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
     // P7.0: peephole-optimizer telemetry (Compiler.HC optimizes every module it

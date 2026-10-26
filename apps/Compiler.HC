@@ -2624,7 +2624,14 @@ I64 HcIsIntrinsic(U8 *name) {
             strcmp(name, "__mmio_r32") == 0 || strcmp(name, "__mmio_w32") == 0 ||
             strcmp(name, "__msr_cntv_tval") == 0 || strcmp(name, "__msr_cntv_ctl") == 0 ||
             strcmp(name, "__irq_disable") == 0 || strcmp(name, "__irq_enable") == 0 ||
-            strcmp(name, "__mrs_daif") == 0 || strcmp(name, "__msr_daif") == 0);
+            strcmp(name, "__mrs_daif") == 0 || strcmp(name, "__msr_daif") == 0 ||
+            // P7.6: ARMv8 PMU (PMUv3) system registers.
+            strcmp(name, "__mrs_pmcr") == 0 || strcmp(name, "__msr_pmcr") == 0 ||
+            strcmp(name, "__mrs_pmccntr") == 0 || strcmp(name, "__msr_pmccntr") == 0 ||
+            strcmp(name, "__mrs_pmevcntr0") == 0 || strcmp(name, "__msr_pmevcntr0") == 0 ||
+            strcmp(name, "__mrs_pmevtyper0") == 0 || strcmp(name, "__msr_pmevtyper0") == 0 ||
+            strcmp(name, "__msr_pmcntenset") == 0 || strcmp(name, "__msr_pmcntenclr") == 0 ||
+            strcmp(name, "__mrs_id_aa64dfr0") == 0);
 }
 
 U0 HcEmitIntrinsic(U8 *name) {
@@ -2648,6 +2655,18 @@ U0 HcEmitIntrinsic(U8 *name) {
     else if (strcmp(name, "__irq_enable") == 0) HcEmit(0xD50342FF);    // MSR DAIFClr, #2
     else if (strcmp(name, "__mrs_daif") == 0) HcEmit(0xD53B4220);      // MRS X0, DAIF
     else if (strcmp(name, "__msr_daif") == 0) HcEmit(0xD51B4220);      // MSR DAIF, X0
+    // P7.6: PMU (PMUv3) system registers (encodings verified with aarch64-as).
+    else if (strcmp(name, "__mrs_pmcr") == 0) HcEmit(0xD54B9C00);       // MRS X0, PMCR_EL0
+    else if (strcmp(name, "__msr_pmcr") == 0) HcEmit(0xD51B9C00);       // MSR PMCR_EL0, X0
+    else if (strcmp(name, "__mrs_pmccntr") == 0) HcEmit(0xD54B9D00);    // MRS X0, PMCCNTR_EL0
+    else if (strcmp(name, "__msr_pmccntr") == 0) HcEmit(0xD51B9D00);    // MSR PMCCNTR_EL0, X0
+    else if (strcmp(name, "__mrs_pmevcntr0") == 0) HcEmit(0xD54BE800);  // MRS X0, PMEVCNTR0_EL0
+    else if (strcmp(name, "__msr_pmevcntr0") == 0) HcEmit(0xD51BE800);  // MSR PMEVCNTR0_EL0, X0
+    else if (strcmp(name, "__mrs_pmevtyper0") == 0) HcEmit(0xD54BEC00); // MRS X0, PMEVTYPER0_EL0
+    else if (strcmp(name, "__msr_pmevtyper0") == 0) HcEmit(0xD51BEC00); // MSR PMEVTYPER0_EL0, X0
+    else if (strcmp(name, "__msr_pmcntenset") == 0) HcEmit(0xD51B9C20); // MSR PMCNTENSET_EL0, X0
+    else if (strcmp(name, "__msr_pmcntenclr") == 0) HcEmit(0xD51B9C40); // MSR PMCNTENCLR_EL0, X0
+    else if (strcmp(name, "__mrs_id_aa64dfr0") == 0) HcEmit(0xD5380500); // MRS X0, ID_AA64DFR0_EL1
 }
 
 U0 HcParseExpr() {

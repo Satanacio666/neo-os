@@ -1413,6 +1413,7 @@ U0 SelfTestRun() {
     SelfTestNeonMem();
     SelfTestTile();
     SelfTestGpuConfig();
+    TelemetrySelfTest();
     SelfTestMath3DParallel();
     FontsSelfTest();
     SelfTest3D();

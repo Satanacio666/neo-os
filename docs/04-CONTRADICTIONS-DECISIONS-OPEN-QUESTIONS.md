@@ -1072,3 +1072,25 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`,
   `DETERMINISM: PASS (1 vs 4 cores identical)`, `SELFTEST 123/123 PASS`, `PARITY 92/92 PASS`, `GPUCFG: PASS
   (21/21)`, `CENSUS: PASS (181, none increased)`, `SELF-HOST: PASS`.
+- **D52 — P7.6: unified telemetry (profiler + HUD) + ARM PMU (DONE).** `apps/Profiler.HC` (scientific frame
+  profiler: percentiles, spike forensics, bottleneck diagnosis, RedSea logs) and `apps/PerfOverlay.HC`
+  (RivaTuner HUD: frametime ring, sparkline) are merged into ONE `apps/Telemetry.HC` (both old files deleted).
+  One `CTelemetry g_tel` holds all state; consumers use the `Telemetry*` functions/accessors (no cross-module
+  struct access). Delivered: the `mark_*` API (`TelemetryBeginFrame`/`MarkLogic|Raster|Blit|Dma|Wm
+  Start|End`/`RecordSmpWait`/`EndFrame`), `TelemetryComputeMetrics` (FPS avg + **1 % low** + **0.1 % low** from
+  the 256-bin histogram, min/max/stddev), a 128-spike ring with **causes** (WM/SMP/blit) plus bottleneck
+  classification, `TelemetryDirective(bottleneck)`, `TelemetryWriteLogs` into a **static** `g_tel_log[16384]`
+  (removes the former `kmalloc`/`kfree` — census drops 181 → **179**), and the `TelemetryDraw` HUD.
+  **ARM PMU:** new `apps/Compiler.HC` intrinsics `__mrs_pmcr`/`__msr_pmcr`, `__mrs_pmccntr`/`__msr_pmccntr`,
+  `__mrs_pmevcntr0`/`__msr_pmevcntr0`, `__mrs_pmevtyper0`/`__msr_pmevtyper0`, `__msr_pmcntenset`/`__msr_pmcntenclr`,
+  `__mrs_id_aa64dfr0` (every encoding verified with `aarch64-linux-gnu-as`). `TelemetryPmuInit` gates on
+  `ID_AA64DFR0_EL1.PMUVer` and programs PMCR_EL0 (E|P|C|D|LC), PMEVTYPER0=0x08 (INST_RETIRED) and PMCNTENSET.
+  **Honest fallback (verified):** on QEMU TCG cortex-a72 the PMU *control* registers accept writes but reading
+  `PMCCNTR_EL0` raises an **Undefined Instruction** (PMUVer reports 1 yet the counter traps), so the counters are
+  configured but reported unusable (`pmu_available = 0`) and CNTVCT_EL0 frame deltas stay authoritative — never a
+  silent fake. `SelfTestTelemetry` → `TELEMETRY: PASS (7/7)` (100 frames → 95 valid, percentiles > 0, a 65 ms
+  spike with a cause, non-empty directive, PMU init+probe without faulting, both logs written), asserted by
+  `golden-boot.sh`. `KernelInit` Stage 6 now loads `Telemetry.HC` (subsystem count 34 → 33). Gate (standard
+  **and** `-icount shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact,
+  `TILE: PASS`, `TELEMETRY: PASS`, `GPUCFG: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`, `SELFTEST 123/123 PASS`,
+  `PARITY 92/92 PASS`, `CENSUS: PASS (179, decreased)`, `SELF-HOST: PASS`.
