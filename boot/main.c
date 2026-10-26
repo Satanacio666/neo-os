@@ -44,6 +44,11 @@ extern uint64_t neo_block_bytes(int idx);
 extern int      neo_block_is_removable(int idx);
 extern int64_t  neo_block_read(int idx, uint64_t lba, uint64_t count, void *buf);
 extern int64_t  neo_block_write(int idx, uint64_t lba, uint64_t count, const void *buf);
+
+/* P7.2 — crash dump em setores crus (boot/runtime/blockio.c) */
+extern void neo_crash_dump_to_disk(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr);
+extern void neo_crash_set_heap(uint64_t base);
+extern void neo_crash_set_module(uint64_t idx, const char *name);
 extern void     gicv3_bpr1_set(uint64_t v);
 extern uint64_t gicv3_bpr1_get(void);
 extern int      neo_pl011_available(void);
@@ -210,6 +215,14 @@ void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
            (unsigned long long)g_uefi_heap_base,
            (unsigned long long)(elr - g_uefi_heap_base));
     printf("=========== <<<BSOD:TIER0>>> HALTED ===========\r\n");
+
+    // P7.2 — Grava o dump em setores CRUS, fora da FAT, ANTES de travar.
+    // Caminho de falha: sem alocacao, sem heap, sem driver FAT — so
+    // BlockIo->WriteBlocks para a zona reservada no fim da midia.
+    // Leitura offline: scripts/read-crash-dump.py
+    neo_crash_dump_to_disk(esr, elr, far, spsr);
+    printf("=========== dump gravado em LBA %d ===========\r\n", (int)NEO_CRASH_ZONE_LBA);
+
     while (1) {
         asm volatile("wfi");
     }
@@ -406,6 +419,10 @@ int main(int argc, char **argv)
     }
     kheap_init((void*)heap_phys, s_kernel_heap_size);
     g_uefi_heap_base = (uint64_t)heap_phys;
+
+    // P7.2 — contexto para o crash dump: a base do heap entra no cabecalho, o que
+    // permite ver de imediato se o PC da falha caiu dentro do heap (JIT) ou fora.
+    neo_crash_set_heap((uint64_t)heap_phys);
     g_uefi_heap_size = s_kernel_heap_size;
 
     // 3. Allocate Dedicated JIT Executable Pool (EfiLoaderCode)
@@ -526,6 +543,12 @@ int main(int argc, char **argv)
     symbols_register("neo_block_is_removable", (void*)neo_block_is_removable, SYM_FUNC);
     symbols_register("neo_block_read", (void*)neo_block_read, SYM_FUNC);
     symbols_register("neo_block_write", (void*)neo_block_write, SYM_FUNC);
+
+    // P7.2 — crash dump. O KernelInit.HC chama neo_crash_set_module antes de cada
+    // compilacao, para o dump dizer QUAL modulo estava ativo quando falhou.
+    symbols_register("neo_crash_dump_to_disk", (void*)neo_crash_dump_to_disk, SYM_FUNC);
+    symbols_register("neo_crash_set_heap", (void*)neo_crash_set_heap, SYM_FUNC);
+    symbols_register("neo_crash_set_module", (void*)neo_crash_set_module, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 

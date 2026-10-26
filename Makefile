@@ -51,6 +51,7 @@ BUILD_DIR = build
 TARGET_EFI = $(BUILD_DIR)/BOOTAA64.EFI
 TARGET_SO = $(BUILD_DIR)/boot.so
 DISK_IMG = $(BUILD_DIR)/disk.img
+FAT_IMG  = $(BUILD_DIR)/fat.img
 REDSEA_IMG = $(BUILD_DIR)/redsea.img
 
 UEFI_DIR = boot/uefi
@@ -75,8 +76,19 @@ OBJS_C = $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C))
 OBJS_S = $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_S))
 ALL_OBJS = $(OBJS_C) $(OBJS_S)
 
+# --- Disk layout (P7.2) ------------------------------------------------------
+# O crash dump vai para setores CRUS no fim da midia, FORA da FAT. Um caminho de
+# falha nao pode alocar, nao pode montar estrutura de diretorio e nao pode
+# depender de heap: se o panic vier de heap corrompido, um logger FAT travaria e
+# apagaria o rastro. Estes numeros tambem sao passados ao C via -D.
+FAT_SIZE_MB    = 64
+CRASH_ZONE_MB  = 4
+DISK_SIZE_MB   = 68
+CRASH_ZONE_LBA = 131072          # FAT_SIZE_MB * 1024 * 1024 / 512
+
 CFLAGS = -fshort-wchar -fno-strict-aliasing -ffreestanding -fno-stack-protector \
          -fno-stack-check -I$(UEFI_DIR) -Ikernel -Iboot/seed -Igui -Idrivers -Ifs -D__aarch64__ \
+         -DNEO_CRASH_ZONE_LBA=$(CRASH_ZONE_LBA) -DNEO_FAT_SIZE_MB=$(FAT_SIZE_MB) \
          -Wno-builtin-declaration-mismatch -fpic -fPIC -O2 -Wall -MMD -MP
 
 ASFLAGS = -Ikernel
@@ -157,17 +169,20 @@ $(TARGET_EFI): $(TARGET_SO)
 	@echo ">>> Successfully built $(TARGET_EFI) <<<"
 
 disk: $(TARGET_EFI)
-	@echo "Creating FAT32 UEFI bootable disk image..."
-	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=64 status=none
-	$(MKFS_VFAT) -F 32 $(DISK_IMG) >/dev/null
-	mmd -i $(DISK_IMG) ::/EFI
-	mmd -i $(DISK_IMG) ::/EFI/BOOT
-	mcopy -i $(DISK_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI
+	@echo "Creating FAT32 UEFI bootable disk image ($(FAT_SIZE_MB) MB FAT + $(CRASH_ZONE_MB) MB crash zone)..."
+	dd if=/dev/zero of=$(FAT_IMG) bs=1M count=$(FAT_SIZE_MB) status=none
+	$(MKFS_VFAT) -F 32 $(FAT_IMG) >/dev/null
+	mmd -i $(FAT_IMG) ::/EFI
+	mmd -i $(FAT_IMG) ::/EFI/BOOT
+	mcopy -i $(FAT_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI
 	@printf "FS0:\r\ncd EFI\\\\BOOT\r\nBOOTAA64.EFI\r\n" > $(BUILD_DIR)/startup.nsh
-	mcopy -i $(DISK_IMG) $(BUILD_DIR)/startup.nsh ::/startup.nsh
+	mcopy -i $(FAT_IMG) $(BUILD_DIR)/startup.nsh ::/startup.nsh
 	@echo "Copying HolyC sources to the ESP (::/holyc) for the P2.2 bootstrap..."
-	mmd -i $(DISK_IMG) ::/holyc
-	mcopy -i $(DISK_IMG) apps/*.HC ::/holyc/
+	mmd -i $(FAT_IMG) ::/holyc
+	mcopy -i $(FAT_IMG) apps/*.HC ::/holyc/
+	@echo "Assembling $(DISK_SIZE_MB) MB image: FAT in LBA 0..$(CRASH_ZONE_LBA), crash zone from LBA $(CRASH_ZONE_LBA)"
+	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=$(DISK_SIZE_MB) status=none
+	dd if=$(FAT_IMG) of=$(DISK_IMG) conv=notrunc status=none
 	@echo "Packaging RedSea 32MB disk image from apps/..."
 	python3 scripts/mkredsea.py $(REDSEA_IMG) apps/
 	@echo ">>> Boot disk image ready at $(DISK_IMG) <<<"
