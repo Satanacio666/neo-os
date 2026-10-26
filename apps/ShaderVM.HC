@@ -103,17 +103,27 @@ I64 g_sv_prog_len;
 F64 g_sv_const[SV_MAX_CONST];
 I64 g_sv_const_count;
 
-F64 g_sv_regs[SV_MAX_REGS * 4];
-I64 g_sv_mask;
-I64 g_sv_cond;
-I64 g_sv_mask_stack[8];
-I64 g_sv_mask_sp;
-F64 g_sv_qx;
-F64 g_sv_qy;
-F64 g_sv_sx;
-F64 g_sv_sy;
-F64 g_sv_time;
-U32 g_sv_out[4];
+// P7.4 F3: per-core fragment-shader execution context. ALL mutable VM state — the
+// 4-lane register file, the execution mask + its stack, the quad's screen-space
+// origin/step, the shader time, and the 4 output pixels — lives here, one instance
+// per core (g_sv_ctx[]). Concurrent tile shaders therefore share NO mutable state;
+// the program (g_sv_prog/g_sv_const) is read-only and shared. The BSP renders with
+// context 0 (ShaderVMRenderNode); a tile worker passes its own.
+#define SV_MAX_CORES 4
+class CShaderCtx {
+  F64 regs[SV_MAX_REGS * 4];
+  I64 mask;
+  I64 cond;
+  I64 mask_stack[8];
+  I64 mask_sp;
+  F64 qx;
+  F64 qy;
+  F64 sx;
+  F64 sy;
+  F64 time;
+  U32 out[4];
+};
+CShaderCtx g_sv_ctx[SV_MAX_CORES];
 
 I64 g_sv_cur_type = -99;
 
@@ -317,21 +327,21 @@ F64 ShaderSdfTorus(F64 px, F64 py, F64 pz, F64 R, F64 r) {
 // VM interpreter: evaluate g_sv_prog over a 2x2 quad.
 // lane layout: 0=(x,y) 1=(x+sx,y) 2=(x,y+sy) 3=(x+sx,y+sy)
 // ==============================================================================
-U0 ShaderVMQuad(F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
+U0 ShaderVMQuad(CShaderCtx *ctx, F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
     I64 i = 0;
-    while (i < SV_MAX_REGS * 4) { g_sv_regs[i] = 0.0; i = i + 1; }
-    g_sv_qx = qx;
-    g_sv_qy = qy;
-    g_sv_sx = sx;
-    g_sv_sy = sy;
-    g_sv_time = t;
-    g_sv_mask = 15;
-    g_sv_cond = 15;
-    g_sv_mask_sp = 0;
-    g_sv_out[0] = 0xFF000000;
-    g_sv_out[1] = 0xFF000000;
-    g_sv_out[2] = 0xFF000000;
-    g_sv_out[3] = 0xFF000000;
+    while (i < SV_MAX_REGS * 4) { ctx->regs[i] = 0.0; i = i + 1; }
+    ctx->qx = qx;
+    ctx->qy = qy;
+    ctx->sx = sx;
+    ctx->sy = sy;
+    ctx->time = t;
+    ctx->mask = 15;
+    ctx->cond = 15;
+    ctx->mask_sp = 0;
+    ctx->out[0] = 0xFF000000;
+    ctx->out[1] = 0xFF000000;
+    ctx->out[2] = 0xFF000000;
+    ctx->out[3] = 0xFF000000;
 
     I64 pc = 0;
     I64 steps = 0;
@@ -350,99 +360,99 @@ U0 ShaderVMQuad(F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
             halted = 1;
         } else if (op >= SV_ADD && op <= SV_FRACT) {
             // NEON 4-lane arithmetic core.
-            ShaderOp4(&tmp[0], &g_sv_regs[b * 4], &g_sv_regs[c * 4], op - SV_ADD);
+            ShaderOp4(&tmp[0], &ctx->regs[b * 4], &ctx->regs[c * 4], op - SV_ADD);
             I64 l = 0;
-            while (l < 4) { if ((g_sv_mask & (1 << l)) != 0) g_sv_regs[a * 4 + l] = tmp[l]; l = l + 1; }
+            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = tmp[l]; l = l + 1; }
         } else if (op == SV_MOV) {
             I64 l = 0;
-            while (l < 4) { if ((g_sv_mask & (1 << l)) != 0) g_sv_regs[a * 4 + l] = g_sv_regs[b * 4 + l]; l = l + 1; }
+            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = ctx->regs[b * 4 + l]; l = l + 1; }
         } else if (op == SV_MOVI) {
             F64 v = g_sv_const[b];
             I64 l = 0;
-            while (l < 4) { if ((g_sv_mask & (1 << l)) != 0) g_sv_regs[a * 4 + l] = v; l = l + 1; }
+            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v; l = l + 1; }
         } else if (op == SV_SIN || op == SV_COS) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 x = g_sv_regs[b * 4 + l];
-                    if (op == SV_SIN) g_sv_regs[a * 4 + l] = MathSinRad(x);
-                    else g_sv_regs[a * 4 + l] = MathCosRad(x);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 x = ctx->regs[b * 4 + l];
+                    if (op == SV_SIN) ctx->regs[a * 4 + l] = MathSinRad(x);
+                    else ctx->regs[a * 4 + l] = MathCosRad(x);
                 }
                 l = l + 1;
             }
         } else if (op == SV_LEN2 || op == SV_LEN3) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 x = g_sv_regs[b * 4 + l];
-                    F64 y = g_sv_regs[(b + 1) * 4 + l];
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 x = ctx->regs[b * 4 + l];
+                    F64 y = ctx->regs[(b + 1) * 4 + l];
                     F64 s = x * x + y * y;
-                    if (op == SV_LEN3) { F64 z = g_sv_regs[(b + 2) * 4 + l]; s = s + z * z; }
-                    g_sv_regs[a * 4 + l] = MathSqrt(s);
+                    if (op == SV_LEN3) { F64 z = ctx->regs[(b + 2) * 4 + l]; s = s + z * z; }
+                    ctx->regs[a * 4 + l] = MathSqrt(s);
                 }
                 l = l + 1;
             }
         } else if (op == SV_DOT2) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 ax = g_sv_regs[b * 4 + l];
-                    F64 ay = g_sv_regs[(b + 1) * 4 + l];
-                    F64 bx = g_sv_regs[c * 4 + l];
-                    F64 by = g_sv_regs[(c + 1) * 4 + l];
-                    g_sv_regs[a * 4 + l] = ax * bx + ay * by;
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 ax = ctx->regs[b * 4 + l];
+                    F64 ay = ctx->regs[(b + 1) * 4 + l];
+                    F64 bx = ctx->regs[c * 4 + l];
+                    F64 by = ctx->regs[(c + 1) * 4 + l];
+                    ctx->regs[a * 4 + l] = ax * bx + ay * by;
                 }
                 l = l + 1;
             }
         } else if (op == SV_MIX) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 t0 = g_sv_regs[c * 4 + l];
-                    F64 p0 = g_sv_regs[a * 4 + l];
-                    F64 p1 = g_sv_regs[b * 4 + l];
-                    g_sv_regs[a * 4 + l] = p0 + (p1 - p0) * t0;
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 t0 = ctx->regs[c * 4 + l];
+                    F64 p0 = ctx->regs[a * 4 + l];
+                    F64 p1 = ctx->regs[b * 4 + l];
+                    ctx->regs[a * 4 + l] = p0 + (p1 - p0) * t0;
                 }
                 l = l + 1;
             }
         } else if (op == SV_CLAMP) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 v = g_sv_regs[a * 4 + l];
-                    F64 lo = g_sv_regs[b * 4 + l];
-                    F64 hi = g_sv_regs[c * 4 + l];
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 v = ctx->regs[a * 4 + l];
+                    F64 lo = ctx->regs[b * 4 + l];
+                    F64 hi = ctx->regs[c * 4 + l];
                     if (v < lo) v = lo;
                     if (v > hi) v = hi;
-                    g_sv_regs[a * 4 + l] = v;
+                    ctx->regs[a * 4 + l] = v;
                 }
                 l = l + 1;
             }
         } else if (op == SV_SMOOTH) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    F64 x = g_sv_regs[a * 4 + l];
-                    F64 e0 = g_sv_regs[b * 4 + l];
-                    F64 e1 = g_sv_regs[c * 4 + l];
-                    g_sv_regs[a * 4 + l] = Smoothstep(e0, e1, x);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    F64 x = ctx->regs[a * 4 + l];
+                    F64 e0 = ctx->regs[b * 4 + l];
+                    F64 e1 = ctx->regs[c * 4 + l];
+                    ctx->regs[a * 4 + l] = Smoothstep(e0, e1, x);
                 }
                 l = l + 1;
             }
         } else if (op == SV_FRAGX || op == SV_FRAGY || op == SV_TIME) {
             I64 l = 0;
             while (l < 4) {
-                F64 v = g_sv_time;
-                if (op == SV_FRAGX) v = g_sv_qx + g_sv_sx * (F64)(l & 1);
-                else if (op == SV_FRAGY) v = g_sv_qy + g_sv_sy * (F64)(l >> 1);
-                if ((g_sv_mask & (1 << l)) != 0) g_sv_regs[a * 4 + l] = v;
+                F64 v = ctx->time;
+                if (op == SV_FRAGX) v = ctx->qx + ctx->sx * (F64)(l & 1);
+                else if (op == SV_FRAGY) v = ctx->qy + ctx->sy * (F64)(l >> 1);
+                if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v;
                 l = l + 1;
             }
         } else if (op == SV_DFDX || op == SV_DFDY) {
-            F64 v0 = g_sv_regs[b * 4 + 0];
-            F64 v1 = g_sv_regs[b * 4 + 1];
-            F64 v2 = g_sv_regs[b * 4 + 2];
-            F64 v3 = g_sv_regs[b * 4 + 3];
+            F64 v0 = ctx->regs[b * 4 + 0];
+            F64 v1 = ctx->regs[b * 4 + 1];
+            F64 v2 = ctx->regs[b * 4 + 2];
+            F64 v3 = ctx->regs[b * 4 + 3];
             F64 d0 = 0.0;
             F64 d1 = 0.0;
             F64 d2 = 0.0;
@@ -455,97 +465,97 @@ U0 ShaderVMQuad(F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
                 if (l == 1) d = d1;
                 else if (l == 2) d = d2;
                 else if (l == 3) d = d3;
-                if ((g_sv_mask & (1 << l)) != 0) g_sv_regs[a * 4 + l] = d;
+                if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = d;
                 l = l + 1;
             }
         } else if (op == SV_IF) {
             I64 cond = 0;
             I64 l = 0;
-            while (l < 4) { if (g_sv_regs[a * 4 + l] > 0.0) cond = cond | (1 << l); l = l + 1; }
-            if (g_sv_mask_sp < 7) {
-                g_sv_mask_stack[g_sv_mask_sp] = g_sv_mask;
-                g_sv_mask_sp = g_sv_mask_sp + 1;
+            while (l < 4) { if (ctx->regs[a * 4 + l] > 0.0) cond = cond | (1 << l); l = l + 1; }
+            if (ctx->mask_sp < 7) {
+                ctx->mask_stack[ctx->mask_sp] = ctx->mask;
+                ctx->mask_sp = ctx->mask_sp + 1;
             }
-            g_sv_cond = cond;
-            g_sv_mask = g_sv_mask & cond;
+            ctx->cond = cond;
+            ctx->mask = ctx->mask & cond;
         } else if (op == SV_ELSE) {
             I64 saved = 15;
-            if (g_sv_mask_sp > 0) saved = g_sv_mask_stack[g_sv_mask_sp - 1];
-            g_sv_mask = saved & (~g_sv_cond) & 15;
+            if (ctx->mask_sp > 0) saved = ctx->mask_stack[ctx->mask_sp - 1];
+            ctx->mask = saved & (~ctx->cond) & 15;
         } else if (op == SV_ENDIF) {
-            if (g_sv_mask_sp > 0) {
-                g_sv_mask_sp = g_sv_mask_sp - 1;
-                g_sv_mask = g_sv_mask_stack[g_sv_mask_sp];
+            if (ctx->mask_sp > 0) {
+                ctx->mask_sp = ctx->mask_sp - 1;
+                ctx->mask = ctx->mask_stack[ctx->mask_sp];
             } else {
-                g_sv_mask = 15;
+                ctx->mask = 15;
             }
         } else if (op == SV_JMP) {
             pc = a * 4;
         } else if (op == SV_JNZ || op == SV_JZ) {
             I64 nz = 0;
             I64 l = 0;
-            while (l < 4) { if (g_sv_regs[a * 4 + l] != 0.0) nz = 1; l = l + 1; }
+            while (l < 4) { if (ctx->regs[a * 4 + l] != 0.0) nz = 1; l = l + 1; }
             if ((op == SV_JNZ && nz != 0) || (op == SV_JZ && nz == 0)) pc = b * 4;
         } else if (op == SV_PERLIN) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    g_sv_regs[a * 4 + l] = ShaderPerlin3(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[(b + 2) * 4 + l]);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    ctx->regs[a * 4 + l] = ShaderPerlin3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
                 }
                 l = l + 1;
             }
         } else if (op == SV_FBM) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    I64 oct = (I64)g_sv_regs[c * 4 + l];
-                    g_sv_regs[a * 4 + l] = ShaderFbm3(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[(b + 2) * 4 + l], oct);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    I64 oct = (I64)ctx->regs[c * 4 + l];
+                    ctx->regs[a * 4 + l] = ShaderFbm3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], oct);
                 }
                 l = l + 1;
             }
         } else if (op == SV_MANDEL) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    g_sv_regs[a * 4 + l] = ShaderMandelbulbDE(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[(b + 2) * 4 + l]);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    ctx->regs[a * 4 + l] = ShaderMandelbulbDE(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
                 }
                 l = l + 1;
             }
         } else if (op == SV_SDFSPHERE) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    g_sv_regs[a * 4 + l] = SdfSphere(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[(b + 2) * 4 + l], g_sv_regs[c * 4 + l]);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    ctx->regs[a * 4 + l] = SdfSphere(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l]);
                 }
                 l = l + 1;
             }
         } else if (op == SV_SDFBOX) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    g_sv_regs[a * 4 + l] = SdfBox2D(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[c * 4 + l], g_sv_regs[(c + 1) * 4 + l]);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    ctx->regs[a * 4 + l] = SdfBox2D(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
                 }
                 l = l + 1;
             }
         } else if (op == SV_SDFTORUS) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    g_sv_regs[a * 4 + l] = ShaderSdfTorus(g_sv_regs[b * 4 + l], g_sv_regs[(b + 1) * 4 + l], g_sv_regs[(b + 2) * 4 + l], g_sv_regs[c * 4 + l], g_sv_regs[(c + 1) * 4 + l]);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    ctx->regs[a * 4 + l] = ShaderSdfTorus(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
                 }
                 l = l + 1;
             }
         } else if (op == SV_OUT) {
             I64 l = 0;
             while (l < 4) {
-                if ((g_sv_mask & (1 << l)) != 0) {
-                    I64 r = (I64)(g_sv_regs[a * 4 + l] * 255.0 + 0.5);
-                    I64 g = (I64)(g_sv_regs[b * 4 + l] * 255.0 + 0.5);
-                    I64 bl = (I64)(g_sv_regs[c * 4 + l] * 255.0 + 0.5);
+                if ((ctx->mask & (1 << l)) != 0) {
+                    I64 r = (I64)(ctx->regs[a * 4 + l] * 255.0 + 0.5);
+                    I64 g = (I64)(ctx->regs[b * 4 + l] * 255.0 + 0.5);
+                    I64 bl = (I64)(ctx->regs[c * 4 + l] * 255.0 + 0.5);
                     if (r < 0) r = 0; if (r > 255) r = 255;
                     if (g < 0) g = 0; if (g > 255) g = 255;
                     if (bl < 0) bl = 0; if (bl > 255) bl = 255;
-                    g_sv_out[l] = 0xFF000000 | (r << 16) | (g << 8) | bl;
+                    ctx->out[l] = 0xFF000000 | (r << 16) | (g << 8) | bl;
                 }
                 l = l + 1;
             }
@@ -921,7 +931,7 @@ U0 ShaderField4(F64 *dst, F64 *px, F64 *py, F64 *pz, F64 t) {
 
 // Raymarch a 2x2 quad of pixels. u0/v0 = quad origin in NDC-ish screen space,
 // su/sv = per-pixel step. Field evaluation is 4-lane NEON (ShaderField4).
-U0 ShaderRaymarchQuad(F64 u0, F64 v0, F64 su, F64 sv, F64 t) {
+U0 ShaderRaymarchQuad(CShaderCtx *ctx, F64 u0, F64 v0, F64 su, F64 sv, F64 t) {
     F64 rox[4]; F64 roy[4]; F64 roz[4];
     F64 rdx[4]; F64 rdy[4]; F64 rdz[4];
     F64 tt[4];
@@ -1034,7 +1044,7 @@ U0 ShaderRaymarchQuad(F64 u0, F64 v0, F64 su, F64 sv, F64 t) {
             I64 ib = (I64)(bb * 255.0); if (ib < 0) ib = 0; if (ib > 255) ib = 255;
             col = 0xFF000000 | (ir << 16) | (ig << 8) | ib;
         }
-        g_sv_out[l] = col;
+        ctx->out[l] = col;
         l = l + 1;
     }
 }
@@ -1052,7 +1062,9 @@ I64 ShaderTypeId(U8 *s) {
     return -1;
 }
 
-U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
+// Render a shader viewport with an explicit per-core context (F3): the BSP uses
+// context 0 via ShaderVMRenderNode; a tile worker would pass its own.
+U0 ShaderVMRenderNodeCore(CShaderCtx *ctx, I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
     I64 tid = ShaderTypeId(sh_type);
     if (tid < 0) tid = SVB_VM;
     if (tid != g_sv_cur_type) {
@@ -1079,19 +1091,19 @@ U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
             F64 u0 = (F64)qx * invw - 0.5;
             F64 v0 = (F64)qy * invh - 0.5;
             if (tid == SVB_BULB) {
-                ShaderRaymarchQuad(u0, v0, invw, invh, t);
+                ShaderRaymarchQuad(ctx, u0, v0, invw, invh, t);
             } else {
                 // fragment-space [0,1] quad
                 F64 fx = (F64)qx * invw;
                 F64 fy = (F64)qy * invh;
-                ShaderVMQuad(fx, fy, invw, invh, t);
+                ShaderVMQuad(ctx, fx, fy, invw, invh, t);
             }
             I64 l = 0;
             while (l < 4) {
                 I64 px = vx + qx + (l & 1);
                 I64 py = vy + qy + (l >> 1);
                 if (px >= 0 && px < g_sv_cw && py >= 0 && py < g_sv_ch) {
-                    g_sv_fb[py * g_sv_pit + px] = g_sv_out[l];
+                    g_sv_fb[py * g_sv_pit + px] = ctx->out[l];
                 }
                 l = l + 1;
             }
@@ -1099,6 +1111,11 @@ U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
         }
         qy = qy + 2;
     }
+}
+
+// Public entry (DolDoc.HC): the BSP renders with context 0.
+U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
+    ShaderVMRenderNodeCore(&g_sv_ctx[0], vx, vy, vw, vh, sh_type);
 }
 
 // ==============================================================================
@@ -1119,12 +1136,17 @@ U0 ShaderVMTestOp4(I64 *pass, I64 *total) {
     if (d[0] > 0.99 && d[0] < 1.01 && d[3] > 1.99 && d[3] < 2.01) *pass = *pass + 1;
 }
 
-// Evaluate a one-pixel program and return lane 0's red channel.
-I64 ShaderVMEvalR(U8 *src, F64 qx, F64 qy, F64 sx, F64 sy) {
+// Evaluate a one-pixel program on an explicit context and return lane 0's red.
+I64 ShaderVMEvalRCtx(CShaderCtx *ctx, U8 *src, F64 qx, F64 qy, F64 sx, F64 sy) {
     I64 n = ShaderVMAssemble(src);
     if (n <= 0) return -1;
-    ShaderVMQuad(qx, qy, sx, sy, 0.0);
-    return (I64)((g_sv_out[0] >> 16) & 255);
+    ShaderVMQuad(ctx, qx, qy, sx, sy, 0.0);
+    return (I64)((ctx->out[0] >> 16) & 255);
+}
+
+// Default: evaluate on context 0.
+I64 ShaderVMEvalR(U8 *src, F64 qx, F64 qy, F64 sx, F64 sy) {
+    return ShaderVMEvalRCtx(&g_sv_ctx[0], src, qx, qy, sx, sy);
 }
 
 U0 ShaderVMSelfTest() {
@@ -1196,8 +1218,8 @@ U0 ShaderVMSelfTest() {
         while (x < 120) {
             F64 fx = (F64)x / 120.0;
             F64 fy = (F64)y / 120.0;
-            ShaderVMQuad(fx, fy, 1.0 / 120.0, 1.0 / 120.0, 0.0);
-            U32 c0 = g_sv_out[0];
+            ShaderVMQuad(&g_sv_ctx[0], fx, fy, 1.0 / 120.0, 1.0 / 120.0, 0.0);
+            U32 c0 = g_sv_ctx[0].out[0];
             I64 lum = (((c0 >> 16) & 255) * 30 + ((c0 >> 8) & 255) * 59 + (c0 & 255) * 11) / 100;
             if (lum > 8) ink = ink + 1;
             I64 qb = lum >> 2;
@@ -1208,6 +1230,19 @@ U0 ShaderVMSelfTest() {
     }
     total = total + 1;
     if (ink > 200 && distinct >= 6) pass = pass + 1;
+
+    // 7. F3 per-core context isolation: evaluating a program on context 1 must not
+    //    disturb context 0's state/output. (Program A on ctx0 -> red 32; program B
+    //    on ctx1 -> red 64; ctx0's output must still be 32 afterwards.)
+    I64 iso_a = ShaderVMEvalRCtx(&g_sv_ctx[0],
+        "fragx r0\nmovi r1, 0.0625\nmul r0, r0, r1\nout r0, r0, r0\nend\n", 2.0, 0.0, 0.0, 0.0);
+    U32 iso_a_out = g_sv_ctx[0].out[0];
+    I64 iso_b = ShaderVMEvalRCtx(&g_sv_ctx[1],
+        "fragx r0\nmovi r1, 0.125\nmul r0, r0, r1\nout r0, r0, r0\nend\n", 2.0, 0.0, 0.0, 0.0);
+    total = total + 1;
+    if (iso_a == 32 && iso_b == 64) pass = pass + 1;
+    total = total + 1;
+    if (g_sv_ctx[0].out[0] == iso_a_out && g_sv_ctx[0].out[0] != g_sv_ctx[1].out[0]) pass = pass + 1;
 
     g_sv_cur_type = -99;
     if (pass == total) doldoc_printf("SHADERVM: PASS (%lld/%lld)\n", pass, total);

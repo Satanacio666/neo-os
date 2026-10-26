@@ -393,6 +393,18 @@ Z-raster 40,209,426, identical to F1). The `TILE` self-test gained a fifth check
 payload, a producer-1-only triangle rendering, arena distinctness + ctx binding). Heap headroom after the 4×
 bins: 25.9 MB free. See doc 04 D45.
 
+### P7.4 F3 — per-core fragment-shader VM context `CShaderCtx` — **[REAL]**
+
+`apps/ShaderVM.HC` kept all mutable VM state in ~11 shared globals (4-lane register file, execution
+mask + stack, quad origin/step, shader time, 4 output pixels). They are now one `CShaderCtx` per core
+(`g_sv_ctx[4]`), and `ShaderVMQuad(ctx,…)` / `ShaderRaymarchQuad(ctx,…)` / `ShaderVMRenderNodeCore(ctx,…)` /
+`ShaderVMEvalRCtx(ctx,…)` take it explicitly. The program (`g_sv_prog`/`g_sv_const`) and render target
+(`g_sv_fb/pit/cw/ch`) stay shared read-only. Public signatures are unchanged (they delegate to context 0), so
+DolDoc/Shell/SelfTest are untouched. Concurrent tile shaders therefore share **no mutable state** — the
+precondition for shader viewports inside parallel tile workers. `ShaderVMSelfTest` gained two isolation checks
+(context 1 must not disturb context 0). `SHADERVM: PASS (16/16)`, `RENDER 0xD28836F` bit-exact, `CENSUS 181`.
+See doc 04 D46.
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

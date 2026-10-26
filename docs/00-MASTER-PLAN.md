@@ -302,8 +302,9 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > root fix + cull/F64 alignment). **P7.4 in progress: F0 ✅** (SMP join/parallelism proof + compiler-limit root
 > fixes, D41), **F1 ✅** (deterministic `icount` measurement D42; compiler deferred-offset lvalues D43;
 > per-core `CRasterCtx` D44 — `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,209,427**, −3.5 %)
-> and **F2 ✅** (immutable `CTriRecord` snapshot + per-producer bins + per-core `CFrameArena`, D45).
-> **next = P7.4 F3** (runbook in `02-TASKLIST.md` §P7.4). Gate: `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`,
+> **F2 ✅** (immutable `CTriRecord` snapshot + per-producer bins + per-core `CFrameArena`, D45) and **F3 ✅**
+> (per-core fragment-shader VM context `CShaderCtx`, D46 — `SHADERVM: PASS 16/16`).
+> **next = P7.4 F4** (runbook in `02-TASKLIST.md` §P7.4). Gate: `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`,
 > `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
 
 ---
@@ -549,8 +550,9 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   deferred-offset-lvalue root fix (D43), and the 64-byte-aligned per-core `CRasterCtx g_rctx[]` threaded as an
   explicit first argument (D44; `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,209,427**, −3.5 %).
   **F2 ✅** — the sort-middle prerequisites: immutable `CTriRecord` snapshot (coords truncated once), per-producer
-  bins, and per-core `CFrameArena` frame arenas (D45; bit-exact, immediate path untouched).
-  The remaining SMP tile dispatch (`RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED`) is F3+.
+  bins, and per-core `CFrameArena` frame arenas (D45; bit-exact, immediate path untouched). **F3 ✅** — per-core
+  fragment-shader VM context `CShaderCtx` (D46; `SHADERVM: PASS 16/16`, no shared mutable shader state).
+  The remaining SMP tile dispatch (`RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED`) is F4.
 
 ### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong + 32-bit Z (e)
 

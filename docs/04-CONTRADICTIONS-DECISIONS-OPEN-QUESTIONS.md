@@ -971,3 +971,16 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (icount Z-raster 40,209,426, identical to F1). Heap headroom after the 4× bins: 25.9 MB free.
   Gate: `GOLDEN BOOT: PASS`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `RENDER: PASS (0xD28836F)`,
   `TILE: PASS`, `MATH3DPAR: PASS`, `HEAPINT: PASS`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D46 — P7.4 F3: per-core fragment-shader VM context `CShaderCtx` (DONE).** `apps/ShaderVM.HC` kept ALL of
+  its mutable execution state in ~11 shared globals (the 4-lane register file `g_sv_regs`, the execution
+  `mask`/`cond` + `mask_stack`/`mask_sp`, the quad origin/step `qx/qy/sx/sy`, `time`, and the 4 output pixels
+  `out[4]`). Those are now a single `CShaderCtx`, one per core (`CShaderCtx g_sv_ctx[SV_MAX_CORES=4]`), and the
+  evaluation entry points take it explicitly: `ShaderVMQuad(ctx, …)`, `ShaderRaymarchQuad(ctx, …)`,
+  `ShaderVMRenderNodeCore(ctx, …)`, `ShaderVMEvalRCtx(ctx, …)`. The program (`g_sv_prog`/`g_sv_const`) and the
+  render target (`g_sv_fb/pit/cw/ch`) stay shared and read-only during evaluation. The public entry points keep
+  their signatures — `ShaderVMRenderNode(vx,vy,vw,vh,sh_type)` and `ShaderVMEvalR(...)` delegate to context 0 —
+  so the DolDoc/Shell/SelfTest callers are untouched. **Result:** concurrent tile shaders share NO mutable state
+  (each core's registers/mask/quad/outputs are private), the precondition for running shader viewports from
+  parallel tile workers. `ShaderVMSelfTest` gained two isolation checks (context 1's evaluation must not
+  disturb context 0's output). Gate: `GOLDEN BOOT: PASS`, `SHADERVM: PASS (16/16)`, `RENDER: PASS (0xD28836F)`
+  bit-exact, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.

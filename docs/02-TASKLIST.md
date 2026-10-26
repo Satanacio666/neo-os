@@ -1483,6 +1483,10 @@ sort-middle prerequisites — immutable `CTriRecord` snapshot (I64 coords trunca
 per-producer bins (`g_rs_bins[4][*]`, `RasterSceneAddTriangleP`, drained in producer-id order), and per-core
 `CFrameArena g_frame_arenas[]` (64×64 scratchpad + bound ctx) with `RasterRenderTileCore(arena,t)` /
 `RasterTileResolveCore(arena,t)`. Bit-exact; the `TILE` self-test now exercises snapshot/producer/arena.
+**F3 ✅ DONE (see doc 04 D46):** per-core fragment-shader VM context `CShaderCtx g_sv_ctx[]` — all mutable VM
+state (registers, mask/stack, quad, outputs) is per-core, so concurrent tile shaders share no mutable state;
+`ShaderVMQuad(ctx,…)`/`ShaderRaymarchQuad(ctx,…)`/`ShaderVMRenderNodeCore(ctx,…)`/`ShaderVMEvalRCtx(ctx,…)`
+take it explicitly, public entry points delegate to context 0. `SHADERVM: PASS 16/16`.
 **Remaining — see doc 04 D40:** the SMP tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`,
 `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the `MeshRender` batch-transform wiring.
 Runbook below is the original spec (retained).

@@ -144,7 +144,9 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   permutations; execution masking (a per-lane predicate + mask stack); raymarched SDF primitives; multi-octave
   Perlin/fBm noise; Mandelbulb; a text assembler for custom shaders. **[REAL — P4.6]** (`apps/ShaderVM.HC`,
   `scripts/shader_quad.s`); the legacy 2-D `$SHADER$` approximations remain in `DolDoc.HC` for the other type
-  strings. 32×32 tile parallelism across 4 cores is still open (P9).
+  strings. **[PARTIAL — P7.4 F3]** the VM's mutable state (registers, mask/stack, quad, outputs) is now a
+  per-core `CShaderCtx g_sv_ctx[]` (doc 04 D46), so a shader viewport can run from a parallel tile worker with
+  no shared mutable state. 32×32 tile parallelism across 4 cores is still open (P9).
 - **NEON span rasterizer** `(from single_core…_audit §2/§4, complete_render_stack §3.4)`: 8-pixel simultaneous
   depth test (`cmlt.8h`), branchless select (`bsl`/`bit`), 64-byte vector writes.
 - **F32x4 SIMD as a HolyC primitive** `(from neo_os_grand_architecture_manifesto §8)`: `F32x4 v1 = {…}; v1+v2 → fadd v0.4s`.
