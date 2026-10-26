@@ -252,6 +252,36 @@ int64_t seed_write_file(const char *name, const void *buf, size_t bytes) {
     return (int64_t)size;
 }
 
+/* P8 — escrita por CAMINHO COMPLETO (ex: "NEOJIT\\<nome>.bin"). O seed_write_file
+ * prefixa "holyc\\"; o cache de JIT mora fora dessa arvore. */
+int64_t seed_write_file_at(const char *path, const void *buf, size_t bytes) {
+    if (!s_root || !path || !buf) return -1;
+
+    wchar_t wpath[256];
+    seed_ascii_to_wchar(path, wpath, 256);
+
+    /* Apaga a versao anterior: o FAT nao trunca ao sobrescrever, entao um arquivo
+     * novo menor ficaria com cauda do anterior. */
+    efi_file_handle_t *old = NULL;
+    if (!EFI_ERROR(s_root->Open(s_root, &old, wpath,
+                                EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0)) && old) {
+        old->Delete(old);
+    }
+
+    efi_file_handle_t *fh = NULL;
+    efi_status_t st = s_root->Open(s_root, &fh, wpath,
+                                   EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE |
+                                   EFI_FILE_MODE_CREATE, 0);
+    if (EFI_ERROR(st) || !fh) return -1;
+
+    uintn_t size = (uintn_t)bytes;
+    st = fh->Write(fh, &size, (void*)buf);
+    if (!EFI_ERROR(st)) st = fh->Flush(fh);
+    fh->Close(fh);
+    if (EFI_ERROR(st) || size != (uintn_t)bytes) return -1;
+    return (int64_t)size;
+}
+
 uint32_t seed_fnv1a(const void *data, size_t bytes) {
     const uint8_t *p = (const uint8_t*)data;
     uint32_t h = 2166136261u;             /* FNV-1a 32 bits */

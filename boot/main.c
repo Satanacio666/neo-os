@@ -96,6 +96,9 @@ extern uint32_t profile_morton(void);
 extern uint32_t profile_smp_cores(void);
 extern uint32_t profile_errata(void);
 extern uint32_t profile_throttle_us(void);
+/* P8 — cache de JIT (boot/runtime/jitcache.c) */
+extern int64_t jit_compile_and_run_cached(const char *name, const char *source);
+extern void    jitcache_set_heap(uint64_t heap_base);
 extern const char *profile_name(void);
 extern void    *g_acpi_rsdp;
 extern void    *g_fdt_blob;
@@ -488,6 +491,9 @@ int main(int argc, char **argv)
     // P7.2 — contexto para o crash dump: a base do heap entra no cabecalho, o que
     // permite ver de imediato se o PC da falha caiu dentro do heap (JIT) ou fora.
     neo_crash_set_heap((uint64_t)heap_phys);
+    // P8: ancora do cache de JIT. Se o heap mudar de lugar, o codigo
+    // cacheado (que embute enderecos absolutos) e descartado.
+    jitcache_set_heap((uint64_t)heap_phys);
     g_uefi_heap_size = s_kernel_heap_size;
 
     // 3. Allocate Dedicated JIT Executable Pool (EfiLoaderCode)
@@ -659,6 +665,8 @@ int main(int argc, char **argv)
     symbols_register("profile_errata", (void*)profile_errata, SYM_FUNC);
     symbols_register("profile_throttle_us", (void*)profile_throttle_us, SYM_FUNC);
     symbols_register("profile_name", (void*)profile_name, SYM_FUNC);
+    symbols_register("jit_compile_and_run_cached", (void*)jit_compile_and_run_cached, SYM_FUNC);
+    symbols_register("jitcache_set_heap", (void*)jitcache_set_heap, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
