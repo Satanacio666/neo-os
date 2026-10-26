@@ -128,6 +128,8 @@ I64 g_doc_inspected_nid  = -1;
 I64 g_doc_anim_tick      = 0;
 // P8.0: per-node spring velocity (harmonic-spring animated positions).
 F64 g_doc_spring_v[DOC_MAX_NODES];
+// G1: the node currently being drawn (selects its spring slot).
+I64 g_doc_cur_nid = 0;
 
 // Telemetry ring buffers for $PL$ / $GRAPH$ oscilloscopes
 I64 g_osc_sine_buf[64];
@@ -563,7 +565,10 @@ U0 doldoc_backspace() { DolDocBackspace(); }
 
 U0 DolDocDrawCursor(I64 visible) {
     U32 color = visible ? DolDocResolveColor(SEM_COLOR_SKY) : DolDocResolveColor(g_doc_cur_bg);
-    gfx_draw_rect(g_doc_cursor_x, g_doc_cursor_y + 1, 2, 14, color);
+    // G1: the caret glides continuously (sub-pixel) toward the cursor column with a
+    // SNAPPY spring, instead of jumping glyph to glyph.
+    F64 cx = EffectsSpringPull(64.0, (F64)g_doc_cursor_x, 22.0, 3.0, 0.016);
+    gfx_draw_rect((I64)cx, g_doc_cursor_y + 1, 2, 14, color);
 }
 
 U0 doldoc_draw_cursor(I64 visible) { DolDocDrawCursor(visible); }
@@ -1957,7 +1962,12 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
         I64 fill_w = ((val - mn) * (vw - 12)) / (mx - mn);
         if (fill_w < 0) fill_w = 0; if (fill_w > vw - 12) fill_w = vw - 12;
         if (fill_w > 0) gfx_draw_rounded_rect(vx, track_y, fill_w + 6, 6, 3, teal);
-        I64 thumb_x = vx + fill_w + 6; I64 thumb_y = track_y + 3;
+        // G1: the thumb glides to the value with a BOUNCY spring (inertia + overshoot),
+        // so dragging a slider feels tactile instead of snapping rigidly.
+        F64 sfill = EffectsSpringPull((F64)(g_doc_cur_nid & 63), (F64)fill_w, 18.0, 1.0, 0.016);
+        I64 sfill_i = (I64)sfill;
+        if (sfill_i < 0) sfill_i = 0; if (sfill_i > vw - 12) sfill_i = vw - 12;
+        I64 thumb_x = vx + sfill_i + 6; I64 thumb_y = track_y + 3;
         gfx_draw_circle_filled(thumb_x, thumb_y, 7, text_col);
         gfx_draw_circle_filled(thumb_x, thumb_y, 5, sapphire);
         U8 vs[16]; I64 tv = val; I64 pi = 0;
@@ -2042,6 +2052,7 @@ U0 DolDocDrawChildren(I64 parent, I64 scroll) {
 
 U0 DolDocDrawNode(I64 nid, I64 scroll) {
     CDocNode *nd = &g_doc_nodes[nid];
+    g_doc_cur_nid = nid;   // G1: selects this node's spring slot
     if (nd->kind == DOC_TEXT) {
         I64 x = nd->x;
         I64 y = nd->y + scroll;

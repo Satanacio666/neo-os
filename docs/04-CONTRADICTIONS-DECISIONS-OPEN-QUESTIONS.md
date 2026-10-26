@@ -1127,3 +1127,26 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   Invariants held: golden hash `0xD28836F` bit-exact, census **neutral** (179). Gate (standard **and** `-icount`):
   `GOLDEN BOOT: PASS`, `RENDER 0xD28836F`, `LAYOUT: PASS (4/4)`, `EFFECTS: PASS`, `SELFTEST 123/123`,
   `PARITY 92/92`, `CENSUS 179`, `SELF-HOST: PASS`.
+- **D54 — STRATEGIC PIVOT: self-hosting deferred to the very end; FASE G (Sovereign GUI Continuum) is now the
+  priority; G1 (universal harmonic physics) DONE.** Per the user's explicit order, all compiler/self-hosting
+  work is **stopped and re-sequenced to P11 (LAST)** — the compiler already builds every module and passes every
+  test, so closing the bootstrap loop is the last thing. `docs/00` and `docs/02` now carry the **G1–G5** ladder
+  (G1 harmonic physics, G2 materials/glass + transitions, G3 industrial widgets, G4 sub-pixel typography + math,
+  G5 procedural shaders/sprites in text). **Honest grounding:** the Raven dossier (`oscar-soirey/Raven`, a real
+  C11 GUI library — fetched and read) is only **partly** ported: DONE = springs (basic), dual-Kawase blur, basic
+  Slate layout, the node-kind vocabulary; NOT YET = real glass materials, transitions, node-graph
+  interaction/cables, block snap, docking BSP, island morph, sub-pixel type / elastic tabstops / math layout,
+  in-document shaders/sprites/graphs. **G1 (DONE):** `apps/Effects.HC` gains a **spring pool** (128 slots,
+  position+velocity) driven by the closed-form integrator, the Raven **motions** (`SMOOTH` 0.75, `BOUNCY` 0.52,
+  `WOBBLY` 0.32, `SNAPPY` 0.90), the Raven **transitions** (`Pop` 0.52, `Drop` 0.32, `SlideLeft/Right` 0.90),
+  `EffectsTransitionProgress` (0→1 with overshoot), and **reduce-motion** (`EffectsSetAnimations(0)` snaps).
+  Wired into the **slider** thumb (inertia + overshoot) and the editor **caret** (sub-pixel glide); the window
+  `$SPRING$` nodes were already spring-driven. `EffectsSpringSelfTest` → **`SPRING: PASS (6/6)`** (motions,
+  transitions, BOUNCY overshoot, SNAPPY no-overshoot, reduce-motion snap, Pop overshoot), asserted by
+  `golden-boot.sh`. **Compiler quirk found (root, worked around + documented):** a **function call used directly
+  as an F64 argument** to another function is mis-placed (the BOUNCY spring diverged to x=16.9, v=1053 with a
+  nested `EffectsMotionZeta(...)` argument); hoisting the call into a local first makes it exact. This is a
+  real emitter bug to fix at the root in a later G step. **Invariants held:** golden hash `0xD28836F` bit-exact,
+  census **neutral** (179), pure HolyC. Gate (standard **and** `-icount`): `GOLDEN BOOT: PASS`,
+  `RENDER 0xD28836F`, `SPRING: PASS (6/6)`, `LAYOUT: PASS`, `EFFECTS: PASS`, `SELFTEST 123/123`, `PARITY 92/92`,
+  `CENSUS 179`, `SELF-HOST: PASS`.

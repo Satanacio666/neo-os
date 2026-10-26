@@ -477,6 +477,16 @@ fix for `ptr + int` (the compiler currently scales only `ptr[i]`, measured `(pt+
 
 ---
 
+### FASE G (G1) — universal harmonic physics — **[REAL]** (strategic pivot, D54)
+
+The compiler/self-hosting work is **stopped and deferred to P11 (LAST)**; the GUI is now the priority. The Raven
+dossier (`oscar-soirey/Raven`, a real C11 GUI library) is only **partly** ported (springs/blur/basic Slate/node
+kinds; not yet glass materials, transitions, node-graph cables, docking, island, sub-pixel type, in-document
+shaders). **G1** adds a spring **pool** (128 slots) driven by the closed-form integrator, the Raven **motions**
+and **transitions** zeta values, `EffectsTransitionProgress`, and **reduce-motion**; wired into the **slider**
+thumb (inertia + overshoot) and the **caret** (sub-pixel glide). `SPRING: PASS (6/6)`. A compiler quirk was
+found: a **function call used directly as an F64 argument** is mis-placed (hoist it to a local). See D54.
+
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC
 
 > Merged from the former `docs/05-UPSTREAM-SALVAGE-AUDIT.md` (P7.0 doc consolidation; the repo rule forbids extra `docs/*.md`). Every claim names the upstream `file:line` and the current equivalent.

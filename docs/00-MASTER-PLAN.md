@@ -63,9 +63,10 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P5** | DolDoc (real model + dissolution) | ✅ **DONE** — `DolDoc.HC` rewritten as a genuine **CDoc/CTree** (flat index-linked `CDocNode` tree + per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set (`TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI`) incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap; **windows are documents** (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); **`WM.HC` and `Compositor.HC` DELETED** (desktop/window/damage/present/effects absorbed into DolDoc); reactive cells (`$SL`/`$DA` target= binding); `$FI` include (RedSea doc persistence); `g_doc_dirty_mask` shift fixed; new `DOLDOC: PASS` gate (doc 2 §P5, doc 4 **D17/D18/D19/D20**) | no char grid; one CDoc/CTree; windows are documents; 34 modules |
 | **P6** | Shell (action executor over a CDoc) | ✅ **DONE** — `Shell.HC` is now an **O(1) action executor**: FNV-1a `CShellCmd` registry (`shell_register_cmd`/`ShellFindCmd`, real hash dispatch replacing the ~50-branch if/else ladder); the **action protocol** `DOC_ACT_{RUN,OPEN,SET,CLONE,FOCUS}` (ring queue in `DolDoc.HC` + `DolDocPushAction`/`DolDocPollAction`/`ShellDrainActions`); **the `DolDoc → Shell` cycle is broken** (DolDoc has 0 `shell_run_command`/`shell_poll` references; it emits actions and calls a Shell-registered pump via a function pointer); shell output is a CDoc; `top`/`filer`/`edit` tools render interactive CDoc (buttons/progress/line-numbered text); `WFE` idle; new `SHELL: PASS` gate (doc 2 §P6, doc 4 **D21**) | no cycles; shell output is a CDoc |
 | **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) + **P7.2 ✅** (near-plane clipper `CLIP: PASS` + NEON memory kernels `NEONMEM: PASS`) + **P7.3 ✅** (L1 tile binning + per-core scratchpad + `stnp` resolve, `TILE: PASS`) + **P7.4 ✅ DONE** (SMP tiled rasterization, deterministic multi-core: F0–F7 — per-core `CRasterCtx`, sort-middle records/bins/arenas, SMP tile dispatch ~3× MTTCG, parallel front-end, mesh batch transform, default-on) + **P7.5 ✅ DONE** (unified `CGpuConfig` 5-knob plane + VirtIO batch2/3 + page-flip, `GPUCFG: PASS`) + **P7.6 ✅ DONE** (`Profiler`+`PerfOverlay` → `Telemetry.HC` + ARM PMU, `TELEMETRY: PASS`) | one real 40-phase suite; profilers merged |
-| **P8** | Self-hosting everything | ⬜ | boot as a document; only boot C remains |
+| **G** | **Sovereign GUI Continuum (integral Raven-GUI adoption)** — 🟡 **G1 ▶ next** (universal harmonic physics), G2 (materials/glass + transitions), G3 (industrial widgets: node graph / block editor / dock-BSP / island), G4 (subpixel typography + math), G5 (procedural shaders/sprites/graphs in text) | a DolDoc-continuum desktop that fully realises the Raven dossier: springs on every control, real glass materials, node graph, docking, island, subpixel type, in-document shaders |
 | **P9** | GPU provider | ⬜ | virtio-gpu 3D / native |
 | **P10** | Run anything + MCU cluster | ⬜ | `HolyPort` + `Surface`/`remote` |
+| **P11 (LAST)** | **Self-hosting everything — deferred to the very end** | ⬜ | boot as a document; only boot C remains. *Explicitly deprioritised: the compiler already builds 100 % of the modules and passes every test; closing the bootstrap loop is the last thing.* |
 
 **Earlier "Level" scheme (L0–L8)** from `NEO_OS_MASTER_PLAN.md` maps onto this: L1 = P1 compiler, L2 = P2
 bootstrap, L3 = P3 kernel, L4 = P4 render, L5 = P5 DolDoc, L6 = P6 shell, L7 = P7/P8 bench+self-host, L8 =
@@ -316,10 +317,14 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **P8.0 ✅ DONE — the sovereign DolDoc continuum + Raven pillars** (D53): WM/Compositor dissolution and the
 > 128×48 character grid were already gone (P5, re-verified); new `apps/Effects.HC` adds **harmonic springs**
 > (closed-form damped oscillator, `$SPRING$` nodes) and a **dual-Kawase NEON blur** (UHADD, scalar-parity),
-> wired into `$GLASS$`; `EFFECTS: PASS (6/6)`. **next = P8.1** (Slate two-pass layout + `$PANEL$`/`$MODAL$`
-> nodes + the `ptr+int` emitter fix). Gate (standard **and** `-icount`): `SELFTEST 123/123`,
-> `PARITY 92/92 (0 diff)`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`,
-> `GPUCFG: PASS`, `TELEMETRY: PASS`, `EFFECTS: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`,
+> wired into `$GLASS$`; `EFFECTS: PASS (6/6)`. **PIVOT (this revision):** the compiler/self-hosting work is
+> **stopped and deferred to the very end (P11 LAST)** — the compiler already builds every module and passes
+> every test. **Priority is now FASE G — the Sovereign GUI Continuum (integral Raven-GUI adoption).** The
+> Raven dossier (`oscar-soirey/Raven`) is only *partly* ported so far (springs + Kawase blur + basic Slate
+> layout + node kinds); the G1–G5 ladder (§G) closes the gap. **next = G1 (universal harmonic physics).**
+> Gate (standard **and** `-icount`): `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`,
+> `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`, `GPUCFG: PASS`,
+> `TELEMETRY: PASS`, `EFFECTS: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`,
 > `SELF-HOST: PASS`, `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
 
 ---
@@ -796,7 +801,39 @@ scalar reference the self-test proves bit-identical; `$GLASS$` now blurs behind 
 `$BLOCK_EDITOR$` / `$ISLAND$`, and the live **`$REPL$`** shell node → `LAYOUT: PASS (4/4)`. **Deferred to P8.1:**
 the `ptr + int` scaling fix in the emitter (and any further node vocabulary). See doc 04 D53.
 
-## P8 — Self-hosting everything
+## G — FASE G: the Sovereign GUI Continuum (integral Raven-GUI adoption) — ▶ ACTIVE
+
+**Why.** The user's order: stop all compiler/self-hosting work (deferred to P11, the very end) and put **all**
+effort on the graphical interface — unification, perfection, minimisation, and the *integral* adoption of the
+Raven GUI dossier (`oscar-soirey/Raven`, a real C11 multithreaded GUI library). P8.0 landed only a sketch
+(springs, a UHADD Kawase blur, a basic Slate layout, three node kinds); most of the dossier is **not yet
+ported**. The G ladder is the honest, complete plan.
+
+- **G1 — Universal harmonic physics (▶ next).** One analytic spring engine (`x''+2ζωx'+ω²(x−x_t)=0`, closed
+  form) governing **every** interactive control: `$SL$` sliders (inertia + overshoot on drag), `$WIN$` window
+  drag (elastic, no procedural stiffness), the editor **caret** (continuous sub-pixel glide between glyphs),
+  and visibility **transitions** with the Raven ζ values (`Pop` ζ=0.52, `Drop` ζ=0.32, `SlideLeft/Right`
+  ζ=0.90) and motions (`SNAPPY`/`SMOOTH`/`BOUNCY`/`WOBBLY`). Reduce-motion honoured.
+- **G2 — Materials & transitions.** Real `Solid`/`Glass`/`FrostedGlass`/`TintedGlass` materials (blur + rim
+  bend + top-left light) and the `BackgroundBlur` styles; the transitions from G1 applied to widgets
+  (`Appear=`/`Play`), driven by the same spring engine.
+- **G3 — Industrial widgets.** `$NODE_GRAPH$` with interactive pins, Bézier cables that hang/swing under
+  gravity+spring, and canvas panning; `$BLOCK_EDITOR$` Scratch-style blocks with geometric notches, mouths
+  that contain nested statements, and magnetic snap; `$DOCK$` + splitters as a BSP (binary-tree) spatial
+  partition with an elastic resize bar; `$ISLAND$` (Dynamic Island) with morphing physics and cross-fading
+  status (CPU/GPU, audio, alerts).
+- **G4 — Sub-pixel typography & math.** `FontVector.HC` analytic strokes for all 95 printable ASCII glyphs
+  with smooth dynamic scaling; **elastic tabstops** (column alignment by real word width — the end of the
+  8×18 cell grid); math formatting (`$EQ$`/`$MA$`) with centred fraction bars and a radical sign that
+  stretches to the expression height.
+- **G5 — Procedural shaders & 3D sprites in text.** `$SHADER$` fragment shaders running live inside DolDoc
+  with `iTime`/`iResolution`/`iMouse` uniforms (plasma, fire, light tunnel, Lambertian sphere); `$SP$` 3D
+  meshes/gears spinning interactively in the flow; `$GRAPH$` oscilloscopes with a translucent gradient.
+
+**Invariants for every G step:** golden hash `0xD28836F` bit-exact; census ≤ 181; pure HolyC (no C in user
+space); no stubs/mocks; one commit per step; docs 00–04 updated; bundle refreshed.
+
+## P8 — Self-hosting everything (DEFERRED to P11 — last)
 
 **Purpose.** Finish the self-hosting loop so the C seed is a *bootstrap-only* artifact and the OS can rebuild,
 edit, and document itself entirely in HolyC. The compiler must **lose nothing** when the C seed stops being the

@@ -89,6 +89,84 @@ F64 EffectsSpringStep(F64 x, F64 v, F64 target, F64 omega, F64 zeta, F64 dt, F64
 }
 
 // ==============================================================================
+// G1: UNIVERSAL HARMONIC PHYSICS
+// One pool of spring slots (position + velocity) driven by the analytic integrator
+// above, so EVERY interactive control moves with real damped-oscillator physics:
+// sliders (inertia/overshoot), window drags, the caret (sub-pixel glide) and
+// visibility transitions. Zeta values match the Raven GUI dossier.
+// ==============================================================================
+#define FX_SPRING_SLOTS 128
+F64 g_fx_sx[FX_SPRING_SLOTS];
+F64 g_fx_sv[FX_SPRING_SLOTS];
+I64 g_fx_sinit[FX_SPRING_SLOTS];
+I64 g_fx_anim_enabled = 1;   // reduce-motion (0 = snap)
+I64 g_fx_dbg = 0;
+
+// Raven motions.
+F64 EffectsMotionZeta(I64 motion) {
+  if (motion == 1) return 0.52;  // BOUNCY
+  if (motion == 2) return 0.32;  // WOBBLY
+  if (motion == 3) return 0.90;  // SNAPPY
+  return 0.75;                    // SMOOTH (default)
+}
+// Raven transitions.
+F64 EffectsTransitionZeta(I64 tr) {
+  if (tr == 1) return 0.52;              // Pop
+  if (tr == 2) return 0.32;              // Drop
+  if (tr == 3 || tr == 4) return 0.90;   // SlideLeft / SlideRight
+  return 0.75;                            // Fade / FlyUp / ...
+}
+
+U0 EffectsSpringInit(I64 id, F64 x) {
+  if (id < 0 || id >= FX_SPRING_SLOTS) return;
+  g_fx_sx[id] = x; g_fx_sv[id] = 0.0; g_fx_sinit[id] = 1;
+}
+
+// Pull spring slot `id` toward `target` and return its new position. omega sets the
+// stiffness, `motion` selects zeta. Honours reduce-motion (snaps to the target).
+// All-F64 signature (id/motion included) so the compiler's single-index argument
+// convention places every argument in D0..D4 — a mixed int/float signature would
+// mis-place the floats (measured).
+F64 EffectsSpringPull(F64 idf, F64 target, F64 omega, F64 motionf, F64 dt) {
+  I64 id = (I64)idf;
+  I64 motion = (I64)motionf;
+  if (id < 0 || id >= FX_SPRING_SLOTS) return target;
+  if (g_fx_sinit[id] == 0) { g_fx_sx[id] = target; g_fx_sinit[id] = 1; return target; }
+  if (g_fx_anim_enabled == 0) { g_fx_sx[id] = target; g_fx_sv[id] = 0.0; return target; }
+  F64 cx = g_fx_sx[id];
+  F64 cv = g_fx_sv[id];
+  F64 zeta = EffectsMotionZeta(motion);
+  F64 nv = 0.0;
+  F64 nx = EffectsSpringStep(cx, cv, target, omega, zeta, dt, &nv);
+  g_fx_sx[id] = nx; g_fx_sv[id] = nv;
+  if (nx > target - 0.25 && nx < target + 0.25 && nv < 0.25 && nv > -0.25) {
+    g_fx_sx[id] = target; g_fx_sv[id] = 0.0;
+  }
+  return g_fx_sx[id];
+}
+
+// Visibility transition: a 0 -> 1 progress with the transition's own zeta (so Pop
+// overshoots past 1, Slide glides). Slots 96..127 are reserved for transitions.
+F64 EffectsTransitionProgress(F64 idf, F64 trf, F64 dt) {
+  I64 id = (I64)idf;
+  I64 tr = (I64)trf;
+  I64 sid = 65 + (id % 31);   // transitions live in slots 65..95 (controls 0..63, caret 64)
+  if (g_fx_sinit[sid] == 0) EffectsSpringInit(sid, 0.0);
+  if (g_fx_anim_enabled == 0) { g_fx_sx[sid] = 1.0; g_fx_sv[sid] = 0.0; return 1.0; }
+  F64 cx = g_fx_sx[sid];
+  F64 cv = g_fx_sv[sid];
+  F64 zeta = EffectsTransitionZeta(tr);
+  F64 nv = 0.0;
+  F64 nx = EffectsSpringStep(cx, cv, 1.0, 14.0, zeta, dt, &nv);
+  g_fx_sx[sid] = nx; g_fx_sv[sid] = nv;
+  if (nx > 0.999 && nx < 1.001 && nv < 0.01 && nv > -0.01) { g_fx_sx[sid] = 1.0; g_fx_sv[sid] = 0.0; }
+  return g_fx_sx[sid];
+}
+
+I64 EffectsAnimationsEnabled() { return g_fx_anim_enabled; }
+U0 EffectsSetAnimations(I64 en) { g_fx_anim_enabled = en ? 1 : 0; }
+
+// ==============================================================================
 // 2. DUAL-KAWASE BLUR (NEON UHADD + scalar reference)
 // ==============================================================================
 // Per-channel unsigned halving add (a+b)/2 with NO carry between the 4 channels.
@@ -259,4 +337,55 @@ U0 EffectsSelfTest() {
 
   if (pass == total) doldoc_printf("EFFECTS: PASS (%lld/%lld)\n", pass, total);
   else doldoc_printf("EFFECTS: FAIL (%lld/%lld)\n", pass, total);
+}
+
+// G1 self-test: the universal harmonic-physics engine (motions, transitions,
+// overshoot, reduce-motion). Called from SelfTest.HC -> SPRING: PASS.
+U0 EffectsSpringSelfTest() {
+  I64 pass = 0;
+  I64 total = 0;
+
+  // (1) Raven motions carry the documented zeta values.
+  total++; if (EffectsMotionZeta(1) == 0.52 && EffectsMotionZeta(2) == 0.32 &&
+                EffectsMotionZeta(3) == 0.90 && EffectsMotionZeta(0) == 0.75) pass++;
+
+  // (2) Raven transitions carry the documented zeta values.
+  total++; if (EffectsTransitionZeta(1) == 0.52 && EffectsTransitionZeta(2) == 0.32 &&
+                EffectsTransitionZeta(3) == 0.90) pass++;
+
+  // (3) a BOUNCY spring overshoots past the target, then settles on it.
+  EffectsSpringInit(96, 0.0);
+  F64 overshoot = 0.0;
+  I64 it = 0;
+  F64 dx = 0.0; F64 dv = 0.0;
+  while (it < 240) {
+    F64 nv = 0.0;
+    dx = EffectsSpringStep(dx, dv, 100.0, 12.0, 0.52, 0.016, &nv);
+    dv = nv;
+    if (dx > overshoot) overshoot = dx;
+    it = it + 1;
+  }
+  total++; if (overshoot > 100.5 && dx > 99.0 && dx < 101.0) pass++;
+
+  // (4) a SNAPPY spring does NOT overshoot.
+  EffectsSpringInit(97, 0.0);
+  I64 os2 = 0; it = 0;
+  while (it < 240) { F64 x = EffectsSpringPull(97.0, 100.0, 12.0, 3.0, 0.016); if (x > 100.5) os2 = 1; it = it + 1; }
+  total++; if (os2 == 0 && g_fx_sx[97] > 99.0 && g_fx_sx[97] < 101.0) pass++;
+
+  // (5) reduce-motion snaps straight to the target.
+  EffectsSetAnimations(0);
+  EffectsSpringInit(98, 0.0);
+  F64 sx = EffectsSpringPull(98.0, 42.0, 12.0, 1.0, 0.016);
+  total++; if (sx == 42.0) pass++;
+  EffectsSetAnimations(1);
+
+  // (6) a Pop transition overshoots past 1.0 (bouncy arrival).
+  g_fx_sinit[65] = 0;
+  F64 tov = 0.0; it = 0;
+  while (it < 240) { F64 p = EffectsTransitionProgress(0.0, 1.0, 0.016); if (p > tov) tov = p; it = it + 1; }
+  total++; if (tov > 1.01) pass++;
+
+  if (pass == total) doldoc_printf("SPRING: PASS (%lld/%lld)\n", pass, total);
+  else doldoc_printf("SPRING: FAIL (%lld/%lld)\n", pass, total);
 }

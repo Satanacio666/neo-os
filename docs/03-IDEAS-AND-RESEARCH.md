@@ -156,6 +156,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   The **Slate two-pass layout** (`$VBOX$`/`$HBOX$`/`$GRID$`/`$SPLIT$`), the **industrial nodes**
   `$NODE_GRAPH$`/`$BLOCK_EDITOR$`/`$ISLAND$`, and the live **`$REPL$`** shell node also land in P8.0
   (`LAYOUT: PASS`). Only the emitter `ptr + int` scaling fix remains (doc 04 D53). **[REAL]**
+- **FASE G — Sovereign GUI Continuum (D54, ACTIVE).** Strategic pivot: self-hosting deferred to P11 (last); the
+  GUI is the priority. The Raven dossier is only partly ported; the G1–G5 ladder closes it (G1 harmonic physics,
+  G2 glass/transitions, G3 industrial widgets, G4 sub-pixel type/math, G5 in-text shaders/sprites). **G1** adds
+  the universal spring pool + Raven motions/transitions + reduce-motion, wired into sliders and the caret
+  (`SPRING: PASS 6/6`). See doc 04 D54.
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

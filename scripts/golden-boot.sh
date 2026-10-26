@@ -259,6 +259,13 @@ else
         echo "  [FAIL] layout: ${lyline:-<none>} (want LAYOUT: PASS)"
         fail=1
     fi
+    spline="$(printf '%s\n' "$out" | grep -a 'SPRING: ' | tail -1)"
+    if printf '%s' "$spline" | grep -aq 'PASS'; then
+        echo "  [PASS] $spline (universal harmonic physics: motions/transitions/overshoot)"
+    else
+        echo "  [FAIL] spring physics: ${spline:-<none>} (want SPRING: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

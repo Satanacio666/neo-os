@@ -1789,6 +1789,34 @@ emitter fix for `ptr + int` scaling (only `ptr[i]` is scaled today). See doc 04 
 
 ---
 
+## 5G. FASE G — the Sovereign GUI Continuum (integral Raven-GUI adoption) — ▶ ACTIVE
+
+**Directive (user, this revision):** STOP all compiler / self-hosting work — deferred to the very end (P11
+LAST). Put everything on the graphical interface: unification, perfection, minimisation, and the *integral*
+adoption of the Raven GUI dossier (`oscar-soirey/Raven`). P8.0 was a sketch; G1–G5 complete it. **Every step
+keeps:** `RENDER: PASS (0xD28836F)` bit-exact, `CENSUS <= 181`, pure HolyC, no stubs/mocks.
+
+- **G1 — Universal harmonic physics (▶ next).** One analytic spring engine (closed form) for every interactive
+  control: `$SL$` sliders (inertia/overshoot), `$WIN$` window drag (elastic), the editor caret (sub-pixel
+  glide), and visibility transitions with Raven's zeta (`Pop` 0.52, `Drop` 0.32, `SlideLeft/Right` 0.90) and
+  motions (`SNAPPY`/`SMOOTH`/`BOUNCY`/`WOBBLY`); reduce-motion honoured. Gate: `SPRING: PASS`.
+- **G2 — Materials & transitions.** `Solid`/`Glass`/`FrostedGlass`/`TintedGlass` (blur + rim bend + top-left
+  light) + `BackgroundBlur` styles; widget transitions (`Appear=`/`Play`) on the G1 engine. Gate: `GLASS: PASS`.
+- **G3 — Industrial widgets.** `$NODE_GRAPH$` (pins, Bezier cables hanging/swinging, canvas pan),
+  `$BLOCK_EDITOR$` (Scratch-style blocks, notches, mouths, magnetic snap), `$DOCK$`+splitters (BSP partition,
+  elastic resize), `$ISLAND$` (Dynamic Island morphing + status cross-fade). Gate: `INDUS: PASS`.
+- **G4 — Sub-pixel typography & math.** `FontVector.HC` (95 printable ASCII analytic strokes, smooth scaling);
+  elastic tabstops (end of the 8x18 grid); math (`$EQ$`/`$MA$`) with centred fraction bars + stretching
+  radical. Gate: `TYPE: PASS`.
+- **G5 — Procedural shaders & 3D sprites in text.** `$SHADER$` (live fragment shaders with `iTime`/
+  `iResolution`/`iMouse`: plasma/fire/tunnel/sphere), `$SP$` (interactive 3D meshes/gears in flow), `$GRAPH$`
+  (oscilloscopes, translucent gradient). Gate: `SHADERTEXT: PASS`.
+
+**Honest status of the Raven dossier port:** DONE — springs (basic), dual-Kawase blur, basic Slate layout,
+node-kind vocabulary (`$NODE_GRAPH$`/`$BLOCK_EDITOR$`/`$ISLAND$`/`$REPL$` parse + draw). NOT YET — real glass
+materials, transitions, node-graph interaction/cables, block snap, docking BSP, island morph, sub-pixel
+type / elastic tabstops / math layout, in-document shaders/sprites/graphs. G1–G5 close these.
+
 ## 6. Assembly plan (every NEON kernel to add)
 
 All `.s` files are **source-of-truth, not built** (pattern: `scripts/raster_span.s:1-13`). Regenerate the
