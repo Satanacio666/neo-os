@@ -1487,9 +1487,13 @@ per-producer bins (`g_rs_bins[4][*]`, `RasterSceneAddTriangleP`, drained in prod
 state (registers, mask/stack, quad, outputs) is per-core, so concurrent tile shaders share no mutable state;
 `ShaderVMQuad(ctx,…)`/`ShaderRaymarchQuad(ctx,…)`/`ShaderVMRenderNodeCore(ctx,…)`/`ShaderVMEvalRCtx(ctx,…)`
 take it explicitly, public entry points delegate to context 0. `SHADERVM: PASS 16/16`.
-**Remaining — see doc 04 D40:** the SMP tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`,
-`GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the `MeshRender` batch-transform wiring.
-Runbook below is the original spec (retained).
+**F4 ✅ DONE (see doc 04 D47):** the SMP back-end dispatch — `RasterSceneEndSmp` dispatches secondaries via
+`SmpDispatchAsync`; every worker steals tiles from a shared cursor with `RasterAtomicFetchAdd` (AArch64
+LDAXR/STLXR), renders into its own `CFrameArena` and resolves straight to the target; `GFX_MODE_SMP_TILED` is
+wired through `GfxDeviceSetMode` → `RasterSetSmpTiled` and routed by `RasterSceneEnd`. Tiles are disjoint and
+claimed once, so output is byte-identical on 1 vs 4 cores (`TILE` self-test check 6 + gate under `-icount`);
+measured **~2.5–3.2× MTTCG wall-clock speed-up** (`smptilebench`). **Remaining:** the `SelfTestTile` SMP sub-test
+fold-in and the `MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
 
 **Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
 transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.

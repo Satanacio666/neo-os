@@ -132,7 +132,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   and resolves non-temporally; F2 (doc 04 D45) added the sort-middle prerequisites — an immutable `CTriRecord`
   snapshot, **per-producer bins** (a geometry submitter owns a disjoint bin set, so producers bin concurrently
   without a lock; the drain walks producers in id order for determinism), and a per-core `CFrameArena`
-  (64×64 scratchpad + bound context). The SMP tile *dispatch* (one worker per core) is still F3+. **[MISSING]**.
+  (64×64 scratchpad + bound context). **[REAL — P7.4 F4]** the SMP tile *dispatch* now works: core 0 dispatches
+  secondaries via `SmpDispatchAsync`; workers steal tiles from a shared cursor with a lock-free **LDAXR/STLXR**
+  fetch-and-add (`RasterAtomicFetchAdd`), render into their own `CFrameArena` and resolve to the canvas.
+  Output is byte-identical on 1 vs N cores (disjoint tiles, claimed once) and measures **~2.5–3.2×** MTTCG
+  wall-clock speed-up on 3 workers (doc 04 D47). GPU-provider execution of tile jobs is still open (P9).
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

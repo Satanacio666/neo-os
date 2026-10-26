@@ -14,9 +14,15 @@ SERLOG=/tmp/neo-os-serial.log
 VNC_DISPLAY=${NEO_VNC_DISPLAY:-0}
 QEMU_BIOS=${NEO_QEMU_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 
+# P7.4 F4: TCG threading. Default single (deterministic, one host thread); set
+# NEO_MTTCG=1 for MTTCG (one host thread per vCPU) to measure the *real* SMP
+# wall-clock speed-up of the tiled back-end. Never combined with NEO_ICOUNT.
+ACCEL_THREAD=single
+if [ "${NEO_MTTCG:-0}" = "1" ]; then ACCEL_THREAD=multi; fi
+
 QEMU_ARGS=(
   -M virt,gic-version=2
-  -accel tcg,thread=single,tb-size=512
+  -accel "tcg,thread=${ACCEL_THREAD},tb-size=512"
   -cpu cortex-a72
   -smp "${NEO_SMP:-4}"
   # P7.4 F1: deterministic measurement mode. `-icount shift=0,align=off,sleep=off`

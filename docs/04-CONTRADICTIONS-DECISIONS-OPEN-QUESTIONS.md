@@ -984,3 +984,26 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   parallel tile workers. `ShaderVMSelfTest` gained two isolation checks (context 1's evaluation must not
   disturb context 0's output). Gate: `GOLDEN BOOT: PASS`, `SHADERVM: PASS (16/16)`, `RENDER: PASS (0xD28836F)`
   bit-exact, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D47 — P7.4 F4: SMP back-end tile dispatch + worker execution (DONE; closes D40).** `apps/RasterTile.HC`
+  gains `RasterSceneEndSmp` and `RasterTileWorker`. Core 0 dispatches every online secondary (1..n-1) with
+  `SmpDispatchAsync`, then joins them with `SmpWaitJob` (whose trailing `DMB ISH` is the acquire before the
+  canvas is read). **(1) Lock-free dynamic assignment:** all workers steal tiles from one shared cursor
+  (`g_rs_next_tile`) with `RasterAtomicFetchAdd` — an AArch64 **LDAXR/STLXR** fetch-and-add (`mov x9,x0;
+  ldaxr x0,[x9]; add x2,x0,#1; stlxr w3,x2,[x9]; cbnz w3,-3`), so every tile is claimed by exactly one core
+  with no lock; `DMB ISH` fences the reset-before-dispatch and the join-after. **(2) Workers render into their
+  own `CFrameArena`** (`RasterRenderTileCore`) and resolve straight to the target canvas
+  (`RasterTileResolveCore`) — tiles are disjoint, so no two cores touch the same pixel or Z word. **(3) Wiring:**
+  `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` calls `RasterSetSmpTiled(1)` (`apps/GfxDevice.HC`), and `RasterSceneEnd`
+  routes to `RasterSceneEndSmp` while the flag is set; the `gfx smp` shell command selects it. The rasterizer
+  keeps the flag local, so it never depends on `GfxDevice` (no cycle). If no secondary is online, core 0 drains
+  the tiles itself (single-core fallback). **(4) Determinism:** each tile is rendered exactly once, into its own
+  arena, so the frame is byte-identical on 1 vs N cores — asserted by the `TILE` self-test's sixth check (same
+  scene single-threaded vs `RasterSceneEndSmp`, colour **and** Z compared; secondaries must have rendered) and by
+  the whole gate under `-icount`. **(5) Speed-up (measured):** the new `smptilebench` shell command renders a
+  192-tile / 1536-triangle scene both ways. Under **MTTCG** (`NEO_MTTCG=1`, real host parallelism, 4 host cores)
+  it is **2.5–3.2×** faster on 3 workers (1 core ~8.1–9.2 M cycles vs 4 cores ~2.8–3.2 M). Under `-icount`
+  (which counts *work*, not time) it is **1.00×** — expected, since parallelism does not shrink the instruction
+  count; icount is the determinism/work metric, MTTCG the speed-up metric. Gate (default **and** `-icount`):
+  `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS` (SMP == single-threaded, byte-exact),
+  `DETERMINISM: PASS (1 vs 4 cores identical)`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `SHADERVM: PASS
+  (16/16)`, `CENSUS 181`, `SELF-HOST: PASS`. New `NEO_MTTCG=1` mode in `scripts/run-viewer-vm.sh`.

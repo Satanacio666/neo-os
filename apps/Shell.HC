@@ -643,6 +643,7 @@ U0 ShellCmd_src(U8 *a, U8 *r) {
     ShellInspectSource(a);
 }
 U0 ShellCmd_renderbench(U8 *a, U8 *r) { RenderBench(); }
+U0 ShellCmd_smptilebench(U8 *a, U8 *r) { RasterSmpBench(); }
 U0 ShellCmd_shadervm(U8 *a, U8 *r) { ShaderVMDemo(); }
 U0 ShellCmd_mesh(U8 *a, U8 *r) { MeshDemo(); }
 U0 ShellCmd_obj(U8 *a, U8 *r) {
@@ -1037,6 +1038,7 @@ U0 ShellInit() {
     shell_register_cmd("uf", ShellCmd_uf, "disassemble symbol");
     shell_register_cmd("src", ShellCmd_src, "inspect source");
     shell_register_cmd("renderbench", ShellCmd_renderbench, "render benchmark");
+    shell_register_cmd("smptilebench", ShellCmd_smptilebench, "SMP tiled benchmark");
     shell_register_cmd("shadervm", ShellCmd_shadervm, "shader VM demo");
     shell_register_cmd("mesh", ShellCmd_mesh, "mesh demo");
     shell_register_cmd("obj", ShellCmd_obj, "load OBJ mesh");

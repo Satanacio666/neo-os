@@ -84,6 +84,13 @@ I64 g_rs_pitch = 0;
 U32 g_rs_clear = 0;
 I64 g_rs_vx = 0; I64 g_rs_vy = 0; I64 g_rs_vw = 0; I64 g_rs_vh = 0;
 I64 g_rs_cull = 0;
+// F4: SMP tiled dispatch state. Core 0 dispatches the secondaries; every worker
+// steals the next tile from this shared lock-free cursor (atomic fetch-add) and
+// renders it into its own CFrameArena, so tile assignment is dynamic and
+// deterministic (each tile is rendered exactly once, by exactly one core).
+I64 g_rs_next_tile = 0;     // shared work-stealing cursor
+I64 g_rs_smp_workers = 0;   // secondaries dispatched for the last SMP frame
+I64 g_rs_smp_mode = 0;      // 1 while GFX_MODE_SMP_TILED is selected
 
 // ==============================================================================
 // P4.3: unified texture state. The ONE rasterizer reads ctx->tex_active; when a
@@ -957,6 +964,11 @@ I64 TileResolveRow(U32 *dst, U32 *src, I64 n) {
 // tiled path stays pixel-identical to the immediate path unless the caller opts in).
 U0 RasterSetCull(I64 en) { g_rs_cull = en ? 1 : 0; }
 
+// F4: select the SMP tiled back-end for RasterSceneEnd. Wired by GfxDevice.HC's
+// GfxDeviceSetMode(GFX_MODE_SMP_TILED) (the `gfx smp` shell command). Kept local
+// to RasterTile.HC so the rasterizer never depends on GfxDevice (no cycle).
+U0 RasterSetSmpTiled(I64 en) { g_rs_smp_mode = en ? 1 : 0; }
+
 U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   RasterInit();
   g_rs_target = GfxDeviceTarget();
@@ -1123,11 +1135,156 @@ U0 RasterTileResolveCore(CFrameArena *a, I64 t) {
 
 U0 RasterTileResolve(I64 t) { RasterTileResolveCore(&g_frame_arenas[0], t); }
 
+// ==============================================================================
+// F4: SMP back-end tile dispatch. Core 0 dispatches the online secondaries; all
+// workers (and, when there are none, core 0) steal tiles from the shared cursor
+// below with an atomic fetch-and-add, so assignment is dynamic and lock-free.
+// ==============================================================================
+
+// Lock-free atomic fetch-and-add of *p (AArch64 LL/SC). Returns the PREVIOUS
+// value in X0 — i.e. the tile index this caller now exclusively owns. Source of
+// record; the compiler emits prologue/epilogue around this block (no `ret` here).
+//   mov x9,x0        (addr -> x9)       ldaxr x0,[x9]   (load-exclusive)
+//   add x2,x0,#1     (increment)        stlxr w3,x2,[x9] (store-exclusive)
+//   cbnz w3, retry   (spin on failure)  -> x0 = old value
+I64 RasterAtomicFetchAdd(I64 *p) {
+  asm {
+    0xAA0003E9 0xC85FFD20 0x91000402 0xC803FD22 0x35FFFFA3
+  }
+}
+
+// A tile worker: steal tiles from the shared cursor until the scene is drained,
+// rendering each into this core's own frame arena and resolving it straight to
+// the target canvas. arg = the core id (which arena to use).
+U0 RasterTileWorker(U64 arg) {
+  I64 core = (I64)arg;
+  if (core < 0 || core >= RC_MAX_CORES) return;
+  CFrameArena *a = &g_frame_arenas[core];
+  I64 nt = g_rs_cols * g_rs_rows;
+  I64 t = RasterAtomicFetchAdd(&g_rs_next_tile);
+  while (t < nt) {
+    RasterRenderTileCore(a, t);
+    RasterTileResolveCore(a, t);
+    t = RasterAtomicFetchAdd(&g_rs_next_tile);
+  }
+}
+
+// SMP variant of RasterSceneEnd: core 0 dispatches secondaries 1..n-1, then joins
+// them. Tiles are disjoint and each is rendered exactly once (the cursor is
+// atomic), so the result is byte-identical to the single-threaded path on any
+// core count. If no secondary is online, core 0 drains the tiles itself.
+U0 RasterSceneEndSmp() {
+  if (!g_rs_target) return;
+  I64 cores = (I64)SmpOnlineCoreCount();
+  if (cores > RC_MAX_CORES) cores = RC_MAX_CORES;
+  g_rs_next_tile = 0;
+  g_rs_smp_workers = 0;
+  __dmb_ish(); // publish the reset cursor before any worker can observe it
+  I64 dispatched = 0;
+  I64 c = 1;
+  while (c < cores) {
+    if (SmpCoreOnline((U32)c)) {
+      if (SmpDispatchAsync((U32)c, (U64)&RasterTileWorker, (U64)c) == 0) dispatched = dispatched + 1;
+    }
+    c = c + 1;
+  }
+  g_rs_smp_workers = dispatched;
+  if (dispatched == 0) {
+    RasterTileWorker(0); // no secondary online: BSP drains the tiles
+    __dmb_ish();
+    return;
+  }
+  // Join. SmpWaitJob's trailing DMB ISH is the acquire before we read the canvas.
+  c = 1;
+  while (c < cores) {
+    if (SmpCoreOnline((U32)c)) SmpWaitJob((U32)c);
+    c = c + 1;
+  }
+  __dmb_ish();
+}
+
 U0 RasterSceneEnd() {
   if (!g_rs_target) return;
+  if (g_rs_smp_mode != 0) { RasterSceneEndSmp(); return; }
   I64 nt = g_rs_cols * g_rs_rows;
   I64 t = 0;
   while (t < nt) { RasterRenderTile(t); RasterTileResolve(t); t = t + 1; }
+}
+
+// F4 benchmark: build a full-canvas grid scene (nx*ny cells, 2 triangles each),
+// render it once single-threaded and once on the SMP back-end, and report the
+// CNTVCT cycle count of each plus the speed-up. The two renders cover the same
+// pixels, so their work is identical; only the core count differs.
+I64 g_rs_bench_single = 0;
+I64 g_rs_bench_smp = 0;
+I64 g_rs_bench_tiles = 0;
+I64 g_rs_bench_workers = 0;
+
+U0 RasterSmpBenchBuild(I64 nx, I64 ny, I64 w, I64 h, U32 clear) {
+  RasterSceneBegin(0, 0, w, h, clear);
+  I64 cellw = w / nx; I64 cellh = h / ny;
+  if (cellw < 1) cellw = 1; if (cellh < 1) cellh = 1;
+  CRasterVertex v[3];
+  I64 gy = 0;
+  while (gy < ny) {
+    I64 gx = 0;
+    while (gx < nx) {
+      F64 x0 = (F64)(gx * cellw);       F64 y0 = (F64)(gy * cellh);
+      F64 x1 = (F64)(gx * cellw + cellw); F64 y1 = (F64)(gy * cellh + cellh);
+      v[0].x = x0; v[0].y = y0; v[0].z = 100;
+      v[1].x = x1; v[1].y = y0; v[1].z = 200;
+      v[2].x = x0; v[2].y = y1; v[2].z = 300;
+      RasterSceneAddTriangle(v, 0xFF204060 | (U32)((gx * 7 + gy * 13) & 255));
+      v[0].x = x1; v[0].y = y0; v[0].z = 200;
+      v[1].x = x1; v[1].y = y1; v[1].z = 150;
+      v[2].x = x0; v[2].y = y1; v[2].z = 300;
+      RasterSceneAddTriangle(v, 0xFF806040 | (U32)((gx * 3 + gy * 5) & 255));
+      gx = gx + 1;
+    }
+    gy = gy + 1;
+  }
+}
+
+U0 RasterSmpBench() {
+  RasterInit();
+  I64 w = gfx_get_canvas_width();
+  I64 h = gfx_get_canvas_height();
+  if (w <= 0) w = 1024; if (h <= 0) h = 768;
+  I64 nx = 32; I64 ny = 24;
+
+  // Single-threaded tiled path.
+  RasterSetSmpTiled(0);
+  RasterClearZ();
+  RasterSmpBenchBuild(nx, ny, w, h, 0xFF101018);
+  U64 s0 = __mrs_cntvct();
+  RasterSceneEnd();
+  U64 s1 = __mrs_cntvct();
+  g_rs_bench_single = (I64)(s1 - s0);
+  g_rs_bench_tiles = g_rs_cols * g_rs_rows;
+
+  // SMP tiled path.
+  RasterSetSmpTiled(1);
+  RasterClearZ();
+  RasterSmpBenchBuild(nx, ny, w, h, 0xFF101018);
+  U64 m0 = __mrs_cntvct();
+  RasterSceneEnd();
+  U64 m1 = __mrs_cntvct();
+  g_rs_bench_smp = (I64)(m1 - m0);
+  g_rs_bench_workers = g_rs_smp_workers;
+  RasterSetSmpTiled(0);
+  GfxPresent(0, 0, w, h, 1);
+
+  doldoc_printf("\n=== NeoOS SMP Tiled Benchmark ===\n");
+  doldoc_printf("  tiles     : %lld (%lldx%lld, %lld tris)\n",
+                g_rs_bench_tiles, g_rs_cols, g_rs_rows, (nx * ny * 2));
+  doldoc_printf("  1 core    : %lld cycles\n", g_rs_bench_single);
+  doldoc_printf("  %lld cores  : %lld cycles (workers=%lld)\n",
+                (I64)SmpOnlineCoreCount(), g_rs_bench_smp, g_rs_bench_workers);
+  if (g_rs_bench_smp > 0) {
+    I64 sp100 = (g_rs_bench_single * 100) / g_rs_bench_smp;
+    doldoc_printf("  speedup   : %lld.%02lldx\n", sp100 / 100, sp100 % 100);
+  }
+  doldoc_printf("=================================\n\n");
 }
 
 // P7.3/P7.4-F2 self-test (called from apps/SelfTest.HC -> TILE: PASS). Checks the
@@ -1297,6 +1454,64 @@ U0 RasterSelfTestTile() {
   if (fb[60 * pit + 60] != COL) { ok = 0; doldoc_print("[TILE] F2 producer-1 bin not rendered\n"); }
   if (&g_frame_arenas[0].color[0] == &g_frame_arenas[1].color[0]) { ok = 0; doldoc_print("[TILE] F2 arenas alias\n"); }
   if (g_frame_arenas[0].ctx != &g_rctx[0] || g_frame_arenas[1].ctx != &g_rctx[1]) { ok = 0; doldoc_print("[TILE] F2 arena ctx binding\n"); }
+
+  // (6) F4: the SMP tiled dispatch must be byte-identical (colour + Z) to the
+  //     single-threaded tiled path, RasterSceneEnd must route to it when
+  //     GFX_MODE_SMP_TILED is selected, and the secondaries must actually render.
+  //     Scene: two triangles spanning several 64x64 tiles.
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 10.0;  g_tile_tmpv[0].y = 10.0;  g_tile_tmpv[0].z = 100;
+  g_tile_tmpv[1].x = 250.0; g_tile_tmpv[1].y = 30.0;  g_tile_tmpv[1].z = 200;
+  g_tile_tmpv[2].x = 20.0;  g_tile_tmpv[2].y = 240.0; g_tile_tmpv[2].z = 300;
+  RasterSceneAddTriangle(g_tile_tmpv, COL);
+  g_tile_tmpv[0].x = 200.0; g_tile_tmpv[0].y = 200.0; g_tile_tmpv[0].z = 50;
+  g_tile_tmpv[1].x = 40.0;  g_tile_tmpv[1].y = 220.0; g_tile_tmpv[1].z = 150;
+  g_tile_tmpv[2].x = 230.0; g_tile_tmpv[2].y = 50.0;  g_tile_tmpv[2].z = 250;
+  RasterSceneAddTriangle(g_tile_tmpv, 0xFF00A0FF);
+  RasterSceneEnd(); // single-threaded (mode off) -> arena 0
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) {
+      g_tile_snap_fb[y * R + x] = fb[y * pit + x];
+      g_tile_snap_zb[y * R + x] = g_zbuf[y * zw + x];
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSetSmpTiled(1);
+  RasterSceneBegin(0, 0, R, R, BG);
+  g_tile_tmpv[0].x = 10.0;  g_tile_tmpv[0].y = 10.0;  g_tile_tmpv[0].z = 100;
+  g_tile_tmpv[1].x = 250.0; g_tile_tmpv[1].y = 30.0;  g_tile_tmpv[1].z = 200;
+  g_tile_tmpv[2].x = 20.0;  g_tile_tmpv[2].y = 240.0; g_tile_tmpv[2].z = 300;
+  RasterSceneAddTriangle(g_tile_tmpv, COL);
+  g_tile_tmpv[0].x = 200.0; g_tile_tmpv[0].y = 200.0; g_tile_tmpv[0].z = 50;
+  g_tile_tmpv[1].x = 40.0;  g_tile_tmpv[1].y = 220.0; g_tile_tmpv[1].z = 150;
+  g_tile_tmpv[2].x = 230.0; g_tile_tmpv[2].y = 50.0;  g_tile_tmpv[2].z = 250;
+  RasterSceneAddTriangle(g_tile_tmpv, 0xFF00A0FF);
+  RasterSceneEnd(); // mode on -> RasterSceneEndSmp
+  RasterSetSmpTiled(0);
+  I64 smpdiff = 0;
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) {
+      if (fb[y * pit + x] != g_tile_snap_fb[y * R + x]) smpdiff = smpdiff + 1;
+      if (g_zbuf[y * zw + x] != g_tile_snap_zb[y * R + x]) smpdiff = smpdiff + 1;
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  if (smpdiff != 0) { ok = 0; doldoc_printf("[TILE] F4 SMP!=single diff=%lld\n", smpdiff); }
+  I64 sec_rendered = g_frame_arenas[1].rendered + g_frame_arenas[2].rendered + g_frame_arenas[3].rendered;
+  if (SmpOnlineCoreCount() > 1 && (g_rs_smp_workers < 1 || sec_rendered <= 0)) {
+    ok = 0;
+    doldoc_printf("[TILE] F4 no parallel work (workers=%lld sec_tiles=%lld)\n", g_rs_smp_workers, sec_rendered);
+  }
 
   gfx_clear(0xFF000000);
   RasterClearZ();

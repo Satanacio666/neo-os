@@ -405,6 +405,18 @@ precondition for shader viewports inside parallel tile workers. `ShaderVMSelfTes
 (context 1 must not disturb context 0). `SHADERVM: PASS (16/16)`, `RENDER 0xD28836F` bit-exact, `CENSUS 181`.
 See doc 04 D46.
 
+### P7.4 F4 — SMP back-end tile dispatch + worker execution — **[REAL]**
+
+`RasterSceneEndSmp` + `RasterTileWorker` (`apps/RasterTile.HC`) make `GFX_MODE_SMP_TILED` real. Core 0
+dispatches every online secondary with `SmpDispatchAsync` and joins with `SmpWaitJob`; all workers steal tiles
+from one shared cursor via `RasterAtomicFetchAdd` (AArch64 **LDAXR/STLXR** fetch-and-add), render into their own
+`CFrameArena` (`RasterRenderTileCore`) and resolve straight to the target (`RasterTileResolveCore`). Tiles are
+disjoint and claimed exactly once, so the frame is **byte-identical on 1 vs 4 cores** (colour + Z) — proven by
+the `TILE` self-test's sixth check and by the whole gate under `-icount`. `GfxDeviceSetMode(GFX_MODE_SMP_TILED)`
+calls `RasterSetSmpTiled(1)`; `RasterSceneEnd` routes accordingly (`gfx smp`). Measured with the new
+`smptilebench` command (192 tiles / 1536 tris): **~2.5–3.2×** MTTCG wall-clock speed-up on 3 workers (1 core
+~8.1–9.2 M cycles vs 4 cores ~2.8–3.2 M); `1.00×` under `-icount` (which counts work, not time). See doc 04 D47.
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

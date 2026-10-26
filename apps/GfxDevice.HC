@@ -504,6 +504,9 @@ U0 GfxDeviceSetMode(I64 m) {
   } else {
     strcpy(g_gdev.name, "CPU Software (UEFI)");
   }
+  // P7.4 F4: route RasterSceneEnd to the SMP tiled back-end (RasterSceneEndSmp).
+  // The rasterizer keeps a local flag so it never has to depend on GfxDevice.
+  RasterSetSmpTiled(m == GFX_MODE_SMP_TILED);
 }
 
 I64 GfxDeviceGetMode() { return g_gdev.mode; }
