@@ -177,7 +177,7 @@ int neo_block_probe(void) {
  * ------------------------------------------------------------------------- */
 
 #ifndef NEO_CRASH_ZONE_LBA
-#define NEO_CRASH_ZONE_LBA 131072
+#error "NEO_CRASH_ZONE_LBA nao definido: vem do Makefile (CRASH_ZONE_LBA). Um fallback silencioso aqui gravaria o dump no LBA errado sem avisar."
 #endif
 
 #define NEO_CRASH_MAGIC    0x4E454F21u   /* "NEO!" em ASCII */
