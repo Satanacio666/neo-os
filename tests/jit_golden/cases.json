@@ -775,6 +775,14 @@
         "I64 f0many() { I64 w0=0;I64 w1=1;I64 w2=2;I64 w3=3;I64 w4=4;I64 w5=5;I64 w6=6;I64 w7=7;I64 w8=8;I64 w9=9;I64 w10=10;I64 w11=11;I64 w12=12;I64 w13=13;I64 w14=14;I64 w15=15;I64 w16=16;I64 w17=17;I64 w18=18;I64 w19=19;I64 w20=20;I64 w21=21;I64 w22=22;I64 w23=23;I64 w24=24;I64 w25=25;I64 w26=26;I64 w27=27;I64 w28=28;I64 w29=29;I64 w30=30;I64 w31=31;I64 w32=32;I64 w33=33;I64 w34=34;I64 w35=35;I64 w36=36;I64 w37=37;I64 w38=38;I64 w39=39;I64 w40=40;I64 w41=41;I64 w42=42;I64 w43=43;I64 w44=44;I64 w45=45;I64 w46=46;I64 w47=47; return w0+w1+w2+w3+w4+w5+w6+w7+w8+w9+w10+w11+w12+w13+w14+w15+w16+w17+w18+w19+w20+w21+w22+w23+w24+w25+w26+w27+w28+w29+w30+w31+w32+w33+w34+w35+w36+w37+w38+w39+w40+w41+w42+w43+w44+w45+w46+w47; } f0many();"
       ],
       "expect": "0x468"
+    },
+    {
+      "name": "neg_global_redecl_overflow",
+      "note": "P7.4 F0: a size-increasing global re-declaration is a HARD ERROR (was a silent reuse of the smaller cell -> heap corruption). Expects rejection (0xFFFF...).",
+      "cmds": [
+        "I64 g_f0ro_x; I64 g_f0ro_x[10]; g_f0ro_x[0];"
+      ],
+      "expect": "0xFFFFFFFFFFFFFFFF"
     }
   ]
 }

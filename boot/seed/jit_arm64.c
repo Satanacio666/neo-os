@@ -551,6 +551,29 @@ typedef struct {
 static struct_def_t struct_defs[MAX_STRUCT_DEFS];
 static int struct_def_count = 0;
 
+// P7.4 F0: byte size allocated for each compiler-created global. A re-declaration
+// of an existing global with a LARGER type must never silently reuse a smaller
+// cell (that wrote past the allocation into the next heap block). The self-hosted
+// compiler (Compiler.HC) hard-errors; this mirrors that so both engines agree.
+#define MAX_GALLOC 1024
+static struct { char name[32]; size_t bytes; } g_galloc[MAX_GALLOC];
+static int g_galloc_count = 0;
+static size_t galloc_get(const char *n) {
+    for (int i = 0; i < g_galloc_count; i++)
+        if (strcmp(g_galloc[i].name, n) == 0) return g_galloc[i].bytes;
+    return 0;
+}
+static void galloc_set(const char *n, size_t b) {
+    for (int i = 0; i < g_galloc_count; i++)
+        if (strcmp(g_galloc[i].name, n) == 0) { g_galloc[i].bytes = b; return; }
+    if (g_galloc_count < MAX_GALLOC) {
+        strncpy(g_galloc[g_galloc_count].name, n, 31);
+        g_galloc[g_galloc_count].name[31] = '\0';
+        g_galloc[g_galloc_count].bytes = b;
+        g_galloc_count++;
+    }
+}
+
 static struct_def_t* find_struct_def(const char *name) {
     if (!name || !*name) return NULL;
     for (int i = 0; i < struct_def_count; i++) {
@@ -2761,12 +2784,19 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     }
                 }
 
+                if (galloc_get(name) > 0 && total_buf_sz > galloc_get(name)) {
+                    printf("[JIT] Error: global '%s' re-declared larger (%zu > %zu bytes)\n",
+                           name, total_buf_sz, galloc_get(name));
+                    cb->has_error = 1;
+                    return;
+                }
                 void *arr_buf = kmalloc(total_buf_sz);
                 if (arr_buf) memset(arr_buf, 0, total_buf_sz);
 
                 int64_t *storage = (int64_t*)kmalloc(sizeof(int64_t));
                 *storage = (int64_t)arr_buf;
                 symbols_register(name, storage, SYM_VAR);
+                galloc_set(name, total_buf_sz);
                 register_var_type(name, elem_sz, 1, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
 
                 if (lexer_peek(l).type == TOK_SEMICOLON) lexer_next(l);
@@ -2789,6 +2819,12 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                     emit_str_ptr(cb, 0, 16); // local = X0
                 }
             } else {
+            if (galloc_get(name) > 0 && alloc_sz > galloc_get(name)) {
+                printf("[JIT] Error: global '%s' re-declared larger (%zu > %zu bytes)\n",
+                       name, alloc_sz, galloc_get(name));
+                cb->has_error = 1;
+                return;
+            }
             symbol_t *existing_sym = symbols_lookup_entry(name);
             int64_t *storage = NULL;
             if (existing_sym && existing_sym->type == SYM_VAR && existing_sym->address && alloc_sz <= sizeof(int64_t)) {
@@ -2798,6 +2834,7 @@ static void parse_statement(lexer_t *l, code_buffer_t *cb) {
                 memset(storage, 0, alloc_sz);
                 symbols_register(name, storage, SYM_VAR);
             }
+            galloc_set(name, alloc_sz);
             register_var_type(name, scale, is_ptr, (base_type == TOK_TYPE_F64 && !is_ptr) ? 1 : 0, st_type_name[0] ? st_type_name : NULL);
 
             if (lexer_peek(l).type == TOK_EQUAL) {
