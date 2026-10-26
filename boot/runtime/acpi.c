@@ -174,6 +174,22 @@ void disco_set_identity(const char *src) {
 
 const char *disco_identity(void) { return g_discovered_plat.identity; }
 
+/* E6 — FATOS DE REGISTRADOR DE SISTEMA. Nao vem de ACPI nem de FDT: sao leituras
+ * diretas de registradores de arquitetura, validas em qualquer AArch64. Por isso
+ * nao pertencem a nenhuma tabela nem ao perfil.
+ *   CTR_EL0[19:16] = DminLine -> linha de cache de dados = 4 << DminLine bytes.
+ * Motivo de existir: a linha de cache estava no arquivo de PERFIL, o que viola a
+ * separacao descoberta/politica. Um fato fisico lido em uma instrucao nao pode
+ * ser configuravel. */
+void disco_read_system_facts(void) {
+    uint64_t ctr = 0;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    uint32_t dminline = (uint32_t)((ctr >> 16) & 0xFULL);
+    g_discovered_plat.dcache_line_bytes = 4u << dminline;
+}
+
+uint32_t disco_dcache_line(void) { return g_discovered_plat.dcache_line_bytes; }
+
 /* --------------------------------------------------------------------------
  * Integridade
  * ------------------------------------------------------------------------ */

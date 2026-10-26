@@ -43,6 +43,10 @@ typedef struct {
      *   nada -> "generic_aarch64"
      * Saneada para [A-Za-z0-9_-] porque vira nome de arquivo na ESP. */
     char identity[64];
+    /* E6 — a linha de cache e FATO FISICO, nao politica: vem de CTR_EL0.DminLine
+     * (bits [19:16]), bytes = 4 << DminLine. Nao pertence ao perfil — o perfil
+     * deve ENCOLHER conforme mais coisas se tornam descobriveis. */
+    uint32_t dcache_line_bytes;
 } discovered_platform_t;
 
 extern discovered_platform_t g_discovered_plat;

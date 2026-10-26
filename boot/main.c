@@ -79,6 +79,9 @@ extern void fdt_report(void);
 
 /* E5 — identidade e perfil como dado (boot/runtime/profile.c) */
 extern const char *disco_identity(void);
+/* E6 — fatos de registrador de sistema (CTR_EL0). Nao vem de tabela nenhuma. */
+extern void     disco_read_system_facts(void);
+extern uint32_t disco_dcache_line(void);
 extern int      profile_load(void);
 extern void     profile_defaults(void);
 extern uint32_t profile_loaded(void);
@@ -624,6 +627,8 @@ int main(int argc, char **argv)
     // E5 — identidade e perfil. O HolyC le estes para ajustar politica (tiling,
     // SMP, erratas) sem que a politica contamine a descoberta.
     symbols_register("disco_identity", (void*)disco_identity, SYM_FUNC);
+    symbols_register("disco_read_system_facts", (void*)disco_read_system_facts, SYM_FUNC);
+    symbols_register("disco_dcache_line", (void*)disco_dcache_line, SYM_FUNC);
     symbols_register("profile_load", (void*)profile_load, SYM_FUNC);
     symbols_register("profile_defaults", (void*)profile_defaults, SYM_FUNC);
     symbols_register("profile_loaded", (void*)profile_loaded, SYM_FUNC);
@@ -677,6 +682,13 @@ int main(int argc, char **argv)
     if (neo_fwdesc_has_dtb()) {
         if (fdt_discover(g_fdt_blob, acpi_source() != 0) == 0) fdt_report();
     }
+
+    // E6 — FATOS DE REGISTRADOR DE SISTEMA. Nao vem de ACPI nem de FDT: sao
+    // leituras diretas de registradores de arquitetura, validas em qualquer
+    // AArch64. Por serem fatos fisicos, nao pertencem ao perfil (politica).
+    disco_read_system_facts();
+    printf("[BOOT] DCache line = %u bytes (CTR_EL0.DminLine)\n",
+           (unsigned)disco_dcache_line());
 
     // E5 — PERFIL COMO DADO. Precisa rodar AQUI: e uma leitura via Boot Services
     // (FAT), e depois do drop elas nao podem mais ser feitas. E antes da

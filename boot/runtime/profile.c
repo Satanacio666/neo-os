@@ -40,7 +40,6 @@ typedef struct {
     /* Silicio */
     uint32_t errata_flags;          /* default 0 */
     uint32_t throttle_delay_us;     /* default 0 */
-    uint32_t dcache_line_bytes;     /* 0 = ler de CTR_EL0 */
 } neo_profile_t;
 
 neo_profile_t g_active_profile;
@@ -54,7 +53,6 @@ void profile_defaults(void) {
     g_active_profile.smp_affinity_policy = 0;
     g_active_profile.errata_flags        = 0;
     g_active_profile.throttle_delay_us   = 0;
-    g_active_profile.dcache_line_bytes   = 0;
 }
 
 /* Acessores para o HolyC. */
@@ -141,7 +139,6 @@ int profile_load(void) {
         else if (key_is(buf, ls, ke, "smp_affinity_policy")) g_active_profile.smp_affinity_policy = parse_u32(buf, vs, le);
         else if (key_is(buf, ls, ke, "errata_flags"))        g_active_profile.errata_flags = parse_u32(buf, vs, le);
         else if (key_is(buf, ls, ke, "throttle_delay_us"))   g_active_profile.throttle_delay_us = parse_u32(buf, vs, le);
-        else if (key_is(buf, ls, ke, "dcache_line_bytes"))   g_active_profile.dcache_line_bytes = parse_u32(buf, vs, le);
     }
 
     g_active_profile.loaded = 1;
