@@ -96,6 +96,20 @@ U0 KHeapInit(U8 *p_start, I64 p_size) {
   smp_spin_unlock(&g_kheap_lock);
 }
 
+// P7.4 F0: walk the whole heap free list and return the address of the first block
+// whose header canary is corrupt (0 if the heap is intact). Used by the self-test to
+// prove the entire battery never wrote out of bounds into a heap block header.
+I64 KHeapCheckAll() {
+  CHeapBlock *kc = g_heap_head;
+  I64 kc_guard = 0;
+  while (kc && kc_guard < 1000000) {
+    if (kc->canary_head != HEAP_CANARY) return kc;
+    kc = kc->next;
+    kc_guard = kc_guard + 1;
+  }
+  return 0;
+}
+
 I64 KHeapIsValidPtr(U8 *ptr) {
   if (!ptr) return 0;
   U64 p = ptr;

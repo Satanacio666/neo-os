@@ -58,6 +58,14 @@ I64 SmpCoreOnline(U32 core_id) {
   return g_smp_hc.core_online[core_id];
 }
 
+// P7.4 F0: number of cores that actually came online (BSP + secondaries). Callers
+// must never read g_smp_hc directly; this is the single source of truth for
+// deciding how many disjoint slices a parallel job can be split into.
+U32 SmpOnlineCoreCount() {
+  if (g_smp_hc.online_cores == 0) return 1;
+  return g_smp_hc.online_cores;
+}
+
 // One generic per-core worker loop (no copy-paste). Each core owns its own job
 // slot (SmpGetJob) and idles in WFE until the BSP posts a job.
 U0 SmpWorkerLoop(U32 core_id) {
@@ -206,8 +214,10 @@ I64 SmpDispatch(U32 core_id, U64 fn, U64 arg) {
   return 0;
 }
 
-// P7.4: post a job without waiting for completion (the caller joins via SmpWaitJob
-// or its own completion flag). Reuses the same CSmpJob slot; no new allocation.
+// P7.4 F0: non-blocking post. The release sequence is: write fn/arg/completed,
+// DMB ISH, publish pending with a store, DMB ISH, SEV. A worker that observes
+// pending==1 with a matching acquire (its own DMB after the WFE) is guaranteed to
+// see fn/arg. There is deliberately no local-execution fallback.
 I64 SmpDispatchAsync(U32 core_id, U64 fn, U64 arg) {
   if (core_id == 0 || core_id >= SMP_MAX_CORES || fn == 0) return -1;
   if (!g_smp_hc.core_online[core_id]) return -1;
@@ -228,13 +238,23 @@ I64 SmpIsJobDone(U32 core_id) {
   return j->completed;
 }
 
-U0 SmpWaitJob(U32 core_id) {
-  if (core_id >= SMP_MAX_CORES) return;
-  I64 sw_guard = 0;
-  while (!SmpIsJobDone(core_id) && sw_guard < 500000) {
-    task_yield();
-    sw_guard++;
+// P7.4 F0: blocking join with an explicit acquire barrier. Spins WFE/SEV (the
+// worker's completion SEV sets the event register so the WFE returns), then a
+// trailing DMB ISH makes every store the worker made before `completed=1` visible
+// to this core. Returns 0 on success, -1 on timeout (an explicit failure — the
+// old version returned silently after a fixed iteration count, hiding a hang).
+I64 SmpWaitJob(U32 core_id) {
+  if (core_id >= SMP_MAX_CORES) return -1;
+  CSmpJob *j = SmpGetJob(core_id);
+  I64 guard = 0;
+  while (!j->completed) {
+    __wfe();
+    __sev();
+    guard = guard + 1;
+    if (guard >= 2000000000) return -1;
   }
+  __dmb_ish();
+  return 0;
 }
 
 U32 SmpGetCoreLoadPct(U32 core_id) {
@@ -316,6 +336,7 @@ I64 SmpSelfTest() {
 
   // Test 3: Real function job dispatch to Core 1 (no magic 0x75001111 address hack)
   g_smp_test_acc = 0;
+  g_smp_test_exec_core = 0xFFFFFFFF;
   U64 hb_before = g_smp_hc.core_heartbeat[1];
   I64 d_res = SmpDispatch(1, SmpTestWorkerFn, 0x99);
   if (d_res != 0) {
@@ -324,13 +345,17 @@ I64 SmpSelfTest() {
   }
   doldoc_printf("$FG,GREEN$[PASS] Test 3: Lockless SPSC job dispatch to Worker Core 1 validated.$FG$\n");
 
-  // Test 4: Job synchronization, payload execution & real heartbeat increment
-  SmpWaitJob(1);
-  if (!SmpIsJobDone(1) || g_smp_test_acc != 0x1099 || g_smp_hc.core_heartbeat[1] != hb_before + 1) {
-    doldoc_printf("$FG,RED$[FAIL] Test 4: Worker payload or heartbeat increment failed (acc=0x%llX)!$FG$\n", g_smp_test_acc);
+  // Test 4: Job synchronization, payload execution, real heartbeat increment and
+  // — the F0 proof — the worker reporting the MPIDR core it actually ran on.
+  I64 wj = SmpWaitJob(1);
+  if (wj != 0 || !SmpIsJobDone(1) || g_smp_test_acc != 0x1099 ||
+      g_smp_hc.core_heartbeat[1] != hb_before + 1 || g_smp_test_exec_core != 1) {
+    doldoc_printf("$FG,RED$[FAIL] Test 4: Worker payload/heartbeat/core-ID failed (acc=0x%llX core=%d)!$FG$\n",
+                  g_smp_test_acc, g_smp_test_exec_core);
     return 0;
   }
-  doldoc_printf("$FG,GREEN$[PASS] Test 4: SmpWaitJob synchronization, payload (0x%llX) & heartbeat verified.$FG$\n", g_smp_test_acc);
+  doldoc_printf("$FG,GREEN$[PASS] Test 4: SmpWaitJob join + payload (0x%llX) ran on core #%d (MPIDR) verified.$FG$\n",
+                g_smp_test_acc, g_smp_test_exec_core);
 
   // Test 5: Real cycle-based CPU load calculation & DolDoc telemetry
   U32 bsp_load = SmpGetCoreLoadPct(0);

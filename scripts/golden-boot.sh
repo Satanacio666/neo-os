@@ -278,6 +278,13 @@ else
         echo "  [FAIL] shell: ${shline:-<none>} (want SHELL: PASS)"
         fail=1
     fi
+    hpline="$(printf '%s\n' "$out" | grep -a 'HEAPINT: ' | tail -1)"
+    if printf '%s' "$hpline" | grep -aq 'PASS'; then
+        echo "  [PASS] $hpline (no out-of-bounds heap writes across the whole battery)"
+    else
+        echo "  [FAIL] heap integrity: ${hpline:-<none>} (want HEAPINT: PASS)"
+        fail=1
+    fi
 fi
 
 echo "== .HC -> C runtime census =="

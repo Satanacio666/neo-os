@@ -884,3 +884,26 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `RasterSceneEndSmp`/`RasterTileWorker`, the `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and
   the `MeshRender` batch-transform wiring (the latter is ambiguous — `HolyGLVertex3f` applies the full MVP, so a
   pre-transformed submit path is needed; deferred rather than guessed).
+- **D41 — P7.4 F0: SMP join/parallelism hardening + compiler-limit root fixes (DONE).** F0 hardened the P7.4
+  base before the per-core refactor. **(A) SMP:** `SmpWaitJob` is now a real WFE/SEV join with a trailing
+  `DMB ISH` acquire (and returns `I64`: 0 ok / -1 timeout) instead of a silent `task_yield` spin that gave up
+  after a fixed count; `SmpDispatchAsync`'s release sequence is documented and unchanged. `SmpTestWorkerFn`
+  now records the MPIDR core it ran on, asserted in `SmpSelfTest` Test 4. `Math3DTransformParallel` splits the
+  batch into **contiguous, disjoint slices across ALL online cores** (BSP + each online secondary), each
+  worker records `g_tf_s_ran[k] = MPIDR & 3`, and `Math3DSelfTestParallel` **requires** `ran == designated`
+  for every slice plus ≥1 secondary doing real work on a multi-core machine. Proof (4-core boot):
+  `slice 0 [0,4) core=0 ran=0`, `slice 1 [4,8) core=1 ran=1`, `slice 2 [8,12) core=2 ran=2`,
+  `slice 3 [12,16) core=3 ran=3` → `MATH3DPAR: PASS`. **(B) Compiler limits:** `HC_STRUCT_MEMBERS` 64→128 and
+  `HC_MAX_LOCALS` 256→512 as named constants; struct-member overflow is now a hard error (`g_hc_error`) instead
+  of a silent drop (the old `m_cnt < 64` guard threw members away with no diagnostic); the C seed JIT's
+  `MAX_STRUCT_MEMBERS` raised 64→128 and its function-pointer-member overflow path now errors too. **(C) A
+  genuine root bug found by the new regressions:** a top-level global re-declaration that resolved to an
+  **existing symbol** (`symbols_lookup`) reused the old cell **regardless of its size** — `AV av;` (40 bytes)
+  landing on a 16-byte cell silently wrote 24 bytes past the allocation into the next heap block header
+  (`[KHEAP] FATAL: Memory corruption`). `HcParseProgram` now records each compiler-allocated global's size
+  (`g_hc_global_alloc`) and hard-errors (`[HCLX] GLOBAL RE-DECL OVERFLOW`) when a re-declaration needs more
+  bytes than the known existing cell. The F0 regression tests use deliberately **unique** global names so a
+  test can never alias a module global. New permanent gate `HEAPINT: PASS` (KHeap.HC `KHeapCheckAll()` walks
+  the whole free list and asserts every block canary after the full battery). Gate: `GOLDEN BOOT: PASS`,
+  `SELFTEST 108/108`, `PARITY 77/77 (0 diff)`, `MATH3DPAR: PASS` (with core-ID proof), `TILE: PASS`,
+  `RENDER: PASS (0xD28836F)`, `DETERMINISM: PASS`, `HEAPINT: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.

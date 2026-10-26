@@ -1466,6 +1466,12 @@ non-temporal resolve. The immediate `RasterTriangleZ` path stays byte-identical.
 **Landed (verified, `GOLDEN BOOT: PASS`):** `SmpDispatchAsync` (non-blocking mailbox post, `apps/Smp.HC`),
 `SmpCoreOnline` (cross-module-safe core query), and `Math3DTransformParallel` (`apps/Math3D.HC` — splits the
 batch core-1 + BSP) with `SelfTestMath3DParallel` → `MATH3DPAR: PASS` (parallel == scalar, bit-for-bit).
+**F0 ✅ DONE (see doc 04 D41):** SMP join hardened (`SmpWaitJob` = WFE/SEV + `DMB ISH` acquire, `I64` result);
+`Math3DTransformParallel` now splits across **all** online cores with each worker recording its MPIDR core and
+the self-test requiring the designated core per slice (proof: 4 slices → cores 0/1/2/3); compiler limits raised
+(`HC_STRUCT_MEMBERS` 64→128, `HC_MAX_LOCALS` 256→512) with **hard error** on member overflow (was a silent
+drop), and a root fix for the silent **global re-declaration overflow** (reusing a too-small existing cell →
+heap corruption) — now a `[HCLX] GLOBAL RE-DECL OVERFLOW` hard error; new `HEAPINT: PASS` heap-integrity gate.
 **Remaining — see doc 04 D40:** the SMP tile dispatch is blocked on a **per-core raster-state refactor** (the
 rasterizer's ~24 state globals, ~198 refs, would race across concurrent tile workers), then
 `RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the

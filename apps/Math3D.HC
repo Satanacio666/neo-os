@@ -374,12 +374,23 @@ U0 Mat4MulVec4(CVec4 *out, CMat4 *m, CVec4 *v) {
   out->w = tw;
 }
 
-// P7.4: parallel vertex transform across cores. Deterministic: the range is split
-// into disjoint index slices (second half on core 1 via the SMP mailbox, first half
-// on the BSP), each slice uses the identical Mat4MulVec4 math. Falls back to a
-// scalar loop when there is only one online core or the batch is tiny.
-class CTransformJob { CVec3 *in; CVec4 *out; CMat4 *mvp; I64 start; I64 end; };
-CTransformJob g_tf_job;
+// P7.4 F0: parallel vertex transform across ALL online cores (BSP + each online
+// secondary). The batch is split into contiguous, disjoint index slices — one per
+// online core — so the result is independent of core count: each output element is
+// written by exactly one core using the identical Mat4MulVec4 math. Every worker
+// records the MPIDR core it actually executed on (g_tf_s_ran[k]); the self-test
+// asserts it equals the designated core — the real F0 parallelism proof. Flat
+// parallel arrays (not an array of structs) keep the hot path trivial.
+#define MATH3D_TF_MAX 4
+
+I64 g_tf_s_start[MATH3D_TF_MAX];
+I64 g_tf_s_end[MATH3D_TF_MAX];
+I64 g_tf_s_core[MATH3D_TF_MAX];   // designated core for the slice
+I64 g_tf_s_ran[MATH3D_TF_MAX];    // core that actually ran it (-1 = not run)
+I64 g_tf_nslices;
+CVec3 *g_tf_in;
+CVec4 *g_tf_out;
+CMat4 *g_tf_mvp;
 
 U0 Math3DTransformRange(CVec3 *in, CVec4 *out, CMat4 *mvp, I64 start, I64 end) {
   I64 i = start;
@@ -392,26 +403,82 @@ U0 Math3DTransformRange(CVec3 *in, CVec4 *out, CMat4 *mvp, I64 start, I64 end) {
 }
 
 U0 Math3DTransformWorker(U64 arg) {
-  Math3DTransformRange(g_tf_job.in, g_tf_job.out, g_tf_job.mvp, g_tf_job.start, g_tf_job.end);
-}
-
-U0 Math3DTransformParallel(CVec3 *in, CVec4 *out, I64 count, CMat4 *mvp) {
-  if (count < 8 || SmpGetCoreCount() <= 1 || !SmpCoreOnline(1)) {
-    Math3DTransformRange(in, out, mvp, 0, count);
-    return;
-  }
-  I64 half = count / 2;
-  g_tf_job.in = in; g_tf_job.out = out; g_tf_job.mvp = mvp;
-  g_tf_job.start = half; g_tf_job.end = count;
+  I64 sidx = (I64)arg;
+  Math3DTransformRange(g_tf_in, g_tf_out, g_tf_mvp, g_tf_s_start[sidx], g_tf_s_end[sidx]);
   __dmb_ish();
-  SmpDispatchAsync(1, (U64)&Math3DTransformWorker, 0);
-  Math3DTransformRange(in, out, mvp, 0, half);
-  I64 guard = 0;
-  while (!SmpIsJobDone(1) && guard < 200000000) guard = guard + 1;
+  g_tf_s_ran[sidx] = (I64)SmpGetCoreId();
+  __dmb_ish();
 }
 
-// P7.4 self-test (called from apps/SelfTest.HC): the parallel path must equal the
-// scalar reference bit-for-bit. Returns the number of mismatching components.
+// Splits [0,count) across the online cores. Returns the number of slices used
+// (1 on the scalar fallback). Falls back to a scalar BSP-only pass when the batch
+// is tiny or only one core is online.
+I64 Math3DTransformParallel(CVec3 *in, CVec4 *out, I64 count, CMat4 *mvp) {
+  I64 ncores = (I64)SmpOnlineCoreCount();
+  if (ncores > MATH3D_TF_MAX) ncores = MATH3D_TF_MAX;
+  if (count < 8 || ncores <= 1) {
+    g_tf_nslices = 1;
+    g_tf_s_start[0] = 0; g_tf_s_end[0] = count; g_tf_s_core[0] = 0; g_tf_s_ran[0] = -1;
+    Math3DTransformRange(in, out, mvp, 0, count);
+    g_tf_s_ran[0] = 0;
+    return 1;
+  }
+
+  g_tf_in = in; g_tf_out = out; g_tf_mvp = mvp;
+  I64 per = (count + ncores - 1) / ncores;
+  I64 nsl = 0;
+  I64 start = 0;
+  I64 core = 0;
+  while (core < MATH3D_TF_MAX && start < count) {
+    if (core == 0 || SmpCoreOnline((U32)core)) {
+      I64 end = start + per;
+      if (end > count) end = count;
+      g_tf_s_start[nsl] = start;
+      g_tf_s_end[nsl] = end;
+      g_tf_s_core[nsl] = core;
+      g_tf_s_ran[nsl] = -1;
+      nsl = nsl + 1;
+      start = end;
+    }
+    core = core + 1;
+  }
+  g_tf_nslices = nsl;
+  __dmb_ish(); // publish slice descriptors before any core can observe them
+
+  I64 k = 0;
+  while (k < nsl) {
+    if (g_tf_s_core[k] != 0) {
+      SmpDispatchAsync((U32)g_tf_s_core[k], (U64)&Math3DTransformWorker, (U64)k);
+    }
+    k = k + 1;
+  }
+
+  // BSP renders its own slice(s) concurrently with the workers.
+  k = 0;
+  while (k < nsl) {
+    if (g_tf_s_core[k] == 0) {
+      Math3DTransformRange(in, out, mvp, g_tf_s_start[k], g_tf_s_end[k]);
+      g_tf_s_ran[k] = 0;
+    }
+    k = k + 1;
+  }
+
+  // Join: SmpWaitJob's trailing DMB ISH is the acquire before we read the results.
+  k = 0;
+  while (k < nsl) {
+    if (g_tf_s_core[k] != 0) {
+      SmpWaitJob((U32)g_tf_s_core[k]);
+    }
+    k = k + 1;
+  }
+  __dmb_ish();
+  return nsl;
+}
+
+// P7.4 F0 self-test (called from apps/SelfTest.HC): the parallel path must equal
+// the scalar reference bit-for-bit AND every slice must have executed on its
+// designated core, with at least one secondary core doing real work on a
+// multi-core machine. Returns the number of failures (0 = pass).
 CVec3 g_tf_test_in[16];
 CVec4 g_tf_test_out[16];
 CVec4 g_tf_test_ref[16];
@@ -430,7 +497,14 @@ I64 Math3DSelfTestParallel() {
     Mat4MulVec4(&g_tf_test_ref[i], &mvp, &t);
     i = i + 1;
   }
-  Math3DTransformParallel(g_tf_test_in, g_tf_test_out, 16, &mvp);
+  I64 nsl = Math3DTransformParallel(g_tf_test_in, g_tf_test_out, 16, &mvp);
+  // F0 proof: show which MPIDR core actually ran each slice (designated vs ran).
+  I64 pk = 0;
+  while (pk < nsl) {
+    doldoc_printf("[MATH3DPAR] slice %lld [%lld,%lld) core=%lld ran=%lld\n",
+                  pk, g_tf_s_start[pk], g_tf_s_end[pk], g_tf_s_core[pk], g_tf_s_ran[pk]);
+    pk = pk + 1;
+  }
   I64 bad = 0;
   i = 0;
   while (i < 16) {
@@ -439,6 +513,22 @@ I64 Math3DSelfTestParallel() {
     if (g_tf_test_out[i].z != g_tf_test_ref[i].z) bad = bad + 1;
     if (g_tf_test_out[i].w != g_tf_test_ref[i].w) bad = bad + 1;
     i = i + 1;
+  }
+  // F0: every slice must have run on the core it was designated to.
+  I64 k = 0;
+  while (k < nsl) {
+    if (g_tf_s_ran[k] != g_tf_s_core[k]) bad = bad + 1;
+    k = k + 1;
+  }
+  // F0: with >1 core online, at least one secondary must have done real work.
+  if ((I64)SmpOnlineCoreCount() > 1) {
+    I64 sec = 0;
+    k = 0;
+    while (k < nsl) {
+      if (g_tf_s_core[k] != 0 && g_tf_s_ran[k] == g_tf_s_core[k]) sec = sec + 1;
+      k = k + 1;
+    }
+    if (sec < 1) bad = bad + 1;
   }
   return bad;
 }

@@ -538,7 +538,7 @@ typedef struct {
 
 
 #define MAX_STRUCT_DEFS 256
-#define MAX_STRUCT_MEMBERS 64
+#define MAX_STRUCT_MEMBERS 128
 #define MAX_VAR_TYPES 4096
 
 typedef struct {
@@ -2013,17 +2013,20 @@ static void parse_struct_def(lexer_t *l, code_buffer_t *cb) {
                     if (lexer_peek(l).type == TOK_STAR) lexer_next(l); // eat '*'
                     token_t fn_id = lexer_peek(l);
                     if (fn_id.type == TOK_IDENT) {
-                        if (st->member_count < MAX_STRUCT_MEMBERS) {
-                            struct_member_t *mem = &st->members[st->member_count++];
-                            memset(mem, 0, sizeof(struct_member_t));
-                            strncpy(mem->name, fn_id.str_value, 31);
-                            mem->name[31] = '\0';
-                            mem->offset = cur_offset;
-                            mem->size = 8; // 64-bit function pointer
-                            mem->elem_size = 8;
-                            mem->is_ptr = 1;
-                            cur_offset += 8;
+                        if (st->member_count >= MAX_STRUCT_MEMBERS) {
+                            printf("[JIT] Error: Struct '%s' exceeded max members (%d)\n", st_name, MAX_STRUCT_MEMBERS);
+                            cb->has_error = 1;
+                            return;
                         }
+                        struct_member_t *mem = &st->members[st->member_count++];
+                        memset(mem, 0, sizeof(struct_member_t));
+                        strncpy(mem->name, fn_id.str_value, 31);
+                        mem->name[31] = '\0';
+                        mem->offset = cur_offset;
+                        mem->size = 8; // 64-bit function pointer
+                        mem->elem_size = 8;
+                        mem->is_ptr = 1;
+                        cur_offset += 8;
                         lexer_next(l); // eat ident
                     }
                     if (lexer_peek(l).type == TOK_RPAREN) lexer_next(l); // eat ')'

@@ -100,9 +100,18 @@
 #define TOK_SEMI         47
 
 #define HC_CODE_CAPACITY 1048576
-// NOTE: there is no HC_MAX_LOCALS macro. The per-function local table is sized 256
-// (see g_hc_local_* below) and HcAddLocalTyped hard-errors (g_hc_error = 1) rather
-// than silently dropping a local if that ceiling is ever reached.
+// P7.4 F0: per-function local table capacity. Was a bare 256 with the arrays
+// sized by literal; now a named constant so the table, the strides table and the
+// overflow check can never drift apart. HcAddLocalTyped hard-errors (g_hc_error)
+// rather than silently dropping a local if the ceiling is reached.
+#define HC_MAX_LOCALS    512
+// P7.4 F0: struct registry capacity and members-per-struct. The member slot index
+// is `st_idx * HC_STRUCT_MEMBERS + m_cnt`, so both must be named constants and all
+// member arrays sized `HC_MAX_STRUCTS * HC_STRUCT_MEMBERS`. Exceeding either is a
+// hard error (g_hc_error), never a silent drop — the old `m_cnt < 64` guard threw
+// members away with no diagnostic, which is exactly the class of bug F0 removes.
+#define HC_MAX_STRUCTS   128
+#define HC_STRUCT_MEMBERS 128
 #define HC_MAX_FUNCS     512
 // Max `return` statements per function (epilogue back-patches). A large
 // two-letter tag dispatcher legitimately needs well over the old 64.
@@ -162,14 +171,18 @@ I64   g_hc_epi_patches[HC_MAX_EPILOGUES];
 I64   g_hc_epi_count;
 
 // Local Variables Table (per function)
-U8    g_hc_local_names[8192];   // 256 * 32
-I64   g_hc_local_offsets[256];
-I64   g_hc_local_scales[256];    // 1, 2, 4, 8, or struct size
-I64   g_hc_local_is_ptr[256];    // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
-I64   g_hc_local_is_float[256];  // 1 if this local is an F64
-I64   g_hc_local_elem_float[256]; // 1 if this local's ELEMENT/POINTEE is F64 (arrays, F64*)
-I64   g_hc_local_st_idx[256];    // struct index or -1
-I64   g_hc_local_strides[256 * 4]; // per-dim byte strides for local arrays (0 = none)
+// NOTE: array dimensions are explicit literals (not HC_MAX_LOCALS * 32) on
+// purpose — the C seed JIT sizes globals from a macro-aware dim parser, and a
+// PRODUCT of two macros is the one form it does not fold reliably. The named
+// constants below/above are the single source of truth for the bounds checks.
+U8    g_hc_local_names[16384];       // HC_MAX_LOCALS * 32
+I64   g_hc_local_offsets[512];
+I64   g_hc_local_scales[512];        // 1, 2, 4, 8, or struct size
+I64   g_hc_local_is_ptr[512];        // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
+I64   g_hc_local_is_float[512];      // 1 if this local is an F64
+I64   g_hc_local_elem_float[512];    // 1 if this local's ELEMENT/POINTEE is F64 (arrays, F64*)
+I64   g_hc_local_st_idx[512];        // struct index or -1
+I64   g_hc_local_strides[2048];      // HC_MAX_LOCALS * 4 (per-dim byte strides; 0 = none)
 I64   g_hc_local_count;
 I64   g_hc_decl_float;          // transient: current declaration is F64
 I64   g_hc_decl_elem_float;     // transient: current decl's element/pointee is F64
@@ -206,6 +219,11 @@ I64   g_hc_global_is_ptr[HC_MAX_GLOBALS]; // 1 if the global is a pointer (e.g. 
 I64   g_hc_global_is_float[HC_MAX_GLOBALS];
 I64   g_hc_global_elem_scale[HC_MAX_GLOBALS]; // element byte width for indexing
 I64   g_hc_global_strides[HC_MAX_GLOBALS * 4]; // per-dim byte strides for arrays (0 = none)
+// P7.4 F0: byte size the compiler actually allocated for each global (0 = unknown,
+// e.g. a cell allocated by the C seed JIT). A re-declaration of an existing global
+// with a LARGER type must never silently reuse the smaller cell — that is an
+// out-of-bounds write into the next heap block. HcParseProgram hard-errors instead.
+I64   g_hc_global_alloc[HC_MAX_GLOBALS];
 I64   g_hc_global_count;
 
 // Preprocessor #define Table in Compiler.HC
@@ -224,24 +242,27 @@ I64   g_hc_init_slot[HC_MAX_DEFERRED];
 I64   g_hc_init_pos[HC_MAX_DEFERRED];
 I64   g_hc_init_count;
 
-// Struct / Class Registry (up to 128 structs, 64 members each = 8192 member slots)
+// Struct / Class Registry (HC_MAX_STRUCTS structs, HC_STRUCT_MEMBERS each).
 // Persists across modules (matching the C JIT) so cross-module struct types
 // (e.g. Math3D's CMat4 used by HolyGL) resolve correctly.
-U8    g_hc_structs[4096];        // 128 * 32 struct names
+// NOTE: dimensions are explicit literals — see the note on the local table above;
+// HC_MAX_STRUCTS * HC_STRUCT_MEMBERS * 32 (two macros in a product) is the form
+// the C seed JIT's dim parser does not fold, so it must not appear here.
+U8    g_hc_structs[4096];            // HC_MAX_STRUCTS * 32
 I64   g_hc_struct_sizes[128];
 I64   g_hc_struct_mcount[128];
-U8    g_hc_member_names[262144]; // 8192 * 32 member names
-I64   g_hc_member_offsets[8192];
-I64   g_hc_member_sizes[8192];   // 1, 2, 4, 8 (element/field load width)
-I64   g_hc_member_is_arr[8192];  // 1 if inline array member
-I64   g_hc_member_is_ptr[8192];  // 1 if pointer member
-I64   g_hc_member_st_idx[8192];  // nested struct index or -1
-I64   g_hc_member_is_float[8192];// 1 if this member is an F64 scalar/element
+U8    g_hc_member_names[524288];     // HC_MAX_STRUCTS * HC_STRUCT_MEMBERS * 32
+I64   g_hc_member_offsets[16384];    // HC_MAX_STRUCTS * HC_STRUCT_MEMBERS
+I64   g_hc_member_sizes[16384];      // 1, 2, 4, 8 (element/field load width)
+I64   g_hc_member_is_arr[16384];     // 1 if inline array member
+I64   g_hc_member_is_ptr[16384];     // 1 if pointer member
+I64   g_hc_member_st_idx[16384];     // nested struct index or -1
+I64   g_hc_member_is_float[16384];   // 1 if this member is an F64 scalar/element
 // D7 root fix: the element/pointee byte width used to INDEX a member. For a
 // scalar pointer member `U32 *data` this is 4 (NOT the 8-byte pointer field
 // width); for an inline array it is the element width; for a nested struct it is
 // the struct size. Mirrors struct_member_t.elem_size in boot/seed/jit_arm64.c.
-I64   g_hc_member_elem_bytes[8192];
+I64   g_hc_member_elem_bytes[16384];
 I64   g_hc_struct_count;
 
 // Loop & Switch Break/Continue Patching Stacks (16 levels, 32 patches per level)
@@ -517,7 +538,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (g_hc_struct_count >= 128) { g_hc_error = 1; return 0; }
+    if (g_hc_struct_count >= HC_MAX_STRUCTS) { g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
@@ -543,7 +564,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
     for (s_i = s_start; s_i < s_end; s_i++) {
         I64 mcnt = g_hc_struct_mcount[s_i];
         for (m_i = 0; m_i < mcnt; m_i++) {
-            I64 slot = s_i * 64 + m_i;
+            I64 slot = s_i * HC_STRUCT_MEMBERS + m_i;
             if (strcmp(&g_hc_member_names[slot * 32], mname) == 0) {
                 *out_off = g_hc_member_offsets[slot];
                 *out_sz = g_hc_member_sizes[slot];
@@ -562,7 +583,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
         for (s_i = 0; s_i < g_hc_struct_count; s_i++) {
             I64 mcnt2 = g_hc_struct_mcount[s_i];
             for (m_i = 0; m_i < mcnt2; m_i++) {
-                I64 slot2 = s_i * 64 + m_i;
+                I64 slot2 = s_i * HC_STRUCT_MEMBERS + m_i;
                 if (strcmp(&g_hc_member_names[slot2 * 32], mname) == 0) {
                     *out_off = g_hc_member_offsets[slot2];
                     *out_sz = g_hc_member_sizes[slot2];
@@ -630,7 +651,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         if (alloc_bytes < 16) alloc_bytes = 16;
     }
     g_hc_frame_offset += alloc_bytes;
-    if (g_hc_local_count < 256) {
+    if (g_hc_local_count < HC_MAX_LOCALS) {
         HcSafeCopy(&g_hc_local_names[g_hc_local_count * 32], name, 32);
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
@@ -1746,6 +1767,28 @@ U0 HcResetGlobalType(U8 *name) {
     }
 }
 
+// P7.4 F0: record/query the allocation size of a compiler-allocated global.
+// HcSetGlobalAlloc creates the table entry if needed (mirrors the HcRegisterGlobal*
+// add path); a size of 0 means "unknown" (C seed JIT cell or not yet sized).
+U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_alloc[i] = bytes; return; }
+    }
+    if (g_hc_global_count < HC_MAX_GLOBALS) {
+        HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_st_idx[g_hc_global_count] = -1;
+        g_hc_global_alloc[g_hc_global_count] = bytes;
+        g_hc_global_count++;
+    }
+}
+
+I64 HcGetGlobalAlloc(U8 *name) {
+    for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_alloc[i];
+    }
+    return 0;
+}
+
 U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_is_float) {
     *out_scale = 8;
     *out_addr_only = 0;
@@ -2666,17 +2709,21 @@ U0 HcParseStructDef() {
                 }
             }
             cur_off = (cur_off + 7) & (~7);
-            if (fp_name[0] && m_cnt < 64) {
-                I64 fp_slot = st_idx * 64 + m_cnt;
-                HcSafeCopy(&g_hc_member_names[fp_slot * 32], fp_name, 32);
-                g_hc_member_offsets[fp_slot] = cur_off;
-                g_hc_member_sizes[fp_slot] = 8;
-                g_hc_member_is_arr[fp_slot] = 0;
-                g_hc_member_is_ptr[fp_slot] = 1;
-                g_hc_member_st_idx[fp_slot] = -1;
-                g_hc_member_is_float[fp_slot] = 0;
-                g_hc_member_elem_bytes[fp_slot] = 8;
-                m_cnt++;
+            if (fp_name[0]) {
+                if (m_cnt < HC_STRUCT_MEMBERS) {
+                    I64 fp_slot = st_idx * HC_STRUCT_MEMBERS + m_cnt;
+                    HcSafeCopy(&g_hc_member_names[fp_slot * 32], fp_name, 32);
+                    g_hc_member_offsets[fp_slot] = cur_off;
+                    g_hc_member_sizes[fp_slot] = 8;
+                    g_hc_member_is_arr[fp_slot] = 0;
+                    g_hc_member_is_ptr[fp_slot] = 1;
+                    g_hc_member_st_idx[fp_slot] = -1;
+                    g_hc_member_is_float[fp_slot] = 0;
+                    g_hc_member_elem_bytes[fp_slot] = 8;
+                    m_cnt++;
+                } else {
+                    g_hc_error = 1; // struct member capacity exceeded — hard fail
+                }
             }
             cur_off += 8;
             if (g_hc_tok == TOK_SEMICOLON) HcLexNext();
@@ -2708,8 +2755,8 @@ U0 HcParseStructDef() {
                 }
 
                 // Packed layout (no inter-member padding), matching the C JIT exactly.
-                if (m_cnt < 64) {
-                    I64 m_slot = st_idx * 64 + m_cnt;
+                if (m_cnt < HC_STRUCT_MEMBERS) {
+                    I64 m_slot = st_idx * HC_STRUCT_MEMBERS + m_cnt;
                     HcSafeCopy(&g_hc_member_names[m_slot * 32], mem_n, 32);
                     g_hc_member_offsets[m_slot] = cur_off;
                     g_hc_member_sizes[m_slot] = (is_p || elem_sz > 8) ? 8 : elem_sz;
@@ -2722,6 +2769,8 @@ U0 HcParseStructDef() {
                     // 8-byte pointer field width. This is what D7 was losing.
                     g_hc_member_elem_bytes[m_slot] = base_sz;
                     m_cnt++;
+                } else {
+                    g_hc_error = 1; // struct member capacity exceeded — hard fail
                 }
                 cur_off += field_bytes;
             }
@@ -3567,11 +3616,11 @@ U0 HcParseProgram() {
                 // Top-level global variable declaration: Type g_var [= val];
                 U64 g_slot = symbols_lookup(fname);
                 I64 g_is_arr = g_has_bracket;
+                I64 g_elem_sz = g_is_ptr ? 8 : g_elem_bytes;
+                I64 g_alloc = g_is_arr ? (g_count * g_elem_sz) : (g_is_ptr ? 8 : g_bytes);
+                g_alloc = (g_alloc + 15) & (~15);
+                if (g_alloc < 16) g_alloc = 16;
                 if (!g_slot) {
-                    I64 g_elem_sz = g_is_ptr ? 8 : g_elem_bytes;
-                    I64 g_alloc = g_is_arr ? (g_count * g_elem_sz) : (g_is_ptr ? 8 : g_bytes);
-                    g_alloc = (g_alloc + 15) & (~15);
-                    if (g_alloc < 16) g_alloc = 16;
                     if (g_is_arr) {
                         // Arrays live behind an 8-byte cell holding the base address,
                         // exactly as the C JIT registers them.
@@ -3599,6 +3648,20 @@ U0 HcParseProgram() {
                         memset((U8*)g_slot, 0, g_alloc);
                     }
                     symbols_register(fname, g_slot, 2);
+                    HcSetGlobalAlloc(fname, g_alloc);
+                } else {
+                    // P7.4 F0: a re-declaration must never silently reuse a cell that
+                    // is too small. The C JIT / a previous unit may already own this
+                    // name at a smaller size; writing the larger type through it would
+                    // corrupt the next heap block. If we know the existing size and it
+                    // is too small, hard-error (zero silent failure) instead.
+                    I64 g_known = HcGetGlobalAlloc(fname);
+                    if (g_known > 0 && g_alloc > g_known) {
+                        doldoc_printf("[HCLX] GLOBAL RE-DECL OVERFLOW %s want=%lld have=%lld\n", fname, g_alloc, g_known);
+                        g_hc_error = 1;
+                        g_hc_tok = TOK_EOF;
+                        return;
+                    }
                 }
                 // Record the array/struct/float nature of the global even when its
                 // storage already exists (allocated by the C JIT at boot): the JIT's

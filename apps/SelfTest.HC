@@ -694,6 +694,16 @@ U0 SelfTestHeap() {
     else doldoc_printf("KHEAP: FAIL\n");
 }
 
+// P7.4 F0: end-of-battery heap-integrity sweep. Every module compile and every
+// compiler-limit regression above must have stayed inside its allocations; a block
+// whose header canary is corrupt means something wrote out of bounds (the class of
+// bug a size-increasing global re-declaration used to cause). Prints HEAPINT.
+U0 SelfTestHeapIntegrity() {
+    I64 hi_bad = KHeapCheckAll();
+    if (hi_bad == 0) doldoc_print("HEAPINT: PASS\n");
+    else doldoc_printf("HEAPINT: FAIL (corrupt block 0x%llX)\n", hi_bad);
+}
+
 // P4.3: texture pipeline regression. Four sub-tests through the ONE rasterizer:
 //   1. NEAREST, screen-aligned 2x2 quad -> the 4 quadrant colours.
 //   2. LINEAR  -> the centre is the bilinear average of the 4 texels.
@@ -1295,6 +1305,19 @@ U0 SelfTestRun() {
     // the read (2.5 -> 0x4004000000000000, 1.5+2.5 = 4.0 -> 0x4010000000000000).
     SelfTestCheck("f64_ptr_out_param", "I64 FOPset(F64 *p) { *p = 2.5; return 7; } F64 fop_x = 0.0; FOPset(&fop_x); fop_x;", 4612811918334230528);
     SelfTestCheck("f64_struct_array_member_read", "struct FSAM { F64 m[2]; }; FSAM fsam_v; fsam_v.m[0] = 1.5; fsam_v.m[1] = 2.5; fsam_v.m[0] + fsam_v.m[1];", 4616189618054758400);
+    // P7.4 F0: compiler-limit regressions. These lock in the raised struct/member
+    // and local ceilings and the large-member-offset code path (offset is
+    // materialised into a register, so >4095 and >32767 both work). A silent
+    // overflow is a hard error now (g_hc_error), never a dropped member.
+    // Names are deliberately unique so a test global can never alias a module global
+    // (a size-increasing global re-declaration is now a hard error too — see below).
+    SelfTestCheck("f0_member_arr_var", "struct F0AVA { I64 qq1[4]; I64 qq2; }; F0AVA g_f0av; g_f0av.qq1[0]=10; g_f0av.qq1[1]=20; g_f0av.qq1[2]=30; g_f0av.qq1[3]=40; g_f0av.qq2=2; F0AVA *g_f0ap=&g_f0av; g_f0ap->qq1[g_f0ap->qq2];", 30);
+    SelfTestCheck("f0_member_ptr_var", "struct F0PV { U32 *zzdata; }; U32 g_f0pvb[4]; F0PV g_f0pv; g_f0pv.zzdata=&g_f0pvb[0]; g_f0pv.zzdata[0]=5; g_f0pv.zzdata[1]=7; g_f0pv.zzdata[2]=9; I64 zzk=2; F0PV *g_f0pp=&g_f0pv; g_f0pp->zzdata[zzk];", 9);
+    SelfTestCheck("f0_large_offset_4096", "struct F0LB4 { I64 ppad[513]; I64 ptag; }; F0LB4 g_f0lb4; g_f0lb4.ptag=77; g_f0lb4.ptag;", 77);
+    SelfTestCheck("f0_large_offset_32768", "struct F0LB32 { I64 qpad[4096]; I64 qtag; }; F0LB32 g_f0lb32; g_f0lb32.qtag=99; g_f0lb32.qtag;", 99);
+    SelfTestCheck("f0_struct_48_members", "struct F0M48 { I64 q0;I64 q1;I64 q2;I64 q3;I64 q4;I64 q5;I64 q6;I64 q7;I64 q8;I64 q9;I64 q10;I64 q11;I64 q12;I64 q13;I64 q14;I64 q15;I64 q16;I64 q17;I64 q18;I64 q19;I64 q20;I64 q21;I64 q22;I64 q23;I64 q24;I64 q25;I64 q26;I64 q27;I64 q28;I64 q29;I64 q30;I64 q31;I64 q32;I64 q33;I64 q34;I64 q35;I64 q36;I64 q37;I64 q38;I64 q39;I64 q40;I64 q41;I64 q42;I64 q43;I64 q44;I64 q45;I64 q46;I64 q47; }; F0M48 g_f0m48; g_f0m48.q0=1; g_f0m48.q47=47; g_f0m48.q0+g_f0m48.q47;", 48);
+    SelfTestCheck("f0_struct_70_members", "struct F0M70 { I64 w0;I64 w1;I64 w2;I64 w3;I64 w4;I64 w5;I64 w6;I64 w7;I64 w8;I64 w9;I64 w10;I64 w11;I64 w12;I64 w13;I64 w14;I64 w15;I64 w16;I64 w17;I64 w18;I64 w19;I64 w20;I64 w21;I64 w22;I64 w23;I64 w24;I64 w25;I64 w26;I64 w27;I64 w28;I64 w29;I64 w30;I64 w31;I64 w32;I64 w33;I64 w34;I64 w35;I64 w36;I64 w37;I64 w38;I64 w39;I64 w40;I64 w41;I64 w42;I64 w43;I64 w44;I64 w45;I64 w46;I64 w47;I64 w48;I64 w49;I64 w50;I64 w51;I64 w52;I64 w53;I64 w54;I64 w55;I64 w56;I64 w57;I64 w58;I64 w59;I64 w60;I64 w61;I64 w62;I64 w63;I64 w64;I64 w65;I64 w66;I64 w67;I64 w68;I64 w69; }; F0M70 g_f0m70; g_f0m70.w0=3; g_f0m70.w69=67; g_f0m70.w0+g_f0m70.w69;", 70);
+    SelfTestCheck("f0_many_locals", "I64 f0many() { I64 w0=0;I64 w1=1;I64 w2=2;I64 w3=3;I64 w4=4;I64 w5=5;I64 w6=6;I64 w7=7;I64 w8=8;I64 w9=9;I64 w10=10;I64 w11=11;I64 w12=12;I64 w13=13;I64 w14=14;I64 w15=15;I64 w16=16;I64 w17=17;I64 w18=18;I64 w19=19;I64 w20=20;I64 w21=21;I64 w22=22;I64 w23=23;I64 w24=24;I64 w25=25;I64 w26=26;I64 w27=27;I64 w28=28;I64 w29=29;I64 w30=30;I64 w31=31;I64 w32=32;I64 w33=33;I64 w34=34;I64 w35=35;I64 w36=36;I64 w37=37;I64 w38=38;I64 w39=39;I64 w40=40;I64 w41=41;I64 w42=42;I64 w43=43;I64 w44=44;I64 w45=45;I64 w46=46;I64 w47=47; return w0+w1+w2+w3+w4+w5+w6+w7+w8+w9+w10+w11+w12+w13+w14+w15+w16+w17+w18+w19+w20+w21+w22+w23+w24+w25+w26+w27+w28+w29+w30+w31+w32+w33+w34+w35+w36+w37+w38+w39+w40+w41+w42+w43+w44+w45+w46+w47; } f0many();", 1128);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();
@@ -1323,6 +1346,7 @@ U0 SelfTestRun() {
     SelfTestRender();
     DolDocSelfTest();
     ShellSelfTest();
+    SelfTestHeapIntegrity();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,
