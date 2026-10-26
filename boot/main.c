@@ -68,7 +68,14 @@ extern uint32_t acpi_timer_virt(void);
 extern uint32_t acpi_timer_phys(void);
 extern uint64_t acpi_gicc_base(void);
 extern uint32_t acpi_source(void);
+extern uint64_t acpi_virtio_base(void);
+extern uint32_t acpi_virtio_stride(void);
+extern uint32_t acpi_virtio_slots(void);
 extern uint32_t acpi_cpu_count(void);
+
+/* E4 — descoberta por Device Tree (boot/runtime/fdt.c) */
+extern int  fdt_discover(void *blob, int only_missing);
+extern void fdt_report(void);
 extern void    *g_acpi_rsdp;
 extern void    *g_fdt_blob;
 extern void     gicv3_bpr1_set(uint64_t v);
@@ -593,6 +600,14 @@ int main(int argc, char **argv)
     symbols_register("acpi_gicc_base", (void*)acpi_gicc_base, SYM_FUNC);
     symbols_register("acpi_source", (void*)acpi_source, SYM_FUNC);
     symbols_register("acpi_cpu_count", (void*)acpi_cpu_count, SYM_FUNC);
+
+    // E4 — descoberta por Device Tree. O FDT e o unico que traz dispositivos de
+    // placa (virtio-mmio), que o ACPI nao descreve.
+    symbols_register("fdt_discover", (void*)fdt_discover, SYM_FUNC);
+    symbols_register("fdt_report", (void*)fdt_report, SYM_FUNC);
+    symbols_register("acpi_virtio_base", (void*)acpi_virtio_base, SYM_FUNC);
+    symbols_register("acpi_virtio_stride", (void*)acpi_virtio_stride, SYM_FUNC);
+    symbols_register("acpi_virtio_slots", (void*)acpi_virtio_slots, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -629,6 +644,13 @@ int main(int argc, char **argv)
     // ausente => boota igual. Nunca "boota ou nao".
     if (neo_fwdesc_has_acpi()) {
         if (acpi_discover(g_acpi_rsdp) == 0) acpi_report();
+    }
+    // E4 — O FDT complementa o ACPI: preenche o que faltar, inclusive os
+    // dispositivos de PLACA (virtio-mmio), que o ACPI nao descreve. Num sistema
+    // com os dois, o ACPI manda nos campos arquiteturais e o FDT traz o resto —
+    // por isso only_missing = 1 quando o ACPI ja rodou.
+    if (neo_fwdesc_has_dtb()) {
+        if (fdt_discover(g_fdt_blob, acpi_source() != 0) == 0) fdt_report();
     }
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);

@@ -249,6 +249,22 @@ U0 HalPlatformOverlayDiscovery() {
   U32 tv = acpi_timer_virt();
   if (tv != 0) g_current_platform->irq_timer = tv;
 
+  // Dispositivos de PLACA: SO o FDT descreve. O ACPI nao tem virtio-mmio — ele
+  // e topologia desta placa, nao arquitetura ARM. Se o FDT nao rodou, isto fica
+  // 0 e a tabela mantem o que tinha (fallback preservado).
+  U64 vb = acpi_virtio_base();
+  if (vb != 0) {
+    g_current_platform->virtio_base   = vb;
+    g_hal_virtio_base = vb;
+    U32 vs = acpi_virtio_stride();
+    if (vs != 0) {
+      g_current_platform->virtio_stride = vs;
+      g_hal_virtio_stride = vs;
+    }
+    U32 vn = acpi_virtio_slots();
+    if (vn != 0) g_current_platform->virtio_slots = vn;
+  }
+
   HalStrCpy(g_current_platform->name, "Firmware Discovered (ACPI)");
 }
 

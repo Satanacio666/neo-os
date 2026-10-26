@@ -28,6 +28,7 @@
  */
 
 #include <uefi.h>
+#include "discovery.h"
 
 /* --------------------------------------------------------------------------
  * Estruturas (parciais de proposito — ver ARMADILHA acima)
@@ -130,30 +131,26 @@ typedef struct __attribute__((packed)) {
 } acpi_gtdt_t;
 
 /* --------------------------------------------------------------------------
- * Resultado da descoberta — a estrutura que a HAL vai consumir.
- * Preenchida por ACPI agora; o FDT (E3) preenchera a MESMA estrutura.
+ * Resultado da descoberta — o contrato compartilhado com o FDT (E4).
+ * Ver boot/runtime/discovery.h: um so destino para os dois produtores.
+ * A definicao fica aqui; o FDT escreve nesta mesma instancia.
  * ------------------------------------------------------------------------ */
-
-typedef struct {
-    uint32_t source;            /* 1 = ACPI, 2 = FDT */
-    uint64_t gicd_base;
-    uint64_t gicr_base;
-    uint64_t gicc_base;
-    uint32_t gic_version;
-    uint64_t uart_base;
-    uint32_t uart_type;         /* 1 = PL011, 2 = 16550, 3 = SBSA */
-    uint32_t timer_virt_irq;    /* tipico 27 */
-    uint32_t timer_phys_irq;    /* tipico 30 */
-    uint32_t cpu_count;
-} discovered_platform_t;
 
 discovered_platform_t g_discovered_plat;
 
 /* Acessores para o HolyC e para a HAL. */
+/* ATENCAO A NOMENCLATURA: apesar do prefixo, TODOS estes acessores devolvem o
+ * resultado UNIFICADO da descoberta — nao importa se veio do ACPI (source=1) ou
+ * do Device Tree (source=2). O prefixo e historico (nasceram no E2, quando so
+ * havia ACPI) e vale corrigir para disco_* quando houver oportunidade. */
 uint64_t acpi_gicd_base(void)   { return g_discovered_plat.gicd_base; }
 uint64_t acpi_gicr_base(void)   { return g_discovered_plat.gicr_base; }
 uint64_t acpi_gicc_base(void)   { return g_discovered_plat.gicc_base; }
 uint32_t acpi_source(void)      { return g_discovered_plat.source; }
+/* VirtIO: SO o FDT fornece (o ACPI nao descreve dispositivos de placa). */
+uint64_t acpi_virtio_base(void)   { return g_discovered_plat.virtio_base; }
+uint32_t acpi_virtio_stride(void) { return g_discovered_plat.virtio_stride; }
+uint32_t acpi_virtio_slots(void)  { return g_discovered_plat.virtio_slots; }
 uint64_t acpi_uart_base(void)   { return g_discovered_plat.uart_base; }
 uint32_t acpi_uart_type(void)   { return g_discovered_plat.uart_type; }
 uint32_t acpi_gic_version(void) { return g_discovered_plat.gic_version; }
