@@ -383,6 +383,13 @@ These are the *chosen* implementations for the P4 steps (doc 2 §P4), with the s
 - **USB xHCI** host controller. **[MISSING]**
 - **Virtual memory protection** (optional Memory Domains / MTE) while preserving SASOS zero-copy. **[MISSING]**
 - **SMP dynamic work-stealing** (`ldaxr`/`stlxr` deques). **[MISSING]**
+- **Per-CPU register for the current context (`TPIDR_EL1`) — future option, not now.** P7.4 F1 threads the
+  `CRasterCtx` explicitly as the first argument (see doc 04 D44), which is simple and portable and needs no
+  privileged register. A later optimisation could park the current core's context pointer in `TPIDR_EL1`
+  (AArch64's native per-CPU register, writable at EL1) so the hot path fetches it without an argument/global.
+  Deliberately **not** used in F1: it adds an asm/save-restore surface and couples the rasterizer to the
+  exception/context-switch path for a cost the deterministic measurement did not show. Revisit only with an
+  icount measurement that proves it helps. **[IDEA]**
 - **RedSea improvements:** sector reclamation on delete; dynamic `next_alloc_lba`; grow-allocates; deep subdirs;
   real uptime/RTC timestamps; fix `cd ..` parent popping. **[MISSING]/[PARTIAL]**
 - **Physical page frame allocator (PMM)** + buddy allocator (from `neo_os_architecture_specification §2.4/§2.5`). **[MISSING]**

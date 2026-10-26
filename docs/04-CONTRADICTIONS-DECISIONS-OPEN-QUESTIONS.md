@@ -871,7 +871,7 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   Stage 1 and cannot see the Stage-5 scene types; the runbook's `SelfTestTile()` entry point is preserved.
   Gate: `GOLDEN BOOT: PASS`, `TILE: PASS`, `RENDER: PASS (0xD28836F)`, `RASTER: PASS`, `SELFTEST 101/101`,
   `PARITY 70/70 (0 diff)`, `CENSUS 181`, `SELF-HOST: PASS` (the compiler still compiles itself), `DETERMINISM: PASS`.
-- **D40 — P7.4 SMP tile dispatch needs per-core raster state (OPEN, planned).** The rasterizer keeps its
+- **D40 — P7.4 SMP tile dispatch needs per-core raster state (per-core state DONE in F1/D44; dispatch still open).** The rasterizer keeps its
   per-triangle state in ~24 shared globals (`g_rj_*`, `g_raster_fb/pitch/cw/min_x/max_x`, `g_zbuf*`, `g_rspan`,
   `g_rj_shade_mode`) referenced ~198 times. Running `RasterTriangleZCore` on two cores at once (each rendering
   its own tile range into its own scratchpad, as §P7.4 specifies) would race on that state → a non-deterministic
@@ -879,9 +879,11 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   (`CRasterCtx g_rctx[4]` passed explicitly, or per-core arrays indexed by a `core` parameter) **before** the
   parallel tile path can be turned on. **Done so far (verified; `GOLDEN BOOT: PASS`):** `SmpDispatchAsync`
   (`apps/Smp.HC` — non-blocking mailbox post), `SmpCoreOnline` (cross-module-safe core query), and
-  `Math3DTransformParallel` (`apps/Math3D.HC` — range split core-1 + BSP) with `SelfTestMath3DParallel` →
-  `MATH3DPAR: PASS` (parallel == scalar, bit-for-bit). **Remaining:** the per-core-state refactor,
-  `RasterSceneEndSmp`/`RasterTileWorker`, the `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and
+  `Math3DTransformParallel`   (`apps/Math3D.HC` — range split core-1 + BSP) with `SelfTestMath3DParallel` →
+  `MATH3DPAR: PASS` (parallel == scalar, bit-for-bit). **The per-core-state refactor is DONE (F1, see D44):**
+  the shared per-triangle globals are now a 64-byte-aligned per-core `CRasterCtx g_rctx[]` threaded as an
+  explicit first argument, bit-exact (`RENDER 0xD28836F`, `DETERMINISM: PASS`). **Remaining:** `RasterSceneEndSmp`/`RasterTileWorker` (F4),
+  the `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and
   the `MeshRender` batch-transform wiring (the latter is ambiguous — `HolyGLVertex3f` applies the full MVP, so a
   pre-transformed submit path is needed; deferred rather than guessed).
 - **D41 — P7.4 F0: SMP join/parallelism hardening + compiler-limit root fixes (DONE).** F0 hardened the P7.4
@@ -905,5 +907,44 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   bytes than the known existing cell. The F0 regression tests use deliberately **unique** global names so a
   test can never alias a module global. New permanent gate `HEAPINT: PASS` (KHeap.HC `KHeapCheckAll()` walks
   the whole free list and asserts every block canary after the full battery). Gate: `GOLDEN BOOT: PASS`,
-  `SELFTEST 108/108`, `PARITY 77/77 (0 diff)`, `MATH3DPAR: PASS` (with core-ID proof), `TILE: PASS`,
-  `RENDER: PASS (0xD28836F)`, `DETERMINISM: PASS`, `HEAPINT: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.
+   `SELFTEST 108/108`, `PARITY 77/77 (0 diff)`, `MATH3DPAR: PASS` (with core-ID proof), `TILE: PASS`,
+   `RENDER: PASS (0xD28836F)`, `DETERMINISM: PASS`, `HEAPINT: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.
+- **D42 — P7.4 F1: deterministic measurement via QEMU `icount` (DONE).** The renderbench numbers were
+  wall-clock (CNTVCT_EL0 against the host TSC), so they were confounded by host load (QEMU at ~95 % of one
+  core plus the agent): the *same* build measured 36 M–44 M cycles, and a bogus "Canvas +19 %" appeared on a
+  part the change did not touch. **Root fix:** `scripts/run-viewer-vm.sh` accepts `NEO_ICOUNT=1`, which adds
+  `-icount shift=0,align=off,sleep=off`; QEMU then advances the guest virtual clock by the instruction count,
+  so CNTVCT_EL0 (and therefore `renderbench`) measures **work**, not host time. Validated: repeated runs agree
+  to <0.1 % (observed ~0.00001 %, e.g. Z-raster 40,115,579 / 597 / 604). **The official metric is instructions
+  per triangle/pixel, per phase and total; wall-clock is informational only and never a gate.** Pre-F1 baseline
+  at `51865e6` (icount): Z-raster 41,668,965, Textured 62,274,984, Canvas 28,350.
+- **D43 — P7.4 F1: deferred-offset lvalues + immediate-offset load/store (DONE).** The F1 access-cost root
+  fix, committed *before* the refactor. `HcResolveLValue` no longer materializes `base + member_off` with
+  `movz`+`add` on every member access; it accumulates the constant byte offset in `g_hc_lv_off`, and the
+  consuming load/store folds it into the instruction's unsigned-immediate field (`LDRB/H/W/X`, `STRB/H/W/X`,
+  `LDR`/`STR` d). Member chains accumulate into **one** offset (`s.a.b.c` → a single immediate), so `ctx->field`
+  costs 2 instructions (base load + LDR-with-offset) instead of 4. The pending offset is **materialized** (a
+  real `base+off` in X0) exactly when an address is needed: `&x`, `addr_only`, before an `[index]` base, and
+  before `->` dereferences the pointer cell. F64 members keep the `fmov` path; only the offset changes. Fixed a
+  fallback store that used `[x1]` instead of `[x16]` (base+off) for a non-8-aligned F64 member, which had
+  corrupted adjacent data (TEXTURE/CLIP/SHADING failures). 11 `f1_*` regressions (both engines, 0 diff).
+  Deterministic effect (icount): Z-raster 41,668,965 → 41,247,142 (−1.0 %), Textured 62,274,984 → 61,219,652
+  (−1.7 %) — the fix *improves* the baseline, so the gate is met before F1's refactor even lands.
+- **D44 — P7.4 F1: the per-core raster context `CRasterCtx` (DONE; closes D40's per-core-state item).** The
+  ~24 shared per-triangle globals became one `CRasterCtx`, stored in a 64-byte-aligned per-core arena
+  (`g_rctx[]`, stride `sizeof(CRasterCtx)` = 960 = 15×64) and threaded as an explicit **first argument**
+  (`RasterTriangleZCore(ctx, …)`, `RasterRow(ctx, …)`, …). The immediate 2D path binds `&g_rctx[0]`; the tiled
+  path binds its own context. `RasterCtxInit()` is a one-shot boot guard that asserts the arena is large
+  enough, `sizeof(CRasterCtx) % 64 == 0`, and `&g_rctx[i] % 64 == 0` for every core (zero silent failure).
+  `g_rctx` is private to `RasterTile.HC` (enforced by a `golden-boot.sh` grep gate). This is the prerequisite
+  for concurrent tile workers (F4): each core binds its own scratchpad + state, so no state races. **A pure
+  refactor: RENDER 0xD28836F bit-exact, `TILE: PASS`, 1-vs-4-core `DETERMINISM: PASS`.** Deterministic (icount):
+  Z-raster 41,247,142 → **40,115,588** (−2.7 %), Textured 61,219,652 → **60,290,790** (−1.5 %) — i.e. the
+  refactor is a net *win*, not a cost, because D43 made each `ctx->field` two instructions. **Measured and
+  rejected:** the runbook's prescribed loop-invariant hoisting (reading `ctx->min_x`/`max_x` into locals at the
+  top of `RasterRow`) was implemented and measured to **regress** Z-raster to 40,178,158 (+0.16 %, ~1000× the
+  run noise); HolyC locals are stack slots, so hoisting adds stores without removing loads. It was reverted —
+  the measurement, not the assumption, decides. **Not used:** a fixed X28 register or a single global struct
+  (per-core state is explicit); TPIDR_EL1 (native per-CPU) is recorded in doc 03 as a future option.
+  Gate: `GOLDEN BOOT: PASS`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `RENDER: PASS (0xD28836F)`,
+  `TILE: PASS`, `MATH3DPAR: PASS`, `HEAPINT: PASS`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.

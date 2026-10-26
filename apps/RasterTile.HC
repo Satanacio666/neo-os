@@ -17,35 +17,26 @@
 // P4.2 depended on a Compiler.HC fix: indexing a global POINTER must stride by
 // and load/store sizeof(pointee) (HcResolveLValue / HcRegisterGlobalScale).
 // RasterBootCheck (below) is the regression test.
+//
+// P7.4 F1 (this change): the per-triangle / per-span transient state was ~24
+// separate globals read ~198 times. They now live in a single CRasterCtx, one per
+// core (g_rctx[]), threaded as the FIRST argument of every hot-path function. The
+// immediate 2D path uses &g_rctx[0]. This is a PURE refactor: identical output,
+// same golden hash. It is the prerequisite for concurrent tile workers (F4): each
+// core binds its own scratchpad + state into its own ctx, so no state races.
+// Scene setup (g_rs_*) and the scratchpads stay global BSS (census-neutral).
 // ==============================================================================
 
 I64 TILE_W = 64;
 I64 TILE_H = 64;
 
+// Full-screen depth-buffer owner. Only the BSP touches it (RasterInit/ClearZ and
+// the single-threaded tile-resolve step); the rasterizer reads the depth buffer
+// bound into its ctx (which the tiled path points at a per-core scratchpad).
 U16 *g_zbuf = NULL;
 I64 g_zbuf_w = 0;
 I64 g_zbuf_h = 0;
 I64 g_zbuf_cap = 0;
-
-I64 g_raster_z0 = 0;
-I64 g_raster_z1 = 0;
-I64 g_raster_z2 = 0;
-I64 g_raster_depth_test = 1;
-
-// Per-triangle job state for RasterRow (single-threaded renderer).
-U32 *g_raster_fb = NULL;
-I64 g_raster_pitch = 0;
-I64 g_raster_cw = 0;
-I64 g_raster_min_x = 0;
-I64 g_raster_max_x = 0;
-I64 g_rj_ax = 0; I64 g_rj_ay = 0; I64 g_rj_az = 0;
-I64 g_rj_bx = 0; I64 g_rj_by = 0; I64 g_rj_bz = 0;
-I64 g_rj_cx = 0; I64 g_rj_cy = 0; I64 g_rj_cz = 0;
-I64 g_rj_b0 = 0;
-I64 g_rj_b1 = 0;
-I64 g_rj_b2 = 0;
-I64 g_rj_area = 1;
-U32 g_rj_color = 0;
 
 // ==============================================================================
 // P7.3: L1 tile binning + per-core scratchpad + stnp streaming resolve.
@@ -85,24 +76,12 @@ I64 g_rs_cull = 0;
 U32 g_tile_color[4][4096];
 U16 g_tile_depth[4][4096];
 
-U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
-  if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
-  if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
-  if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
-  g_raster_z0 = z0;
-  g_raster_z1 = z1;
-  g_raster_z2 = z2;
-}
-
-U0 RasterSetDepthTest(I64 en) { g_raster_depth_test = en ? 1 : 0; }
-
 // ==============================================================================
-// P4.3: unified texture span state. The ONE rasterizer (RasterRow) reads
-// `g_raster_tex_active`; when a texture is bound it runs the textured span, when
-// not it runs the byte-identical NEON solid span (golden hash 0xD28836F). The
-// per-texel work is scalar because AArch64 NEON has no gather; everything else
-// (coverage, blending) stays in the unified pipeline. Wrap/filter codes match the
-// GL constants HolyGL.HC passes.
+// P4.3: unified texture state. The ONE rasterizer reads ctx->tex_active; when a
+// texture is bound it runs the textured span, when not it runs the byte-identical
+// NEON solid span (golden hash 0xD28836F). The per-texel work is scalar because
+// AArch64 NEON has no gather; everything else (coverage, blending) stays in the
+// unified pipeline. Wrap/filter codes match the GL constants HolyGL.HC passes.
 // ==============================================================================
 // Canonical OpenGL enum values (HolyGL passes these straight through; RasterTile
 // is compiled before HolyGL, so it defines the same numeric values locally).
@@ -122,239 +101,6 @@ class CRasterTex {
   I64 filter;
   I64 blend_en;
 };
-
-CRasterTex g_rtex;
-I64 g_raster_tex_active = 0;
-
-// Per-vertex perspective attributes (fixed 16.16): u/W, v/W, 1/W. Set by HolyGL
-// before each triangle via RasterSetTexUV.
-I64 g_rt_uow0 = 0; I64 g_rt_uow1 = 0; I64 g_rt_uow2 = 0;
-I64 g_rt_vow0 = 0; I64 g_rt_vow1 = 0; I64 g_rt_vow2 = 0;
-I64 g_rt_iw0  = 0; I64 g_rt_iw1  = 0; I64 g_rt_iw2  = 0;
-
-U0 RasterSetTexture(U32 *data, I64 w, I64 h, I64 wrap_s, I64 wrap_t, I64 filter) {
-  g_rtex.data = data;
-  g_rtex.w = w;
-  g_rtex.h = h;
-  g_rtex.wmask = w - 1;
-  g_rtex.hmask = h - 1;
-  g_rtex.wrap_s = wrap_s;
-  g_rtex.wrap_t = wrap_t;
-  g_rtex.filter = filter;
-  g_raster_tex_active = 1;
-}
-
-U0 RasterSetBlend(I64 en) { g_rtex.blend_en = en ? 1 : 0; }
-
-// Unbind: the unified span returns to the NEON solid path (used by the 2D golden
-// scene so its hash is bit-exact).
-U0 RasterDisableTexture() { g_raster_tex_active = 0; }
-
-// idx: 0/1/2 -> vertex A/B/C. Values are F64 u/W, v/W, 1/W; stored as 16.16.
-U0 RasterSetTexUV(I64 idx, F64 uow, F64 vow, F64 iw) {
-  I64 a = (I64)(uow * 65536.0);
-  I64 b = (I64)(vow * 65536.0);
-  I64 c = (I64)(iw  * 65536.0);
-  if (idx == 0) { g_rt_uow0 = a; g_rt_vow0 = b; g_rt_iw0 = c; }
-  else if (idx == 1) { g_rt_uow1 = a; g_rt_vow1 = b; g_rt_iw1 = c; }
-  else { g_rt_uow2 = a; g_rt_vow2 = b; g_rt_iw2 = c; }
-}
-
-// Called by RasterTriangleZ when it swaps B<->C to normalise winding, so the
-// per-vertex attributes stay attached to the right vertex.
-U0 RasterSwapTexUV12() {
-  I64 t = g_rt_uow1; g_rt_uow1 = g_rt_uow2; g_rt_uow2 = t;
-  t = g_rt_vow1; g_rt_vow1 = g_rt_vow2; g_rt_vow2 = t;
-  t = g_rt_iw1;  g_rt_iw1  = g_rt_iw2;  g_rt_iw2  = t;
-}
-
-// ------------------------------------------------------------------------------
-// P4.5: smooth shading in the ONE rasterizer.
-//   mode 0 = flat   (byte-identical to the golden solid path)
-//   mode 1 = Gouraud (per-vertex lit colours, affine across the span)
-//   mode 2 = per-fragment Blinn-Phong (per-vertex normals interpolated per pixel,
-//            normalized with NEON FRSQRTE/FRSQRTS, diffuse + specular + gamma)
-// All three run inside RasterSpanNEON; only the colour stage differs.
-// ------------------------------------------------------------------------------
-I64 g_rj_shade_mode = 0;
-U32 g_rj_c0 = 0; U32 g_rj_c1 = 0; U32 g_rj_c2 = 0;
-F64 g_rj_n0x = 0.0; F64 g_rj_n0y = 0.0; F64 g_rj_n0z = 1.0;
-F64 g_rj_n1x = 0.0; F64 g_rj_n1y = 0.0; F64 g_rj_n1z = 1.0;
-F64 g_rj_n2x = 0.0; F64 g_rj_n2y = 0.0; F64 g_rj_n2z = 1.0;
-F64 g_rj_lx = 0.4472; F64 g_rj_ly = 0.6324; F64 g_rj_lz = 0.6324;
-F64 g_rj_amb = 0.24; F64 g_rj_diff = 0.76; F64 g_rj_spec = 0.60;
-
-// Gouraud: per-vertex lit ARGB colours, interpolated (affine) across the span.
-U0 RasterSetColor3(U32 c0, U32 c1, U32 c2) {
-  g_rj_c0 = c0; g_rj_c1 = c1; g_rj_c2 = c2;
-  g_rj_shade_mode = 1;
-}
-// Per-fragment Phong: per-vertex normals (view space). idx 0/1/2 = vertex A/B/C.
-U0 RasterSetNormal(I64 idx, F64 nx, F64 ny, F64 nz) {
-  if (idx == 0) { g_rj_n0x = nx; g_rj_n0y = ny; g_rj_n0z = nz; }
-  else if (idx == 1) { g_rj_n1x = nx; g_rj_n1y = ny; g_rj_n1z = nz; }
-  else { g_rj_n2x = nx; g_rj_n2y = ny; g_rj_n2z = nz; }
-}
-U0 RasterSetLight(F64 lx, F64 ly, F64 lz) { g_rj_lx = lx; g_rj_ly = ly; g_rj_lz = lz; }
-U0 RasterSetShading(F64 amb, F64 diff, F64 spec) { g_rj_amb = amb; g_rj_diff = diff; g_rj_spec = spec; }
-U0 RasterEnablePhong() { g_rj_shade_mode = 2; }
-U0 RasterDisableGouraud() { g_rj_shade_mode = 0; }
-U0 RasterSwapColor12() {
-  U32 t = g_rj_c1; g_rj_c1 = g_rj_c2; g_rj_c2 = t;
-  F64 f = g_rj_n1x; g_rj_n1x = g_rj_n2x; g_rj_n2x = f;
-  f = g_rj_n1y; g_rj_n1y = g_rj_n2y; g_rj_n2y = f;
-  f = g_rj_n1z; g_rj_n1z = g_rj_n2z; g_rj_n2z = f;
-}
-
-I64 RasterFloorF(F64 x) {
-  I64 i = (I64)x;
-  if ((F64)i > x) i = i - 1;
-  return i;
-}
-
-// Wrap a signed texel coordinate and fetch one ARGB texel.
-U32 RasterTexFetch(I64 tx, I64 ty) {
-  if (g_rtex.wrap_s == WRAP_CLAMP) {
-    if (tx < 0) tx = 0;
-    if (tx > g_rtex.w - 1) tx = g_rtex.w - 1;
-  } else {
-    tx = tx & g_rtex.wmask;          // REPEAT (power-of-two mask handles negatives)
-  }
-  if (g_rtex.wrap_t == WRAP_CLAMP) {
-    if (ty < 0) ty = 0;
-    if (ty > g_rtex.h - 1) ty = g_rtex.h - 1;
-  } else {
-    ty = ty & g_rtex.hmask;
-  }
-  // D7 root fix (Compiler.HC): indexing a struct-member pointer (`g_rtex.data[k]`)
-  // now strides by sizeof(pointee)=4 and emits LDR W. The old typed-local
-  // workaround (`U32 *td = g_rtex.data; td[...]`) is no longer needed.
-  return g_rtex.data[ty * g_rtex.w + tx];
-}
-
-// Bilinear tap of 4 texels. fx,fy in [0,1).
-U32 RasterTexBilerp(U32 c00, U32 c10, U32 c01, U32 c11, F64 fx, F64 fy) {
-  I64 w00 = (I64)((1.0 - fx) * (1.0 - fy) * 256.0);
-  I64 w10 = (I64)(fx * (1.0 - fy) * 256.0);
-  I64 w01 = (I64)((1.0 - fx) * fy * 256.0);
-  I64 w11 = (I64)(fx * fy * 256.0);
-  I64 r = ((((c00 >> 16) & 255) * w00 + ((c10 >> 16) & 255) * w10 +
-            ((c01 >> 16) & 255) * w01 + ((c11 >> 16) & 255) * w11) >> 8);
-  I64 g = ((((c00 >> 8) & 255) * w00 + ((c10 >> 8) & 255) * w10 +
-            ((c01 >> 8) & 255) * w01 + ((c11 >> 8) & 255) * w11) >> 8);
-  I64 b = ((((c00) & 255) * w00 + ((c10) & 255) * w10 +
-            ((c01) & 255) * w01 + ((c11) & 255) * w11) >> 8);
-  I64 a = ((((c00 >> 24) & 255) * w00 + ((c10 >> 24) & 255) * w10 +
-            ((c01 >> 24) & 255) * w01 + ((c11 >> 24) & 255) * w11) >> 8);
-  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255; if (a > 255) a = 255;
-  return ((U32)a << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
-}
-
-// Sample the bound texture at (u,v) with the active filter.
-U32 RasterTexSample(F64 u, F64 v) {
-  if (g_rtex.filter == FILT_NEAREST) {
-    I64 tx = (I64)(u * (F64)g_rtex.w);
-    I64 ty = (I64)(v * (F64)g_rtex.h);
-    return RasterTexFetch(tx, ty);
-  }
-  F64 x = u * (F64)g_rtex.w - 0.5;
-  F64 y = v * (F64)g_rtex.h - 0.5;
-  I64 x0 = RasterFloorF(x);
-  I64 y0 = RasterFloorF(y);
-  F64 fx = x - (F64)x0;
-  F64 fy = y - (F64)y0;
-  U32 c00 = RasterTexFetch(x0,     y0);
-  U32 c10 = RasterTexFetch(x0 + 1, y0);
-  U32 c01 = RasterTexFetch(x0,     y0 + 1);
-  U32 c11 = RasterTexFetch(x0 + 1, y0 + 1);
-  return RasterTexBilerp(c00, c10, c01, c11, fx, fy);
-}
-
-// GL_MODULATE: texel * vertex colour (alpha stays the texel's).
-U32 RasterTexModulate(U32 texel, U32 color) {
-  I64 r = (((texel >> 16) & 255) * ((color >> 16) & 255)) / 255;
-  I64 g = (((texel >> 8)  & 255) * ((color >> 8)  & 255)) / 255;
-  I64 b = (((texel)       & 255) * ((color)       & 255)) / 255;
-  return ((texel >> 24) << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
-}
-
-// GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA over the framebuffer pixel.
-U32 RasterBlendSrcAlpha(U32 src, U32 dst) {
-  if (g_rtex.blend_en == 0) return src;
-  I64 sa = (src >> 24) & 255;
-  I64 ia = 255 - sa;
-  I64 r = ((((src >> 16) & 255) * sa + ((dst >> 16) & 255) * ia) + 127) / 255;
-  I64 g = ((((src >> 8)  & 255) * sa + ((dst >> 8)  & 255) * ia) + 127) / 255;
-  I64 b = ((((src)       & 255) * sa + ((dst)       & 255) * ia) + 127) / 255;
-  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
-  return 0xFF000000 | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
-}
-
-// One textured pixel of the unified span. Perspective-correct: interpolate
-// (u/W, v/W, 1/W) barycentrically, recover (u,v) = (u/W)/(1/W).
-I64 RasterPixelTextured(I64 xx, I64 yy) {
-  I64 w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
-  I64 w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
-  I64 w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
-  if ((w0 + g_rj_b0) < 0 || (w1 + g_rj_b1) < 0 || (w2 + g_rj_b2) < 0) return 0;
-  I64 pz = (w0 * g_rj_az + w1 * g_rj_bz + w2 * g_rj_cz) / g_rj_area;
-  if (pz < 0) pz = 0;
-  if (pz > 65534) pz = 65534;
-  I64 zi = yy * g_raster_cw + xx;
-  if (g_raster_depth_test != 0 && pz >= g_zbuf[zi]) return 0;
-
-  F64 l0 = (F64)w0 / (F64)g_rj_area;
-  F64 l1 = (F64)w1 / (F64)g_rj_area;
-  F64 l2 = (F64)w2 / (F64)g_rj_area;
-  F64 cw = l0 * (F64)g_rt_iw0  + l1 * (F64)g_rt_iw1  + l2 * (F64)g_rt_iw2;
-  F64 uu = l0 * (F64)g_rt_uow0 + l1 * (F64)g_rt_uow1 + l2 * (F64)g_rt_uow2;
-  F64 vv = l0 * (F64)g_rt_vow0 + l1 * (F64)g_rt_vow1 + l2 * (F64)g_rt_vow2;
-  F64 u = uu; F64 v = vv;
-  if (cw > 0.0000001 || cw < -0.0000001) { u = uu / cw; v = vv / cw; }
-  U32 texel = RasterTexSample(u, v);
-  U32 src = RasterTexModulate(texel, g_rj_color);
-  U32 dst = g_raster_fb[yy * g_raster_pitch + xx];
-  U32 out = RasterBlendSrcAlpha(src, dst);
-  if (g_raster_depth_test != 0) g_zbuf[zi] = pz;
-  g_raster_fb[yy * g_raster_pitch + xx] = out;
-  return 1;
-}
-
-U0 RasterInit() {
-  I64 w = gfx_get_canvas_width();
-  I64 h = gfx_get_canvas_height();
-  if (w <= 0) w = 1024;
-  if (h <= 0) h = 768;
-  if (g_zbuf && g_zbuf_w == w && g_zbuf_h == h) return;
-  if (g_zbuf && (w * h > g_zbuf_cap)) {
-    kfree(g_zbuf);
-    g_zbuf = NULL;
-  }
-  if (!g_zbuf) {
-    g_zbuf = kmalloc(w * h * 2);
-    g_zbuf_cap = w * h;
-  }
-  g_zbuf_w = w;
-  g_zbuf_h = h;
-}
-
-U0 RasterClearZ() {
-  RasterInit();
-  if (!g_zbuf) return;
-  memset(g_zbuf, 0xFF, g_zbuf_w * g_zbuf_h * 2);
-}
-
-I64 PinedaEdge(I64 ax, I64 ay, I64 bx, I64 by, I64 px, I64 py) {
-  return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
-}
-
-I64 RasterTopLeft(I64 ax, I64 ay, I64 bx, I64 by) {
-  I64 dx = bx - ax;
-  I64 dy = by - ay;
-  if (dy > 0) return 1;
-  if (dy == 0 && dx < 0) return 1;
-  return 0;
-}
 
 // ---- NEON span descriptor (offsets MUST match the assembly below) -------------
 //   0x00 fb_ptr (byte addr of the block's first framebuffer pixel)
@@ -405,10 +151,324 @@ class CRasterSpan {
   F64 br2; F64 bg2; F64 bb2;
   F64 amb; F64 diff; F64 spec;
 };
-CRasterSpan g_rspan;
+
+// ==============================================================================
+// P7.4 F1: the per-core raster context. One instance per core so concurrent tile
+// workers (F4) never race on shared per-triangle state.
+// ==============================================================================
+#define RC_MAX_CORES 4
+
+class CRasterCtx {
+  // target + clip window (per-triangle transient)
+  U32 *fb;
+  I64  pitch;
+  I64  cw;          // depth row stride == clip width
+  I64  min_x;
+  I64  max_x;
+  // depth buffer bound to this core (main Z or a tile scratchpad) + clip dims
+  U16 *zbuf;
+  I64  zbuf_w;
+  I64  zbuf_h;
+  I64  z0; I64 z1; I64 z2;
+  I64  depth_test;
+  // Pineda edge state
+  I64 ax; I64 ay; I64 az;
+  I64 bx; I64 by; I64 bz;
+  I64 cx; I64 cy; I64 cz;
+  I64 b0; I64 b1; I64 b2;
+  I64 area;
+  U32 color;
+  // texture binding + per-vertex perspective attributes (fixed 16.16)
+  CRasterTex tex;
+  I64 tex_active;
+  I64 uow0; I64 uow1; I64 uow2;
+  I64 vow0; I64 vow1; I64 vow2;
+  I64 iw0;  I64 iw1;  I64 iw2;
+  // smooth shading (Gouraud colours + Phong normals/light)
+  I64 shade_mode;
+  U32 c0; U32 c1; U32 c2;
+  F64 n0x; F64 n0y; F64 n0z;
+  F64 n1x; F64 n1y; F64 n1z;
+  F64 n2x; F64 n2y; F64 n2z;
+  F64 lx; F64 ly; F64 lz;
+  F64 amb; F64 diff; F64 spec;
+  // NEON span descriptor (passed to RasterSpanNEON in X0)
+  CRasterSpan span;
+  // P7.4 F1: pad the struct to a multiple of 64 bytes so every core's context
+  // starts on its own cache line (no false sharing between tile workers).
+  U64 rc_pad[2];
+};
+
+// 64-byte-aligned per-core storage. HolyC has no alignment attribute, so the
+// arena is over-allocated by 64 bytes and its base is aligned once at boot; each
+// CRasterCtx is padded (above) to a multiple of 64 bytes so neighbouring cores
+// never share a cache line (no false sharing between tile workers). The dimension
+// is a literal because HcParseArrayDimExpr folds only numeric constant
+// expressions (not sizeof); RasterCtxInit hard-checks that it is large enough.
+#define RC_ARENA_BYTES 4096
+U8 g_rctx_arena[RC_ARENA_BYTES];
+CRasterCtx *g_rctx = NULL;
+I64 g_rctx_ready = 0;
+
+// Reset one context to the documented power-on defaults (the values the old
+// globals carried as initialisers). Called for every core at init.
+U0 RasterCtxReset(CRasterCtx *ctx) {
+  ctx->fb = NULL; ctx->pitch = 0; ctx->cw = 0; ctx->min_x = 0; ctx->max_x = 0;
+  ctx->zbuf = NULL; ctx->zbuf_w = 0; ctx->zbuf_h = 0;
+  ctx->z0 = 0; ctx->z1 = 0; ctx->z2 = 0; ctx->depth_test = 1;
+  ctx->ax = 0; ctx->ay = 0; ctx->az = 0;
+  ctx->bx = 0; ctx->by = 0; ctx->bz = 0;
+  ctx->cx = 0; ctx->cy = 0; ctx->cz = 0;
+  ctx->b0 = 0; ctx->b1 = 0; ctx->b2 = 0;
+  ctx->area = 1; ctx->color = 0;
+  ctx->tex.data = NULL;
+  ctx->tex.w = 0; ctx->tex.h = 0; ctx->tex.wmask = 0; ctx->tex.hmask = 0;
+  ctx->tex.wrap_s = 0; ctx->tex.wrap_t = 0; ctx->tex.filter = 0; ctx->tex.blend_en = 0;
+  ctx->tex_active = 0;
+  ctx->uow0 = 0; ctx->uow1 = 0; ctx->uow2 = 0;
+  ctx->vow0 = 0; ctx->vow1 = 0; ctx->vow2 = 0;
+  ctx->iw0 = 0;  ctx->iw1 = 0;  ctx->iw2 = 0;
+  ctx->shade_mode = 0;
+  ctx->c0 = 0; ctx->c1 = 0; ctx->c2 = 0;
+  ctx->n0x = 0.0; ctx->n0y = 0.0; ctx->n0z = 1.0;
+  ctx->n1x = 0.0; ctx->n1y = 0.0; ctx->n1z = 1.0;
+  ctx->n2x = 0.0; ctx->n2y = 0.0; ctx->n2z = 1.0;
+  ctx->lx = 0.4472; ctx->ly = 0.6324; ctx->lz = 0.6324;
+  ctx->amb = 0.24; ctx->diff = 0.76; ctx->spec = 0.60;
+}
+
+U0 RasterCtxInit() {
+  if (g_rctx_ready) return;
+  g_rctx = (CRasterCtx*)(((U64)g_rctx_arena + 63) & (~63));
+  // Zero silent failure: the arena must hold every core's context (plus the
+  // alignment slack), and the per-core stride AND base MUST be 64-byte aligned,
+  // or concurrent tile workers would overrun / share a cache line.
+  I64 rc_bad = 0;
+  if ((RC_MAX_CORES * sizeof(CRasterCtx) + 64) > RC_ARENA_BYTES ||
+      (sizeof(CRasterCtx) & 63) != 0 || ((U64)g_rctx & 63) != 0) rc_bad = 1;
+  // Every core's context must itself be 64-byte aligned (base aligned + stride a
+  // multiple of 64 implies this; assert it directly so a layout change cannot
+  // silently introduce false sharing).
+  I64 rc_i = 0;
+  while (rc_i < RC_MAX_CORES) {
+    if (((U64)&g_rctx[rc_i] & 63) != 0) rc_bad = 1;
+    rc_i = rc_i + 1;
+  }
+  if (rc_bad) {
+    doldoc_printf("[RASTER] FATAL: CRasterCtx arena=%lld need=%lld stride=%lld base=%lld\n",
+                  RC_ARENA_BYTES, RC_MAX_CORES * sizeof(CRasterCtx) + 64,
+                  sizeof(CRasterCtx), (U64)g_rctx & 63);
+  }
+  rc_i = 0;
+  while (rc_i < RC_MAX_CORES) { RasterCtxReset(&g_rctx[rc_i]); rc_i = rc_i + 1; }
+  g_rctx_ready = 1;
+}
+
+// ------------------------------------------------------------------------------
+// Public per-triangle setters. These bind state for the IMMEDIATE path, i.e. the
+// BSP's context g_rctx[0]. The tiled path (RasterRenderTile / a tile worker) binds
+// its own context directly.
+// ------------------------------------------------------------------------------
+U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
+  if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
+  if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
+  if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
+  g_rctx[0].z0 = z0;
+  g_rctx[0].z1 = z1;
+  g_rctx[0].z2 = z2;
+}
+
+U0 RasterSetDepthTest(I64 en) { g_rctx[0].depth_test = en ? 1 : 0; }
+
+U0 RasterSetTexture(U32 *data, I64 w, I64 h, I64 wrap_s, I64 wrap_t, I64 filter) {
+  g_rctx[0].tex.data = data;
+  g_rctx[0].tex.w = w;
+  g_rctx[0].tex.h = h;
+  g_rctx[0].tex.wmask = w - 1;
+  g_rctx[0].tex.hmask = h - 1;
+  g_rctx[0].tex.wrap_s = wrap_s;
+  g_rctx[0].tex.wrap_t = wrap_t;
+  g_rctx[0].tex.filter = filter;
+  g_rctx[0].tex_active = 1;
+}
+
+U0 RasterSetBlend(I64 en) { g_rctx[0].tex.blend_en = en ? 1 : 0; }
+
+// Unbind: the unified span returns to the NEON solid path (used by the 2D golden
+// scene so its hash is bit-exact).
+U0 RasterDisableTexture() { g_rctx[0].tex_active = 0; }
+
+// idx: 0/1/2 -> vertex A/B/C. Values are F64 u/W, v/W, 1/W; stored as 16.16.
+U0 RasterSetTexUV(I64 idx, F64 uow, F64 vow, F64 iw) {
+  I64 a = (I64)(uow * 65536.0);
+  I64 b = (I64)(vow * 65536.0);
+  I64 c = (I64)(iw  * 65536.0);
+  if (idx == 0) { g_rctx[0].uow0 = a; g_rctx[0].vow0 = b; g_rctx[0].iw0 = c; }
+  else if (idx == 1) { g_rctx[0].uow1 = a; g_rctx[0].vow1 = b; g_rctx[0].iw1 = c; }
+  else { g_rctx[0].uow2 = a; g_rctx[0].vow2 = b; g_rctx[0].iw2 = c; }
+}
+
+// Called by RasterTriangleZCore when it swaps B<->C to normalise winding, so the
+// per-vertex attributes stay attached to the right vertex.
+U0 RasterSwapTexUV12(CRasterCtx *ctx) {
+  I64 t = ctx->uow1; ctx->uow1 = ctx->uow2; ctx->uow2 = t;
+  t = ctx->vow1; ctx->vow1 = ctx->vow2; ctx->vow2 = t;
+  t = ctx->iw1;  ctx->iw1  = ctx->iw2;  ctx->iw2  = t;
+}
+
+// ------------------------------------------------------------------------------
+// P4.5: smooth shading in the ONE rasterizer.
+//   mode 0 = flat   (byte-identical to the golden solid path)
+//   mode 1 = Gouraud (per-vertex lit colours, affine across the span)
+//   mode 2 = per-fragment Blinn-Phong (per-vertex normals interpolated per pixel,
+//            normalized with NEON FRSQRTE/FRSQRTS, diffuse + specular + gamma)
+// All three run inside RasterSpanNEON; only the colour stage differs.
+// ------------------------------------------------------------------------------
+// Gouraud: per-vertex lit ARGB colours, interpolated (affine) across the span.
+U0 RasterSetColor3(U32 c0, U32 c1, U32 c2) {
+  g_rctx[0].c0 = c0; g_rctx[0].c1 = c1; g_rctx[0].c2 = c2;
+  g_rctx[0].shade_mode = 1;
+}
+// Per-fragment Phong: per-vertex normals (view space). idx 0/1/2 = vertex A/B/C.
+U0 RasterSetNormal(I64 idx, F64 nx, F64 ny, F64 nz) {
+  if (idx == 0) { g_rctx[0].n0x = nx; g_rctx[0].n0y = ny; g_rctx[0].n0z = nz; }
+  else if (idx == 1) { g_rctx[0].n1x = nx; g_rctx[0].n1y = ny; g_rctx[0].n1z = nz; }
+  else { g_rctx[0].n2x = nx; g_rctx[0].n2y = ny; g_rctx[0].n2z = nz; }
+}
+U0 RasterSetLight(F64 lx, F64 ly, F64 lz) { g_rctx[0].lx = lx; g_rctx[0].ly = ly; g_rctx[0].lz = lz; }
+U0 RasterSetShading(F64 amb, F64 diff, F64 spec) { g_rctx[0].amb = amb; g_rctx[0].diff = diff; g_rctx[0].spec = spec; }
+U0 RasterEnablePhong() { g_rctx[0].shade_mode = 2; }
+U0 RasterDisableGouraud() { g_rctx[0].shade_mode = 0; }
+U0 RasterSwapColor12(CRasterCtx *ctx) {
+  U32 t = ctx->c1; ctx->c1 = ctx->c2; ctx->c2 = t;
+  F64 f = ctx->n1x; ctx->n1x = ctx->n2x; ctx->n2x = f;
+  f = ctx->n1y; ctx->n1y = ctx->n2y; ctx->n2y = f;
+  f = ctx->n1z; ctx->n1z = ctx->n2z; ctx->n2z = f;
+}
+
+I64 RasterFloorF(F64 x) {
+  I64 i = (I64)x;
+  if ((F64)i > x) i = i - 1;
+  return i;
+}
+
+// Wrap a signed texel coordinate and fetch one ARGB texel.
+U32 RasterTexFetch(CRasterCtx *ctx, I64 tx, I64 ty) {
+  if (ctx->tex.wrap_s == WRAP_CLAMP) {
+    if (tx < 0) tx = 0;
+    if (tx > ctx->tex.w - 1) tx = ctx->tex.w - 1;
+  } else {
+    tx = tx & ctx->tex.wmask;          // REPEAT (power-of-two mask handles negatives)
+  }
+  if (ctx->tex.wrap_t == WRAP_CLAMP) {
+    if (ty < 0) ty = 0;
+    if (ty > ctx->tex.h - 1) ty = ctx->tex.h - 1;
+  } else {
+    ty = ty & ctx->tex.hmask;
+  }
+  // D7 root fix (Compiler.HC): indexing a struct-member pointer (`ctx->tex.data[k]`)
+  // now strides by sizeof(pointee)=4 and emits LDR W.
+  return ctx->tex.data[ty * ctx->tex.w + tx];
+}
+
+// Bilinear tap of 4 texels. fx,fy in [0,1). Stateless.
+U32 RasterTexBilerp(U32 c00, U32 c10, U32 c01, U32 c11, F64 fx, F64 fy) {
+  I64 w00 = (I64)((1.0 - fx) * (1.0 - fy) * 256.0);
+  I64 w10 = (I64)(fx * (1.0 - fy) * 256.0);
+  I64 w01 = (I64)((1.0 - fx) * fy * 256.0);
+  I64 w11 = (I64)(fx * fy * 256.0);
+  I64 r = ((((c00 >> 16) & 255) * w00 + ((c10 >> 16) & 255) * w10 +
+            ((c01 >> 16) & 255) * w01 + ((c11 >> 16) & 255) * w11) >> 8);
+  I64 g = ((((c00 >> 8) & 255) * w00 + ((c10 >> 8) & 255) * w10 +
+            ((c01 >> 8) & 255) * w01 + ((c11 >> 8) & 255) * w11) >> 8);
+  I64 b = ((((c00) & 255) * w00 + ((c10) & 255) * w10 +
+            ((c01) & 255) * w01 + ((c11) & 255) * w11) >> 8);
+  I64 a = ((((c00 >> 24) & 255) * w00 + ((c10 >> 24) & 255) * w10 +
+            ((c01 >> 24) & 255) * w01 + ((c11 >> 24) & 255) * w11) >> 8);
+  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255; if (a > 255) a = 255;
+  return ((U32)a << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+// Sample the bound texture at (u,v) with the active filter.
+U32 RasterTexSample(CRasterCtx *ctx, F64 u, F64 v) {
+  if (ctx->tex.filter == FILT_NEAREST) {
+    I64 tx = (I64)(u * (F64)ctx->tex.w);
+    I64 ty = (I64)(v * (F64)ctx->tex.h);
+    return RasterTexFetch(ctx, tx, ty);
+  }
+  F64 x = u * (F64)ctx->tex.w - 0.5;
+  F64 y = v * (F64)ctx->tex.h - 0.5;
+  I64 x0 = RasterFloorF(x);
+  I64 y0 = RasterFloorF(y);
+  F64 fx = x - (F64)x0;
+  F64 fy = y - (F64)y0;
+  U32 c00 = RasterTexFetch(ctx, x0,     y0);
+  U32 c10 = RasterTexFetch(ctx, x0 + 1, y0);
+  U32 c01 = RasterTexFetch(ctx, x0,     y0 + 1);
+  U32 c11 = RasterTexFetch(ctx, x0 + 1, y0 + 1);
+  return RasterTexBilerp(c00, c10, c01, c11, fx, fy);
+}
+
+// GL_MODULATE: texel * vertex colour (alpha stays the texel's). Stateless.
+U32 RasterTexModulate(U32 texel, U32 color) {
+  I64 r = (((texel >> 16) & 255) * ((color >> 16) & 255)) / 255;
+  I64 g = (((texel >> 8)  & 255) * ((color >> 8)  & 255)) / 255;
+  I64 b = (((texel)       & 255) * ((color)       & 255)) / 255;
+  return ((texel >> 24) << 24) | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+// GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA over the framebuffer pixel.
+U32 RasterBlendSrcAlpha(CRasterCtx *ctx, U32 src, U32 dst) {
+  if (ctx->tex.blend_en == 0) return src;
+  I64 sa = (src >> 24) & 255;
+  I64 ia = 255 - sa;
+  I64 r = ((((src >> 16) & 255) * sa + ((dst >> 16) & 255) * ia) + 127) / 255;
+  I64 g = ((((src >> 8)  & 255) * sa + ((dst >> 8)  & 255) * ia) + 127) / 255;
+  I64 b = ((((src)       & 255) * sa + ((dst)       & 255) * ia) + 127) / 255;
+  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+  return 0xFF000000 | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
+}
+
+U0 RasterInit() {
+  RasterCtxInit();
+  I64 w = gfx_get_canvas_width();
+  I64 h = gfx_get_canvas_height();
+  if (w <= 0) w = 1024;
+  if (h <= 0) h = 768;
+  if (g_zbuf && g_zbuf_w == w && g_zbuf_h == h) return;
+  if (g_zbuf && (w * h > g_zbuf_cap)) {
+    kfree(g_zbuf);
+    g_zbuf = NULL;
+  }
+  if (!g_zbuf) {
+    g_zbuf = kmalloc(w * h * 2);
+    g_zbuf_cap = w * h;
+  }
+  g_zbuf_w = w;
+  g_zbuf_h = h;
+}
+
+U0 RasterClearZ() {
+  RasterInit();
+  if (!g_zbuf) return;
+  memset(g_zbuf, 0xFF, g_zbuf_w * g_zbuf_h * 2);
+}
+
+I64 PinedaEdge(I64 ax, I64 ay, I64 bx, I64 by, I64 px, I64 py) {
+  return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+I64 RasterTopLeft(I64 ax, I64 ay, I64 bx, I64 by) {
+  I64 dx = bx - ax;
+  I64 dy = by - ay;
+  if (dy > 0) return 1;
+  if (dy == 0 && dx < 0) return 1;
+  return 0;
+}
 
 // NEON 8-pixel span kernel. The raw words are assembled from scripts/raster_span.s
-// (regenerate/audit there). Returns the drawn pixel count in X0.
+// (regenerate/audit there). Reads ONLY the descriptor in X0 (no globals); returns
+// the drawn pixel count in X0.
 I64 RasterSpanNEON(CRasterSpan *s) {
   asm {
     0xA9BF53F3 0xA9BF5BF5 0xA9BF63F7 0xA9BF6BF9 0xA9BF73FB 0xD10203FF 0xAA0003E9 0xF9400121
@@ -541,18 +601,18 @@ I64 RasterSpanNEON(CRasterSpan *s) {
 }
 
 // Scalar single-pixel path (head/tail), bit-identical to the NEON body.
-I64 RasterPixelScalar(I64 xx, I64 yy) {
-  I64 w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
-  I64 w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
-  I64 w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
-  if ((w0 + g_rj_b0) >= 0 && (w1 + g_rj_b1) >= 0 && (w2 + g_rj_b2) >= 0) {
-    I64 pz = (w0 * g_rj_az + w1 * g_rj_bz + w2 * g_rj_cz) / g_rj_area;
+I64 RasterPixelScalar(CRasterCtx *ctx, I64 xx, I64 yy) {
+  I64 w0 = PinedaEdge(ctx->bx, ctx->by, ctx->cx, ctx->cy, xx, yy);
+  I64 w1 = PinedaEdge(ctx->cx, ctx->cy, ctx->ax, ctx->ay, xx, yy);
+  I64 w2 = PinedaEdge(ctx->ax, ctx->ay, ctx->bx, ctx->by, xx, yy);
+  if ((w0 + ctx->b0) >= 0 && (w1 + ctx->b1) >= 0 && (w2 + ctx->b2) >= 0) {
+    I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
     if (pz < 0) pz = 0;
     if (pz > 65534) pz = 65534;
-    I64 zi = yy * g_raster_cw + xx;
-    if (g_raster_depth_test == 0 || pz < g_zbuf[zi]) {
-      if (g_raster_depth_test != 0) g_zbuf[zi] = pz;
-      g_raster_fb[yy * g_raster_pitch + xx] = g_rj_color;
+    I64 zi = yy * ctx->cw + xx;
+    if (ctx->depth_test == 0 || pz < ctx->zbuf[zi]) {
+      if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+      ctx->fb[yy * ctx->pitch + xx] = ctx->color;
       return 1;
     }
   }
@@ -564,109 +624,109 @@ I64 RasterPixelScalar(I64 xx, I64 yy) {
 // (p4.3b, tex_ptr != 0) or the byte-identical solid path (tex_ptr == 0). The
 // perspective accumulators numU/numV/den are affine in x, so the kernel advances
 // them by dnumU/dnumV/dden per pixel with no per-pixel edge recomputation.
-I64 RasterSpanBlocks(I64 xx, I64 yy, I64 tex) {
-  I64 blocks = (g_raster_max_x - xx) >> 3;
+I64 RasterSpanBlocks(CRasterCtx *ctx, I64 xx, I64 yy, I64 tex) {
+  I64 blocks = (ctx->max_x - xx) >> 3;
   if (blocks <= 0) return 0;
-  I64 rowoff = yy * g_raster_pitch;
-  I64 zrowoff = yy * g_raster_cw;
-  g_rspan.fb_ptr = (U64)g_raster_fb + (rowoff + xx) * 4;
-  g_rspan.zb_ptr = (U64)g_zbuf + (zrowoff + xx) * 2;
-  g_rspan.x_start = xx;
-  g_rspan.count = blocks;
-  g_rspan.w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
-  g_rspan.w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
-  g_rspan.w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
-  g_rspan.dw0 = g_rj_cy - g_rj_by;
-  g_rspan.dw1 = g_rj_ay - g_rj_cy;
-  g_rspan.dw2 = g_rj_by - g_rj_ay;
-  g_rspan.b0 = g_rj_b0;
-  g_rspan.b1 = g_rj_b1;
-  g_rspan.b2 = g_rj_b2;
-  g_rspan.z0 = g_rj_az;
-  g_rspan.z1 = g_rj_bz;
-  g_rspan.z2 = g_rj_cz;
-  g_rspan.area = g_rj_area;
-  g_rspan.color = g_rj_color;
-  g_rspan.depth_test = g_raster_depth_test;
+  I64 rowoff = yy * ctx->pitch;
+  I64 zrowoff = yy * ctx->cw;
+  ctx->span.fb_ptr = (U64)ctx->fb + (rowoff + xx) * 4;
+  ctx->span.zb_ptr = (U64)ctx->zbuf + (zrowoff + xx) * 2;
+  ctx->span.x_start = xx;
+  ctx->span.count = blocks;
+  ctx->span.w0 = PinedaEdge(ctx->bx, ctx->by, ctx->cx, ctx->cy, xx, yy);
+  ctx->span.w1 = PinedaEdge(ctx->cx, ctx->cy, ctx->ax, ctx->ay, xx, yy);
+  ctx->span.w2 = PinedaEdge(ctx->ax, ctx->ay, ctx->bx, ctx->by, xx, yy);
+  ctx->span.dw0 = ctx->cy - ctx->by;
+  ctx->span.dw1 = ctx->ay - ctx->cy;
+  ctx->span.dw2 = ctx->by - ctx->ay;
+  ctx->span.b0 = ctx->b0;
+  ctx->span.b1 = ctx->b1;
+  ctx->span.b2 = ctx->b2;
+  ctx->span.z0 = ctx->az;
+  ctx->span.z1 = ctx->bz;
+  ctx->span.z2 = ctx->cz;
+  ctx->span.area = ctx->area;
+  ctx->span.color = ctx->color;
+  ctx->span.depth_test = ctx->depth_test;
   if (tex != 0) {
-    g_rspan.tex_ptr = (U64)&g_rtex;
-    g_rspan.uow0 = g_rt_uow0; g_rspan.uow1 = g_rt_uow1; g_rspan.uow2 = g_rt_uow2;
-    g_rspan.vow0 = g_rt_vow0; g_rspan.vow1 = g_rt_vow1; g_rspan.vow2 = g_rt_vow2;
-    g_rspan.iw0  = g_rt_iw0;  g_rspan.iw1  = g_rt_iw1;  g_rspan.iw2  = g_rt_iw2;
-    g_rspan.dnumU = g_rspan.dw0 * g_rt_uow0 + g_rspan.dw1 * g_rt_uow1 + g_rspan.dw2 * g_rt_uow2;
-    g_rspan.dnumV = g_rspan.dw0 * g_rt_vow0 + g_rspan.dw1 * g_rt_vow1 + g_rspan.dw2 * g_rt_vow2;
-    g_rspan.dden  = g_rspan.dw0 * g_rt_iw0  + g_rspan.dw1 * g_rt_iw1  + g_rspan.dw2 * g_rt_iw2;
+    ctx->span.tex_ptr = (U64)&ctx->tex;
+    ctx->span.uow0 = ctx->uow0; ctx->span.uow1 = ctx->uow1; ctx->span.uow2 = ctx->uow2;
+    ctx->span.vow0 = ctx->vow0; ctx->span.vow1 = ctx->vow1; ctx->span.vow2 = ctx->vow2;
+    ctx->span.iw0  = ctx->iw0;  ctx->span.iw1  = ctx->iw1;  ctx->span.iw2  = ctx->iw2;
+    ctx->span.dnumU = ctx->span.dw0 * ctx->uow0 + ctx->span.dw1 * ctx->uow1 + ctx->span.dw2 * ctx->uow2;
+    ctx->span.dnumV = ctx->span.dw0 * ctx->vow0 + ctx->span.dw1 * ctx->vow1 + ctx->span.dw2 * ctx->vow2;
+    ctx->span.dden  = ctx->span.dw0 * ctx->iw0  + ctx->span.dw1 * ctx->iw1  + ctx->span.dw2 * ctx->iw2;
   } else {
-    g_rspan.tex_ptr = 0;
+    ctx->span.tex_ptr = 0;
   }
   // P4.5: smooth shading. Colour/normal are affine in x, so pass the value at
   // x_start plus the per-pixel delta; the NEON kernel accumulates per block.
-  I64 mode = (tex != 0) ? 0 : g_rj_shade_mode;
-  g_rspan.gmode = mode;
+  I64 mode = (tex != 0) ? 0 : ctx->shade_mode;
+  ctx->span.gmode = mode;
   if (mode != 0) {
-    F64 inv_area = 1.0 / (F64)g_rspan.area;
+    F64 inv_area = 1.0 / (F64)ctx->span.area;
     F64 nscale = inv_area;   // Gouraud colours are carried in 0..255 (not 0..1)
-    U32 c0 = g_rj_c0; U32 c1 = g_rj_c1; U32 c2 = g_rj_c2;
+    U32 c0 = ctx->c0; U32 c1 = ctx->c1; U32 c2 = ctx->c2;
     F64 c0r = (F64)((c0 >> 16) & 255); F64 c1r = (F64)((c1 >> 16) & 255); F64 c2r = (F64)((c2 >> 16) & 255);
     F64 c0g = (F64)((c0 >> 8) & 255);  F64 c1g = (F64)((c1 >> 8) & 255);  F64 c2g = (F64)((c2 >> 8) & 255);
     F64 c0b = (F64)(c0 & 255);         F64 c1b = (F64)(c1 & 255);         F64 c2b = (F64)(c2 & 255);
-    g_rspan.gr0 = (g_rspan.w0 * c0r + g_rspan.w1 * c1r + g_rspan.w2 * c2r) * nscale;
-    g_rspan.gg0 = (g_rspan.w0 * c0g + g_rspan.w1 * c1g + g_rspan.w2 * c2g) * nscale;
-    g_rspan.gb0 = (g_rspan.w0 * c0b + g_rspan.w1 * c1b + g_rspan.w2 * c2b) * nscale;
-    g_rspan.gdr = (g_rspan.dw0 * c0r + g_rspan.dw1 * c1r + g_rspan.dw2 * c2r) * nscale;
-    g_rspan.gdg = (g_rspan.dw0 * c0g + g_rspan.dw1 * c1g + g_rspan.dw2 * c2g) * nscale;
-    g_rspan.gdb = (g_rspan.dw0 * c0b + g_rspan.dw1 * c1b + g_rspan.dw2 * c2b) * nscale;
+    ctx->span.gr0 = (ctx->span.w0 * c0r + ctx->span.w1 * c1r + ctx->span.w2 * c2r) * nscale;
+    ctx->span.gg0 = (ctx->span.w0 * c0g + ctx->span.w1 * c1g + ctx->span.w2 * c2g) * nscale;
+    ctx->span.gb0 = (ctx->span.w0 * c0b + ctx->span.w1 * c1b + ctx->span.w2 * c2b) * nscale;
+    ctx->span.gdr = (ctx->span.dw0 * c0r + ctx->span.dw1 * c1r + ctx->span.dw2 * c2r) * nscale;
+    ctx->span.gdg = (ctx->span.dw0 * c0g + ctx->span.dw1 * c1g + ctx->span.dw2 * c2g) * nscale;
+    ctx->span.gdb = (ctx->span.dw0 * c0b + ctx->span.dw1 * c1b + ctx->span.dw2 * c2b) * nscale;
     if (mode == 2) {
-      g_rspan.nr0 = (g_rspan.w0 * g_rj_n0x + g_rspan.w1 * g_rj_n1x + g_rspan.w2 * g_rj_n2x) * inv_area;
-      g_rspan.ng0 = (g_rspan.w0 * g_rj_n0y + g_rspan.w1 * g_rj_n1y + g_rspan.w2 * g_rj_n2y) * inv_area;
-      g_rspan.nb0 = (g_rspan.w0 * g_rj_n0z + g_rspan.w1 * g_rj_n1z + g_rspan.w2 * g_rj_n2z) * inv_area;
-      g_rspan.ndr = (g_rspan.dw0 * g_rj_n0x + g_rspan.dw1 * g_rj_n1x + g_rspan.dw2 * g_rj_n2x) * inv_area;
-      g_rspan.ndg = (g_rspan.dw0 * g_rj_n0y + g_rspan.dw1 * g_rj_n1y + g_rspan.dw2 * g_rj_n2y) * inv_area;
-      g_rspan.ndb = (g_rspan.dw0 * g_rj_n0z + g_rspan.dw1 * g_rj_n1z + g_rspan.dw2 * g_rj_n2z) * inv_area;
-      g_rspan.lx = g_rj_lx; g_rspan.ly = g_rj_ly; g_rspan.lz = g_rj_lz;
-      F64 hx = g_rj_lx, hy = g_rj_ly, hz = g_rj_lz + 1.0;
+      ctx->span.nr0 = (ctx->span.w0 * ctx->n0x + ctx->span.w1 * ctx->n1x + ctx->span.w2 * ctx->n2x) * inv_area;
+      ctx->span.ng0 = (ctx->span.w0 * ctx->n0y + ctx->span.w1 * ctx->n1y + ctx->span.w2 * ctx->n2y) * inv_area;
+      ctx->span.nb0 = (ctx->span.w0 * ctx->n0z + ctx->span.w1 * ctx->n1z + ctx->span.w2 * ctx->n2z) * inv_area;
+      ctx->span.ndr = (ctx->span.dw0 * ctx->n0x + ctx->span.dw1 * ctx->n1x + ctx->span.dw2 * ctx->n2x) * inv_area;
+      ctx->span.ndg = (ctx->span.dw0 * ctx->n0y + ctx->span.dw1 * ctx->n1y + ctx->span.dw2 * ctx->n2y) * inv_area;
+      ctx->span.ndb = (ctx->span.dw0 * ctx->n0z + ctx->span.dw1 * ctx->n1z + ctx->span.dw2 * ctx->n2z) * inv_area;
+      ctx->span.lx = ctx->lx; ctx->span.ly = ctx->ly; ctx->span.lz = ctx->lz;
+      F64 hx = ctx->lx, hy = ctx->ly, hz = ctx->lz + 1.0;
       F64 hl = MathSqrt(hx * hx + hy * hy + hz * hz);
       if (hl > 0.0001) { hx = hx / hl; hy = hy / hl; hz = hz / hl; }
-      g_rspan.hx = hx; g_rspan.hy = hy; g_rspan.hz = hz;
-      F64 br = (F64)((g_rj_color >> 16) & 255) / 255.0;
-      F64 bg = (F64)((g_rj_color >> 8)  & 255) / 255.0;
-      F64 bb = (F64)(g_rj_color & 255) / 255.0;
-      g_rspan.br2 = br * br; g_rspan.bg2 = bg * bg; g_rspan.bb2 = bb * bb;
-      g_rspan.amb = g_rj_amb; g_rspan.diff = g_rj_diff; g_rspan.spec = g_rj_spec;
+      ctx->span.hx = hx; ctx->span.hy = hy; ctx->span.hz = hz;
+      F64 br = (F64)((ctx->color >> 16) & 255) / 255.0;
+      F64 bg = (F64)((ctx->color >> 8)  & 255) / 255.0;
+      F64 bb = (F64)(ctx->color & 255) / 255.0;
+      ctx->span.br2 = br * br; ctx->span.bg2 = bg * bg; ctx->span.bb2 = bb * bb;
+      ctx->span.amb = ctx->amb; ctx->span.diff = ctx->diff; ctx->span.spec = ctx->spec;
     }
   }
-  return RasterSpanNEON(&g_rspan);
+  return RasterSpanNEON(&ctx->span);
 }
 
 // Scalar shaded colour at a pixel, from its raw edge values (head/tail <8px).
 // Mirrors the NEON colour stage exactly enough for the fill rule; the bulk of
 // every row is still the NEON span.
-U32 RasterShadeColorAt(I64 w0, I64 w1, I64 w2) {
-  F64 ia = 1.0 / (F64)g_rj_area;
+U32 RasterShadeColorAt(CRasterCtx *ctx, I64 w0, I64 w1, I64 w2) {
+  F64 ia = 1.0 / (F64)ctx->area;
   F64 l0 = (F64)w0 * ia;
   F64 l1 = (F64)w1 * ia;
   F64 l2 = (F64)w2 * ia;
-  if (g_rj_shade_mode == 2) {
-    F64 nx = l0 * g_rj_n0x + l1 * g_rj_n1x + l2 * g_rj_n2x;
-    F64 ny = l0 * g_rj_n0y + l1 * g_rj_n1y + l2 * g_rj_n2y;
-    F64 nz = l0 * g_rj_n0z + l1 * g_rj_n1z + l2 * g_rj_n2z;
+  if (ctx->shade_mode == 2) {
+    F64 nx = l0 * ctx->n0x + l1 * ctx->n1x + l2 * ctx->n2x;
+    F64 ny = l0 * ctx->n0y + l1 * ctx->n1y + l2 * ctx->n2y;
+    F64 nz = l0 * ctx->n0z + l1 * ctx->n1z + l2 * ctx->n2z;
     F64 nl = MathSqrt(nx * nx + ny * ny + nz * nz);
     if (nl > 0.00001) { nx = nx / nl; ny = ny / nl; nz = nz / nl; }
-    F64 ndl = nx * g_rj_lx + ny * g_rj_ly + nz * g_rj_lz;
+    F64 ndl = nx * ctx->lx + ny * ctx->ly + nz * ctx->lz;
     if (ndl < 0.0) ndl = 0.0;
-    F64 hx = g_rj_lx, hy = g_rj_ly, hz = g_rj_lz + 1.0;
+    F64 hx = ctx->lx, hy = ctx->ly, hz = ctx->lz + 1.0;
     F64 hl = MathSqrt(hx * hx + hy * hy + hz * hz);
     if (hl > 0.0001) { hx = hx / hl; hy = hy / hl; hz = hz / hl; }
     F64 ndh = nx * hx + ny * hy + nz * hz;
     if (ndh < 0.0) ndh = 0.0;
     F64 s = ndh * ndh; s = s * s; s = s * s; s = s * s; // ndh^16
-    F64 lam = g_rj_amb + g_rj_diff * ndl;
-    F64 br = (F64)((g_rj_color >> 16) & 255) / 255.0;
-    F64 bg = (F64)((g_rj_color >> 8)  & 255) / 255.0;
-    F64 bb = (F64)(g_rj_color & 255) / 255.0;
-    F64 ir = br * br * lam + g_rj_spec * s; if (ir > 1.0) ir = 1.0;
-    F64 ig = bg * bg * lam + g_rj_spec * s; if (ig > 1.0) ig = 1.0;
-    F64 ib = bb * bb * lam + g_rj_spec * s; if (ib > 1.0) ib = 1.0;
+    F64 lam = ctx->amb + ctx->diff * ndl;
+    F64 br = (F64)((ctx->color >> 16) & 255) / 255.0;
+    F64 bg = (F64)((ctx->color >> 8)  & 255) / 255.0;
+    F64 bb = (F64)(ctx->color & 255) / 255.0;
+    F64 ir = br * br * lam + ctx->spec * s; if (ir > 1.0) ir = 1.0;
+    F64 ig = bg * bg * lam + ctx->spec * s; if (ig > 1.0) ig = 1.0;
+    F64 ib = bb * bb * lam + ctx->spec * s; if (ib > 1.0) ib = 1.0;
     I64 r = (I64)(MathSqrt(ir) * 255.0 + 0.5);
     I64 g = (I64)(MathSqrt(ig) * 255.0 + 0.5);
     I64 b = (I64)(MathSqrt(ib) * 255.0 + 0.5);
@@ -674,87 +734,117 @@ U32 RasterShadeColorAt(I64 w0, I64 w1, I64 w2) {
     return 0xFF000000 | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
   }
   // Gouraud: affine blend of the three lit vertex colours.
-  I64 r = (I64)(l0 * (F64)((g_rj_c0 >> 16) & 255) + l1 * (F64)((g_rj_c1 >> 16) & 255) + l2 * (F64)((g_rj_c2 >> 16) & 255) + 0.5);
-  I64 g = (I64)(l0 * (F64)((g_rj_c0 >> 8)  & 255) + l1 * (F64)((g_rj_c1 >> 8)  & 255) + l2 * (F64)((g_rj_c2 >> 8)  & 255) + 0.5);
-  I64 b = (I64)(l0 * (F64)(g_rj_c0 & 255)        + l1 * (F64)(g_rj_c1 & 255)        + l2 * (F64)(g_rj_c2 & 255)        + 0.5);
+  I64 r = (I64)(l0 * (F64)((ctx->c0 >> 16) & 255) + l1 * (F64)((ctx->c1 >> 16) & 255) + l2 * (F64)((ctx->c2 >> 16) & 255) + 0.5);
+  I64 g = (I64)(l0 * (F64)((ctx->c0 >> 8)  & 255) + l1 * (F64)((ctx->c1 >> 8)  & 255) + l2 * (F64)((ctx->c2 >> 8)  & 255) + 0.5);
+  I64 b = (I64)(l0 * (F64)(ctx->c0 & 255)        + l1 * (F64)(ctx->c1 & 255)        + l2 * (F64)(ctx->c2 & 255)        + 0.5);
   if (r < 0) r = 0; if (r > 255) r = 255;
   if (g < 0) g = 0; if (g > 255) g = 255;
   if (b < 0) b = 0; if (b > 255) b = 255;
   return 0xFF000000 | ((U32)r << 16) | ((U32)g << 8) | (U32)b;
 }
 
-I64 RasterPixelShaded(I64 xx, I64 yy) {
-  I64 w0 = PinedaEdge(g_rj_bx, g_rj_by, g_rj_cx, g_rj_cy, xx, yy);
-  I64 w1 = PinedaEdge(g_rj_cx, g_rj_cy, g_rj_ax, g_rj_ay, xx, yy);
-  I64 w2 = PinedaEdge(g_rj_ax, g_rj_ay, g_rj_bx, g_rj_by, xx, yy);
-  if ((w0 + g_rj_b0) >= 0 && (w1 + g_rj_b1) >= 0 && (w2 + g_rj_b2) >= 0) {
-    I64 pz = (w0 * g_rj_az + w1 * g_rj_bz + w2 * g_rj_cz) / g_rj_area;
+I64 RasterPixelShaded(CRasterCtx *ctx, I64 xx, I64 yy) {
+  I64 w0 = PinedaEdge(ctx->bx, ctx->by, ctx->cx, ctx->cy, xx, yy);
+  I64 w1 = PinedaEdge(ctx->cx, ctx->cy, ctx->ax, ctx->ay, xx, yy);
+  I64 w2 = PinedaEdge(ctx->ax, ctx->ay, ctx->bx, ctx->by, xx, yy);
+  if ((w0 + ctx->b0) >= 0 && (w1 + ctx->b1) >= 0 && (w2 + ctx->b2) >= 0) {
+    I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
     if (pz < 0) pz = 0;
     if (pz > 65534) pz = 65534;
-    I64 zi = yy * g_raster_cw + xx;
-    if (g_raster_depth_test == 0 || pz < g_zbuf[zi]) {
-      if (g_raster_depth_test != 0) g_zbuf[zi] = pz;
-      g_raster_fb[yy * g_raster_pitch + xx] = RasterShadeColorAt(w0, w1, w2);
+    I64 zi = yy * ctx->cw + xx;
+    if (ctx->depth_test == 0 || pz < ctx->zbuf[zi]) {
+      if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+      ctx->fb[yy * ctx->pitch + xx] = RasterShadeColorAt(ctx, w0, w1, w2);
       return 1;
     }
   }
   return 0;
 }
 
+// One textured pixel of the unified span. Perspective-correct: interpolate
+// (u/W, v/W, 1/W) barycentrically, recover (u,v) = (u/W)/(1/W).
+I64 RasterPixelTextured(CRasterCtx *ctx, I64 xx, I64 yy) {
+  I64 w0 = PinedaEdge(ctx->bx, ctx->by, ctx->cx, ctx->cy, xx, yy);
+  I64 w1 = PinedaEdge(ctx->cx, ctx->cy, ctx->ax, ctx->ay, xx, yy);
+  I64 w2 = PinedaEdge(ctx->ax, ctx->ay, ctx->bx, ctx->by, xx, yy);
+  if ((w0 + ctx->b0) < 0 || (w1 + ctx->b1) < 0 || (w2 + ctx->b2) < 0) return 0;
+  I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
+  if (pz < 0) pz = 0;
+  if (pz > 65534) pz = 65534;
+  I64 zi = yy * ctx->cw + xx;
+  if (ctx->depth_test != 0 && pz >= ctx->zbuf[zi]) return 0;
+
+  F64 l0 = (F64)w0 / (F64)ctx->area;
+  F64 l1 = (F64)w1 / (F64)ctx->area;
+  F64 l2 = (F64)w2 / (F64)ctx->area;
+  F64 cw = l0 * (F64)ctx->iw0  + l1 * (F64)ctx->iw1  + l2 * (F64)ctx->iw2;
+  F64 uu = l0 * (F64)ctx->uow0 + l1 * (F64)ctx->uow1 + l2 * (F64)ctx->uow2;
+  F64 vv = l0 * (F64)ctx->vow0 + l1 * (F64)ctx->vow1 + l2 * (F64)ctx->vow2;
+  F64 u = uu; F64 v = vv;
+  if (cw > 0.0000001 || cw < -0.0000001) { u = uu / cw; v = vv / cw; }
+  U32 texel = RasterTexSample(ctx, u, v);
+  U32 src = RasterTexModulate(texel, ctx->color);
+  U32 dst = ctx->fb[yy * ctx->pitch + xx];
+  U32 out = RasterBlendSrcAlpha(ctx, src, dst);
+  if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+  ctx->fb[yy * ctx->pitch + xx] = out;
+  return 1;
+}
+
 // Fill one scanline of the current triangle. ONE pipeline: when a texture is
 // bound the aligned body runs the NEON textured span (p4.3b) and only the
 // head/tail (<8 px) use the scalar perspective pixel; otherwise the NEON span
 // runs the solid (gmode 0), Gouraud (1) or per-fragment Phong (2) colour stage.
-I64 RasterRow(I64 yy) {
-  if (g_raster_tex_active) {
-    I64 xx = g_raster_min_x;
+I64 RasterRow(CRasterCtx *ctx, I64 yy) {
+  if (ctx->tex_active) {
+    I64 xx = ctx->min_x;
     I64 drawn = 0;
-    while (xx < g_raster_max_x && (xx & 7) != 0) {
-      drawn = drawn + RasterPixelTextured(xx, yy);
+    while (xx < ctx->max_x && (xx & 7) != 0) {
+      drawn = drawn + RasterPixelTextured(ctx, xx, yy);
       xx = xx + 1;
     }
-    I64 tb = (g_raster_max_x - xx) >> 3;
+    I64 tb = (ctx->max_x - xx) >> 3;
     if (tb > 0) {
-      drawn = drawn + RasterSpanBlocks(xx, yy, 1);
+      drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 1);
       xx = xx + (tb << 3);
     }
-    while (xx < g_raster_max_x) {
-      drawn = drawn + RasterPixelTextured(xx, yy);
+    while (xx < ctx->max_x) {
+      drawn = drawn + RasterPixelTextured(ctx, xx, yy);
       xx = xx + 1;
     }
     return drawn;
   }
-  I64 smode = g_rj_shade_mode;
-  I64 xx = g_raster_min_x;
+  I64 smode = ctx->shade_mode;
+  I64 xx = ctx->min_x;
   I64 drawn = 0;
-  while (xx < g_raster_max_x && (xx & 7) != 0) {
-    if (smode != 0) drawn = drawn + RasterPixelShaded(xx, yy);
-    else drawn = drawn + RasterPixelScalar(xx, yy);
+  while (xx < ctx->max_x && (xx & 7) != 0) {
+    if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
+    else drawn = drawn + RasterPixelScalar(ctx, xx, yy);
     xx = xx + 1;
   }
-  I64 blocks = (g_raster_max_x - xx) >> 3;
+  I64 blocks = (ctx->max_x - xx) >> 3;
   if (blocks > 0) {
-    drawn = drawn + RasterSpanBlocks(xx, yy, 0);
+    drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 0);
     xx = xx + (blocks << 3);
   }
-  while (xx < g_raster_max_x) {
-    if (smode != 0) drawn = drawn + RasterPixelShaded(xx, yy);
-    else drawn = drawn + RasterPixelScalar(xx, yy);
+  while (xx < ctx->max_x) {
+    if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
+    else drawn = drawn + RasterPixelScalar(ctx, xx, yy);
     xx = xx + 1;
   }
   return drawn;
 }
 
 // P7.3: the triangle body, hoisted so the tiled path can reuse the ONE kernel.
-// It reads the globals g_raster_fb / g_raster_pitch / g_zbuf / g_zbuf_w / g_zbuf_h,
-// which the caller sets (immediate path: RasterTriangleZ; tiled: RasterRenderTile).
-I64 RasterTriangleZCore(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
-  I64 cw = g_zbuf_w;
-  I64 ch = g_zbuf_h;
+// It reads ctx->fb / ctx->pitch / ctx->zbuf / ctx->zbuf_w / ctx->zbuf_h, which the
+// caller binds (immediate path: RasterTriangleZ; tiled: RasterRenderTile).
+I64 RasterTriangleZCore(CRasterCtx *ctx, I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
+  I64 cw = ctx->zbuf_w;
+  I64 ch = ctx->zbuf_h;
 
-  I64 ax = x0; I64 ay = y0; I64 az = g_raster_z0;
-  I64 bx = x1; I64 by = y1; I64 bz = g_raster_z1;
-  I64 cx = x2; I64 cy = y2; I64 cz = g_raster_z2;
+  I64 ax = x0; I64 ay = y0; I64 az = ctx->z0;
+  I64 bx = x1; I64 by = y1; I64 bz = ctx->z1;
+  I64 cx = x2; I64 cy = y2; I64 cz = ctx->z2;
 
   I64 area = PinedaEdge(ax, ay, bx, by, cx, cy);
   if (area == 0) return 0;
@@ -763,8 +853,8 @@ I64 RasterTriangleZCore(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 colo
     sw = by; by = cy; cy = sw;
     sw = bz; bz = cz; cz = sw;
     area = 0 - area;
-    RasterSwapTexUV12();   // keep per-vertex texture attributes attached to B/C
-    RasterSwapColor12();   // keep per-vertex Gouraud colours attached to B/C
+    RasterSwapTexUV12(ctx);   // keep per-vertex texture attributes attached to B/C
+    RasterSwapColor12(ctx);   // keep per-vertex Gouraud colours attached to B/C
   }
 
   I64 min_x = ax; if (bx < min_x) min_x = bx; if (cx < min_x) min_x = cx;
@@ -779,21 +869,21 @@ I64 RasterTriangleZCore(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 colo
   if (max_y > ch) max_y = ch;
   if (min_x >= max_x || min_y >= max_y) return 0;
 
-  g_raster_cw = cw;
-  g_raster_min_x = min_x;
-  g_raster_max_x = max_x;
-  g_rj_ax = ax; g_rj_ay = ay; g_rj_az = az;
-  g_rj_bx = bx; g_rj_by = by; g_rj_bz = bz;
-  g_rj_cx = cx; g_rj_cy = cy; g_rj_cz = cz;
-  g_rj_b0 = -1; if (RasterTopLeft(bx, by, cx, cy) != 0) g_rj_b0 = 0;
-  g_rj_b1 = -1; if (RasterTopLeft(cx, cy, ax, ay) != 0) g_rj_b1 = 0;
-  g_rj_b2 = -1; if (RasterTopLeft(ax, ay, bx, by) != 0) g_rj_b2 = 0;
-  g_rj_area = area;
-  g_rj_color = color;
+  ctx->cw = cw;
+  ctx->min_x = min_x;
+  ctx->max_x = max_x;
+  ctx->ax = ax; ctx->ay = ay; ctx->az = az;
+  ctx->bx = bx; ctx->by = by; ctx->bz = bz;
+  ctx->cx = cx; ctx->cy = cy; ctx->cz = cz;
+  ctx->b0 = -1; if (RasterTopLeft(bx, by, cx, cy) != 0) ctx->b0 = 0;
+  ctx->b1 = -1; if (RasterTopLeft(cx, cy, ax, ay) != 0) ctx->b1 = 0;
+  ctx->b2 = -1; if (RasterTopLeft(ax, ay, bx, by) != 0) ctx->b2 = 0;
+  ctx->area = area;
+  ctx->color = color;
 
   I64 drawn = 0;
   for (I64 yy = min_y; yy < max_y; yy = yy + 1) {
-    drawn = drawn + RasterRow(yy);
+    drawn = drawn + RasterRow(ctx, yy);
   }
   return drawn;
 }
@@ -803,10 +893,14 @@ I64 RasterTriangleZCore(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 colo
 I64 RasterTriangleZ(I64 x0, I64 y0, I64 x1, I64 y1, I64 x2, I64 y2, U32 color) {
   RasterInit();
   if (!g_zbuf) return 0;
-  g_raster_fb = GfxDeviceTarget();
-  if (!g_raster_fb) return 0;
-  g_raster_pitch = gfx_get_canvas_pitch();
-  return RasterTriangleZCore(x0, y0, x1, y1, x2, y2, color);
+  CRasterCtx *ctx = &g_rctx[0];
+  ctx->fb = GfxDeviceTarget();
+  if (!ctx->fb) return 0;
+  ctx->pitch = gfx_get_canvas_pitch();
+  ctx->zbuf = g_zbuf;
+  ctx->zbuf_w = g_zbuf_w;
+  ctx->zbuf_h = g_zbuf_h;
+  return RasterTriangleZCore(ctx, x0, y0, x1, y1, x2, y2, color);
 }
 
 // ------------------------------------------------------------------------------
@@ -902,35 +996,37 @@ U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) {
 
 // Render one tile into core-0's scratchpad, reusing the ONE kernel with local
 // (tile-relative) coordinates; the Pineda edge functions are translation-invariant,
-// so the result is bit-identical to the immediate path.
+// so the result is bit-identical to the immediate path. The scratchpad + clip dims
+// are bound into the BSP's context (F4 will give each worker its own).
 U0 RasterRenderTile(I64 t) {
   I64 tx = t % g_rs_cols;
   I64 ty = t / g_rs_cols;
   I64 ox = g_rs_vx + tx * g_rs_tile_size;
   I64 oy = g_rs_vy + ty * g_rs_tile_size;
+  CRasterCtx *ctx = &g_rctx[0];
   RenderNeonFill(g_tile_color[0], 4096, g_rs_clear);
   memset(g_tile_depth[0], 0xFF, 4096 * 2);
-  U32 *sv_fb = g_raster_fb;
-  I64 sv_pitch = g_raster_pitch;
-  I64 sv_cw = g_raster_cw;
-  U16 *sv_zb = g_zbuf;
-  I64 sv_zw = g_zbuf_w;
-  I64 sv_zh = g_zbuf_h;
-  g_raster_fb = g_tile_color[0]; g_raster_pitch = 64; g_raster_cw = 64;
-  g_zbuf = g_tile_depth[0]; g_zbuf_w = 64; g_zbuf_h = 64;
+  U32 *sv_fb = ctx->fb;
+  I64 sv_pitch = ctx->pitch;
+  I64 sv_cw = ctx->cw;
+  U16 *sv_zb = ctx->zbuf;
+  I64 sv_zw = ctx->zbuf_w;
+  I64 sv_zh = ctx->zbuf_h;
+  ctx->fb = g_tile_color[0]; ctx->pitch = 64; ctx->cw = 64;
+  ctx->zbuf = g_tile_depth[0]; ctx->zbuf_w = 64; ctx->zbuf_h = 64;
   CRasterBin *b = &g_rs_bins[t];
   I64 i = 0;
   while (i < b->count) {
     I64 ti = (I64)b->idx[i];
     CRasterTri *tr = &g_rs_tris[ti];
     RasterSetZ(tr->z[0], tr->z[1], tr->z[2]);
-    RasterTriangleZCore((I64)tr->x[0] - ox, (I64)tr->y[0] - oy,
+    RasterTriangleZCore(ctx, (I64)tr->x[0] - ox, (I64)tr->y[0] - oy,
                         (I64)tr->x[1] - ox, (I64)tr->y[1] - oy,
                         (I64)tr->x[2] - ox, (I64)tr->y[2] - oy, tr->color);
     i = i + 1;
   }
-  g_raster_fb = sv_fb; g_raster_pitch = sv_pitch; g_raster_cw = sv_cw;
-  g_zbuf = sv_zb; g_zbuf_w = sv_zw; g_zbuf_h = sv_zh;
+  ctx->fb = sv_fb; ctx->pitch = sv_pitch; ctx->cw = sv_cw;
+  ctx->zbuf = sv_zb; ctx->zbuf_w = sv_zw; ctx->zbuf_h = sv_zh;
 }
 
 // Resolve one tile: colour to the target via the stnp kernel, depth to the main
@@ -1128,14 +1224,14 @@ U0 RasterBootCheck() {
   RasterSetZ(1, 1, 1);
   I64 n = RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFFFF00FF);
   if (n < 700 || n > 900) { ok = 0; doldoc_printf("[RASTER] coverage n=%lld (want ~800)\n", n); }
-  if (g_raster_fb[30 * pit + 40] != 0xFFFF00FF) { ok = 0; doldoc_print("[RASTER] center pixel not filled\n"); }
+  if (g_rctx[0].fb[30 * pit + 40] != 0xFFFF00FF) { ok = 0; doldoc_print("[RASTER] center pixel not filled\n"); }
 
   RasterClearZ();
   RasterSetZ(100, 100, 100);
   RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFF00FF00);
   RasterSetZ(5000, 5000, 5000);
   RasterTriangleZ(20, 20, 60, 20, 40, 60, 0xFFFF0000);
-  if (g_raster_fb[30 * pit + 40] != 0xFF00FF00) { ok = 0; doldoc_print("[RASTER] depth rejection failed\n"); }
+  if (g_rctx[0].fb[30 * pit + 40] != 0xFF00FF00) { ok = 0; doldoc_print("[RASTER] depth rejection failed\n"); }
 
   // Two triangles sharing the diagonal (100,100)-(200,200) tile the square
   // [100,200)x[100,200); every pixel must be filled.
@@ -1148,7 +1244,7 @@ U0 RasterBootCheck() {
   while (gy < 200) {
     I64 gx = 100;
     while (gx < 200) {
-      if (g_raster_fb[gy * pit + gx] != 0xFFF1C40F) gaps = gaps + 1;
+      if (g_rctx[0].fb[gy * pit + gx] != 0xFFF1C40F) gaps = gaps + 1;
       gx++;
     }
     gy++;
@@ -1175,6 +1271,7 @@ U0 RasterTileMain() {
 }
 
 if (g_kernel_booting) {
+  RasterCtxInit();
   RasterInit();
   RasterBootCheck();
 } else {

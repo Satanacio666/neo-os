@@ -356,6 +356,27 @@ The earlier WIP **BSOD** was self-inflicted: a 9-argument `doldoc_printf` inside
 
 **Research briefs** (read-only, external best-in-class) added: `docs/research/*.md` (see doc 03 §11).
 
+### P7.4 F1 — deterministic renderbench baseline + per-core `CRasterCtx` — **[REAL]**
+
+The renderbench numbers were wall-clock and therefore meaningless as a gate (host load moved the *same* build
+between 36 M and 44 M cycles). They are now taken under **QEMU `-icount shift=0,align=off,sleep=off`**
+(`NEO_ICOUNT=1 scripts/run-viewer-vm.sh`), so the virtual clock — and `renderbench` — measures **work**.
+Repeated runs agree to ~0.00001 %. See doc 04 D42.
+
+Deterministic `renderbench` (4000 triangles unless noted), instructions:
+
+| metric | `51865e6` (pre-F1, old compiler) | + deferred-offset compiler (D43) | + F1 `CRasterCtx` (D44) |
+|---|---|---|---|
+| Z-raster | 41,668,965 | 41,247,142 (−1.0 %) | **40,115,588 (−3.7 %)** |
+| Textured | 62,274,984 | 61,219,652 (−1.7 %) | **60,290,790 (−3.2 %)** |
+| Canvas (clear) | 28,350 | 28,278 | 28,252 |
+
+The F1 gate (`F1 + new compiler ≤ 51865e6 × 1.03`) passes with a wide margin, and the pure refactor cost —
+F1 vs *the same compiler without the refactor* — is **negative** (−2.7 % Z-raster, −1.5 % Textured): the
+per-core context is a net win because D43 made each `ctx->field` two instructions. The runbook's prescribed
+loop-invariant hoisting was implemented and **measured to regress** Z-raster to 40,178,158 (+0.16 %, ~1000×
+the run noise; HolyC locals are stack slots, so hoisting adds stores without removing loads) and was reverted.
+Correctness is unchanged: `RENDER: PASS (0xD28836F)`, `TILE: PASS`, 1-vs-4-core `DETERMINISM: PASS`.
 
 ---
 

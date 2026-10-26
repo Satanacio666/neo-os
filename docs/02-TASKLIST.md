@@ -1472,10 +1472,15 @@ the self-test requiring the designated core per slice (proof: 4 slices → cores
 (`HC_STRUCT_MEMBERS` 64→128, `HC_MAX_LOCALS` 256→512) with **hard error** on member overflow (was a silent
 drop), and a root fix for the silent **global re-declaration overflow** (reusing a too-small existing cell →
 heap corruption) — now a `[HCLX] GLOBAL RE-DECL OVERFLOW` hard error; new `HEAPINT: PASS` heap-integrity gate.
-**Remaining — see doc 04 D40:** the SMP tile dispatch is blocked on a **per-core raster-state refactor** (the
-rasterizer's ~24 state globals, ~198 refs, would race across concurrent tile workers), then
-`RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile` SMP sub-test, and the
-`MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
+**F1 ✅ DONE (see doc 04 D42/D43/D44):** the **per-core raster-state refactor** is complete — the ~24 shared
+per-triangle globals are now one 64-byte-aligned `CRasterCtx g_rctx[]` threaded as an explicit first argument
+(`RasterTriangleZCore(ctx, …)`), private to `RasterTile.HC` (grep-gated), with a one-shot `RasterCtxInit()`
+alignment guard. It landed **on top of a compiler root fix** (`HcResolveLValue` deferred-offset lvalues +
+immediate-offset load/store, D43) so `ctx->field` costs 2 instructions, not 4. Bit-exact (`RENDER 0xD28836F`,
+`TILE: PASS`, `DETERMINISM: PASS`); deterministic (icount) Z-raster 41,247,142 → **40,115,588** (−2.7 %) —
+a net win. Measurement is now deterministic: `NEO_ICOUNT=1` (D42). **Remaining — see doc 04 D40:** the SMP
+tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile`
+SMP sub-test, and the `MeshRender` batch-transform wiring. Runbook below is the original spec (retained).
 
 **Goal.** Split tiles across online cores (each into its own scratchpad), then resolve; add a parallel vertex
 transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the render path.

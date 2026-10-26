@@ -50,6 +50,15 @@ else
     echo "  [FAIL] rasterizer: ${raline:-<none>} (want RASTER: PASS)"
     fail=1
 fi
+# P7.4 F1: the per-core raster context is private to RasterTile.HC. No other
+# module may name g_rctx (it is threaded as an explicit argument instead).
+if [ "$(grep -rl 'g_rctx' "$ROOT/apps" "$ROOT/boot" 2>/dev/null | grep -vc 'RasterTile.HC')" -eq 0 ]; then
+    echo "  [PASS] g_rctx is private to RasterTile.HC"
+else
+    echo "  [FAIL] g_rctx referenced outside RasterTile.HC"
+    grep -rl 'g_rctx' "$ROOT/apps" "$ROOT/boot" 2>/dev/null | grep -v 'RasterTile.HC'
+    fail=1
+fi
 
 echo "== in-guest SELFTEST (one command, apps/SelfTest.HC) =="
 out="$(python3 "$ROOT/scripts/neo_uart.py" --sentinel "$SENTINEL" --timeout 120 'selftest' 2>/dev/null || true)"
