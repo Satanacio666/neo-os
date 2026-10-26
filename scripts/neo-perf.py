@@ -4,6 +4,24 @@ Uso: neo-perf.py <rotulo> [args extras do QEMU...]
 """
 import os, subprocess, sys, time, signal
 
+def find_firmware():
+    """Acha o firmware UEFI AArch64 — o caminho muda por distro.
+
+    Medido: Alpine tem em /usr/share/AAVMF/QEMU_EFI.fd; Debian/Ubuntu em
+    /usr/share/qemu-efi-aarch64/QEMU_EFI.fd. Sem isso o QEMU não boota e o erro
+    que aparece é "SHELL NAO APARECEU" (foi o que travou o CI no GitHub).
+    """
+    import os
+    for p in (os.environ.get("NEO_QEMU_BIOS", ""),
+              "/usr/share/AAVMF/QEMU_EFI.fd",
+              "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+              "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+              "/usr/share/qemu/edk2-aarch64-code.fd"):
+        if p and os.path.exists(p):
+            return p
+    raise SystemExit("firmware UEFI AArch64 nao encontrado (instale aavmf ou qemu-efi-aarch64)")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 label = sys.argv[1]
 extra = sys.argv[2:]
@@ -17,7 +35,7 @@ base = [
     "-accel", "tcg,thread=single,tb-size=512",
     "-cpu", "cortex-a72",
     "-smp", "4", "-m", "1024",
-    "-bios", "/usr/share/AAVMF/QEMU_EFI.fd",
+    "-bios", find_firmware(),
     "-device", "ramfb",
     "-device", "virtio-gpu-device,xres=1024,yres=768",
     "-device", "virtio-keyboard-device", "-device", "virtio-tablet-device",
