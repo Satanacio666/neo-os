@@ -153,7 +153,9 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   dissolved into `DolDoc.HC` (windows are `$WIN$` document nodes) and the rigid character grid is gone. New
   `apps/Effects.HC` adds a **harmonic spring** (closed-form damped oscillator) for tactile window/slider motion
   and a **dual-Kawase blur** on an AArch64 NEON UHADD kernel for Catppuccin acrylic glass, wired into `$GLASS$`.
-  The Slate two-pass layout and `$PANEL$`/`$MODAL$` nodes are the next increment (doc 04 D53). **[REAL/PARTIAL]**
+  The **Slate two-pass layout** (`$VBOX$`/`$HBOX$`/`$GRID$`/`$SPLIT$`), the **industrial nodes**
+  `$NODE_GRAPH$`/`$BLOCK_EDITOR$`/`$ISLAND$`, and the live **`$REPL$`** shell node also land in P8.0
+  (`LAYOUT: PASS`). Only the emitter `ptr + int` scaling fix remains (doc 04 D53). **[REAL]**
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

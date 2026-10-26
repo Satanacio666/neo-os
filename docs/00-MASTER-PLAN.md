@@ -791,8 +791,10 @@ the 128×48 character grid is gone (text is an arena with a per-character `fg|bg
 delivers two Raven pillars — **harmonic springs** (closed-form damped oscillator `x''+2ζωx'+ω²(x−x_t)=0`, driving
 `$SPRING$` nodes through `DolDocSpringTick`) and a **dual-Kawase blur** on an AArch64 **NEON UHADD** kernel with a
 scalar reference the self-test proves bit-identical; `$GLASS$` now blurs behind the panel before tinting.
-`EFFECTS: PASS (6/6)`. **Deferred to P8.1:** the Slate two-pass layout, `$PANEL$`/`$MODAL$` nodes, and the
-`ptr + int` scaling fix in the emitter. See doc 04 D53.
+`EFFECTS: PASS (6/6)`. **Also in P8.0 (2nd increment):** the **Slate two-pass layout** (`DolDocSlateLayout` +
+`DolDocSlatePass`) for `$VBOX$`/`$HBOX$`/`$GRID$`/`$SPLIT$`, the **industrial nodes** `$NODE_GRAPH$` /
+`$BLOCK_EDITOR$` / `$ISLAND$`, and the live **`$REPL$`** shell node → `LAYOUT: PASS (4/4)`. **Deferred to P8.1:**
+the `ptr + int` scaling fix in the emitter (and any further node vocabulary). See doc 04 D53.
 
 ## P8 — Self-hosting everything
 

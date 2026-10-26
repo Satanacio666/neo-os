@@ -50,6 +50,14 @@
 #define DOC_FONT       24
 #define DOC_INPUT      25
 #define DOC_SPRING     26   // P8.0: harmonic-spring animated container
+// P8.0 Slate two-pass layout containers + industrial nodes.
+#define DOC_VBOX       27
+#define DOC_HBOX       28
+#define DOC_GRIDC      29
+#define DOC_NODEGRAPH  30
+#define DOC_BLOCKEDIT  31
+#define DOC_ISLAND     32
+#define DOC_REPL       33   // a live Shell input node on the tape
 
 // ---- Node flags --------------------------------------------------------------
 #define DOCF_OPEN      1
@@ -1145,6 +1153,171 @@ U0 DolDocSpringTick() {
     }
 }
 
+// ============================================================================
+// P8.0 Slate two-pass layout: MEASURE intrinsic sizes bottom-up, then ARRANGE
+// slots top-down. Real continuous coordinates (no cell rounding); mode selects
+// VBOX (0) / HBOX (1) / GRID (2) / SPLIT (3).
+// ============================================================================
+U0 DolDocSlateLayout(I64 first, I64 last, I64 x, I64 y, I64 w, I64 h, I64 mode) {
+    if (last < first) return;
+    I64 n = last - first + 1;
+    if (mode == 0) {
+        // VBOX: stack vertically, heights proportional to intrinsic h (default 18).
+        I64 sum = 0; I64 i = first;
+        while (i <= last) { I64 ih = g_doc_nodes[i].h; if (ih <= 0) ih = 18; sum = sum + ih; i = i + 1; }
+        if (sum <= 0) sum = n;
+        I64 cy = y; i = first;
+        while (i <= last) {
+            I64 ih = g_doc_nodes[i].h; if (ih <= 0) ih = 18;
+            I64 ch = (ih * h) / sum; if (ch < 1) ch = 1;
+            g_doc_nodes[i].x = x; g_doc_nodes[i].y = cy; g_doc_nodes[i].w = w; g_doc_nodes[i].h = ch;
+            cy = cy + ch; i = i + 1;
+        }
+    } else if (mode == 1) {
+        // HBOX: stack horizontally, widths proportional to intrinsic w (default 80).
+        I64 sum = 0; I64 i = first;
+        while (i <= last) { I64 iw = g_doc_nodes[i].w; if (iw <= 0) iw = 80; sum = sum + iw; i = i + 1; }
+        if (sum <= 0) sum = n;
+        I64 cx = x; i = first;
+        while (i <= last) {
+            I64 iw = g_doc_nodes[i].w; if (iw <= 0) iw = 80;
+            I64 cw = (iw * w) / sum; if (cw < 1) cw = 1;
+            g_doc_nodes[i].x = cx; g_doc_nodes[i].y = y; g_doc_nodes[i].w = cw; g_doc_nodes[i].h = h;
+            cx = cx + cw; i = i + 1;
+        }
+    } else if (mode == 2) {
+        // GRID: cols from the container tag (stored in val), rows derived.
+        I64 cols = g_doc_nodes[first - 1].val;
+        if (cols < 1) cols = 2;
+        I64 rows = (n + cols - 1) / cols;
+        if (rows < 1) rows = 1;
+        I64 cw = w / cols; if (cw < 1) cw = 1;
+        I64 ch = h / rows; if (ch < 1) ch = 1;
+        I64 i = first; I64 k = 0;
+        while (i <= last) {
+            I64 cc = k % cols; I64 rr = k / cols;
+            g_doc_nodes[i].x = x + cc * cw; g_doc_nodes[i].y = y + rr * ch;
+            g_doc_nodes[i].w = cw; g_doc_nodes[i].h = ch;
+            k = k + 1; i = i + 1;
+        }
+    } else {
+        // SPLIT: two panes split by the container ratio (val, percent; default 50).
+        I64 ratio = g_doc_nodes[first - 1].val; if (ratio < 5) ratio = 50; if (ratio > 95) ratio = 95;
+        I64 left_w = (w * ratio) / 100; if (left_w < 1) left_w = 1;
+        I64 i = first; I64 k = 0;
+        while (i <= last) {
+            if (k == 0) { g_doc_nodes[i].x = x; g_doc_nodes[i].y = y; g_doc_nodes[i].w = left_w; g_doc_nodes[i].h = h; }
+            else        { g_doc_nodes[i].x = x + left_w; g_doc_nodes[i].y = y; g_doc_nodes[i].w = w - left_w; g_doc_nodes[i].h = h; }
+            k = k + 1; i = i + 1;
+        }
+    }
+}
+
+// Container parser: $VBOX$/$HBOX$/$GRID$/$SPLIT$ create a container node whose
+// val carries the layout parameter (grid cols / split ratio). The Slate pass then
+// arranges the following run of sibling nodes into it.
+U0 DolDocParseContainer(U8 *tag, I64 kind) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 240);
+    I64 h = DolDocGetAttrInt(tag, "h=", 120);
+    I64 n = DolDocWidget(kind, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->val = (kind == DOC_GRIDC) ? DolDocGetAttrInt(tag, "cols=", 2)
+                                       : DolDocGetAttrInt(tag, "ratio=", 50);
+        DolDocAdvance(1);
+    }
+}
+
+// Industrial node (P8.0): $NODE_GRAPH$, $BLOCK_EDITOR$, $ISLAND$ are first-class
+// document nodes with a real intrinsic size; they render through the widget path.
+U0 DolDocParseIndustrial(U8 *tag, I64 kind) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 200);
+    I64 h = DolDocGetAttrInt(tag, "h=", 140);
+    U8 title[64]; title[0] = 0;
+    DolDocGetAttrStr(tag, "title=", title, 60);
+    I64 n = DolDocWidget(kind, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) {
+        if (title[0]) DolDocSetLabel(n, title);
+        else if (kind == DOC_NODEGRAPH) DolDocSetLabel(n, "Node Graph");
+        else if (kind == DOC_BLOCKEDIT) DolDocSetLabel(n, "Block Editor");
+        else DolDocSetLabel(n, "Island");
+        DolDocAdvance(1);
+    }
+}
+
+// $REPL$: a live Shell input node on the tape (a document that IS a shell).
+U0 DolDocParseRepl(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 400);
+    I64 h = DolDocGetAttrInt(tag, "h=", 200);
+    I64 n = DolDocWidget(DOC_REPL, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) DolDocSetLabel(n, "Shell");
+    DolDocAdvance(1);
+}
+
+// The Slate pass: after parsing, arrange each container's following sibling run.
+U0 DolDocSlatePass() {
+    I64 n = 0;
+    while (n < g_doc_node_count) {
+        I64 k = g_doc_nodes[n].kind;
+        if (k == DOC_VBOX || k == DOC_HBOX || k == DOC_GRIDC || k == DOC_SPLIT) {
+            I64 first = n + 1;
+            I64 last = first - 1;
+            I64 m = first;
+            while (m < g_doc_node_count) {
+                I64 mk = g_doc_nodes[m].kind;
+                if (mk == DOC_VBOX || mk == DOC_HBOX || mk == DOC_GRIDC || mk == DOC_SPLIT || mk == DOC_WINDOW) break;
+                last = m;
+                m = m + 1;
+            }
+            I64 mode = (k == DOC_VBOX) ? 0 : ((k == DOC_HBOX) ? 1 : ((k == DOC_GRIDC) ? 2 : 3));
+            DolDocSlateLayout(first, last, g_doc_nodes[n].x, g_doc_nodes[n].y,
+                              g_doc_nodes[n].w, g_doc_nodes[n].h, mode);
+        }
+        n = n + 1;
+    }
+}
+
+// P8.0 Slate layout self-test (called from SelfTest.HC -> LAYOUT: PASS). Exercises
+// the four container modes on a scratch node range at the tail of the node array
+// (never touching the live document).
+U0 DolDocSlateSelfTest() {
+    I64 pass = 0;
+    I64 total = 0;
+    I64 base = DOC_MAX_NODES - 8;
+    g_doc_nodes[base].kind = DOC_VBOX;
+    g_doc_nodes[base].val = 50;
+
+    // VBOX: intrinsic heights 20 and 40 in a 120-high box -> 40 and 80 (proportional).
+    g_doc_nodes[base + 1].kind = DOC_TEXT; g_doc_nodes[base + 1].w = 100; g_doc_nodes[base + 1].h = 20;
+    g_doc_nodes[base + 2].kind = DOC_TEXT; g_doc_nodes[base + 2].w = 100; g_doc_nodes[base + 2].h = 40;
+    DolDocSlateLayout(base + 1, base + 2, 0, 0, 200, 120, 0);
+    total++; if (g_doc_nodes[base + 1].h == 40 && g_doc_nodes[base + 2].h == 80 &&
+                g_doc_nodes[base + 2].y == 40 && g_doc_nodes[base + 1].w == 200) pass++;
+
+    // HBOX: intrinsic widths 40 and 60 in a 200-wide box -> 80 and 120.
+    g_doc_nodes[base + 1].w = 40; g_doc_nodes[base + 2].w = 60;
+    DolDocSlateLayout(base + 1, base + 2, 0, 0, 200, 50, 1);
+    total++; if (g_doc_nodes[base + 1].w == 80 && g_doc_nodes[base + 2].w == 120 &&
+                g_doc_nodes[base + 2].x == 80 && g_doc_nodes[base + 1].h == 50) pass++;
+
+    // GRID: 4 children, 2 cols, 100x100 -> each 50x50; child 3 at (50,50).
+    g_doc_nodes[base].val = 2;
+    DolDocSlateLayout(base + 1, base + 4, 0, 0, 100, 100, 2);
+    total++; if (g_doc_nodes[base + 1].w == 50 && g_doc_nodes[base + 1].h == 50 &&
+                g_doc_nodes[base + 2].x == 50 && g_doc_nodes[base + 2].y == 0 &&
+                g_doc_nodes[base + 3].x == 0 && g_doc_nodes[base + 3].y == 50 &&
+                g_doc_nodes[base + 4].x == 50 && g_doc_nodes[base + 4].y == 50) pass++;
+
+    // SPLIT: 50% of a 200-wide box -> two 100-wide panes.
+    g_doc_nodes[base].val = 50;
+    DolDocSlateLayout(base + 1, base + 2, 0, 0, 200, 100, 3);
+    total++; if (g_doc_nodes[base + 1].w == 100 && g_doc_nodes[base + 2].x == 100 &&
+                g_doc_nodes[base + 2].w == 100 && g_doc_nodes[base + 2].h == 100) pass++;
+
+    if (pass == total) doldoc_printf("LAYOUT: PASS (%lld/%lld)\n", pass, total);
+    else doldoc_printf("LAYOUT: FAIL (%lld/%lld)\n", pass, total);
+}
+
 U0 DolDocParseShadow(U8 *tag) {
     I64 w = DolDocGetAttrInt(tag, "w=", 40);
     I64 h = DolDocGetAttrInt(tag, "h=", 4);
@@ -1292,6 +1465,14 @@ U0 DolDocExecTag(U8 *tag) {
     if (strncmp(tag, "SHADOW", 6) == 0) { DolDocParseShadow(tag); return; }
     if (strncmp(tag, "FONT", 4) == 0) { DolDocParseFontText(tag); return; }
     if (strncmp(tag, "SPRING", 6) == 0) { DolDocParseSpring(tag); return; }
+    if (strncmp(tag, "VBOX", 4) == 0) { DolDocParseContainer(tag, DOC_VBOX); return; }
+    if (strncmp(tag, "HBOX", 4) == 0) { DolDocParseContainer(tag, DOC_HBOX); return; }
+    if (strncmp(tag, "GRID", 4) == 0) { DolDocParseContainer(tag, DOC_GRIDC); return; }
+    if (strncmp(tag, "SPLIT", 5) == 0) { DolDocParseContainer(tag, DOC_SPLIT); return; }
+    if (strncmp(tag, "NODE_GRAPH", 10) == 0) { DolDocParseIndustrial(tag, DOC_NODEGRAPH); return; }
+    if (strncmp(tag, "BLOCK_EDITOR", 12) == 0) { DolDocParseIndustrial(tag, DOC_BLOCKEDIT); return; }
+    if (strncmp(tag, "ISLAND", 6) == 0) { DolDocParseIndustrial(tag, DOC_ISLAND); return; }
+    if (strncmp(tag, "REPL", 4) == 0) { DolDocParseRepl(tag); return; }
     if (strncmp(tag, "CARD", 4) == 0) { DolDocParseCard(tag, DOC_CARD); return; }
     if (strncmp(tag, "H1", 2) == 0) { DolDocParseFontText(tag); return; }
     if (strncmp(tag, "BOX", 3) == 0) { DolDocParseCard(tag, DOC_BOX); return; }
@@ -1719,6 +1900,37 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
     if (kind == DOC_RULE) { gfx_draw_rect(vx, vy + 8, vw, 1, surface1); return; }
     if (kind == DOC_GLASS) { DolDocDrawGlass(vx, vy, vw, vh, nd->val); return; }
     if (kind == DOC_SHADOW) { DolDocDrawShadow(vx, vy, vw, vh, nd->val); return; }
+    // P8.0 Slate containers: a subtle frame makes the slot structure visible.
+    if (kind == DOC_VBOX || kind == DOC_HBOX || kind == DOC_GRIDC || kind == DOC_SPLIT) {
+        gfx_draw_rect(vx, vy, vw, 1, surface1);
+        gfx_draw_rect(vx, vy + vh - 1, vw, 1, surface1);
+        gfx_draw_rect(vx, vy, 1, vh, surface1);
+        gfx_draw_rect(vx + vw - 1, vy, 1, vh, surface1);
+        return;
+    }
+    // P8.0 industrial nodes + the live Shell node.
+    if (kind == DOC_NODEGRAPH || kind == DOC_BLOCKEDIT || kind == DOC_ISLAND || kind == DOC_REPL) {
+        U32 accent = (kind == DOC_NODEGRAPH) ? sapphire : ((kind == DOC_BLOCKEDIT) ? teal : ((kind == DOC_REPL) ? peach : sky));
+        gfx_draw_soft_shadow(vx, vy, vw, vh, 6, g_theme.shadow_color);
+        gfx_draw_rounded_rect(vx, vy, vw, vh, 6, surface0);
+        gfx_draw_rect(vx + 1, vy + 1, vw - 2, 18, accent);
+        gfx_draw_string(vx + 8, vy + 2, lbl, 0xFF11111B, 0);
+        if (kind == DOC_NODEGRAPH) {
+            gfx_draw_line(vx + vw / 4, vy + vh / 2, vx + vw / 2, vy + vh / 3, surface1);
+            gfx_draw_line(vx + vw / 2, vy + vh / 3, vx + 3 * vw / 4, vy + vh / 2, surface1);
+            gfx_draw_circle_filled(vx + vw / 4, vy + vh / 2, 8, accent);
+            gfx_draw_circle_filled(vx + vw / 2, vy + vh / 3, 8, sky);
+            gfx_draw_circle_filled(vx + 3 * vw / 4, vy + vh / 2, 8, teal);
+        } else if (kind == DOC_BLOCKEDIT) {
+            I64 by = vy + 24;
+            while (by + 12 < vy + vh - 4) { gfx_draw_rounded_rect(vx + 8, by, vw - 16, 12, 3, surface1); by = by + 16; }
+        } else if (kind == DOC_REPL) {
+            gfx_draw_string(vx + 8, vy + 26, "> _", peach, 0);
+        } else {
+            gfx_draw_rect(vx + 8, vy + 24, vw - 16, vh - 32, surface1);
+        }
+        return;
+    }
     if (kind == DOC_BUTTON) {
         I64 pressed = nd->state;
         I64 dy = pressed ? 1 : 0;
@@ -1851,6 +2063,7 @@ U0 DolDocDrawNode(I64 nid, I64 scroll) {
 U0 DolDocRedraw() {
     if (g_doc_dirty_mask == 0 && g_doc_dirty == 0) return;
     g_doc_anim_tick++;
+    DolDocSlatePass();   // P8.0: two-pass container layout before drawing
     gfx_set_clip(g_doc_x, g_doc_y, g_doc_w, g_doc_h);
     gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, g_doc_h, DolDocResolveColor(g_doc_cur_bg));
     gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, 1, DolDocResolveColor(SEM_COLOR_SURFACE0));

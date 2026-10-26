@@ -1114,3 +1114,16 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`,
   `EFFECTS: PASS (6/6)`, `TELEMETRY: PASS`, `GPUCFG: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`,
   `SELFTEST 123/123 PASS`, `PARITY 92/92 PASS`, `CENSUS 179`, `SELF-HOST: PASS`.
+- **D53 (cont.) — P8.0 second increment: Slate two-pass layout + industrial nodes.** The remainder of the P8.0
+  directive lands here, all in `apps/DolDoc.HC`: (1) **Slate two-pass layout** — `DolDocSlateLayout(first,last,x,y,
+  w,h,mode)` MEASURES intrinsic child sizes bottom-up and ARRANGES top-down slots for **VBOX** (proportional
+  vertical stack), **HBOX** (proportional horizontal stack), **GRID** (`cols=` cells) and **SPLIT** (`ratio=` two
+  panes); `DolDocSlatePass()` runs it over each container's following sibling run at redraw. (2) **Industrial
+  nodes** — `$NODE_GRAPH$`, `$BLOCK_EDITOR$` and `$ISLAND$` are first-class node kinds with real intrinsic sizes
+  and a rendered body (nodes+edges / block rows / panel), plus **`$REPL$`**, the live Shell node on the tape.
+  (3) New container/industrial tag parsers are dispatched by the two-letter/word tag table. `DolDocSlateSelfTest`
+  proves the slot arithmetic for all four modes → `LAYOUT: PASS (4/4)`, asserted by `golden-boot.sh`. The static
+  128×48 grid was already eradicated (P5) — `g_doc_attr` is the per-character attribute ARENA, not the old grid.
+  Invariants held: golden hash `0xD28836F` bit-exact, census **neutral** (179). Gate (standard **and** `-icount`):
+  `GOLDEN BOOT: PASS`, `RENDER 0xD28836F`, `LAYOUT: PASS (4/4)`, `EFFECTS: PASS`, `SELFTEST 123/123`,
+  `PARITY 92/92`, `CENSUS 179`, `SELF-HOST: PASS`.

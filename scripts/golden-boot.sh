@@ -252,6 +252,13 @@ else
         echo "  [FAIL] effects: ${fxline:-<none>} (want EFFECTS: PASS)"
         fail=1
     fi
+    lyline="$(printf '%s\n' "$out" | grep -a 'LAYOUT: ' | tail -1)"
+    if printf '%s' "$lyline" | grep -aq 'PASS'; then
+        echo "  [PASS] $lyline (Slate two-pass VBOX/HBOX/GRID/SPLIT layout)"
+    else
+        echo "  [FAIL] layout: ${lyline:-<none>} (want LAYOUT: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

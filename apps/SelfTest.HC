@@ -1423,6 +1423,7 @@ U0 SelfTestRun() {
     MeshSelfTest();
     SelfTestRender();
     DolDocSelfTest();
+    DolDocSlateSelfTest();
     ShellSelfTest();
     SelfTestHeapIntegrity();
 

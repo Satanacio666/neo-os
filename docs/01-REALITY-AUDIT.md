@@ -469,9 +469,11 @@ in `DolDoc.HC`), and no 128×48 character grid (text is an arena with a per-char
 `apps/Effects.HC`:** a closed-form **harmonic spring** (damped oscillator, under/critical/over-damped, with a
 self-contained `FxExp`) driving `$SPRING$` nodes through `DolDocSpringTick`, and a **dual-Kawase blur** on an
 AArch64 **NEON UHADD** kernel (encodings verified with `aarch64-as`) with a scalar reference proven
-bit-identical — `$GLASS$` blurs behind the panel before tinting. `EFFECTS: PASS (6/6)`; golden hash preserved;
-census 179. **Deferred (honest):** Slate two-pass layout, `$PANEL$`/`$MODAL$` nodes, and the emitter fix for
-`ptr + int` (the compiler currently scales only `ptr[i]`, measured `(pt+5)-(pt)=5`). See D53.
+bit-identical — `$GLASS$` blurs behind the panel before tinting. `EFFECTS: PASS (6/6)`. **Second increment:**
+the **Slate two-pass layout** (`DolDocSlateLayout` measure→arrange for `$VBOX$`/`$HBOX$`/`$GRID$`/`$SPLIT$`,
+driven by `DolDocSlatePass`), the **industrial nodes** `$NODE_GRAPH$`/`$BLOCK_EDITOR$`/`$ISLAND$`, and the live
+`$REPL$` shell node → `LAYOUT: PASS (4/4)`. Golden hash preserved; census 179. **Deferred (honest):** the emitter
+fix for `ptr + int` (the compiler currently scales only `ptr[i]`, measured `(pt+5)-(pt)=5`). See D53.
 
 ---
 

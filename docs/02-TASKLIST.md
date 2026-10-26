@@ -1782,8 +1782,10 @@ CPU bench; purge synthetic constants and write-only state.
 (re-verified). New `apps/Effects.HC`: closed-form **harmonic springs** (damped oscillator + `FxExp`, driving
 `$SPRING$` nodes via `DolDocSpringTick`) and a **dual-Kawase blur** on an AArch64 **NEON UHADD** kernel with a
 scalar-parity self-test, wired into `$GLASS$` (`EffectsBlurFramebuffer`). `SelfTestEffects` → `EFFECTS: PASS
-(6/6)`, asserted by `golden-boot.sh`. **Remaining (P8.1):** Slate two-pass layout, `$PANEL$`/`$MODAL$` industrial
-nodes, and the emitter fix for `ptr + int` scaling (only `ptr[i]` is scaled today). See doc 04 D53.
+(6/6)`. **Second increment:** the Slate two-pass layout (`DolDocSlateLayout`/`DolDocSlatePass` for
+`$VBOX$`/`$HBOX$`/`$GRID$`/`$SPLIT$`), the industrial nodes `$NODE_GRAPH$`/`$BLOCK_EDITOR$`/`$ISLAND$`, and the
+live `$REPL$` shell node → `LAYOUT: PASS (4/4)`. Both asserted by `golden-boot.sh`. **Remaining (P8.1):** the
+emitter fix for `ptr + int` scaling (only `ptr[i]` is scaled today). See doc 04 D53.
 
 ---
 
