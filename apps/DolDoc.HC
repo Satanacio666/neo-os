@@ -49,6 +49,7 @@
 #define DOC_SHADOW     23
 #define DOC_FONT       24
 #define DOC_INPUT      25
+#define DOC_SPRING     26   // P8.0: harmonic-spring animated container
 
 // ---- Node flags --------------------------------------------------------------
 #define DOCF_OPEN      1
@@ -59,6 +60,7 @@
 #define DOCF_BLUR      32
 #define DOCF_WRAP      64
 #define DOCF_INVERT    128
+#define DOCF_SPRING    256   // P8.0: node position is driven by a harmonic spring
 
 // Semantic Color Token IDs (resolved dynamically via g_theme at render time)
 #define SEM_COLOR_TEXT      0x01000001
@@ -116,6 +118,8 @@ I64 g_sprite_rot_speed   = 50;
 I64 g_doc_inspector_mode = 0;
 I64 g_doc_inspected_nid  = -1;
 I64 g_doc_anim_tick      = 0;
+// P8.0: per-node spring velocity (harmonic-spring animated positions).
+F64 g_doc_spring_v[DOC_MAX_NODES];
 
 // Telemetry ring buffers for $PL$ / $GRAPH$ oscilloscopes
 I64 g_osc_sine_buf[64];
@@ -1099,6 +1103,48 @@ U0 DolDocParseGlass(U8 *tag) {
     if (n >= 0) g_doc_nodes[n].val = alpha;
 }
 
+// P8.0: $SPRING$ harmonic-spring container. x is the animated coordinate and
+// val the target; the node settles toward it via the closed-form damped oscillator
+// (EffectsSpringStep) in DolDocSpringTick — no static interpolation curves.
+U0 DolDocParseSpring(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 40);
+    I64 h = DolDocGetAttrInt(tag, "h=", 4);
+    I64 tx = DolDocGetAttrInt(tag, "tx=", 0);
+    I64 om = DolDocGetAttrInt(tag, "omega=", 12);
+    I64 n = DolDocWidget(DOC_SPRING, DolDocFlowPx(), DolDocFlowPy(), w * 8, h * 18, tag);
+    if (n >= 0) {
+        CDocNode *nd = &g_doc_nodes[n];
+        nd->flags = nd->flags | DOCF_SPRING;
+        nd->val = tx;                 // target x
+        nd->min = om;                 // omega (spring stiffness)
+        nd->max = 75;                 // zeta x100 (0.75, slightly underdamped)
+        g_doc_spring_v[n] = 0.0;
+    }
+}
+
+U0 DolDocSpringTick() {
+    I64 n = 0;
+    while (n < g_doc_node_count) {
+        if ((g_doc_nodes[n].flags & DOCF_SPRING) != 0) {
+            F64 x = (F64)g_doc_nodes[n].x;
+            F64 v = g_doc_spring_v[n];
+            F64 target = (F64)g_doc_nodes[n].val;
+            F64 omega = (F64)g_doc_nodes[n].min; if (omega <= 0.0) omega = 12.0;
+            F64 zeta = (F64)g_doc_nodes[n].max / 100.0; if (zeta <= 0.0) zeta = 0.75;
+            F64 nv = 0.0;
+            F64 nx = EffectsSpringStep(x, v, target, omega, zeta, 0.016, &nv);
+            g_doc_spring_v[n] = nv;
+            g_doc_nodes[n].x = (I64)nx;
+            // snap when settled (avoids an endless sub-pixel crawl)
+            if (nx > target - 0.5 && nx < target + 0.5 && nv < 0.5 && nv > -0.5) {
+                g_doc_nodes[n].x = (I64)target;
+                g_doc_spring_v[n] = 0.0;
+            }
+        }
+        n = n + 1;
+    }
+}
+
 U0 DolDocParseShadow(U8 *tag) {
     I64 w = DolDocGetAttrInt(tag, "w=", 40);
     I64 h = DolDocGetAttrInt(tag, "h=", 4);
@@ -1245,6 +1291,7 @@ U0 DolDocExecTag(U8 *tag) {
     if (strncmp(tag, "GLASS", 5) == 0) { DolDocParseGlass(tag); return; }
     if (strncmp(tag, "SHADOW", 6) == 0) { DolDocParseShadow(tag); return; }
     if (strncmp(tag, "FONT", 4) == 0) { DolDocParseFontText(tag); return; }
+    if (strncmp(tag, "SPRING", 6) == 0) { DolDocParseSpring(tag); return; }
     if (strncmp(tag, "CARD", 4) == 0) { DolDocParseCard(tag, DOC_CARD); return; }
     if (strncmp(tag, "H1", 2) == 0) { DolDocParseFontText(tag); return; }
     if (strncmp(tag, "BOX", 3) == 0) { DolDocParseCard(tag, DOC_BOX); return; }
@@ -1817,6 +1864,7 @@ U0 DolDocRedraw() {
 U0 DolDocAnimateTick() {
     if (g_doc_node_count <= 0) return;
     g_doc_anim_tick++;
+    DolDocSpringTick();   // P8.0: settle harmonic-spring nodes toward their targets
     I64 scroll = g_doc_scroll_offset * 18;
     for (I64 n = 0; n < g_doc_node_count; n++) {
         I64 k = g_doc_nodes[n].kind;
@@ -2015,6 +2063,9 @@ U0 DolDocDrawShadow(I64 x, I64 y, I64 w, I64 h, I64 spread) {
 
 U0 DolDocDrawGlass(I64 x, I64 y, I64 w, I64 h, I64 alpha) {
     if (alpha <= 0) alpha = 0xC8;
+    // P8.0: dual-Kawase frosted glass — blur what is behind the panel (NEON UHADD)
+    // before tinting, so the acrylic look is real, not a flat translucent fill.
+    if (g_comp.glass_enabled) EffectsBlurFramebuffer(x, y, w, h, 2);
     U32 col = ((alpha & 0xFF) << 24) | (g_theme.glass_tint & 0x00FFFFFF);
     gfx_blend_rect(x, y, w, h, col);
     gfx_blend_rect(x + 2, y, w - 4, 1, 0x30FFFFFF);

@@ -1776,6 +1776,17 @@ CPU bench; purge synthetic constants and write-only state.
 
 ---
 
+### P8.0 — The sovereign DolDoc continuum + the Raven pillars — ✅ **DONE** (D53)
+
+**✅ DONE.** WM.HC / Compositor.HC dissolution and the 128×48 character grid were already done in P5
+(re-verified). New `apps/Effects.HC`: closed-form **harmonic springs** (damped oscillator + `FxExp`, driving
+`$SPRING$` nodes via `DolDocSpringTick`) and a **dual-Kawase blur** on an AArch64 **NEON UHADD** kernel with a
+scalar-parity self-test, wired into `$GLASS$` (`EffectsBlurFramebuffer`). `SelfTestEffects` → `EFFECTS: PASS
+(6/6)`, asserted by `golden-boot.sh`. **Remaining (P8.1):** Slate two-pass layout, `$PANEL$`/`$MODAL$` industrial
+nodes, and the emitter fix for `ptr + int` scaling (only `ptr[i]` is scaled today). See doc 04 D53.
+
+---
+
 ## 6. Assembly plan (every NEON kernel to add)
 
 All `.s` files are **source-of-truth, not built** (pattern: `scripts/raster_span.s:1-13`). Regenerate the

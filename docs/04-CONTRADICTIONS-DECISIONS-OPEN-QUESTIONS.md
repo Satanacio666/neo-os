@@ -1094,3 +1094,23 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   **and** `-icount shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact,
   `TILE: PASS`, `TELEMETRY: PASS`, `GPUCFG: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`, `SELFTEST 123/123 PASS`,
   `PARITY 92/92 PASS`, `CENSUS: PASS (179, decreased)`, `SELF-HOST: PASS`.
+- **D53 — P8.0: the sovereign DolDoc continuum + the Raven pillars (DONE, partial by design).** **Already
+  landed (P5, re-verified):** WM.HC and Compositor.HC do **not** exist — windows are `$WIN$` document nodes, the
+  desktop is a document, and damage/present/effects live in `DolDoc.HC`; the fixed character grid
+  (`g_doc_chars`/`g_doc_fg`/`g_doc_bg`, 128×48) is **gone** — text is a contiguous arena with a per-character
+  `fg|bg` word. **New in P8.0 — `apps/Effects.HC`** (loaded before DolDoc): (1) **harmonic springs** — the damped
+  oscillator `x'' + 2ζωx' + ω²(x−x_t) = 0` integrated in CLOSED FORM (under/critical/over-damped forms, with a
+  self-contained `FxExp`), driving `$SPRING$` nodes via `DolDocSpringTick`; (2) **dual-Kawase blur** — an AArch64
+  **NEON UHADD** kernel (`EffectsBlur1DNEONCore`: `ldr/ldr/uhadd/str/subs/b.ne`, encodings verified with
+  `aarch64-as`) with a scalar reference the self-test proves **bit-identical** (`EFFECTS: PASS (6/6)`). `$GLASS$`
+  now blurs what is behind the panel (`EffectsBlurFramebuffer`) before tinting, so the Catppuccin acrylic is
+  real. **Compiler limitation found (root, documented):** the self-hosted compiler does **not** scale
+  `ptr + int` by the pointee size (only `ptr[i]` is scaled — `(pt+5)-(pt)` measured 5, not 20), so Effects uses
+  `&ptr[i]` indexing; fixing the emitter is deferred (it needs pointee-type tracking on binary `+`). **Deferred
+  (honest):** the Slate two-pass layout (measure-then-allocate) and the `$PANEL$`/`$MODAL$` industrial nodes were
+  not added in this increment — `$CARD$`/`$BOX$`/`$GLASS$`/`$SPRING$` already cover the container vocabulary.
+  **Invariants held:** golden hash `0xD28836F` bit-exact (DolDoc/Effects are outside the canonical scene), census
+  **neutral** (179; Effects uses static BSS, no kmalloc), no C, no stubs. Gate (standard **and** `-icount
+  shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`,
+  `EFFECTS: PASS (6/6)`, `TELEMETRY: PASS`, `GPUCFG: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`,
+  `SELFTEST 123/123 PASS`, `PARITY 92/92 PASS`, `CENSUS 179`, `SELF-HOST: PASS`.

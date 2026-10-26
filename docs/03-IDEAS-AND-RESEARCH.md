@@ -149,6 +149,11 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   TCG target the PMU *control* registers accept writes but reading `PMCCNTR_EL0` traps (Undefined Instruction),
   so the counters are configured but reported unusable and `CNTVCT_EL0` stays authoritative — an honest fallback,
   never a fake number (doc 04 D52). **[REAL]**
+- **Sovereign DolDoc continuum + Raven pillars** `(P8.0)`: the window manager and compositor are already
+  dissolved into `DolDoc.HC` (windows are `$WIN$` document nodes) and the rigid character grid is gone. New
+  `apps/Effects.HC` adds a **harmonic spring** (closed-form damped oscillator) for tactile window/slider motion
+  and a **dual-Kawase blur** on an AArch64 NEON UHADD kernel for Catppuccin acrylic glass, wired into `$GLASS$`.
+  The Slate two-pass layout and `$PANEL$`/`$MODAL$` nodes are the next increment (doc 04 D53). **[REAL/PARTIAL]**
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

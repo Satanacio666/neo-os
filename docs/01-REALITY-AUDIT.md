@@ -462,6 +462,17 @@ cortex-a72 reading `PMCCNTR_EL0` raises Undefined Instruction, so the counters a
 reported unusable (`pmu_available=0`), with `CNTVCT_EL0` authoritative. `SelfTestTelemetry` → `TELEMETRY: PASS
 (7/7)`. Gate passes in standard and `-icount` modes (D52).
 
+### P8.0 — sovereign DolDoc continuum + Raven pillars — **[REAL / PARTIAL]**
+
+**Verified already done (P5):** no WM.HC / Compositor.HC (windows are `$WIN$` document nodes; damage/present live
+in `DolDoc.HC`), and no 128×48 character grid (text is an arena with a per-character `fg|bg` word). **New
+`apps/Effects.HC`:** a closed-form **harmonic spring** (damped oscillator, under/critical/over-damped, with a
+self-contained `FxExp`) driving `$SPRING$` nodes through `DolDocSpringTick`, and a **dual-Kawase blur** on an
+AArch64 **NEON UHADD** kernel (encodings verified with `aarch64-as`) with a scalar reference proven
+bit-identical — `$GLASS$` blurs behind the panel before tinting. `EFFECTS: PASS (6/6)`; golden hash preserved;
+census 179. **Deferred (honest):** Slate two-pass layout, `$PANEL$`/`$MODAL$` nodes, and the emitter fix for
+`ptr + int` (the compiler currently scales only `ptr[i]`, measured `(pt+5)-(pt)=5`). See D53.
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

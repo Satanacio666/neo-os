@@ -1414,6 +1414,7 @@ U0 SelfTestRun() {
     SelfTestTile();
     SelfTestGpuConfig();
     TelemetrySelfTest();
+    EffectsSelfTest();
     SelfTestMath3DParallel();
     FontsSelfTest();
     SelfTest3D();

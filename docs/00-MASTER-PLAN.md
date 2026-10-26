@@ -313,10 +313,14 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > telemetry (profiler + HUD) + ARM PMU** (D52): `apps/Profiler.HC` + `apps/PerfOverlay.HC` merged into one
 > `apps/Telemetry.HC` (`CTelemetry g_tel`, mark_* API, 1 %/0.1 % lows, spike ring with causes, static logs, HUD),
 > PMU intrinsics in `Compiler.HC` with an honest QEMU-TCG fallback; `TELEMETRY: PASS (7/7)`, census 181 → 179.
-> **next = P7.7** (runbook in `02-TASKLIST.md`). Gate (standard **and** `-icount`): `SELFTEST 123/123`,
+> **P8.0 ✅ DONE — the sovereign DolDoc continuum + Raven pillars** (D53): WM/Compositor dissolution and the
+> 128×48 character grid were already gone (P5, re-verified); new `apps/Effects.HC` adds **harmonic springs**
+> (closed-form damped oscillator, `$SPRING$` nodes) and a **dual-Kawase NEON blur** (UHADD, scalar-parity),
+> wired into `$GLASS$`; `EFFECTS: PASS (6/6)`. **next = P8.1** (Slate two-pass layout + `$PANEL$`/`$MODAL$`
+> nodes + the `ptr+int` emitter fix). Gate (standard **and** `-icount`): `SELFTEST 123/123`,
 > `PARITY 92/92 (0 diff)`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`,
-> `GPUCFG: PASS`, `TELEMETRY: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`, `SELF-HOST: PASS`,
-> `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
+> `GPUCFG: PASS`, `TELEMETRY: PASS`, `EFFECTS: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`,
+> `SELF-HOST: PASS`, `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
 
 ---
 
@@ -777,6 +781,18 @@ four real exports, and a 10-group GL conformance test with a screendump — all 
 - **Benchmark wall time** (P7.6) must stay interruptible or the gate hangs.
 
 ---
+
+## P8.0 — The sovereign DolDoc continuum + the Raven pillars (D53) — ✅ DONE
+
+**Purpose.** Make the desktop a genuine document continuum with no procedural window-manager seam, no rigid
+character grid, and physically-natural motion/glass. **Already landed (P5, re-verified):** WM.HC and
+Compositor.HC do not exist (windows are `$WIN$` document nodes; damage/present/effects live in `DolDoc.HC`), and
+the 128×48 character grid is gone (text is an arena with a per-character `fg|bg` word). **New:** `apps/Effects.HC`
+delivers two Raven pillars — **harmonic springs** (closed-form damped oscillator `x''+2ζωx'+ω²(x−x_t)=0`, driving
+`$SPRING$` nodes through `DolDocSpringTick`) and a **dual-Kawase blur** on an AArch64 **NEON UHADD** kernel with a
+scalar reference the self-test proves bit-identical; `$GLASS$` now blurs behind the panel before tinting.
+`EFFECTS: PASS (6/6)`. **Deferred to P8.1:** the Slate two-pass layout, `$PANEL$`/`$MODAL$` nodes, and the
+`ptr + int` scaling fix in the emitter. See doc 04 D53.
 
 ## P8 — Self-hosting everything
 

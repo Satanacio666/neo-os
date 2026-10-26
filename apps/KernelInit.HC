@@ -102,6 +102,9 @@ U0 KernelInitMain() {
     KInitLoad("BenchCpu.HC");
     KInitLoad("BenchReport.HC");
     KInitLoad("Theme.HC");
+    // P8.0: sovereign visual effects (harmonic springs + dual-Kawase NEON blur)
+    // load before DolDoc, which consumes them for glass/spring nodes.
+    KInitLoad("Effects.HC");
     // P5: WM.HC and Compositor.HC are dissolved into DolDoc.HC (windows are
     // documents; damage/present/effects live in the continuum). DolDoc loads
     // before Shell, which drives DolDocDesktopLoop().
@@ -111,7 +114,7 @@ U0 KernelInitMain() {
     KInitLoad("HolyBenchmark.HC");
 
     KInitLog("======================================================");
-    KInitLog("✦ ALL 33 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
+    KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
     KInitLog("======================================================");
 
     // P7.0: peephole-optimizer telemetry (Compiler.HC optimizes every module it
