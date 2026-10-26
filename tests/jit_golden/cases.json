@@ -477,6 +477,24 @@
       "expect": "0x2A"
     },
     {
+      "name": "macro_define_div",
+      "note": "P7.4 F5 root fix: the #define parser must evaluate / (was ignored).",
+      "cmds": [
+        "#define MACDIV (40 / 4)",
+        "MACDIV;"
+      ],
+      "expect": "0xA"
+    },
+    {
+      "name": "macro_define_prec",
+      "note": "P7.4 F5 root fix: the #define parser must honour * over +.",
+      "cmds": [
+        "#define MACPREC (2 + 3 * 4)",
+        "MACPREC;"
+      ],
+      "expect": "0xE"
+    },
+    {
       "name": "addr_of_array_elem",
       "cmds": [
         "I64 aa[3]; aa[0] = 10; aa[1] = 20; aa[2] = 30; I64 *ap = &aa[1]; *ap;"

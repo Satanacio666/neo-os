@@ -1253,12 +1253,18 @@ U0 HcPatchContinues(I64 lvl, I64 target_idx) {
 // later elements aliased unrelated globals (heap corruption, not a compile error).
 // Operands: `( expr )`, `0xHEX`, decimal, or another macro name; operators `* + -`
 // (left-associative; `/` excluded so a trailing `// comment` is never divided).
-I64 HcParseMacroExpr() {
+// #define value parser, precedence climbing. Same operators AND precedence as the
+// C seed lexer (parse_define_expr): `*`/`/` bind tighter than `+`/`-`; division by
+// zero yields 0 (matches the seed). Resolves identifiers from the define table and
+// hex/decimal literals. ROOT FIX: the previous version handled only `* + -` and
+// was flat, so `#define X (A / B)` silently evaluated to A (the `/` was ignored)
+// and `a + b * c` mis-grouped — both diverge from the seed.
+I64 HcParseMacroP(I64 min_prec) {
     while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
     I64 v = 0;
     if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '(') {
         g_hc_pos++;
-        v = HcParseMacroExpr();
+        v = HcParseMacroP(0);
         while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
         if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') g_hc_pos++;
     } else if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
@@ -1283,43 +1289,27 @@ I64 HcParseMacroExpr() {
         ref_n[rn_i] = 0;
         HcFindDefine(ref_n, &v);
     }
-    while (g_hc_pos < g_hc_len) {
+    while (1) {
         while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
         U8 dop = g_hc_src[g_hc_pos];
-        if (dop != '*' && dop != '+' && dop != '-') break;
+        // A `/` that starts a comment is not an operator.
+        if (dop == '/' && g_hc_pos + 1 < g_hc_len &&
+            (g_hc_src[g_hc_pos + 1] == '/' || g_hc_src[g_hc_pos + 1] == '*')) break;
+        I64 prec = 0;
+        if (dop == '*' || dop == '/') prec = 2;
+        else if (dop == '+' || dop == '-') prec = 1;
+        if (prec == 0 || prec < min_prec) break;
         g_hc_pos++;
-        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
-        I64 rhs = 0;
-        if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '(') {
-            g_hc_pos++;
-            rhs = HcParseMacroExpr();
-            while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
-            if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') g_hc_pos++;
-        } else if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
-                   (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
-            g_hc_pos += 2;
-            while (g_hc_pos < g_hc_len) {
-                U8 hc = g_hc_src[g_hc_pos];
-                if (hc >= '0' && hc <= '9') { rhs = (rhs << 4) | (hc - '0'); g_hc_pos++; }
-                else if (hc >= 'a' && hc <= 'f') { rhs = (rhs << 4) | (hc - 'a' + 10); g_hc_pos++; }
-                else if (hc >= 'A' && hc <= 'F') { rhs = (rhs << 4) | (hc - 'A' + 10); g_hc_pos++; }
-                else break;
-            }
-        } else if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
-            while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) { rhs = rhs * 10 + (g_hc_src[g_hc_pos] - '0'); g_hc_pos++; }
-        } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
-            U8 rn2[64];
-            I64 r2 = 0;
-            while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && r2 < 63) rn2[r2++] = g_hc_src[g_hc_pos++];
-            rn2[r2] = 0;
-            HcFindDefine(rn2, &rhs);
-        }
+        I64 rhs = HcParseMacroP(prec + 1);
         if (dop == '*') v = v * rhs;
+        else if (dop == '/') { if (rhs != 0) v = v / rhs; else v = 0; }
         else if (dop == '+') v = v + rhs;
         else if (dop == '-') v = v - rhs;
     }
     return v;
 }
+
+I64 HcParseMacroExpr() { return HcParseMacroP(0); }
 
 // ------------------------------------------------------------------------------
 // Lexical Analyzer (Tokenizer with #define Preprocessor Support)

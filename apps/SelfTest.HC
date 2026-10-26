@@ -1340,6 +1340,11 @@ U0 SelfTestRun() {
     SelfTestCheck("f1_arrow_incdec", "struct F1IC { I64 v; }; F1IC g_f1ic; F1IC *g_f1icp=&g_f1ic; g_f1icp->v=10; g_f1icp->v++; g_f1icp->v+=5; g_f1icp->v;", 16);
     SelfTestCheck("f1_addr_of_member", "struct F1AM { I64 v; I64 w; }; F1AM g_f1am; g_f1am.w=5; I64 *g_f1amp=&g_f1am.w; *g_f1amp=9; g_f1am.w;", 9);
     SelfTestCheck("f1_member_arr_var", "struct F1AV { I64 a[4]; I64 n; }; F1AV g_f1av; g_f1av.a[0]=10; g_f1av.a[1]=20; g_f1av.a[2]=30; g_f1av.n=2; g_f1av.a[g_f1av.n];", 30);
+    // P7.4 F5: the #define value parser must evaluate division and precedence like
+    // the C seed (the old self-hosted parser ignored `/` and was flat).
+    SelfTestCheck("f5_macro_div", "#define MDIV (40 / 4)\nMDIV;", 10);
+    SelfTestCheck("f5_macro_prec", "#define MPREC (2 + 3 * 4)\nMPREC;", 14);
+    SelfTestCheck("f5_macro_div_chain", "#define MCHAIN (100 / 5 / 2)\nMCHAIN;", 10);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();

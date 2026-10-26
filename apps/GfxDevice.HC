@@ -484,14 +484,17 @@ I64 VirtioGpuIsAvailable() {
 // Unified device layer — one target resolver, one damage tracker, one present.
 // ==============================================================================
 U0 GfxDeviceInit() {
-  g_gdev.mode = GFX_MODE_CPU_SW;
   g_gdev.buffering = GFX_BUFFER_DOUBLE;
   g_gdev.shading = RASTER_SHADE_GOURAUD;
-  strcpy(g_gdev.name, "CPU Software (UEFI)");
   g_gdev.ops_counter = 0;
   g_gdev.dma_bytes = 0;
+  g_gdev.mode = GFX_MODE_CPU_SW;
   g_gfx_cfg.mode = GFX_MODE_CPU_SW;
   RenderSetZeroRamMode(0);
+  // P7.4 F7: the sovereign renderer defaults to the SMP tiled back-end. This is
+  // set via the setter so g_gdev.name/g_gfx_cfg stay consistent; it touches only
+  // GfxDevice state (the rasterizer reads the mode, never the reverse).
+  GfxDeviceSetMode(GFX_MODE_SMP_TILED);
 }
 
 U0 GfxDeviceSetMode(I64 m) {
@@ -504,9 +507,9 @@ U0 GfxDeviceSetMode(I64 m) {
   } else {
     strcpy(g_gdev.name, "CPU Software (UEFI)");
   }
-  // P7.4 F4: route RasterSceneEnd to the SMP tiled back-end (RasterSceneEndSmp).
-  // The rasterizer keeps a local flag so it never has to depend on GfxDevice.
-  RasterSetSmpTiled(m == GFX_MODE_SMP_TILED);
+  // P7.4 F4/F7: RasterSceneEnd reads this mode via GfxDeviceGetMode() and routes
+  // to the SMP tiled back-end when it is GFX_MODE_SMP_TILED. This is the single
+  // source of truth (the rasterizer never keeps a second copy of the flag).
 }
 
 I64 GfxDeviceGetMode() { return g_gdev.mode; }

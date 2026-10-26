@@ -54,6 +54,15 @@ I64 g_zbuf_cap = 0;
 // so the tile's triangle order is deterministic regardless of how many producers
 // ran. With a single producer this is byte-identical to the old shared bin.
 #define RASTER_MAX_PRODUCERS      4
+// F5: each producer owns a CONTIGUOUS slice of the record array, so the front-end
+// can build records concurrently with no shared counter (the slices + per-producer
+// bins are disjoint). Slices are assigned in increasing producer order, so the
+// back-end drain (producer 0..3) reconstructs the original submission order exactly.
+#define RS_TRIS_PER_PRODUCER      (RASTER_MAX_SCENE_TRIS / RASTER_MAX_PRODUCERS)
+// Matches GfxDevice.HC's GFX_MODE_SMP_TILED. RasterTile keeps the value local (like
+// the GL enums below) but READS the mode via GfxDeviceGetMode, so there is a single
+// source of truth. RasterSceneEnd routes to the SMP back-end when it is set.
+#define RASTER_MODE_SMP_TILED     2
 
 // Screen-space vertices (F64 x/y per the §P7.3 spec; z is the integer depth). The
 // core is integer-exact, so the F64 coords are truncated ONCE, when the record is
@@ -75,7 +84,7 @@ class CRasterBin { U16 idx[RASTER_MAX_TRIS_PER_TILE]; I64 count; };
 
 CTriRecord  g_rs_records[RASTER_MAX_SCENE_TRIS];
 CRasterBin  g_rs_bins[RASTER_MAX_PRODUCERS][RASTER_MAX_TILES];
-I64 g_rs_record_count = 0;
+I64 g_rs_prod_count[RASTER_MAX_PRODUCERS];   // accepted records per producer
 I64 g_rs_cols = 0;
 I64 g_rs_rows = 0;
 I64 g_rs_tile_size = 64;
@@ -90,7 +99,6 @@ I64 g_rs_cull = 0;
 // deterministic (each tile is rendered exactly once, by exactly one core).
 I64 g_rs_next_tile = 0;     // shared work-stealing cursor
 I64 g_rs_smp_workers = 0;   // secondaries dispatched for the last SMP frame
-I64 g_rs_smp_mode = 0;      // 1 while GFX_MODE_SMP_TILED is selected
 
 // ==============================================================================
 // P4.3: unified texture state. The ONE rasterizer reads ctx->tex_active; when a
@@ -964,11 +972,6 @@ I64 TileResolveRow(U32 *dst, U32 *src, I64 n) {
 // tiled path stays pixel-identical to the immediate path unless the caller opts in).
 U0 RasterSetCull(I64 en) { g_rs_cull = en ? 1 : 0; }
 
-// F4: select the SMP tiled back-end for RasterSceneEnd. Wired by GfxDevice.HC's
-// GfxDeviceSetMode(GFX_MODE_SMP_TILED) (the `gfx smp` shell command). Kept local
-// to RasterTile.HC so the rasterizer never depends on GfxDevice (no cycle).
-U0 RasterSetSmpTiled(I64 en) { g_rs_smp_mode = en ? 1 : 0; }
-
 U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   RasterInit();
   g_rs_target = GfxDeviceTarget();
@@ -976,7 +979,8 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   g_rs_vx = vx; g_rs_vy = vy; g_rs_vw = vw; g_rs_vh = vh;
   g_rs_clear = clear;
   g_rs_tile_size = TILE_W;
-  g_rs_record_count = 0;
+  I64 rp = 0;
+  while (rp < RASTER_MAX_PRODUCERS) { g_rs_prod_count[rp] = 0; rp = rp + 1; }
   g_rs_cols = (vw + TILE_W - 1) / TILE_W;
   g_rs_rows = (vh + TILE_H - 1) / TILE_H;
   if (g_rs_cols < 1) g_rs_cols = 1;
@@ -998,7 +1002,7 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
 U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
   if (!v) return;
   if (producer < 0 || producer >= RASTER_MAX_PRODUCERS) return;
-  if (g_rs_record_count >= RASTER_MAX_SCENE_TRIS) return;
+  if (g_rs_prod_count[producer] >= RS_TRIS_PER_PRODUCER) return;
   // F2: truncate the F64 producer coords to the rasterizer's native I64 form ONCE
   // (the same truncation the render phase used to redo per tile per triangle).
   I64 ax = (I64)v[0].x; I64 ay = (I64)v[0].y;
@@ -1033,7 +1037,7 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
   I64 z0 = v[0].z; if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
   I64 z1 = v[1].z; if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
   I64 z2 = v[2].z; if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
-  I64 ti = g_rs_record_count;
+  I64 ti = producer * RS_TRIS_PER_PRODUCER + g_rs_prod_count[producer];
   CTriRecord *t = &g_rs_records[ti];
   t->x0 = ax; t->y0 = ay; t->z0 = z0;
   t->x1 = bx; t->y1 = by; t->z1 = z1;
@@ -1053,11 +1057,78 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
     }
     ty = ty + 1;
   }
-  g_rs_record_count = g_rs_record_count + 1;
+  g_rs_prod_count[producer] = g_rs_prod_count[producer] + 1;
 }
 
 // Default producer 0 (the common single-submitter case).
 U0 RasterSceneAddTriangle(CRasterVertex *v, U32 color) { RasterSceneAddTriangleP(v, color, 0); }
+
+// ==============================================================================
+// F5: parallel geometry front-end. A triangle batch is partitioned into
+// contiguous slices across the online cores; each core builds the records + bins
+// for its slice into its OWN producer set (producer = core id), so the front-end
+// is lock-free. Contiguous increasing slices + the producer-ordered back-end drain
+// mean the rendered frame is byte-identical to sequential submission, on any core
+// count (and vs the single-threaded path).
+// ==============================================================================
+I64 g_rs_geo_start[RASTER_MAX_PRODUCERS];
+I64 g_rs_geo_end[RASTER_MAX_PRODUCERS];
+I64 g_rs_geo_workers = 0;      // secondaries dispatched for the last front-end batch
+CRasterVertex *g_rs_geo_verts = NULL;
+U32 *g_rs_geo_colors = NULL;
+
+U0 RasterGeoWorker(U64 arg) {
+  I64 core = (I64)arg;
+  if (core < 0 || core >= RASTER_MAX_PRODUCERS) return;
+  I64 i = g_rs_geo_start[core];
+  I64 e = g_rs_geo_end[core];
+  while (i < e) {
+    RasterSceneAddTriangleP(&g_rs_geo_verts[i * 3], g_rs_geo_colors[i], core);
+    i = i + 1;
+  }
+}
+
+// Submit `count` triangles (verts = 3 vertices each) across the online cores.
+U0 RasterSceneAddTrianglesParallel(CRasterVertex *verts, U32 *colors, I64 count) {
+  if (!verts || count <= 0) return;
+  I64 ncores = (I64)SmpOnlineCoreCount();
+  if (ncores > RASTER_MAX_PRODUCERS) ncores = RASTER_MAX_PRODUCERS;
+  if (ncores < 1) ncores = 1;
+  g_rs_geo_verts = verts;
+  g_rs_geo_colors = colors;
+  I64 per = (count + ncores - 1) / ncores;
+  I64 c = 0;
+  I64 start = 0;
+  while (c < RASTER_MAX_PRODUCERS) {
+    I64 end = start;
+    if (c < ncores) {
+      end = start + per;
+      if (end > count) end = count;
+    }
+    g_rs_geo_start[c] = start;
+    g_rs_geo_end[c] = end;
+    start = end;
+    c = c + 1;
+  }
+  g_rs_geo_workers = 0;
+  __dmb_ish(); // publish the slice bounds before any worker can observe them
+  I64 dispatched = 0;
+  c = 1;
+  while (c < ncores) {
+    if (SmpCoreOnline((U32)c)) {
+      if (SmpDispatchAsync((U32)c, (U64)&RasterGeoWorker, (U64)c) == 0) dispatched = dispatched + 1;
+    }
+    c = c + 1;
+  }
+  g_rs_geo_workers = dispatched;
+  RasterGeoWorker(0); // BSP builds its own slice concurrently with the workers
+  c = 1;
+  while (c < ncores) {
+    if (SmpCoreOnline((U32)c)) SmpWaitJob((U32)c);
+    c = c + 1;
+  }
+  __dmb_ish();
+}
 
 // Render one tile into `a`'s scratchpad, reusing the ONE kernel with local
 // (tile-relative) coordinates; the Pineda edge functions are translation-invariant,
@@ -1205,7 +1276,7 @@ U0 RasterSceneEndSmp() {
 
 U0 RasterSceneEnd() {
   if (!g_rs_target) return;
-  if (g_rs_smp_mode != 0) { RasterSceneEndSmp(); return; }
+  if (GfxDeviceGetMode() == RASTER_MODE_SMP_TILED) { RasterSceneEndSmp(); return; }
   I64 nt = g_rs_cols * g_rs_rows;
   I64 t = 0;
   while (t < nt) { RasterRenderTile(t); RasterTileResolve(t); t = t + 1; }
@@ -1253,7 +1324,7 @@ U0 RasterSmpBench() {
   I64 nx = 32; I64 ny = 24;
 
   // Single-threaded tiled path.
-  RasterSetSmpTiled(0);
+  GfxDeviceSetMode(0);
   RasterClearZ();
   RasterSmpBenchBuild(nx, ny, w, h, 0xFF101018);
   U64 s0 = __mrs_cntvct();
@@ -1263,7 +1334,7 @@ U0 RasterSmpBench() {
   g_rs_bench_tiles = g_rs_cols * g_rs_rows;
 
   // SMP tiled path.
-  RasterSetSmpTiled(1);
+  GfxDeviceSetMode(RASTER_MODE_SMP_TILED);
   RasterClearZ();
   RasterSmpBenchBuild(nx, ny, w, h, 0xFF101018);
   U64 m0 = __mrs_cntvct();
@@ -1271,7 +1342,7 @@ U0 RasterSmpBench() {
   U64 m1 = __mrs_cntvct();
   g_rs_bench_smp = (I64)(m1 - m0);
   g_rs_bench_workers = g_rs_smp_workers;
-  RasterSetSmpTiled(0);
+  GfxDeviceSetMode(0);
   GfxPresent(0, 0, w, h, 1);
 
   doldoc_printf("\n=== NeoOS SMP Tiled Benchmark ===\n");
@@ -1293,6 +1364,9 @@ U0 RasterSmpBench() {
 U32 g_tile_snap_fb[256 * 256];
 U16 g_tile_snap_zb[256 * 256];
 CRasterVertex g_tile_tmpv[3];
+// F5 self-test batch (8 triangles).
+CRasterVertex g_geo_batch[24];
+U32 g_geo_colors[8];
 
 U0 RasterSelfTestTile() {
   RasterInit();
@@ -1442,7 +1516,7 @@ U0 RasterSelfTestTile() {
   g_tile_tmpv[1].x = 200.9; g_tile_tmpv[1].y = 60.9;  g_tile_tmpv[1].z = 1;
   g_tile_tmpv[2].x = 90.9;  g_tile_tmpv[2].y = 180.9; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
-  if (g_rs_record_count != 1) { ok = 0; doldoc_printf("[TILE] F2 snapshot count=%lld\n", g_rs_record_count); }
+  if (g_rs_prod_count[0] != 1) { ok = 0; doldoc_printf("[TILE] F2 snapshot count=%lld\n", g_rs_prod_count[0]); }
   if (g_rs_records[0].x0 != 30 || g_rs_records[0].y0 != 30) { ok = 0; doldoc_print("[TILE] F2 snapshot truncation\n"); }
   if (g_rs_records[0].z0 != 1 || g_rs_records[0].color != COL) { ok = 0; doldoc_print("[TILE] F2 snapshot payload\n"); }
   RasterSceneBegin(0, 0, R, R, BG);
@@ -1459,6 +1533,7 @@ U0 RasterSelfTestTile() {
   //     single-threaded tiled path, RasterSceneEnd must route to it when
   //     GFX_MODE_SMP_TILED is selected, and the secondaries must actually render.
   //     Scene: two triangles spanning several 64x64 tiles.
+  GfxDeviceSetMode(0); // reference render: single-threaded tiled path -> arena 0
   gfx_clear(BG);
   RasterClearZ();
   RasterSceneBegin(0, 0, R, R, BG);
@@ -1483,7 +1558,7 @@ U0 RasterSelfTestTile() {
   }
   gfx_clear(BG);
   RasterClearZ();
-  RasterSetSmpTiled(1);
+  GfxDeviceSetMode(RASTER_MODE_SMP_TILED);
   RasterSceneBegin(0, 0, R, R, BG);
   g_tile_tmpv[0].x = 10.0;  g_tile_tmpv[0].y = 10.0;  g_tile_tmpv[0].z = 100;
   g_tile_tmpv[1].x = 250.0; g_tile_tmpv[1].y = 30.0;  g_tile_tmpv[1].z = 200;
@@ -1494,7 +1569,7 @@ U0 RasterSelfTestTile() {
   g_tile_tmpv[2].x = 230.0; g_tile_tmpv[2].y = 50.0;  g_tile_tmpv[2].z = 250;
   RasterSceneAddTriangle(g_tile_tmpv, 0xFF00A0FF);
   RasterSceneEnd(); // mode on -> RasterSceneEndSmp
-  RasterSetSmpTiled(0);
+  GfxDeviceSetMode(0);
   I64 smpdiff = 0;
   y = 0;
   while (y < R) {
@@ -1512,6 +1587,55 @@ U0 RasterSelfTestTile() {
     ok = 0;
     doldoc_printf("[TILE] F4 no parallel work (workers=%lld sec_tiles=%lld)\n", g_rs_smp_workers, sec_rendered);
   }
+
+  // (7) F5: the parallel geometry front-end (contiguous slices + per-producer
+  //     bins, drained in producer order) must be byte-identical to sequential
+  //     submission of the same batch.
+  I64 N = 8;
+  I64 q = 0;
+  while (q < N) {
+    I64 cx0 = 10 + (q % 4) * 58;
+    I64 cy0 = 10 + (q / 4) * 110;
+    g_geo_batch[q * 3 + 0].x = (F64)cx0;        g_geo_batch[q * 3 + 0].y = (F64)cy0;        g_geo_batch[q * 3 + 0].z = 100 + q * 20;
+    g_geo_batch[q * 3 + 1].x = (F64)(cx0 + 50); g_geo_batch[q * 3 + 1].y = (F64)cy0;        g_geo_batch[q * 3 + 1].z = 120 + q * 20;
+    g_geo_batch[q * 3 + 2].x = (F64)cx0;        g_geo_batch[q * 3 + 2].y = (F64)(cy0 + 80); g_geo_batch[q * 3 + 2].z = 140 + q * 20;
+    g_geo_colors[q] = 0xFF3050A0 | (U32)(q * 16);
+    q = q + 1;
+  }
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSceneBegin(0, 0, R, R, BG);
+  q = 0;
+  while (q < N) { RasterSceneAddTriangle(&g_geo_batch[q * 3], g_geo_colors[q]); q = q + 1; }
+  RasterSceneEnd();
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) {
+      g_tile_snap_fb[y * R + x] = fb[y * pit + x];
+      g_tile_snap_zb[y * R + x] = g_zbuf[y * zw + x];
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  gfx_clear(BG);
+  RasterClearZ();
+  RasterSceneBegin(0, 0, R, R, BG);
+  RasterSceneAddTrianglesParallel(&g_geo_batch[0], &g_geo_colors[0], N);
+  RasterSceneEnd();
+  I64 geodiff = 0;
+  y = 0;
+  while (y < R) {
+    x = 0;
+    while (x < R) {
+      if (fb[y * pit + x] != g_tile_snap_fb[y * R + x]) geodiff = geodiff + 1;
+      if (g_zbuf[y * zw + x] != g_tile_snap_zb[y * R + x]) geodiff = geodiff + 1;
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  if (geodiff != 0) { ok = 0; doldoc_printf("[TILE] F5 parallel front-end != sequential diff=%lld\n", geodiff); }
+  if (g_rs_geo_workers < 1 && SmpOnlineCoreCount() > 1) { ok = 0; doldoc_print("[TILE] F5 no front-end workers\n"); }
 
   gfx_clear(0xFF000000);
   RasterClearZ();
