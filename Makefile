@@ -61,10 +61,12 @@ SRCS_C = boot/main.c \
          boot/seed/jit_arm64.c \
          boot/seed/seed_fs.c \
          boot/runtime/kheap.c \
-         boot/runtime/symbols.c
+         boot/runtime/symbols.c \
+         kernel/arch/aarch64/gicv3.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \
+         kernel/arch/aarch64/el2_drop.S \
          kernel/arch/aarch64/smp_entry.S \
          kernel/arch/aarch64/ffi_arm64.S
 

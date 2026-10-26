@@ -19,6 +19,9 @@ class CHalPlatform {
   U32 irq_timer;
   U32 irq_uart;
   U64 timer_freq_hz;
+  // P1.2 — acrescentados no FIM de proposito: nao deslocam nenhum campo existente.
+  U64 gicr_base;    // redistribuidor do GICv3 (0 = a plataforma nao tem)
+  U64 gic_version;  // 2 = GICv2, 3 = GICv3, 0 = autodetectar em runtime (QEMU)
 };
 
 CHalPlatform g_plat_qemu;
@@ -35,6 +38,8 @@ U64 g_hal_virtio_base;
 U32 g_hal_virtio_slots;
 U32 g_hal_virtio_stride;
 U64 g_hal_timer_freq;
+U64 g_hal_gicr_base;
+U64 g_hal_gic_version;
 
 U0 HalStrCpy(U8 *dst_buf, U8 *src_buf) {
   if (!dst_buf || !src_buf) return;
@@ -66,9 +71,16 @@ U0 HalSetPlatform(CHalPlatform *p) {
   g_hal_virtio_slots  = p->virtio_slots;
   g_hal_virtio_stride = p->virtio_stride;
   g_hal_timer_freq    = p->timer_freq_hz;
+  g_hal_gicr_base     = p->gicr_base;
+  g_hal_gic_version   = p->gic_version;
 }
 
 U64 HalGetUartBase() {
+  // P5.1: 0x09000000 so e um PL011 na maquina virt do QEMU. No Snapdragon 860
+  // (Qualcomm) esse endereco NAO esta mapeado — a primeira leitura de UARTFR
+  // (+0x18) seria Data Abort. Devolver 0 faz todos os callers de UART saírem
+  // cedo, porque eles ja checam `if (!uart_base) return;`.
+  if (neo_pl011_available() == 0) return 0;
   if (g_hal_uart_base == 0) return 0x09000000;
   return g_hal_uart_base;
 }
@@ -175,6 +187,27 @@ U0 hal_reset_system() {
   HalSystemReset();
 }
 
+// P1.2 — Escolhe a plataforma pelo silicio (MIDR_EL1), em vez de fixar QEMU.
+//
+// Implementer medido:
+//   0x51 Qualcomm     -> POCO X3 Pro (SM8150/vayu), part 0x804 (Kryo Gold) / 0x805 (Silver)
+//   0x41 ARM          -> QEMU virt (cortex-a72, part 0xD08) — e tambem RPi4/RK3399
+//   0x50 AppliedMicro -> APM X-Gene (CloudLab m400)
+//
+// RESSALVA HONESTA: 0x41 e ambiguo — QEMU e Cortex-A72 real compartilham o MIDR.
+// Como o QEMU e o alvo de desenvolvimento e o unico alvo de hardware aqui e
+// Qualcomm, a regra pratica e: 0x51 -> SM8150, resto -> QEMU virt. Um
+// discriminador melhor (DTB/ACPI ou FirmwareVendor) fica como pendencia.
+U0 HalPlatformDetectByMidr() {
+  U64 impl = neo_midr_implementer();
+  U64 part = neo_midr_partnum();
+  if (impl == 0x51 && (part == 0x804 || part == 0x805)) {
+    HalSetPlatform(&g_plat_sm8150);
+    return;
+  }
+  HalSetPlatform(&g_plat_qemu);
+}
+
 U0 HalPlatformInit() {
   U64 boot_frq = __mrs_cntfrq();
   if (boot_frq == 0) boot_frq = 62500000;
@@ -191,6 +224,8 @@ U0 HalPlatformInit() {
   g_plat_qemu.irq_timer     = 27;
   g_plat_qemu.irq_uart      = 33;
   g_plat_qemu.timer_freq_hz = boot_frq;
+  g_plat_qemu.gicr_base     = 0x080A0000;
+  g_plat_qemu.gic_version   = 0;   // QEMU: v2 ou v3 e opcao de linha de comando -> sondar
 
   // 2. Raspberry Pi 4 (BCM2711)
   g_plat_rpi4.id            = HAL_PLATFORM_RPI4;
@@ -243,8 +278,14 @@ U0 HalPlatformInit() {
   g_plat_sm8150.irq_timer     = 27;
   g_plat_sm8150.irq_uart      = 108;
   g_plat_sm8150.timer_freq_hz = 19200000;
+  // Fonte primaria: arch/arm64/boot/dts/qcom/sm8150.dtsi (kernel oficial Xiaomi,
+  // branch vayu-r-oss) — `interrupt-controller@17a00000`, `compatible = arm,gic-v3`,
+  // `redistributor-stride = <0x0 0x20000>`, GICR em 0x17a60000 (* 8 cores).
+  g_plat_sm8150.gicr_base     = 0x17A60000;
+  g_plat_sm8150.gic_version   = 3;
 
-  HalSetPlatform(&g_plat_qemu);
+  // P1.2: escolhe a plataforma pelo silicio (MIDR_EL1), em vez de fixar o QEMU.
+  HalPlatformDetectByMidr();
 }
 
 I64 HalPlatformSelect(I64 p_id) {

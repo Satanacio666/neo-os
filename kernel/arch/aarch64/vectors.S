@@ -285,6 +285,27 @@ panic_halt:
 .balign 4
 early_sync_panic:
     msr  daifset, #0xf      // mask D/A/I/F while we report
+
+    // P5.2 — sonda de MMIO com recuperacao.
+    // Se g_mmio_probe_active != 0, este fault e ESPERADO: marca o resultado,
+    // avanca ELR_EL1 em 4 (pula a instrucao de load que faltou) e devolve o
+    // controle, em vez de derrubar o boot. Necessario porque a versao do GIC
+    // so pode ser descoberta por GICD_PIDR2 (0xFFE8), que no GICv2 do QEMU fica
+    // FORA da regiao mapeada do distribuidor (4 KB) e da Data Abort.
+    // x16/x17 sao IP0/IP1 — scratch pela ABI, seguros de clobber.
+    adrp x16, g_mmio_probe_active
+    add  x16, x16, :lo12:g_mmio_probe_active
+    ldr  w17, [x16]
+    cbz  w17, 2f
+    adrp x16, g_mmio_probe_faulted
+    add  x16, x16, :lo12:g_mmio_probe_faulted
+    mov  w17, #1
+    str  w17, [x16]
+    mrs  x16, elr_el1
+    add  x16, x16, #4
+    msr  elr_el1, x16
+    eret                    // retoma logo apos o load; PSTATE volta do SPSR_EL1
+2:
     mrs  x0, esr_el1
     mrs  x1, elr_el1
     mrs  x2, far_el1

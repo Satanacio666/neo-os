@@ -16,6 +16,17 @@ int     seed_fs_init(void);
 int64_t seed_read_file(const char *name, void *buf, size_t max_bytes);
 
 /*
+ * P1.1 / P4.3 — Pre-carga da arvore `holyc\` para RAM.
+ *
+ * Precisa rodar ANTES do drop EL2->EL1: depois dele os Boot Services do
+ * firmware nao podem mais ser chamados (o firmware foi inicializado em EL2).
+ * Uma vez pre-carregado, seed_read_file() serve da RAM e nao toca no FAT.
+ * Retorna o numero de arquivos carregados, ou -1.
+ */
+int     seed_preload_all(void);
+int     seed_preload_count_get(void);
+
+/*
  * P2.3 — Escrita no ESP pelo driver FAT do firmware.
  *
  * O seed não ganha um filesystem próprio: ele usa o mesmo driver FAT que o

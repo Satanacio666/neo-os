@@ -24,9 +24,136 @@ static void seed_ascii_to_wchar(const char *src, wchar_t *dst, int cap) {
     dst[i] = 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * P1.1 / P4.3 — Pre-carga da arvore `holyc\` para RAM.
+ *
+ * POR QUE ISTO EXISTE (medido, nao teorico):
+ * O NeoOS roda em EL1, mas o firmware que o carrega pode estar em EL2 — U-Boot
+ * e o EDK2 do Renegade no Snapdragon entregam o payload em EL2. Depois do drop
+ * EL2->EL1 (kernel/arch/aarch64/el2_drop.S) os Boot Services do firmware NAO
+ * podem mais ser chamados: o codigo do firmware foi inicializado em EL2 e, ao
+ * executa-lo a partir de EL1, ele toma excecao. Medido sob U-Boot:
+ *
+ *     [RAW] entry=EL2 drop=2 now=EL1
+ *     Resetting CPU ...                 <- panic do proprio U-Boot
+ *
+ * Logo, TODA leitura de arquivo tem que acontecer ANTES do drop. Esta tabela e
+ * o RAMDisk: depois do drop, seed_read_file() serve da RAM e nunca mais toca em
+ * s_root->Open().
+ * ------------------------------------------------------------------------- */
+
+#define SEED_PRELOAD_MAX   64
+#define SEED_PRELOAD_DIRSZ (8 * 4096)
+
+typedef struct {
+    char     name[64];
+    uint8_t *data;
+    uint64_t size;
+} seed_preload_entry_t;
+
+static seed_preload_entry_t s_preload[SEED_PRELOAD_MAX];
+static int   s_preload_count = 0;
+static int   s_preload_ready = 0;
+static uint8_t *s_preload_dirbuf = NULL;
+
+int seed_preload_count_get(void) { return s_preload_count; }
+
+static int seed_name_eq(const char *a, const char *b) {
+    int i = 0;
+    for (;;) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
+        if (ca != cb) return 0;
+        if (ca == 0) return 1;
+        i++;
+    }
+}
+
+/* Le a arvore `holyc\` inteira para RAM. Retorna o numero de arquivos, ou -1. */
+int seed_preload_all(void) {
+    if (!s_root) return -1;
+
+    uint64_t dirbuf = 0;
+    if (EFI_ERROR(BS->AllocatePages(AllocateAnyPages, EfiLoaderData,
+                                    SEED_PRELOAD_DIRSZ / 4096, &dirbuf)))
+        return -1;
+    s_preload_dirbuf = (uint8_t*)dirbuf;
+
+    wchar_t wdir[16];
+    seed_ascii_to_wchar("holyc", wdir, 16);
+
+    efi_file_handle_t *dir = NULL;
+    if (EFI_ERROR(s_root->Open(s_root, &dir, wdir, EFI_FILE_MODE_READ, 0)) || !dir)
+        return -1;
+
+    for (;;) {
+        uintn_t sz = SEED_PRELOAD_DIRSZ;
+        efi_status_t st = dir->Read(dir, &sz, s_preload_dirbuf);
+        if (EFI_ERROR(st) || sz == 0) break;
+
+        efi_file_info_t *fi = (efi_file_info_t*)s_preload_dirbuf;
+        if (fi->Attribute & EFI_FILE_DIRECTORY) continue;
+        if (fi->FileSize == 0 || fi->FileSize > (4 * 1024 * 1024)) continue;
+        if (s_preload_count >= SEED_PRELOAD_MAX) break;
+
+        char nm[64];
+        int k = 0;
+        while (fi->FileName[k] && k < 63) { nm[k] = (char)fi->FileName[k]; k++; }
+        nm[k] = 0;
+
+        uint64_t phys = 0;
+        if (EFI_ERROR(BS->AllocatePages(AllocateAnyPages, EfiLoaderData,
+                                        (fi->FileSize + 4095) / 4096, &phys)))
+            continue;
+
+        char path[256];
+        int n = 0;
+        const char *pre = "holyc\\";
+        for (int i = 0; pre[i] && n < 250; i++) path[n++] = pre[i];
+        for (int i = 0; nm[i] && n < 254; i++) path[n++] = nm[i];
+        path[n] = 0;
+
+        wchar_t wp[256];
+        seed_ascii_to_wchar(path, wp, 256);
+
+        efi_file_handle_t *fh = NULL;
+        if (EFI_ERROR(s_root->Open(s_root, &fh, wp, EFI_FILE_MODE_READ, 0)) || !fh)
+            continue;
+        uintn_t rd = (uintn_t)fi->FileSize;
+        efi_status_t rst = fh->Read(fh, &rd, (void*)phys);
+        fh->Close(fh);
+        if (EFI_ERROR(rst)) continue;
+
+        for (int i = 0; i < k; i++) s_preload[s_preload_count].name[i] = nm[i];
+        s_preload[s_preload_count].name[k]  = 0;
+        s_preload[s_preload_count].data     = (uint8_t*)phys;
+        s_preload[s_preload_count].size     = (uint64_t)rd;
+        s_preload_count++;
+    }
+    dir->Close(dir);
+    s_preload_ready = 1;
+    return s_preload_count;
+}
+
 /* Reads "holyc\<name>" from the ESP. Returns bytes read, or -1 on error. */
 int64_t seed_read_file(const char *name, void *buf, size_t max_bytes) {
-    if (!s_root || !name || !buf) return -1;
+    if (!name || !buf) return -1;
+
+    /* P1.1/P4.3: depois do drop nao existem Boot Services — servir da RAM. */
+    if (s_preload_ready) {
+        for (int i = 0; i < s_preload_count; i++) {
+            if (!seed_name_eq(s_preload[i].name, name)) continue;
+            uint64_t n = s_preload[i].size;
+            if (n > (uint64_t)max_bytes) n = (uint64_t)max_bytes;
+            uint8_t *d = (uint8_t*)buf;
+            for (uint64_t j = 0; j < n; j++) d[j] = s_preload[i].data[j];
+            return (int64_t)n;
+        }
+        return -1;
+    }
+
+    if (!s_root) return -1;
 
     char path[256];
     int n = 0;

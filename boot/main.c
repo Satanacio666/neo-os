@@ -16,6 +16,26 @@ static uint64_t s_kernel_heap_size = KERNEL_HEAP_DEFAULT;
 static uint64_t s_jit_code_pool_size = JIT_CODE_POOL_DEFAULT;
 
 extern void install_vector_table(void);
+
+/* P5.2 — interface de system registers do GICv3 (kernel/arch/aarch64/gicv3.c) */
+extern uint64_t gicv3_sre_get(void);
+extern uint64_t gicv3_sre_enable(void);
+extern uint64_t gicv3_sre_el2_enable(void);
+extern void     gicv3_pmr_set(uint64_t v);
+extern uint64_t gicv3_pmr_get(void);
+extern uint64_t gicv3_ctlr_get(void);
+extern void     gicv3_ctlr_set(uint64_t v);
+extern uint64_t gicv3_iar1(void);
+extern void     gicv3_eoir1(uint64_t v);
+extern void     gicv3_igrpen1_set(uint64_t v);
+extern uint64_t gicv3_igrpen1_get(void);
+extern uint32_t neo_probe_mmio_read32(uint64_t addr, int *faulted);
+extern uint64_t neo_midr_el1(void);
+extern uint64_t neo_midr_implementer(void);
+extern uint64_t neo_midr_partnum(void);
+extern void     gicv3_bpr1_set(uint64_t v);
+extern uint64_t gicv3_bpr1_get(void);
+extern int      neo_pl011_available(void);
 extern void enable_interrupts(void);
 extern void disable_interrupts(void);
 extern void cpu_switch_context(void *prev, void *next);
@@ -298,8 +318,24 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
+    // Mask IRQ/FIQ/SError/Debug from the very first instruction. EDK2 hands off with
+    // DAIF masked, but U-Boot may not: an unmasked timer IRQ taken before
+    // disable_interrupts() would vector through the firmware's VBAR (the NeoOS vectors
+    // are not installed yet) and reset the whole boot. Measured symptom without this:
+    // the app re-entered main() dozens of times, each preceded by a U-Boot restart.
+    asm volatile("msr daifset, #0xf" ::: "memory");
+
     aarch64_enable_fp();
     printf("[DEBUG BASE] main is at 0x%016llX\n", (unsigned long long)main);
+
+    // P1.1 / D36: the NeoOS is designed for EL1, but the handoff EL is firmware-dependent
+    // (AAVMF/EDK2 enters at EL1; U-Boot and Renegade EDK2 enter at EL2). At EL2 every EL1
+    // write is silently ignored and the boot derails. The drop itself happens LATER, after
+    // every UEFI Boot Services call is done — see the P1.1/P4.3 block below.
+    extern uint32_t neo_get_current_el(void);
+    extern uint32_t neo_ensure_el1(void);
+    uint32_t el_at_entry = neo_get_current_el();
+    printf("[BOOT] CurrentEL at entry = EL%u\r\n", (unsigned)el_at_entry);
 
     printf("\n======================================================\n");
     printf(" NeoOS AArch64 (ARMv8-A Ring 0 / EL1)\n");
@@ -443,6 +479,30 @@ int main(int argc, char **argv)
     symbols_register("smp_entry", (void*)smp_entry, SYM_FUNC);
     symbols_register("cpu_switch_context", (void*)cpu_switch_context, SYM_FUNC);
     symbols_register("install_vector_table", (void*)install_vector_table, SYM_FUNC);
+
+    // P5.2 — GICv3: interface de system registers (ICC_*_EL1). O HolyC nao tem
+    // mnemonicos para eles; o apps/Gic.HC chama estas funcoes pelo nome.
+    symbols_register("gicv3_sre_get", (void*)gicv3_sre_get, SYM_FUNC);
+    symbols_register("gicv3_sre_enable", (void*)gicv3_sre_enable, SYM_FUNC);
+    symbols_register("gicv3_sre_el2_enable", (void*)gicv3_sre_el2_enable, SYM_FUNC);
+    symbols_register("gicv3_pmr_set", (void*)gicv3_pmr_set, SYM_FUNC);
+    symbols_register("gicv3_pmr_get", (void*)gicv3_pmr_get, SYM_FUNC);
+    symbols_register("gicv3_ctlr_get", (void*)gicv3_ctlr_get, SYM_FUNC);
+    symbols_register("gicv3_ctlr_set", (void*)gicv3_ctlr_set, SYM_FUNC);
+    symbols_register("gicv3_iar1", (void*)gicv3_iar1, SYM_FUNC);
+    symbols_register("gicv3_eoir1", (void*)gicv3_eoir1, SYM_FUNC);
+    symbols_register("gicv3_igrpen1_set", (void*)gicv3_igrpen1_set, SYM_FUNC);
+    symbols_register("gicv3_igrpen1_get", (void*)gicv3_igrpen1_get, SYM_FUNC);
+    // P5.2 — sonda de MMIO com recuperacao pelo tier-0 (vectors.S).
+    symbols_register("neo_probe_mmio_read32", (void*)neo_probe_mmio_read32, SYM_FUNC);
+    symbols_register("gicv3_bpr1_set", (void*)gicv3_bpr1_set, SYM_FUNC);
+    symbols_register("gicv3_bpr1_get", (void*)gicv3_bpr1_get, SYM_FUNC);
+    // P5.1 — guarda do PL011 para os modulos HolyC (Keyboard.HC / HalPlatform.HC).
+    symbols_register("neo_pl011_available", (void*)neo_pl011_available, SYM_FUNC);
+    // P1.2 — identidade do silicio (MIDR_EL1), para o HolyC escolher a plataforma.
+    symbols_register("neo_midr_el1", (void*)neo_midr_el1, SYM_FUNC);
+    symbols_register("neo_midr_implementer", (void*)neo_midr_implementer, SYM_FUNC);
+    symbols_register("neo_midr_partnum", (void*)neo_midr_partnum, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -473,6 +533,37 @@ int main(int argc, char **argv)
     // timer/GIC live; an IRQ before the scheduler (Sched.HC) is loaded would call
     // the not-yet-defined SchedOnTick. IRQs are unmasked only at Stage 7.
     disable_interrupts();
+
+    // -----------------------------------------------------------------------
+    // P1.1 / P4.3 — Pre-carga + troca de console + drop EL2->EL1.
+    //
+    // ORDEM OBRIGATORIA. A partir do drop nao se pode mais chamar Boot Services:
+    // o firmware foi inicializado no EL de entrada (EL2 sob U-Boot/Renegade) e o
+    // seu codigo, executado a partir de EL1, toma excecao e derruba o boot
+    // (medido: "Resetting CPU ..." do U-Boot, 27 vezes, sempre logo apos o drop).
+    //
+    // Por isso, nesta ordem exata:
+    //   1. pre-carregar a arvore holyc\ inteira para RAM  (ultimo uso do FAT);
+    //   2. desligar o ConOut                             (ultimo uso do console UEFI);
+    //   3. so entao descer para EL1.
+    // -----------------------------------------------------------------------
+    {
+        extern int seed_preload_all(void);
+        int preloaded = seed_preload_all();
+        printf("[BOOT] P4.3 preload: %d arquivos carregados em RAM\r\n", preloaded);
+
+        // Ultimo uso do console UEFI. A partir daqui o firmware nao pode mais ser
+        // chamado (ver o cabecalho acima): o console passa a ser o espelho cru da
+        // UART e o framebuffer, quando ativo.
+        extern int g_uefi_console_enabled;
+        g_uefi_console_enabled = 0;
+
+        uint32_t drop_ret = neo_ensure_el1();
+        printf("[BOOT] CurrentEL: entry=EL%u -> drop=%s -> now=EL%u\r\n",
+               (unsigned)el_at_entry,
+               drop_ret == 2 ? "EL2->EL1" : (drop_ret == 1 ? "no-op (already EL1)" : "?"),
+               (unsigned)neo_get_current_el());
+    }
 
     // P0.8: take the exception vectors BEFORE any .HC module runs (KernelInit.HC
     // compiles Compiler.HC, HalPlatform.HC, Timer.HC, Gic.HC ... before
