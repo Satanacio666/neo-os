@@ -1477,7 +1477,7 @@ per-triangle globals are now one 64-byte-aligned `CRasterCtx g_rctx[]` threaded 
 (`RasterTriangleZCore(ctx, …)`), private to `RasterTile.HC` (grep-gated), with a one-shot `RasterCtxInit()`
 alignment guard. It landed **on top of a compiler root fix** (`HcResolveLValue` deferred-offset lvalues +
 immediate-offset load/store, D43) so `ctx->field` costs 2 instructions, not 4. Bit-exact (`RENDER 0xD28836F`,
-`TILE: PASS`, `DETERMINISM: PASS`); deterministic (icount) Z-raster 41,247,142 → **40,115,588** (−2.7 %) —
+`TILE: PASS`, `DETERMINISM: PASS`); deterministic (icount) Z-raster 41,247,142 → **40,209,427** (−3.5 %) —
 a net win. Measurement is now deterministic: `NEO_ICOUNT=1` (D42). **Remaining — see doc 04 D40:** the SMP
 tile dispatch itself — `RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED` routing, the `SelfTestTile`
 SMP sub-test, and the `MeshRender` batch-transform wiring. Runbook below is the original spec (retained).

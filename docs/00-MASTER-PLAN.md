@@ -301,7 +301,7 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > `sub`/`subs` blend-hang root fix; D37 parenthesized-macro-dimension root fix; D39 2D-global partial-index
 > root fix + cull/F64 alignment). **P7.4 in progress: F0 ✅** (SMP join/parallelism proof + compiler-limit root
 > fixes, D41) and **F1 ✅** (deterministic `icount` measurement D42; compiler deferred-offset lvalues D43;
-> per-core `CRasterCtx` D44 — `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,115,588**, −2.7 %).
+> per-core `CRasterCtx` D44 — `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,209,427**, −3.5 %).
 > **next = P7.4 F2** (runbook in `02-TASKLIST.md` §P7.4). Gate: `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`,
 > `CENSUS 181`, `SELF-HOST: PASS`, `DETERMINISM: PASS (0xD28836F)`, `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
 
@@ -546,7 +546,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
 - **Progress (2026-10).** **F0 ✅** (SMP join/parallelism proof + compiler-limit root fixes, D41). **F1 ✅** — the
   prerequisite per-core raster-state refactor: deterministic measurement via QEMU `icount` (D42), the compiler
   deferred-offset-lvalue root fix (D43), and the 64-byte-aligned per-core `CRasterCtx g_rctx[]` threaded as an
-  explicit first argument (D44; `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,115,588**, −2.7 %).
+  explicit first argument (D44; `RENDER 0xD28836F` bit-exact, icount Z-raster 41,247,142 → **40,209,427**, −3.5 %).
   The remaining SMP tile dispatch (`RasterSceneEndSmp`/`RasterTileWorker`, `GFX_MODE_SMP_TILED`) is F2+.
 
 ### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong + 32-bit Z (e)

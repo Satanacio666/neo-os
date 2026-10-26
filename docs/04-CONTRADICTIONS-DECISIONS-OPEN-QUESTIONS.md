@@ -939,12 +939,15 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   `g_rctx` is private to `RasterTile.HC` (enforced by a `golden-boot.sh` grep gate). This is the prerequisite
   for concurrent tile workers (F4): each core binds its own scratchpad + state, so no state races. **A pure
   refactor: RENDER 0xD28836F bit-exact, `TILE: PASS`, 1-vs-4-core `DETERMINISM: PASS`.** Deterministic (icount):
-  Z-raster 41,247,142 → **40,115,588** (−2.7 %), Textured 61,219,652 → **60,290,790** (−1.5 %) — i.e. the
-  refactor is a net *win*, not a cost, because D43 made each `ctx->field` two instructions. **Measured and
-  rejected:** the runbook's prescribed loop-invariant hoisting (reading `ctx->min_x`/`max_x` into locals at the
-  top of `RasterRow`) was implemented and measured to **regress** Z-raster to 40,178,158 (+0.16 %, ~1000× the
-  run noise); HolyC locals are stack slots, so hoisting adds stores without removing loads. It was reverted —
-  the measurement, not the assumption, decides. **Not used:** a fixed X28 register or a single global struct
-  (per-core state is explicit); TPIDR_EL1 (native per-CPU) is recorded in doc 03 as a future option.
+  Z-raster 41,247,142 → **40,209,427** (−2.5 %), Textured 61,219,652 → **60,436,760** (−1.3 %) — i.e. the
+  refactor is a net *win*, not a cost, because D43 made each `ctx->field` two instructions. **Invariant hoisting
+  (retained, as required by the F1 gate):** `RasterRow` reads `min_x`, `max_x`, `tex_active` and `shade_mode`
+  from `ctx` **once** into locals at the top, instead of reloading them on every loop-condition test. Measured
+  cost of this hoisting is +0.23 % Z-raster (40,115,588 without it → 40,209,427 with it, ~1000× the run noise):
+  HolyC locals are stack slots, so hoisting adds stores without removing loads. It is nevertheless **kept**
+  because it is a stated F1 invariant and the result is still **−3.5 % below the `51865e6` baseline** (well
+  inside the ≤3 % gate). A future compiler register-promotion of simple locals would make it free. **Not used:**
+  a fixed X28 register or a single global struct (per-core state is explicit); TPIDR_EL1 (native per-CPU) is
+  recorded in doc 03 as a future option.
   Gate: `GOLDEN BOOT: PASS`, `SELFTEST 120/120`, `PARITY 89/89 (0 diff)`, `RENDER: PASS (0xD28836F)`,
   `TILE: PASS`, `MATH3DPAR: PASS`, `HEAPINT: PASS`, `DETERMINISM: PASS`, `CENSUS 181`, `SELF-HOST: PASS`.

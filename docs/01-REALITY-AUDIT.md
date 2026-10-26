@@ -367,16 +367,17 @@ Deterministic `renderbench` (4000 triangles unless noted), instructions:
 
 | metric | `51865e6` (pre-F1, old compiler) | + deferred-offset compiler (D43) | + F1 `CRasterCtx` (D44) |
 |---|---|---|---|
-| Z-raster | 41,668,965 | 41,247,142 (−1.0 %) | **40,115,588 (−3.7 %)** |
-| Textured | 62,274,984 | 61,219,652 (−1.7 %) | **60,290,790 (−3.2 %)** |
+| Z-raster | 41,668,965 | 41,247,142 (−1.0 %) | **40,209,427 (−3.5 %)** |
+| Textured | 62,274,984 | 61,219,652 (−1.7 %) | **60,436,760 (−3.0 %)** |
 | Canvas (clear) | 28,350 | 28,278 | 28,252 |
 
-The F1 gate (`F1 + new compiler ≤ 51865e6 × 1.03`) passes with a wide margin, and the pure refactor cost —
-F1 vs *the same compiler without the refactor* — is **negative** (−2.7 % Z-raster, −1.5 % Textured): the
-per-core context is a net win because D43 made each `ctx->field` two instructions. The runbook's prescribed
-loop-invariant hoisting was implemented and **measured to regress** Z-raster to 40,178,158 (+0.16 %, ~1000×
-the run noise; HolyC locals are stack slots, so hoisting adds stores without removing loads) and was reverted.
-Correctness is unchanged: `RENDER: PASS (0xD28836F)`, `TILE: PASS`, 1-vs-4-core `DETERMINISM: PASS`.
+The F1 gate (`F1 + new compiler ≤ 51865e6 × 1.03`) passes, and the pure refactor cost — F1 vs *the same
+compiler without the refactor* — is **negative** (−2.5 % Z-raster, −1.3 % Textured): the per-core context is a
+net win because D43 made each `ctx->field` two instructions. The F1 invariant hoisting in `RasterRow` (`min_x`,
+`max_x`, `tex_active`, `shade_mode` read once into locals) is **retained**; it costs +0.23 % Z-raster vs the
+non-hoisted refactor (40,115,588 → 40,209,427) because HolyC locals are stack slots, but stays −3.5 % below
+baseline, inside the ≤3 % gate. Correctness is unchanged: `RENDER: PASS (0xD28836F)`, `TILE: PASS`, 1-vs-4-core
+`DETERMINISM: PASS`.
 
 ---
 

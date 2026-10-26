@@ -796,38 +796,44 @@ I64 RasterPixelTextured(CRasterCtx *ctx, I64 xx, I64 yy) {
 // head/tail (<8 px) use the scalar perspective pixel; otherwise the NEON span
 // runs the solid (gmode 0), Gouraud (1) or per-fragment Phong (2) colour stage.
 I64 RasterRow(CRasterCtx *ctx, I64 yy) {
-  if (ctx->tex_active) {
-    I64 xx = ctx->min_x;
+  // F1 invariant hoisting: read the per-row bounds and mode flags ONCE, instead
+  // of reloading them from ctx on every loop-condition test. The per-pixel body
+  // is still the NEON kernel, which reads its descriptor via X0.
+  I64 min_x = ctx->min_x;
+  I64 max_x = ctx->max_x;
+  I64 tex_active = ctx->tex_active;
+  I64 smode = ctx->shade_mode;
+  if (tex_active) {
+    I64 xx = min_x;
     I64 drawn = 0;
-    while (xx < ctx->max_x && (xx & 7) != 0) {
+    while (xx < max_x && (xx & 7) != 0) {
       drawn = drawn + RasterPixelTextured(ctx, xx, yy);
       xx = xx + 1;
     }
-    I64 tb = (ctx->max_x - xx) >> 3;
+    I64 tb = (max_x - xx) >> 3;
     if (tb > 0) {
       drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 1);
       xx = xx + (tb << 3);
     }
-    while (xx < ctx->max_x) {
+    while (xx < max_x) {
       drawn = drawn + RasterPixelTextured(ctx, xx, yy);
       xx = xx + 1;
     }
     return drawn;
   }
-  I64 smode = ctx->shade_mode;
-  I64 xx = ctx->min_x;
+  I64 xx = min_x;
   I64 drawn = 0;
-  while (xx < ctx->max_x && (xx & 7) != 0) {
+  while (xx < max_x && (xx & 7) != 0) {
     if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
     else drawn = drawn + RasterPixelScalar(ctx, xx, yy);
     xx = xx + 1;
   }
-  I64 blocks = (ctx->max_x - xx) >> 3;
+  I64 blocks = (max_x - xx) >> 3;
   if (blocks > 0) {
     drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 0);
     xx = xx + (blocks << 3);
   }
-  while (xx < ctx->max_x) {
+  while (xx < max_x) {
     if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
     else drawn = drawn + RasterPixelScalar(ctx, xx, yy);
     xx = xx + 1;
