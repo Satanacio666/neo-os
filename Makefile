@@ -62,6 +62,7 @@ SRCS_C = boot/main.c \
          boot/seed/seed_fs.c \
          boot/runtime/kheap.c \
          boot/runtime/symbols.c \
+         boot/runtime/blockio.c \
          kernel/arch/aarch64/gicv3.c
 
 SRCS_S = kernel/sched/switch.S \

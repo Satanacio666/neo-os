@@ -33,6 +33,17 @@ extern uint32_t neo_probe_mmio_read32(uint64_t addr, int *faulted);
 extern uint64_t neo_midr_el1(void);
 extern uint64_t neo_midr_implementer(void);
 extern uint64_t neo_midr_partnum(void);
+
+/* P7.1 — descoberta de armazenamento (boot/runtime/blockio.c) */
+extern int      neo_block_probe(void);
+extern int      neo_block_count(void);
+extern int      neo_block_primary(void);
+extern uint32_t neo_block_size(int idx);
+extern uint64_t neo_block_last(int idx);
+extern uint64_t neo_block_bytes(int idx);
+extern int      neo_block_is_removable(int idx);
+extern int64_t  neo_block_read(int idx, uint64_t lba, uint64_t count, void *buf);
+extern int64_t  neo_block_write(int idx, uint64_t lba, uint64_t count, const void *buf);
 extern void     gicv3_bpr1_set(uint64_t v);
 extern uint64_t gicv3_bpr1_get(void);
 extern int      neo_pl011_available(void);
@@ -503,6 +514,18 @@ int main(int argc, char **argv)
     symbols_register("neo_midr_el1", (void*)neo_midr_el1, SYM_FUNC);
     symbols_register("neo_midr_implementer", (void*)neo_midr_implementer, SYM_FUNC);
     symbols_register("neo_midr_partnum", (void*)neo_midr_partnum, SYM_FUNC);
+
+    // P7.1 — armazenamento via EFI_BLOCK_IO. O apps/RedSea.HC consome
+    // neo_block_read e neo_block_write; o resto e diagnostico e escolha do primario.
+    symbols_register("neo_block_probe", (void*)neo_block_probe, SYM_FUNC);
+    symbols_register("neo_block_count", (void*)neo_block_count, SYM_FUNC);
+    symbols_register("neo_block_primary", (void*)neo_block_primary, SYM_FUNC);
+    symbols_register("neo_block_size", (void*)neo_block_size, SYM_FUNC);
+    symbols_register("neo_block_last", (void*)neo_block_last, SYM_FUNC);
+    symbols_register("neo_block_bytes", (void*)neo_block_bytes, SYM_FUNC);
+    symbols_register("neo_block_is_removable", (void*)neo_block_is_removable, SYM_FUNC);
+    symbols_register("neo_block_read", (void*)neo_block_read, SYM_FUNC);
+    symbols_register("neo_block_write", (void*)neo_block_write, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -521,6 +544,12 @@ int main(int argc, char **argv)
     symbols_register("seed_delete_file", (void*)seed_delete_file, SYM_FUNC);
     symbols_register("seed_fnv1a", (void*)seed_fnv1a, SYM_FUNC);
     neo_verify_esp_write();
+
+    // P7.1 — Descoberta de armazenamento via EFI_BLOCK_IO_PROTOCOL.
+    // Precisa rodar AQUI: e uma chamada a Boot Services, e depois do drop elas
+    // nao podem mais ser feitas. E tambem aqui que descobrimos, na propria POCO,
+    // o que o Renegade EDK2 expoe — sem supor nada sobre UFS ou USB.
+    neo_block_probe();
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
