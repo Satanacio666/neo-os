@@ -18,18 +18,15 @@ class CDirtyRect {
   I64 y1;
 };
 
-class CGfxConfig {
-  I64 buffer_mode;
-  I64 mode;
-  I64 vsync_en;
-  I64 vsync_hz;
-};
+// P7.5: the renderer's config now lives in the canonical CGpuConfig (GpuConfig.HC)
+// and is read through gpu_get_* accessors — no local g_gfx_cfg copy.
 
 class CCanvasState {
   I64 width;
   I64 height;
   I64 pitch;
   U32 *back_buffer;
+  U32 *mid_buffer;    // P7.5: second back buffer (triple buffering: front + 2 back)
   U32 *front_buffer;
   CClipRect clip;
   CDirtyRect dirty;
@@ -40,7 +37,6 @@ class CCanvasState {
   U64 vsync_last_vct;
 };
 
-CGfxConfig g_gfx_cfg;
 CCanvasState g_canv;
 
 U0 RenderInit() {
@@ -51,9 +47,13 @@ U0 RenderInit() {
   doldoc_printf("[RENDER-INIT] front_buffer=0x%016llX uefi_fb=0x%016llX (%lldx%lld pitch=%lld)\n",
                 g_canv.front_buffer, g_uefi_fb, g_canv.width, g_canv.height, g_canv.pitch);
   if (!g_canv.back_buffer) {
-    g_canv.back_buffer = kmalloc(g_canv.pitch * g_canv.height * 4);
+    // P7.5: triple buffering needs a SECOND back buffer (front + 2 back). It is
+    // carved out of ONE allocation (census-neutral: no extra kmalloc site).
+    I64 nbuf = (gpu_get_buffer_mode() == GPU_BUF_TRIPLE) ? 2 : 1;
+    g_canv.back_buffer = kmalloc(g_canv.pitch * g_canv.height * 4 * nbuf);
     if (g_canv.back_buffer) {
-      memset(g_canv.back_buffer, 0, g_canv.pitch * g_canv.height * 4);
+      memset(g_canv.back_buffer, 0, g_canv.pitch * g_canv.height * 4 * nbuf);
+      if (nbuf == 2) g_canv.mid_buffer = g_canv.back_buffer + g_canv.pitch * g_canv.height;
     }
   }
 
@@ -78,12 +78,15 @@ U0 RenderInit() {
 
 U0 RenderSetZeroRamMode(I64 en) {
   g_canv.zero_ram_mode = en ? 1 : 0;
-  g_gfx_cfg.buffer_mode = en ? 1 : 0;
+  // Zero-RAM direct scanout == single-buffered (render straight to the front).
+  gpu_set_buffer_mode(en ? GPU_BUF_SINGLE : GPU_BUF_DOUBLE);
 }
 
 U32* RenderGetTargetBuffer() {
   if (g_canv.width == 0) RenderInit();
-  if ((g_gfx_cfg.buffer_mode == 1 || g_canv.zero_ram_mode == 1) && g_canv.front_buffer) {
+  // Single/direct (or zero-RAM) draws into the front buffer; double/triple into a
+  // back buffer (gfx_swap_* presents it).
+  if ((gpu_get_buffer_mode() == GPU_BUF_SINGLE || g_canv.zero_ram_mode == 1) && g_canv.front_buffer) {
     return g_canv.front_buffer;
   }
   return g_canv.back_buffer ? g_canv.back_buffer : g_canv.front_buffer;
@@ -608,6 +611,13 @@ U0 gfx_swap_buffers() {
     I64 total_bytes = g_canv.pitch * g_canv.height * 4;
     RenderNeonBlit(g_canv.front_buffer, target, total_bytes);
   }
+  // P7.5 triple buffering: rotate the two back buffers (front + 2 back). The next
+  // frame draws into the buffer just freed, so a present never stalls the renderer.
+  if (gpu_get_buffer_mode() == GPU_BUF_TRIPLE && g_canv.mid_buffer) {
+    U32 *tmp = g_canv.back_buffer;
+    g_canv.back_buffer = g_canv.mid_buffer;
+    g_canv.mid_buffer = tmp;
+  }
   RenderDirtyReset();
 }
 U0 gfx_swap_rect(I64 rx, I64 ry, I64 rw, I64 rh) {
@@ -639,8 +649,7 @@ U0 gfx_vsync_set(I64 en, I64 hz) {
   g_canv.vsync_en = en ? 1 : 0;
   if (hz <= 0) hz = 60;
   g_canv.vsync_hz = hz;
-  g_gfx_cfg.vsync_en = g_canv.vsync_en;
-  g_gfx_cfg.vsync_hz = g_canv.vsync_hz;
+  gpu_set_vsync(g_canv.vsync_en);   // canonical config
   U64 hw_frq = __mrs_cntfrq();
   if (hw_frq == 0) hw_frq = 62500000;
   g_canv.vsync_interval_ticks = hw_frq / hz;

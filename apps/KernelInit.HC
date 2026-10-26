@@ -61,6 +61,9 @@ U0 KernelInitMain() {
     KInitLoad("Exceptions.HC");
     KInitLoad("KHeap.HC");
     KInitLoad("Symbols.HC");
+    // P7.5: the unified GPU config plane is loaded before every consumer
+    // (SelfTest, Render, GfxDevice, RasterTile) reads its accessors.
+    KInitLoad("GpuConfig.HC");
     KInitLoad("SelfTest.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography

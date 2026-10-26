@@ -1539,7 +1539,16 @@ transform; make `GfxDeviceSetMode(GFX_MODE_SMP_TILED)` actually change the rende
 
 ---
 
-### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong (+ optional 32-bit Z)
+### P7.5 — GPU config plane + VirtIO batch2/batch3 + page-flip ping-pong (+ optional 32-bit Z) — ✅ **DONE**
+
+**✅ DONE (see doc 04 D51).** Delivered as ONE canonical `CGpuConfig g_gpu_cfg` in the new `apps/GpuConfig.HC`
+(loaded after Symbols.HC), replacing the split `g_gfx_cfg`. Five clamped knobs with accessors — `buffer_mode`
+(single/double/triple), `tile_size` (32/64), `smp_cores` (1..4), `zprecision` (16/32), `vsync` (0/1) — pulled by
+Render/RasterTile/GfxDevice (no cross-module struct access). VirtIO `VirtioGpuSubmitBatch2/3` (one virtqueue
+transaction) + `VirtioGpuPageFlip` in `apps/GfxDevice.HC`; `VirtioGpuFlushRect` batches transfer+flush.
+`SelfTestGpuConfig` → `GPUCFG: PASS (21/21)`; gate green in standard **and** `-icount`. The dedicated
+`z32_span.s` kernel and the DolDoc config window were not used (the 32-bit path reuses the width-parameterized
+scalar depth ops; window deferred). Runbook below is the original spec (retained).
 
 **Goal.** Real GPU knobs, batched VirtIO submission, dual-resource page-flip.
 

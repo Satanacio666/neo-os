@@ -1045,3 +1045,30 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   PASS (16/16)`, `HEAPINT: PASS`. **P7.4 (SMP tiled rasterization: deterministic, multi-core) is DONE** —
   F0 SMP proof, F1 per-core `CRasterCtx`, F2 sort-middle records/bins/arenas, F3 per-core shader VM, F4 SMP
   tile dispatch (~3× MTTCG), F5 parallel front-end, F6 mesh batch transform, F7 default-on.
+- **D51 — P7.5: unified GPU config plane + VirtIO display batching (DONE).** `apps/GpuConfig.HC` (new module,
+  loaded right after Symbols.HC so every consumer sees it) introduces ONE canonical `CGpuConfig g_gpu_cfg`,
+  replacing the old split `g_gfx_cfg` (Render.HC) + ad-hoc flags. It exposes the five real knobs through clean
+  functional accessors — **no cross-module struct-member access**; consumers PULL the values at use time (so
+  there is no push and no module cycle) and every setter CLAMPS:
+  1. `gpu_get/set_buffer_mode` (0 single/direct, 1 double, 2 triple) — Render allocates the second back buffer
+     for triple out of ONE allocation (census-neutral) and rotates it in `gfx_swap_buffers`.
+  2. `gpu_get/set_tile_size` (32 or 64; snapped+clamped) — pulled by `RasterSceneBegin` into `TILE_W/TILE_H`
+     (the arena/render/resolve all follow the live tile size).
+  3. `gpu_get/set_smp_cores` (1..4) — caps the worker count in `RasterSceneEndSmp`.
+  4. `gpu_get/set_zprecision` (16 or 32) — the Z buffer stores 16- or 32-bit words (`g_rs_z_elem`); the scalar
+     depth ops are width-parameterized (`RasterZGet/Put`), and the 16-bit NEON span is used only in 16-bit mode
+     (32-bit routes every pixel through the scalar path). `RasterSetZPrecision` reallocates the main Z buffer.
+  5. `gpu_get/set_vsync` (0/1) — Render's CNTVCT_EL0 frame pacing.
+  `GfxDeviceSetMode` mirrors the mode into `gpu_set_mode`. **VirtIO display batching** (`apps/GfxDevice.HC`, where
+  the virtio-gpu driver lives): `VirtioGpuSubmitBatchN/2/3` chain 2–3 command descriptors + one response in a
+  SINGLE virtqueue transaction (one avail entry, one notify, one used-wait), and `VirtioGpuFlushRect` now sends
+  transfer+flush as ONE batch (was two transactions); `VirtioGpuPageFlip` sets the scanout to a resource without
+  a framebuffer copy (the double-buffered GPU path). **Verification:** `SelfTestGpuConfig` exercises all five
+  knobs (read / write / clamp / restore) and asserts 1-vs-4-worker tiled output is byte-identical
+  (`RasterTestSmpCoresDeterminism`) → `GPUCFG: PASS (21/21)`, asserted by `golden-boot.sh`.
+  **Root bug found on the way (fixed):** the self-hosted compiler mis-parses a C-style cast of a struct ARRAY
+  member followed by indexing — `((U16*)a->depth)[i]` — silently producing a bad address; the arena depth is now
+  a `U16 depth[8192]` accessed as `&a->depth[0]` (no array-member cast). Gate (standard **and** `-icount
+  shift=0,align=off,sleep=off`): `GOLDEN BOOT: PASS`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`,
+  `DETERMINISM: PASS (1 vs 4 cores identical)`, `SELFTEST 123/123 PASS`, `PARITY 92/92 PASS`, `GPUCFG: PASS
+  (21/21)`, `CENSUS: PASS (181, none increased)`, `SELF-HOST: PASS`.

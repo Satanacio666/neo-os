@@ -139,8 +139,10 @@ distributed documents (`$FI` across nodes); one action bus (observable/replayabl
   wall-clock speed-up on 3 workers (doc 04 D47). **[REAL — P7.4 F5–F7]** the geometry front-end is parallel too
   (`RasterSceneAddTrianglesParallel`: contiguous slices + per-producer bins, byte-identical to sequential), the
   mesh path batch-transforms via `Math3DTransformParallel` (`HolyGLVertexClip`), and the SMP tiled mode is the
-  **default** (`RasterSceneEnd` reads `GfxDeviceGetMode`); see doc 04 D48–D50. GPU-provider execution of tile
-  jobs is still open (P9).
+  **default** (`RasterSceneEnd` reads `GfxDeviceGetMode`); see doc 04 D48–D50. **[REAL — P7.5]** the pipeline is
+  reconfigured through ONE canonical `CGpuConfig` (`apps/GpuConfig.HC`): `tile_size` feeds the binner,
+  `smp_cores` caps the dispatch, `zprecision` picks a 16/32-bit Z buffer, `buffer_mode` picks single/double/
+  triple buffering, `vsync` paces presents (doc 04 D51). GPU-provider execution of tile jobs is still open (P9).
 - **Barycentric perspective 3D** `(from FUTURE roadmap §3, forensic dossier §3.4/§4.3)`: kill `z_avg`; Pineda 28.4
   fixed-point edge equations; perspective-correct `1/w, z/w, u/w, v/w`; NEON fast reciprocals. **[MISSING]**.
 - **Textures & lighting** `(from FUTURE roadmap §3.3, complete_render_stack §3.4)`: `glTexImage2D`/`glBindTexture`,

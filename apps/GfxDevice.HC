@@ -237,6 +237,97 @@ I64 VirtioGpuSendCmd(U64 cmd, U32 cmd_size, U64 resp, U32 resp_size) {
   return 0;
 }
 
+// ==============================================================================
+// P7.5: batched command submission. One virtqueue transaction carries `n` chained
+// command descriptors (c0..c2, l0..l2) followed by ONE response descriptor, so a
+// transfer+flush (n=2) or transfer+flush+scanout (n=3) is a single device op —
+// one avail entry, one notify, one used-entry wait.
+// ==============================================================================
+I64 VirtioGpuSubmitBatchN(U64 c0, U32 l0, U64 c1, U32 l1, U64 c2, U32 l2, I64 n) {
+  if (g_vgpu.active == 0) return -1;
+  if (n < 1 || n > 3) return -1;
+  U64 b = g_vgpu.mmio_base;
+  CVirtioGpuCtrlHdr *rhdr = g_vgpu.resp_buf;
+  rhdr->type = 0;
+
+  CVringDesc *vq_desc = g_vgpu.vq_desc;
+  CVringDesc *d0 = &vq_desc[0];
+  d0->addr = c0; d0->len = l0; d0->flags = VRING_DESC_F_NEXT; d0->next = 1;
+  if (n >= 2) {
+    CVringDesc *d1 = &vq_desc[1];
+    d1->addr = c1; d1->len = l1; d1->flags = VRING_DESC_F_NEXT; d1->next = 2;
+  }
+  if (n >= 3) {
+    CVringDesc *d2 = &vq_desc[2];
+    d2->addr = c2; d2->len = l2; d2->flags = VRING_DESC_F_NEXT; d2->next = 3;
+  }
+  CVringDesc *dr = &vq_desc[n];
+  dr->addr = g_vgpu.resp_buf;
+  dr->len = 24;
+  dr->flags = VRING_DESC_F_WRITE;
+  dr->next = 0;
+
+  CVringUsed *vused = g_vgpu.vq_used;
+  U16 last_used = vused->idx;
+  CVringAvail *vavail = g_vgpu.vq_avail;
+  U16 a_idx = vavail->idx;
+  vavail->ring[a_idx % g_vgpu.queue_num] = 0;
+  __dmb_ish();
+  vavail->idx = a_idx + 1;
+
+  hal_flush_cache(c0, l0);
+  if (n >= 2) hal_flush_cache(c1, l1);
+  if (n >= 3) hal_flush_cache(c2, l2);
+  hal_flush_cache(g_vgpu.resp_buf, 24);
+  hal_flush_cache(g_vgpu.ring_base, 4096);
+
+  VGpuMmioWrite32(b, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+
+  I64 vg_timeout = 5000000;
+  while (vused->idx == last_used && vg_timeout > 0) {
+    hal_flush_cache(g_vgpu.vq_used, 64);
+    hal_flush_cache(g_vgpu.resp_buf, 24);
+    vg_timeout--;
+  }
+  if (vg_timeout == 0) return -1;
+  if (rhdr->type != VIRTIO_GPU_RESP_OK_NODATA && rhdr->type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
+    return -1;
+  }
+  return 0;
+}
+
+I64 VirtioGpuSubmitBatch2(U64 c0, U32 l0, U64 c1, U32 l1) {
+  return VirtioGpuSubmitBatchN(c0, l0, c1, l1, 0, 0, 2);
+}
+
+I64 VirtioGpuSubmitBatch3(U64 c0, U32 l0, U64 c1, U32 l1, U64 c2, U32 l2) {
+  return VirtioGpuSubmitBatchN(c0, l0, c1, l1, c2, l2, 3);
+}
+
+// P7.5: hardware page-flip — point the scanout at a resource WITHOUT copying the
+// framebuffer. Used by the double-buffered GPU path (each back buffer has its own
+// resource; flipping is one SET_SCANOUT, not a full blit).
+I64 VirtioGpuPageFlip(I64 scanout_id, U32 resource_id) {
+  if (g_vgpu.active == 0) return -1;
+  CVirtioGpuSetScanout *scan = g_vgpu.cmd_buf;
+  scan->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+  scan->hdr.flags = 0;
+  scan->hdr.fence_id = 0;
+  scan->hdr.ctx_id = 0;
+  scan->hdr.padding = 0;
+  scan->r.x = 0;
+  scan->r.y = 0;
+  scan->r.width = g_vgpu.width;
+  scan->r.height = g_vgpu.height;
+  scan->scanout_id = scanout_id;
+  scan->resource_id = resource_id;
+  CVirtioGpuCtrlHdr *resp = g_vgpu.resp_buf;
+  if (VirtioGpuSendCmd(scan, 48, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
+    return -1;
+  }
+  return 0;
+}
+
 I64 VirtioGpuInit() {
   if (g_vgpu.active && g_vgpu.ring_base != 0) {
     return 0;
@@ -448,12 +539,7 @@ I64 VirtioGpuFlushRect(I64 x, I64 y, I64 w, I64 h) {
   t2d->resource_id = 1;
   t2d->padding = 0;
 
-  CVirtioGpuCtrlHdr *resp = g_vgpu.resp_buf;
-  if (VirtioGpuSendCmd(t2d, 56, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
-    return -1;
-  }
-
-  CVirtioGpuResourceFlush *rf = g_vgpu.cmd_buf;
+  CVirtioGpuResourceFlush *rf = g_vgpu.cmd_buf + 256;   // second command slot
   rf->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
   rf->hdr.flags = 0;
   rf->hdr.fence_id = 0;
@@ -466,7 +552,8 @@ I64 VirtioGpuFlushRect(I64 x, I64 y, I64 w, I64 h) {
   rf->resource_id = 1;
   rf->padding = 0;
 
-  if (VirtioGpuSendCmd(rf, 48, resp, 24) != 0 || resp->type != VIRTIO_GPU_RESP_OK_NODATA) {
+  // P7.5: transfer + flush in ONE virtqueue transaction (batch2) instead of two.
+  if (VirtioGpuSubmitBatch2(t2d, 56, rf, 48) != 0) {
     return -1;
   }
   return 0;
@@ -489,17 +576,18 @@ U0 GfxDeviceInit() {
   g_gdev.ops_counter = 0;
   g_gdev.dma_bytes = 0;
   g_gdev.mode = GFX_MODE_CPU_SW;
-  g_gfx_cfg.mode = GFX_MODE_CPU_SW;
+  gpu_set_mode(GPU_MODE_CPU);
   RenderSetZeroRamMode(0);
   // P7.4 F7: the sovereign renderer defaults to the SMP tiled back-end. This is
-  // set via the setter so g_gdev.name/g_gfx_cfg stay consistent; it touches only
+  // set via the setter so g_gdev.name/g_gpu_cfg stay consistent; it touches only
   // GfxDevice state (the rasterizer reads the mode, never the reverse).
   GfxDeviceSetMode(GFX_MODE_SMP_TILED);
 }
 
 U0 GfxDeviceSetMode(I64 m) {
   g_gdev.mode = m;
-  g_gfx_cfg.mode = m;
+  // P7.5: mirror into the canonical GPU config plane (0 CPU, 1 HW, 2 SMP tiled).
+  gpu_set_mode(m);
   if (m == GFX_MODE_GPU_HW) {
     strcpy(g_gdev.name, "VirtIO-GPU Hardware");
   } else if (m == GFX_MODE_SMP_TILED) {
@@ -522,7 +610,8 @@ U0 GfxDeviceSetBuffering(I64 m) {
 I64 GfxDeviceGetBuffering() { return g_gdev.buffering; }
 
 I64 GfxDeviceIsZeroRam() {
-  return (g_gdev.buffering == GFX_BUFFER_DIRECT_VRAM || g_gfx_cfg.buffer_mode == 1) ? 1 : 0;
+  return (g_gdev.buffering == GFX_BUFFER_DIRECT_VRAM ||
+          gpu_get_buffer_mode() == GPU_BUF_SINGLE) ? 1 : 0;
 }
 U0 GfxDeviceSetZeroRam(I64 en) {
   GfxDeviceSetBuffering(en ? GFX_BUFFER_DIRECT_VRAM : GFX_BUFFER_DOUBLE);

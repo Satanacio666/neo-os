@@ -308,6 +308,54 @@ U0 SelfTestSovereign() {
     }
 }
 
+// P7.5: the unified GPU config plane. Exercises all five knobs (read / write /
+// clamp / restore) and asserts 1 vs 4 SMP workers produce byte-identical tiles.
+U0 SelfTestGpuConfig() {
+    I64 pass = 0;
+    I64 total = 0;
+
+    // 1. buffer_mode (0 single/direct, 1 double, 2 triple).
+    I64 bm0 = gpu_get_buffer_mode();
+    gpu_set_buffer_mode(GPU_BUF_TRIPLE); total++; if (gpu_get_buffer_mode() == GPU_BUF_TRIPLE) pass++;
+    gpu_set_buffer_mode(9);               total++; if (gpu_get_buffer_mode() == GPU_BUF_TRIPLE) pass++;
+    gpu_set_buffer_mode(-5);              total++; if (gpu_get_buffer_mode() == GPU_BUF_SINGLE) pass++;
+    gpu_set_buffer_mode(bm0);             total++; if (gpu_get_buffer_mode() == bm0) pass++;
+
+    // 2. tile_size (32 or 64; snapped + clamped).
+    I64 ts0 = gpu_get_tile_size();
+    gpu_set_tile_size(32);  total++; if (gpu_get_tile_size() == 32) pass++;
+    gpu_set_tile_size(64);  total++; if (gpu_get_tile_size() == 64) pass++;
+    gpu_set_tile_size(999); total++; if (gpu_get_tile_size() == 64) pass++;
+    gpu_set_tile_size(ts0); total++; if (gpu_get_tile_size() == ts0) pass++;
+
+    // 3. smp_cores (1..4).
+    I64 sc0 = gpu_get_smp_cores();
+    gpu_set_smp_cores(1);  total++; if (gpu_get_smp_cores() == 1) pass++;
+    gpu_set_smp_cores(4);  total++; if (gpu_get_smp_cores() == 4) pass++;
+    gpu_set_smp_cores(99); total++; if (gpu_get_smp_cores() == 4) pass++;
+    gpu_set_smp_cores(0);  total++; if (gpu_get_smp_cores() == 1) pass++;
+    gpu_set_smp_cores(sc0); total++; if (gpu_get_smp_cores() == sc0) pass++;
+
+    // 4. zprecision (16 or 32 bits).
+    I64 zp0 = gpu_get_zprecision();
+    gpu_set_zprecision(32); total++; if (gpu_get_zprecision() == 32) pass++;
+    gpu_set_zprecision(16); total++; if (gpu_get_zprecision() == 16) pass++;
+    gpu_set_zprecision(7);  total++; if (gpu_get_zprecision() == 16) pass++;
+    gpu_set_zprecision(zp0); total++; if (gpu_get_zprecision() == zp0) pass++;
+
+    // 5. vsync (0/1).
+    I64 vs0 = gpu_get_vsync();
+    gpu_set_vsync(1);   total++; if (gpu_get_vsync() == 1) pass++;
+    gpu_set_vsync(0);   total++; if (gpu_get_vsync() == 0) pass++;
+    gpu_set_vsync(vs0); total++; if (gpu_get_vsync() == vs0) pass++;
+
+    // 6. 1 vs 4 workers -> byte-identical tiled output (deterministic assignment).
+    total++; if (RasterTestSmpCoresDeterminism() != 0) pass++;
+
+    if (pass == total) doldoc_printf("GPUCFG: PASS (%lld/%lld)\n", pass, total);
+    else doldoc_printf("GPUCFG: FAIL (%lld/%lld)\n", pass, total);
+}
+
 // P3.0 kernel-status report. Informational during P3; the TICK / SMP / BSOD
 // hard assertions are promoted to pass/fail as each capability lands
 // (P3.4 / P3.6 / P3.7).
@@ -1364,6 +1412,7 @@ U0 SelfTestRun() {
     SelfTestClip();
     SelfTestNeonMem();
     SelfTestTile();
+    SelfTestGpuConfig();
     SelfTestMath3DParallel();
     FontsSelfTest();
     SelfTest3D();

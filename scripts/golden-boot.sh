@@ -231,6 +231,13 @@ else
         echo "  [FAIL] parallel vertex transform: ${m3line:-<none>} (want MATH3DPAR: PASS)"
         fail=1
     fi
+    gcfline="$(printf '%s\n' "$out" | grep -a 'GPUCFG: ' | tail -1)"
+    if printf '%s' "$gcfline" | grep -aq 'PASS'; then
+        echo "  [PASS] $gcfline (5 GPU config knobs: read/write/clamp/restore + 1v4 tiles)"
+    else
+        echo "  [FAIL] GPU config plane: ${gcfline:-<none>} (want GPUCFG: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

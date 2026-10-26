@@ -437,6 +437,20 @@ from `GfxDeviceGetMode()` (single source of truth). The complete gate passes in 
 `GOLDEN BOOT: PASS`, `RENDER 0xD28836F` bit-exact, `TILE: PASS`, `DETERMINISM: PASS (1 vs 4 cores)`,
 `SELFTEST 123/123`, `PARITY 92/92`, `CENSUS 181`, `SELF-HOST: PASS` (D50). **P7.4 is DONE.**
 
+### P7.5 — unified GPU config plane + VirtIO display batching — **[REAL]**
+
+`apps/GpuConfig.HC` (new) holds ONE canonical `CGpuConfig g_gpu_cfg` with five clamped knobs — `buffer_mode`
+(0 single/direct, 1 double, 2 triple), `tile_size` (32/64), `smp_cores` (1..4), `zprecision` (16/32), `vsync`
+(0/1) — read by Render/RasterTile/GfxDevice through `gpu_get_*` accessors (no cross-module struct access; the
+old split `g_gfx_cfg` is gone). Buffer mode drives Render's triple-buffer rotation, tile size feeds
+`RasterSceneBegin`→`TILE_W/H`, smp_cores caps `RasterSceneEndSmp`, zprecision selects a 16- or 32-bit Z buffer
+(width-parameterized depth ops; the 16-bit NEON span is used only in 16-bit mode), vsync drives the CNTVCT
+pacing. `apps/GfxDevice.HC` gains `VirtioGpuSubmitBatch2/3` (transfer+flush / +scanout in one virtqueue
+transaction) and `VirtioGpuPageFlip` (scanout switch, no framebuffer copy); `VirtioGpuFlushRect` now batches.
+`SelfTestGpuConfig` → `GPUCFG: PASS (21/21)`. Gate passes in **standard and `-icount`** modes (D51). A
+self-hosted-compiler limitation surfaced here (a cast of a struct array member followed by indexing) and was
+avoided by typing the arena depth `U16 depth[8192]`.
+
 ---
 
 ## L. Upstream salvage audit — the original C repo (`36ca4b0`) vs current HolyC

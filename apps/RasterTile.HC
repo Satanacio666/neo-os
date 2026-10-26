@@ -37,6 +37,11 @@ U16 *g_zbuf = NULL;
 I64 g_zbuf_w = 0;
 I64 g_zbuf_h = 0;
 I64 g_zbuf_cap = 0;
+I64 g_zbuf_elem = 0;   // element width (bytes) the current g_zbuf was allocated with
+// P7.5: Z precision. The depth buffer stores 16-bit (default) or 32-bit words;
+// g_rs_z_elem is the element width in bytes and g_rs_z_max the clamp ceiling.
+I64 g_rs_z_elem = 2;
+I64 g_rs_z_max = 65534;
 
 // ==============================================================================
 // P7.3: L1 tile binning + per-core scratchpad + stnp streaming resolve.
@@ -240,7 +245,7 @@ I64 g_rctx_ready = 0;
 // uses arena 0 for the single-threaded path. Colour/depth are 64x64 = TILE_W*TILE_H.
 class CFrameArena {
   U32 color[4096];
-  U16 depth[4096];
+  U16 depth[8192];   // 4096 px * up to 4 bytes (P7.5: 16 or 32-bit Z)
   CRasterCtx *ctx;   // this core's raster context (bound in RasterCtxInit)
   I64 tile;          // tile index currently resident in the scratchpad
   I64 rendered;      // tiles rendered by this core (telemetry / self-test)
@@ -314,9 +319,9 @@ U0 RasterCtxInit() {
 // its own context directly.
 // ------------------------------------------------------------------------------
 U0 RasterSetZ(I64 z0, I64 z1, I64 z2) {
-  if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
-  if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
-  if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
+  if (z0 < 0) z0 = 0; if (z0 > g_rs_z_max) z0 = g_rs_z_max;
+  if (z1 < 0) z1 = 0; if (z1 > g_rs_z_max) z1 = g_rs_z_max;
+  if (z2 < 0) z2 = 0; if (z2 > g_rs_z_max) z2 = g_rs_z_max;
   g_rctx[0].z0 = z0;
   g_rctx[0].z1 = z1;
   g_rctx[0].z2 = z2;
@@ -479,23 +484,38 @@ U0 RasterInit() {
   I64 h = gfx_get_canvas_height();
   if (w <= 0) w = 1024;
   if (h <= 0) h = 768;
-  if (g_zbuf && g_zbuf_w == w && g_zbuf_h == h) return;
-  if (g_zbuf && (w * h > g_zbuf_cap)) {
+  if (g_zbuf && g_zbuf_w == w && g_zbuf_h == h && g_zbuf_elem == g_rs_z_elem) return;
+  if (g_zbuf) {
     kfree(g_zbuf);
     g_zbuf = NULL;
+    g_zbuf_cap = 0;
   }
   if (!g_zbuf) {
-    g_zbuf = kmalloc(w * h * 2);
+    g_zbuf = kmalloc(w * h * g_rs_z_elem);
     g_zbuf_cap = w * h;
+    g_zbuf_elem = g_rs_z_elem;
   }
   g_zbuf_w = w;
   g_zbuf_h = h;
 }
 
+// P7.5: set the Z-buffer precision (16 or 32 bits). Reallocates the depth buffer
+// with the new element width; the rasterizer's scalar/NEON depth ops read g_rs_z_elem.
+U0 RasterSetZPrecision(I64 bits) {
+  I64 elem = (bits >= 32) ? 4 : 2;
+  if (elem == g_rs_z_elem) return;
+  g_rs_z_elem = elem;
+  g_rs_z_max = (elem == 4) ? 4294967294 : 65534;
+  // RasterInit sees g_zbuf_elem != g_rs_z_elem and reallocates (no extra kfree
+  // site: census-neutral).
+  RasterInit();
+  RasterClearZ();
+}
+
 U0 RasterClearZ() {
   RasterInit();
   if (!g_zbuf) return;
-  memset(g_zbuf, 0xFF, g_zbuf_w * g_zbuf_h * 2);
+  memset(g_zbuf, 0xFF, g_zbuf_w * g_zbuf_h * g_rs_z_elem);
 }
 
 I64 PinedaEdge(I64 ax, I64 ay, I64 bx, I64 by, I64 px, I64 py) {
@@ -644,6 +664,17 @@ I64 RasterSpanNEON(CRasterSpan *s) {
   };
 }
 
+// P7.5: width-parameterized depth access (16-bit or 32-bit element). ctx->zbuf is
+// the raw byte base; g_rs_z_elem selects the element width.
+I64 RasterZGet(CRasterCtx *ctx, I64 zi) {
+  if (g_rs_z_elem == 4) { U32 *z = (U32*)ctx->zbuf; return (I64)z[zi]; }
+  return (I64)ctx->zbuf[zi];
+}
+U0 RasterZPut(CRasterCtx *ctx, I64 zi, I64 v) {
+  if (g_rs_z_elem == 4) { U32 *z = (U32*)ctx->zbuf; z[zi] = (U32)v; return; }
+  ctx->zbuf[zi] = (U16)v;
+}
+
 // Scalar single-pixel path (head/tail), bit-identical to the NEON body.
 I64 RasterPixelScalar(CRasterCtx *ctx, I64 xx, I64 yy) {
   I64 w0 = PinedaEdge(ctx->bx, ctx->by, ctx->cx, ctx->cy, xx, yy);
@@ -652,10 +683,10 @@ I64 RasterPixelScalar(CRasterCtx *ctx, I64 xx, I64 yy) {
   if ((w0 + ctx->b0) >= 0 && (w1 + ctx->b1) >= 0 && (w2 + ctx->b2) >= 0) {
     I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
     if (pz < 0) pz = 0;
-    if (pz > 65534) pz = 65534;
+    if (pz > g_rs_z_max) pz = g_rs_z_max;
     I64 zi = yy * ctx->cw + xx;
-    if (ctx->depth_test == 0 || pz < ctx->zbuf[zi]) {
-      if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+    if (ctx->depth_test == 0 || pz < RasterZGet(ctx, zi)) {
+      if (ctx->depth_test != 0) RasterZPut(ctx, zi, pz);
       ctx->fb[yy * ctx->pitch + xx] = ctx->color;
       return 1;
     }
@@ -794,10 +825,10 @@ I64 RasterPixelShaded(CRasterCtx *ctx, I64 xx, I64 yy) {
   if ((w0 + ctx->b0) >= 0 && (w1 + ctx->b1) >= 0 && (w2 + ctx->b2) >= 0) {
     I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
     if (pz < 0) pz = 0;
-    if (pz > 65534) pz = 65534;
+    if (pz > g_rs_z_max) pz = g_rs_z_max;
     I64 zi = yy * ctx->cw + xx;
-    if (ctx->depth_test == 0 || pz < ctx->zbuf[zi]) {
-      if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+    if (ctx->depth_test == 0 || pz < RasterZGet(ctx, zi)) {
+      if (ctx->depth_test != 0) RasterZPut(ctx, zi, pz);
       ctx->fb[yy * ctx->pitch + xx] = RasterShadeColorAt(ctx, w0, w1, w2);
       return 1;
     }
@@ -814,9 +845,9 @@ I64 RasterPixelTextured(CRasterCtx *ctx, I64 xx, I64 yy) {
   if ((w0 + ctx->b0) < 0 || (w1 + ctx->b1) < 0 || (w2 + ctx->b2) < 0) return 0;
   I64 pz = (w0 * ctx->az + w1 * ctx->bz + w2 * ctx->cz) / ctx->area;
   if (pz < 0) pz = 0;
-  if (pz > 65534) pz = 65534;
+  if (pz > g_rs_z_max) pz = g_rs_z_max;
   I64 zi = yy * ctx->cw + xx;
-  if (ctx->depth_test != 0 && pz >= ctx->zbuf[zi]) return 0;
+  if (ctx->depth_test != 0 && pz >= RasterZGet(ctx, zi)) return 0;
 
   F64 l0 = (F64)w0 / (F64)ctx->area;
   F64 l1 = (F64)w1 / (F64)ctx->area;
@@ -830,7 +861,7 @@ I64 RasterPixelTextured(CRasterCtx *ctx, I64 xx, I64 yy) {
   U32 src = RasterTexModulate(texel, ctx->color);
   U32 dst = ctx->fb[yy * ctx->pitch + xx];
   U32 out = RasterBlendSrcAlpha(ctx, src, dst);
-  if (ctx->depth_test != 0) ctx->zbuf[zi] = pz;
+  if (ctx->depth_test != 0) RasterZPut(ctx, zi, pz);
   ctx->fb[yy * ctx->pitch + xx] = out;
   return 1;
 }
@@ -847,17 +878,23 @@ I64 RasterRow(CRasterCtx *ctx, I64 yy) {
   I64 max_x = ctx->max_x;
   I64 tex_active = ctx->tex_active;
   I64 smode = ctx->shade_mode;
+  // P7.5: the NEON span kernel is a 16-bit-depth kernel, so it is used only when
+  // the Z buffer is 16-bit. In 32-bit mode every pixel goes through the scalar
+  // path (same maths, width-parameterized depth access).
+  I64 use_neon = (g_rs_z_elem == 2) ? 1 : 0;
   if (tex_active) {
     I64 xx = min_x;
     I64 drawn = 0;
-    while (xx < max_x && (xx & 7) != 0) {
+    while (xx < max_x && (use_neon == 0 || (xx & 7) != 0)) {
       drawn = drawn + RasterPixelTextured(ctx, xx, yy);
       xx = xx + 1;
     }
-    I64 tb = (max_x - xx) >> 3;
-    if (tb > 0) {
-      drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 1);
-      xx = xx + (tb << 3);
+    if (use_neon != 0) {
+      I64 tb = (max_x - xx) >> 3;
+      if (tb > 0) {
+        drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 1);
+        xx = xx + (tb << 3);
+      }
     }
     while (xx < max_x) {
       drawn = drawn + RasterPixelTextured(ctx, xx, yy);
@@ -867,15 +904,17 @@ I64 RasterRow(CRasterCtx *ctx, I64 yy) {
   }
   I64 xx = min_x;
   I64 drawn = 0;
-  while (xx < max_x && (xx & 7) != 0) {
+  while (xx < max_x && (use_neon == 0 || (xx & 7) != 0)) {
     if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
     else drawn = drawn + RasterPixelScalar(ctx, xx, yy);
     xx = xx + 1;
   }
-  I64 blocks = (max_x - xx) >> 3;
-  if (blocks > 0) {
-    drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 0);
-    xx = xx + (blocks << 3);
+  if (use_neon != 0) {
+    I64 blocks = (max_x - xx) >> 3;
+    if (blocks > 0) {
+      drawn = drawn + RasterSpanBlocks(ctx, xx, yy, 0);
+      xx = xx + (blocks << 3);
+    }
   }
   while (xx < max_x) {
     if (smode != 0) drawn = drawn + RasterPixelShaded(ctx, xx, yy);
@@ -974,6 +1013,10 @@ U0 RasterSetCull(I64 en) { g_rs_cull = en ? 1 : 0; }
 
 U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   RasterInit();
+  // P7.5: the tile size is the GPU config plane's (32 or 64). Pulled at scene
+  // begin so a live gpu_set_tile_size() takes effect on the next frame.
+  TILE_W = gpu_get_tile_size();
+  TILE_H = gpu_get_tile_size();
   g_rs_target = GfxDeviceTarget();
   g_rs_pitch = gfx_get_canvas_pitch();
   g_rs_vx = vx; g_rs_vy = vy; g_rs_vw = vw; g_rs_vh = vh;
@@ -1143,15 +1186,16 @@ U0 RasterRenderTileCore(CFrameArena *a, I64 t) {
   I64 oy = g_rs_vy + ty * g_rs_tile_size;
   CRasterCtx *ctx = a->ctx;
   RenderNeonFill(a->color, 4096, g_rs_clear);
-  memset(a->depth, 0xFF, 4096 * 2);
+  memset(a->depth, 0xFF, 4096 * g_rs_z_elem);
   U32 *sv_fb = ctx->fb;
   I64 sv_pitch = ctx->pitch;
   I64 sv_cw = ctx->cw;
   U16 *sv_zb = ctx->zbuf;
   I64 sv_zw = ctx->zbuf_w;
   I64 sv_zh = ctx->zbuf_h;
-  ctx->fb = a->color; ctx->pitch = 64; ctx->cw = 64;
-  ctx->zbuf = a->depth; ctx->zbuf_w = 64; ctx->zbuf_h = 64;
+  // P7.5: tile geometry follows the live tile size (32 or 64).
+  ctx->fb = a->color; ctx->pitch = TILE_W; ctx->cw = TILE_W;
+  ctx->zbuf = a->depth; ctx->zbuf_w = TILE_W; ctx->zbuf_h = TILE_H;
   I64 p = 0;
   while (p < RASTER_MAX_PRODUCERS) {
     CRasterBin *b = &g_rs_bins[p][t];
@@ -1194,11 +1238,17 @@ U0 RasterTileResolveCore(CFrameArena *a, I64 t) {
     U32 *src = &a->color[r * TILE_W];
     U32 *dst = &g_rs_target[(oy + r) * g_rs_pitch + ox];
     TileResolveRow(dst, src, tw);
-    U16 *zsrc = &a->depth[r * TILE_W];
-    I64 c = 0;
-    while (c < tw) {
-      g_zbuf[(oy + r) * g_zbuf_w + ox + c] = zsrc[c];
-      c = c + 1;
+    // P7.5: copy depth at the live element width (16 or 32-bit).
+    if (g_rs_z_elem == 4) {
+      U32 *zsrc32 = (U32*)&a->depth[0] + r * TILE_W;
+      U32 *zdst32 = (U32*)&g_zbuf[0] + (oy + r) * g_zbuf_w + ox;
+      I64 c = 0;
+      while (c < tw) { zdst32[c] = zsrc32[c]; c = c + 1; }
+    } else {
+      U16 *zsrc16 = &a->depth[r * TILE_W];
+      U16 *zdst16 = &g_zbuf[(oy + r) * g_zbuf_w + ox];
+      I64 c = 0;
+      while (c < tw) { zdst16[c] = zsrc16[c]; c = c + 1; }
     }
     r = r + 1;
   }
@@ -1248,6 +1298,11 @@ U0 RasterSceneEndSmp() {
   if (!g_rs_target) return;
   I64 cores = (I64)SmpOnlineCoreCount();
   if (cores > RC_MAX_CORES) cores = RC_MAX_CORES;
+  // P7.5: the GPU config plane caps the worker count (gpu_set_smp_cores, 1..4).
+  // cores is the count of cores to USE (core 0 dispatches, so workers = cores-1).
+  I64 cfg_cores = gpu_get_smp_cores();
+  if (cfg_cores < 1) cfg_cores = 1;
+  if (cores > cfg_cores) cores = cfg_cores;
   g_rs_next_tile = 0;
   g_rs_smp_workers = 0;
   __dmb_ish(); // publish the reset cursor before any worker can observe it
@@ -1280,6 +1335,56 @@ U0 RasterSceneEnd() {
   I64 nt = g_rs_cols * g_rs_rows;
   I64 t = 0;
   while (t < nt) { RasterRenderTile(t); RasterTileResolve(t); t = t + 1; }
+}
+
+// P7.5: render a scene with gpu_set_smp_cores(1) then (4) and assert the tiled
+// framebuffer is byte-identical — i.e. the SMP worker count does not change the
+// output (deterministic tile assignment). Returns 1 on pass, 0 on mismatch.
+U32 g_p75_smp_snap[256 * 256];
+
+I64 RasterTestSmpCoresDeterminism() {
+  RasterInit();
+  U32 *fb = GfxDeviceTarget();
+  if (!fb) return 0;
+  I64 pit = gfx_get_canvas_pitch();
+  I64 R = 256;
+  I64 saved_cores = gpu_get_smp_cores();
+  I64 saved_mode = GfxDeviceGetMode();
+  CRasterVertex v[3];
+
+  I64 pass = 1;
+  I64 run = 0;
+  while (run < 2) {
+    if (run == 0) gpu_set_smp_cores(1); else gpu_set_smp_cores(4);
+    GfxDeviceSetMode(RASTER_MODE_SMP_TILED);
+    gfx_clear(0xFF202020);
+    RasterClearZ();
+    RasterSceneBegin(0, 0, R, R, 0xFF202020);
+    v[0].x = 10.0;  v[0].y = 10.0;  v[0].z = 100;
+    v[1].x = 240.0; v[1].y = 40.0;  v[1].z = 200;
+    v[2].x = 30.0;  v[2].y = 230.0; v[2].z = 300;
+    RasterSceneAddTriangle(v, 0xFFE04010);
+    v[0].x = 200.0; v[0].y = 200.0; v[0].z = 50;
+    v[1].x = 40.0;  v[1].y = 220.0; v[1].z = 150;
+    v[2].x = 230.0; v[2].y = 60.0;  v[2].z = 250;
+    RasterSceneAddTriangle(v, 0xFF00A0FF);
+    RasterSceneEnd();
+    I64 y = 0;
+    while (y < R) {
+      I64 x = 0;
+      while (x < R) {
+        if (run == 0) g_p75_smp_snap[y * R + x] = fb[y * pit + x];
+        else if (fb[y * pit + x] != g_p75_smp_snap[y * R + x]) pass = 0;
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    run = run + 1;
+  }
+
+  gpu_set_smp_cores(saved_cores);
+  GfxDeviceSetMode(saved_mode);
+  return pass;
 }
 
 // F4 benchmark: build a full-canvas grid scene (nx*ny cells, 2 triangles each),
@@ -1408,6 +1513,7 @@ U0 RasterSelfTestTile() {
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterSceneEnd();
   I64 diff = 0;
+  I64 zdiff = 0;
   I64 immed_col = 0;
   I64 tiled_col = 0;
   y = 0;
@@ -1419,13 +1525,13 @@ U0 RasterSelfTestTile() {
       if (ta == COL) tiled_col = tiled_col + 1;
       if (tb == COL) immed_col = immed_col + 1;
       if (ta != tb) diff = diff + 1;
-      if (g_zbuf[y * zw + x] != g_tile_snap_zb[y * R + x]) diff = diff + 1;
+      if (g_zbuf[y * zw + x] != g_tile_snap_zb[y * R + x]) { diff = diff + 1; zdiff = zdiff + 1; }
       x = x + 1;
     }
     y = y + 1;
   }
   if (immed_col == 0 || tiled_col != immed_col) { ok = 0; doldoc_printf("[TILE] coverage immed=%lld tiled=%lld\n", immed_col, tiled_col); }
-  if (diff != 0) { ok = 0; doldoc_printf("[TILE] tiled!=immediate diff=%lld\n", diff); }
+  if (diff != 0) { ok = 0; doldoc_printf("[TILE] tiled!=immediate diff=%lld zdiff=%lld\n", diff, zdiff); }
 
   // (2) shared-edge square [60,120)^2 straddling 4 tiles: no gaps.
   gfx_clear(BG);
@@ -1454,7 +1560,8 @@ U0 RasterSelfTestTile() {
 
   // (3) no write past the scratchpad: guard words at the head of core 1's arena.
   g_frame_arenas[1].color[0] = 0xDEADBEEF; g_frame_arenas[1].color[1] = 0xDEADBEEF;
-  g_frame_arenas[1].depth[0] = 0x1234;     g_frame_arenas[1].depth[1] = 0x5678;
+  U16 *g1d = &g_frame_arenas[1].depth[0];
+  g1d[0] = 0x1234; g1d[1] = 0x5678;
   RasterSceneBegin(0, 0, R, R, BG);
   g_tile_tmpv[0].x = 0.0;   g_tile_tmpv[0].y = 0.0;   g_tile_tmpv[0].z = 1;
   g_tile_tmpv[1].x = 300.0; g_tile_tmpv[1].y = 0.0;   g_tile_tmpv[1].z = 1;
@@ -1466,7 +1573,7 @@ U0 RasterSelfTestTile() {
   RasterSceneAddTriangle(g_tile_tmpv, COL);
   RasterRenderTile(0);
   if (g_frame_arenas[1].color[0] != 0xDEADBEEF || g_frame_arenas[1].color[1] != 0xDEADBEEF) { ok = 0; doldoc_print("[TILE] color scratchpad overrun\n"); }
-  if (g_frame_arenas[1].depth[0] != 0x1234 || g_frame_arenas[1].depth[1] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
+  if (g1d[0] != 0x1234 || g1d[1] != 0x5678) { ok = 0; doldoc_print("[TILE] depth scratchpad overrun\n"); }
 
   // (4) back-face cull (opt-in): a back-facing triangle is rejected, a front-facing
   //     one still renders. Default is OFF, so checks (1)-(3) above are unaffected.

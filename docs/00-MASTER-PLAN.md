@@ -62,7 +62,7 @@ no forward declarations; no hardcoded themes/grids/windows.
 | **P4** | Rendering unification (merges) | ✅ **DONE** — P4.0 ✅ (render gate + bench + inventory); P4.1 ✅ (one `GfxDevice.HC`, virtio-gpu command fix); P4.2 ✅ (one rasterizer with real Z + NEON 8-px span, 4.46× + **Compiler.HC global-pointer width fix**); P4.3 ✅ (textures/perspective/filters/blend) + **p4.3b ✅** (NEON textured span + **D7 struct-member pointer root fix**) + **P4.4 ✅** (merged `Fonts.HC` + boot-baked AA atlas) + **P4.5 ✅** (per-fragment Blinn-Phong + Gouraud in the one NEON kernel, `FRSQRTE` normalize, gamma; + **D11 cross-unit F64 return-type root fix** that unblocked the gears) + **P4.6 ✅** (fragment-shader VM: 2×2 NEON quad, `dFdx`/`dFdy`, execution masking, Perlin/fBm/Mandelbulb/SDF library, 4-lane raymarcher; + **D13**, and the local-array/pointer-pointee F64 root fixes) + **P4.7 ✅** (OBJ mesh ingestion: streaming parser + quad triangulation rendering through the one pipeline; + **D14** redeclared-local type-flag root fix, **D15** struct-member array `N*M` dimension root fix in both `Compiler.HC` and the C seed) + **P4.8 ✅** (merge/delete/verify: one damage tracker + one present + `apps/Theme.HC` theme owner; dead-code purge; **determinism gate** proving `0xD28836F` byte-identical on 1 vs 4 cores — doc 2 §P4, doc 3 §3.1, doc 4 D16) | one `GfxDevice` + one tiled rasterizer + one font + one fragment VM + one mesh path + one theme owner |
 | **P5** | DolDoc (real model + dissolution) | ✅ **DONE** — `DolDoc.HC` rewritten as a genuine **CDoc/CTree** (flat index-linked `CDocNode` tree + per-character attribute arena `g_doc_attr[fg|bg]`); the full two-letter tag set (`TX CR SR CU TB CL PB PL LM RM HD FO ID FD/BD/FG/BG PT WW UL IV BK SX SY CM AN LK BT DA MA SP FI`) incl. `$MA` macros, `$DA` forms, `$AN` anchors, `$ID` trees, typed `$LK` links, word-wrap; **windows are documents** (`$WIN$`/`$SPLIT$`/`$BLUR$`/`$ELEV$`); **`WM.HC` and `Compositor.HC` DELETED** (desktop/window/damage/present/effects absorbed into DolDoc); reactive cells (`$SL`/`$DA` target= binding); `$FI` include (RedSea doc persistence); `g_doc_dirty_mask` shift fixed; new `DOLDOC: PASS` gate (doc 2 §P5, doc 4 **D17/D18/D19/D20**) | no char grid; one CDoc/CTree; windows are documents; 34 modules |
 | **P6** | Shell (action executor over a CDoc) | ✅ **DONE** — `Shell.HC` is now an **O(1) action executor**: FNV-1a `CShellCmd` registry (`shell_register_cmd`/`ShellFindCmd`, real hash dispatch replacing the ~50-branch if/else ladder); the **action protocol** `DOC_ACT_{RUN,OPEN,SET,CLONE,FOCUS}` (ring queue in `DolDoc.HC` + `DolDocPushAction`/`DolDocPollAction`/`ShellDrainActions`); **the `DolDoc → Shell` cycle is broken** (DolDoc has 0 `shell_run_command`/`shell_poll` references; it emits actions and calls a Shell-registered pump via a function pointer); shell output is a CDoc; `top`/`filer`/`edit` tools render interactive CDoc (buttons/progress/line-numbered text); `WFE` idle; new `SHELL: PASS` gate (doc 2 §P6, doc 4 **D21**) | no cycles; shell output is a CDoc |
-| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) + **P7.2 ✅** (near-plane clipper `CLIP: PASS` + NEON memory kernels `NEONMEM: PASS`) + **P7.3 ✅** (L1 tile binning + per-core scratchpad + `stnp` resolve, `TILE: PASS`) + **P7.4 ✅ DONE** (SMP tiled rasterization, deterministic multi-core: F0–F7 — per-core `CRasterCtx`, sort-middle records/bins/arenas, SMP tile dispatch ~3× MTTCG, parallel front-end, mesh batch transform, default-on) | one real 40-phase suite; profilers merged |
+| **P7** | Benchmark (one HolyGL-max suite) | 🟡 **P7.0 ✅ + P7.0-audit ✅ + P7.1 ✅** (HolyGL GL 1.3 surface, `GL: PASS`) + **P7.2 ✅** (near-plane clipper `CLIP: PASS` + NEON memory kernels `NEONMEM: PASS`) + **P7.3 ✅** (L1 tile binning + per-core scratchpad + `stnp` resolve, `TILE: PASS`) + **P7.4 ✅ DONE** (SMP tiled rasterization, deterministic multi-core: F0–F7 — per-core `CRasterCtx`, sort-middle records/bins/arenas, SMP tile dispatch ~3× MTTCG, parallel front-end, mesh batch transform, default-on) + **P7.5 ✅ DONE** (unified `CGpuConfig` 5-knob plane + VirtIO batch2/3 + page-flip, `GPUCFG: PASS`) | one real 40-phase suite; profilers merged |
 | **P8** | Self-hosting everything | ⬜ | boot as a document; only boot C remains |
 | **P9** | GPU provider | ⬜ | virtio-gpu 3D / native |
 | **P10** | Run anything + MCU cluster | ⬜ | `HolyPort` + `Surface`/`remote` |
@@ -306,10 +306,14 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > shader VM `CShaderCtx`, D46); F4 ✅ (SMP tile dispatch `RasterSceneEndSmp`/`RasterTileWorker`, lock-free
 > LDAXR/STLXR stealing, **~3× MTTCG speed-up**, D47); F5 ✅ (parallel geometry front-end + `#define` parser root
 > fix, D48); F6 ✅ (`MeshRender` batch transform via `Math3DTransformParallel`, D49); F7 ✅ (default
-> `GFX_MODE_SMP_TILED`, D50). **next = P7.5** (runbook in `02-TASKLIST.md` §P7.5). Gate (standard **and**
-> `-icount`): `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`,
-> `MESH: PASS`, `MATH3DPAR: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 181`,
-> `SELF-HOST: PASS`, `HEAPINT: PASS`, `GOLDEN BOOT: PASS`.
+> `GFX_MODE_SMP_TILED`, D50). **P7.5 ✅ DONE — unified GPU config plane + VirtIO display batching** (D51):
+> one canonical `CGpuConfig g_gpu_cfg` (`apps/GpuConfig.HC`) with five clamped knobs (buffer_mode, tile_size,
+> smp_cores, zprecision, vsync) read through accessors by Render/RasterTile/GfxDevice; VirtIO batch2/batch3
+> submission + hardware page-flip; `SelfTestGpuConfig` → `GPUCFG: PASS (21/21)`. **next = P7.6/P8.0**
+> (runbook in `02-TASKLIST.md`). Gate (standard **and** `-icount`): `SELFTEST 123/123`,
+> `PARITY 92/92 (0 diff)`, `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`,
+> `GPUCFG: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 181`, `SELF-HOST: PASS`, `HEAPINT: PASS`,
+> `GOLDEN BOOT: PASS`.
 
 ---
 
@@ -588,6 +592,15 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
     32-bit Z resolves a Z-fighting case the 16-bit path merges, tile size changes the binner, SMP cores changes
     the dispatch count); live device `VirtioGpuIsAvailable()==1` with batched flush returning 0;
     `RENDER: PASS (0xD28836F)` on the 16-bit default; `CENSUS: PASS (181)`.
+- **Progress (2026-10) — ✅ DONE (D51).** Delivered as **one canonical `CGpuConfig g_gpu_cfg`** in the new
+  `apps/GpuConfig.HC` (replacing the split `g_gfx_cfg`), exposing the five clamped knobs `buffer_mode`
+  (single/double/triple), `tile_size` (32/64), `smp_cores` (1..4), `zprecision` (16/32) and `vsync` (0/1) via
+  `gpu_get_*`/`gpu_set_*`; Render/RasterTile/GfxDevice PULL them (no cross-module struct access). VirtIO
+  `VirtioGpuSubmitBatch2/3` (transfer+flush / +scanout in one virtqueue transaction) and `VirtioGpuPageFlip`
+  land in `GfxDevice.HC`. `SelfTestGpuConfig` → `GPUCFG: PASS (21/21)`. The live-config DolDoc window and a
+  dedicated `z32_span.s` kernel were **not** used: the 32-bit path reuses the width-parameterized scalar
+  depth ops (one rasterizer, no second kernel), and the config window is deferred. Gate passes in standard
+  and `-icount` modes (see D51).
 - **Risks/ordering.** Depends on P7.3 (tile size/cores must be real first). Batch3 must preserve response
   ordering; a batch failure must not leave a half-issued frame. This step lands the **plumbing P9 reuses**.
 
