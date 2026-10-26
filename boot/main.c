@@ -66,6 +66,8 @@ extern uint32_t acpi_uart_type(void);
 extern uint32_t acpi_gic_version(void);
 extern uint32_t acpi_timer_virt(void);
 extern uint32_t acpi_timer_phys(void);
+extern uint64_t acpi_gicc_base(void);
+extern uint32_t acpi_source(void);
 extern uint32_t acpi_cpu_count(void);
 extern void    *g_acpi_rsdp;
 extern void    *g_fdt_blob;
@@ -588,6 +590,8 @@ int main(int argc, char **argv)
     symbols_register("acpi_gic_version", (void*)acpi_gic_version, SYM_FUNC);
     symbols_register("acpi_timer_virt", (void*)acpi_timer_virt, SYM_FUNC);
     symbols_register("acpi_timer_phys", (void*)acpi_timer_phys, SYM_FUNC);
+    symbols_register("acpi_gicc_base", (void*)acpi_gicc_base, SYM_FUNC);
+    symbols_register("acpi_source", (void*)acpi_source, SYM_FUNC);
     symbols_register("acpi_cpu_count", (void*)acpi_cpu_count, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);

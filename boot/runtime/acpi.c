@@ -152,6 +152,8 @@ discovered_platform_t g_discovered_plat;
 /* Acessores para o HolyC e para a HAL. */
 uint64_t acpi_gicd_base(void)   { return g_discovered_plat.gicd_base; }
 uint64_t acpi_gicr_base(void)   { return g_discovered_plat.gicr_base; }
+uint64_t acpi_gicc_base(void)   { return g_discovered_plat.gicc_base; }
+uint32_t acpi_source(void)      { return g_discovered_plat.source; }
 uint64_t acpi_uart_base(void)   { return g_discovered_plat.uart_base; }
 uint32_t acpi_uart_type(void)   { return g_discovered_plat.uart_type; }
 uint32_t acpi_gic_version(void) { return g_discovered_plat.gic_version; }

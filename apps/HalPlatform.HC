@@ -208,6 +208,50 @@ U0 HalPlatformDetectByMidr() {
   HalSetPlatform(&g_plat_qemu);
 }
 
+// E3 — Sobreposicao da descoberta de firmware (ACPI agora, FDT depois).
+//
+// PRIORIDADE: descoberta > tabela estatica > defaults. So os campos que o
+// firmware descreve sao sobrescritos; o que ele NAO descreve permanece da tabela.
+//
+// POR QUE SOBREPOR E NAO SUBSTITUIR: o ACPI descreve os dispositivos
+// ARQUITETURAIS (GIC, UART, timer, CPUs) mas NAO descreve dispositivos de PLACA
+// — o virtio-mmio do QEMU nao aparece em ACPI nenhuma. Zerar a tabela inteira
+// quebraria o virtio, e o virtio nao e "hardware suportado": e o barramento de
+// disco/entrada desta plataforma.
+//
+// INVARIANTE DA UNIVERSALIDADE: sem descoberta, nada muda => boota igual.
+// Nunca "boota ou nao".
+U0 HalPlatformOverlayDiscovery() {
+  if (acpi_source() == 0) return;          // descoberta INATIVA: nada muda
+  if (!g_current_platform) return;
+
+  U64 gicd = acpi_gicd_base();
+  U64 uart = acpi_uart_base();
+  if (gicd == 0 && uart == 0) return;      // firmware nao descreveu nada util
+
+  // Descoberta ATIVA: ela e a autoridade sobre os campos que possui. Atribuicao
+  // direta, sem "so se for diferente de zero" — porque zero e um valor legitimo
+  // (o GICv2 nao tem redistribuidor, e o MADT simplesmente nao traz o registro
+  // 0x0E). Confundir "ausente" com "nao descoberto" deixaria lixo da tabela.
+  g_current_platform->gicd_base   = gicd;
+  g_current_platform->gicr_base   = acpi_gicr_base();
+  g_current_platform->gicc_base   = acpi_gicc_base();
+  g_current_platform->uart_base   = uart;
+  g_current_platform->gic_version = acpi_gic_version();
+
+  g_hal_gicd_base    = g_current_platform->gicd_base;
+  g_hal_gicr_base    = g_current_platform->gicr_base;
+  g_hal_gicc_base    = g_current_platform->gicc_base;
+  g_hal_uart_base    = g_current_platform->uart_base;
+  g_hal_gic_version  = g_current_platform->gic_version;
+
+  // O timer so vem do firmware se o GTDT existir; sem ele, mantem o da tabela.
+  U32 tv = acpi_timer_virt();
+  if (tv != 0) g_current_platform->irq_timer = tv;
+
+  HalStrCpy(g_current_platform->name, "Firmware Discovered (ACPI)");
+}
+
 U0 HalPlatformInit() {
   U64 boot_frq = __mrs_cntfrq();
   if (boot_frq == 0) boot_frq = 62500000;
@@ -286,6 +330,8 @@ U0 HalPlatformInit() {
 
   // P1.2: escolhe a plataforma pelo silicio (MIDR_EL1), em vez de fixar o QEMU.
   HalPlatformDetectByMidr();
+  // E3: e o firmware tem a palavra final sobre o que ele mesmo descreve.
+  HalPlatformOverlayDiscovery();
 }
 
 I64 HalPlatformSelect(I64 p_id) {
