@@ -15,6 +15,12 @@ uint64_t g_free_ram_bytes = 0;
 static uint64_t s_kernel_heap_size = KERNEL_HEAP_DEFAULT;
 static uint64_t s_jit_code_pool_size = JIT_CODE_POOL_DEFAULT;
 
+/* P8 — tamanhos FIXOS. Ver a nota em main() sobre determinismo de memoria: sem
+ * isto o heap e o pool do JIT mudam de endereco a cada boot, e o codigo emitido
+ * embute enderecos absolutos — o cache de JIT nunca poderia validar. */
+#define NEO_HEAP_BYTES      (64ULL * 1024 * 1024)
+#define NEO_JIT_POOL_BYTES  (16ULL * 1024 * 1024)
+
 extern void install_vector_table(void);
 
 /* P5.2 — interface de system registers do GICv3 (kernel/arch/aarch64/gicv3.c) */
@@ -372,8 +378,23 @@ static void boot_probe_memory(void) {
     }
     g_total_ram_bytes = total_bytes;
     g_free_ram_bytes = free_bytes;
-    s_kernel_heap_size = boot_clamp_u64(free_bytes / 4, 16ULL * 1024 * 1024, 64ULL * 1024 * 1024);
-    s_jit_code_pool_size = boot_clamp_u64(free_bytes / 128, 4ULL * 1024 * 1024, 16ULL * 1024 * 1024);
+
+    // P8 — DETERMINISMO DE MEMORIA (pre-requisito do cache de JIT).
+    //
+    // ANTES: os tamanhos vinham da memoria LIVRE, que varia entre boots porque o
+    // firmware deixa estados ligeiramente diferentes. Medido em dois boots:
+    //   Scratch @ 0xB812A000 | Persistent Pool 15952 KB
+    //   Scratch @ 0xB6FB4000 | Persistent Pool 15964 KB
+    // O codigo emitido embute enderecos ABSOLUTOS (heap, funcoes do EFI, pool).
+    // Com o pool mudando de lugar a cada boot, qualquer cache validado por ancora
+    // de endereco NUNCA acertaria — seria peso morto com aparencia de otimizacao.
+    //
+    // AGORA: tamanhos FIXOS. O heap e o pool ficam no mesmo endereco em todo
+    // boot, e o cache pode validar. O ganho de "adaptar o tamanho a memoria livre"
+    // era ilusorio: 64 MB de heap e 16 MB de pool sao o teto do clamp de qualquer
+    // forma, e o pool nunca passa de ~16 MB em uso real.
+    s_kernel_heap_size   = NEO_HEAP_BYTES;
+    s_jit_code_pool_size = NEO_JIT_POOL_BYTES;
     printf("[BOOT] Memory map: total %llu MB, free %llu MB -> heap %llu MB, JIT pool %llu MB\r\n",
            (unsigned long long)(total_bytes / (1024 * 1024)),
            (unsigned long long)(free_bytes / (1024 * 1024)),
