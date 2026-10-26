@@ -68,39 +68,19 @@ jobs:
           make all -j"$(nproc)" 2>&1 | tee /tmp/build.log
           ls -la build/
 
-      - name: Gate — mede tempo ATÉ A SHELL (não o timeout)
+      - name: Gate completo no ARM64 (boot + selftest + screendump)
         run: |
-          BIOS=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
-          # /dev/kvm ausente no ubuntu-24.04-arm (medido: só kvm+tcg no binário, sem o nó)
-          ACCEL="-accel tcg,thread=multi,tb-size=1024"
-          echo "acelerador: $ACCEL"
-          # O QEMU NÃO termina sozinho: o guest fica na shell. Então medimos o instante
-          # em que 'DolDocShell active' aparece no serial, com polling — igual ao
-          # scripts/neo-perf.py. Medir a duração do processo mede o timeout, não o boot.
-          inicio=$(date +%s.%N)
-          qemu-system-aarch64 -M virt,gic-version=2 $ACCEL -cpu cortex-a76 \
-            -smp "$(nproc)" -m 2048 -bios "$BIOS" \
-            -device ramfb -device virtio-gpu-device,xres=1024,yres=768 \
-            -device virtio-keyboard-device -device virtio-tablet-device \
-            -drive file=build/disk.img,format=raw,id=d,if=none -device virtio-blk-pci,drive=d \
-            -drive file=build/redsea.img,format=raw,id=r,if=none -device virtio-blk-device,drive=r \
-            -display none -serial file:/tmp/gate.log &
-          QPID=$!
-          SHELL_T=""
-          for i in $(seq 1 900); do
-            if grep -aq 'DolDocShell active' /tmp/gate.log 2>/dev/null; then
-              SHELL_T=$(echo "$(date +%s.%N) - $inicio" | bc); break
-            fi
-            sleep 1
-          done
-          kill $QPID 2>/dev/null || true
-          wait $QPID 2>/dev/null || true
-          echo "TEMPO_ATE_SHELL=${SHELL_T:-NAO_CHEGOU} s"
-          grep -aE 'GOP FrameBufferBase|ALL 34 HOLYC|DolDocShell active' /tmp/gate.log | tail -3 || true
-          echo "--- rodando o gate completo (selftest in-guest) ---"
-          if [ -f scripts/neo-gate.py ]; then
-            timeout 900 python3 scripts/neo-gate.py 2>&1 | tail -25 || true
-          fi
+          # UM único QEMU: o neo-gate.py já boota, mede o tempo até a shell, roda o
+          # selftest in-guest pela UART e tira screendump. Antes eu subia um QEMU
+          # para medir e outro para o gate — o segundo falhava com lock do disk.img
+          # (medido no CI: ConnectionRefusedError no socket do monitor).
+          sudo rm -f /tmp/neo-*.sock /tmp/neo-*.log /tmp/neos_shell.ppm 2>/dev/null || true
+          echo "acelerador disponível:"
+          qemu-system-aarch64 -accel help || true
+          echo "--- gate ---"
+          timeout 900 python3 scripts/neo-gate.py 2>&1 | tee /tmp/gate-out.txt || true
+          echo "--- resumo ---"
+          grep -aE 'shell ativo|SELFTEST|PARITY|RENDER|CLIP|NEONMEM|GL: PASS' /tmp/gate-out.txt | tail -10 || true
 
       - name: Veredito e comparação
         run: |
@@ -110,11 +90,11 @@ jobs:
             echo ""
             echo "| modo | tempo | shell | 34 módulos |"
             echo "|---|---|---|---|"
-            echo "| tempo até a shell | $(grep -ao 'TEMPO_ATE_SHELL=[0-9.]*' /tmp/gate.log 2>/dev/null | tail -1 | cut -d= -f2) s |"
+            echo "| tempo até a shell | $(grep -ao 'shell ativo em: [0-9.]*' /tmp/gate-out.txt 2>/dev/null | tail -1 | sed 's/.*em: //') s |"
             echo "| /dev/kvm | $( [ -e /dev/kvm ] && echo presente || echo AUSENTE ) |"
             echo ""
             echo '```'
-            grep -aE 'SELFTEST|PARITY|RENDER|CLIP|NEONMEM' /tmp/gate-kvm.log /tmp/gate-tcg.log 2>/dev/null | tail -10 || true
+            grep -aE 'SELFTEST|PARITY|RENDER|CLIP|NEONMEM|GL: PASS' /tmp/gate-out.txt 2>/dev/null | tail -12 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
