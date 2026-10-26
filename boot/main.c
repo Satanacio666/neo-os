@@ -49,6 +49,12 @@ extern int64_t  neo_block_write(int idx, uint64_t lba, uint64_t count, const voi
 extern void neo_crash_dump_to_disk(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr);
 extern void neo_crash_set_heap(uint64_t base);
 extern void neo_crash_set_module(uint64_t idx, const char *name);
+
+/* E1 — descoberta da descricao de hardware (boot/runtime/fwdesc.c) */
+extern int      neo_fwdesc_probe(void);
+extern int      neo_fwdesc_has_dtb(void);
+extern int      neo_fwdesc_has_acpi(void);
+extern uint32_t neo_fwdesc_fdt_size(void);
 extern void     gicv3_bpr1_set(uint64_t v);
 extern uint64_t gicv3_bpr1_get(void);
 extern int      neo_pl011_available(void);
@@ -549,6 +555,13 @@ int main(int argc, char **argv)
     symbols_register("neo_crash_dump_to_disk", (void*)neo_crash_dump_to_disk, SYM_FUNC);
     symbols_register("neo_crash_set_heap", (void*)neo_crash_set_heap, SYM_FUNC);
     symbols_register("neo_crash_set_module", (void*)neo_crash_set_module, SYM_FUNC);
+
+    // E1 — descoberta de hardware pelo firmware (DTB/ACPI). O HolyC consulta isto
+    // para saber se ha descricao utilizavel antes de cair em defaults.
+    symbols_register("neo_fwdesc_probe", (void*)neo_fwdesc_probe, SYM_FUNC);
+    symbols_register("neo_fwdesc_has_dtb", (void*)neo_fwdesc_has_dtb, SYM_FUNC);
+    symbols_register("neo_fwdesc_has_acpi", (void*)neo_fwdesc_has_acpi, SYM_FUNC);
+    symbols_register("neo_fwdesc_fdt_size", (void*)neo_fwdesc_fdt_size, SYM_FUNC);
     symbols_register("enable_interrupts", (void*)enable_interrupts, SYM_FUNC);
     symbols_register("disable_interrupts", (void*)disable_interrupts, SYM_FUNC);
 
@@ -573,6 +586,11 @@ int main(int argc, char **argv)
     // nao podem mais ser feitas. E tambem aqui que descobrimos, na propria POCO,
     // o que o Renegade EDK2 expoe — sem supor nada sobre UFS ou USB.
     neo_block_probe();
+
+    // E1 — Descoberta da descricao de hardware entregue pelo firmware (DTB/ACPI).
+    // E o alicerce da universalidade: a partir daqui a plataforma deixa de ser
+    // uma tabela escrita a mao e passa a ser lida do que o firmware descreve.
+    neo_fwdesc_probe();
     // P2.3: the filesystem is owned by apps/RedSea.HC (no C redsea.c).
     symbols_register("symbols_report_unresolved", (void*)symbols_report_unresolved, SYM_FUNC);
     symbols_register("symbols_unresolved_count", (void*)symbols_unresolved_count, SYM_FUNC);
