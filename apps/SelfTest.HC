@@ -1323,6 +1323,23 @@ U0 SelfTestRun() {
     // corrupted the next heap block). The 16-byte `I64 g;` cell cannot hold
     // `I64 g[10]` (80 bytes) -> RE-DECL OVERFLOW (-1), and parity must hold.
     SelfTestCheck("neg_global_redecl_overflow", "I64 g_f0ro_x; I64 g_f0ro_x[10]; g_f0ro_x[0];", -1);
+    // P7.4 F1 (PASSO 2): deferred-offset lvalue + immediate-offset load/store. The
+    // member byte offset is folded into the LDR/STR unsigned-immediate field; when
+    // it does not fit (non-multiple of the width, or >= 4096*width) it is
+    // materialized. These lock in every width, both limits, chained members,
+    // variable-index member arrays, &member, compound ops, and — the bug that
+    // broke TEXTURE/SHADING/CLIP — an F64 member at a NON-8-aligned offset.
+    SelfTestCheck("f1_u8_odd_offset", "struct F1UO { U8 a; U8 b; U8 c; }; F1UO g_f1uo; g_f1uo.a=1; g_f1uo.b=2; g_f1uo.c=3; g_f1uo.a+g_f1uo.b+g_f1uo.c;", 6);
+    SelfTestCheck("f1_u16_odd_offset", "struct F1H2 { U8 a; U16 b; }; F1H2 g_f1h2; g_f1h2.b=0xBEEF; g_f1h2.b;", 48879);
+    SelfTestCheck("f1_u32_non8_offset", "struct F1UW { U8 a; U32 b; }; F1UW g_f1uw; g_f1uw.a=1; g_f1uw.b=0xDEADBEEF; g_f1uw.b;", 3735928559);
+    SelfTestCheck("f1_f64_non8_offset", "struct F1FO { U32 pad; F64 x; F64 y; }; F1FO g_f1fo; g_f1fo.x=1.5; g_f1fo.y=2.5; g_f1fo.x+g_f1fo.y;", 4616189618054758400);
+    SelfTestCheck("f1_offset_4088", "struct F1O4 { I64 p[511]; I64 t; }; F1O4 g_f1o4; g_f1o4.t=88; g_f1o4.t;", 88);
+    SelfTestCheck("f1_offset_32760", "struct F1O32 { I64 p[4095]; I64 t; }; F1O32 g_f1o32; g_f1o32.t=99; g_f1o32.t;", 99);
+    SelfTestCheck("f1_offset_32768_fallback", "struct F1O33 { I64 p[4096]; I64 t; }; F1O33 g_f1o33; g_f1o33.t=77; g_f1o33.t;", 77);
+    SelfTestCheck("f1_chain_abc", "struct F1CA { I64 v; }; struct F1CB { F1CA b; }; struct F1CC { F1CB a; }; F1CC g_f1cc; g_f1cc.a.b.v=42; g_f1cc.a.b.v;", 42);
+    SelfTestCheck("f1_arrow_incdec", "struct F1IC { I64 v; }; F1IC g_f1ic; F1IC *g_f1icp=&g_f1ic; g_f1icp->v=10; g_f1icp->v++; g_f1icp->v+=5; g_f1icp->v;", 16);
+    SelfTestCheck("f1_addr_of_member", "struct F1AM { I64 v; I64 w; }; F1AM g_f1am; g_f1am.w=5; I64 *g_f1amp=&g_f1am.w; *g_f1amp=9; g_f1am.w;", 9);
+    SelfTestCheck("f1_member_arr_var", "struct F1AV { I64 a[4]; I64 n; }; F1AV g_f1av; g_f1av.a[0]=10; g_f1av.a[1]=20; g_f1av.a[2]=30; g_f1av.n=2; g_f1av.a[g_f1av.n];", 30);
     SelfTestKnown("known_over8_args", "I64 nine(I64 a,I64 b,I64 c,I64 d,I64 e,I64 f,I64 g,I64 h,I64 i) { return a + i; } nine(1,2,3,4,5,6,7,8,9);", -1);
     SelfTestTwins();
     SelfTestSymbols();

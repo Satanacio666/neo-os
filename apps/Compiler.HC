@@ -819,6 +819,31 @@ U0 HcEmitImm64(I64 reg, I64 val) {
     }
 }
 
+// ------------------------------------------------------------------------------
+// P7.4 F1 (PASSO 2): deferred lvalue offset. HcResolveLValue accumulates the
+// constant member offset here instead of emitting `base + off` eagerly; the
+// consuming load/store folds it into the instruction's unsigned-immediate field,
+// so `ctx->field` costs 2 instructions (base load + LDR-with-offset) instead of 4.
+// ------------------------------------------------------------------------------
+I64 g_hc_lv_off = 0;
+
+// Materialize the pending offset into X0 (base in X0 -> base+off in X0). Used when
+// the address itself is needed (&x, addr_only, or before an index/deref that
+// consumes X0 as a base).
+U0 HcFlushLvOff() {
+    if (g_hc_lv_off == 0) return;
+    I64 o = g_hc_lv_off;
+    g_hc_lv_off = 0;
+    if (o > 0 && o <= 4095) {
+        HcEmit(0x91000000 | ((U64)o << 10));          // add x0, x0, #imm12
+    } else if (o > 0 && (o & 0xFFF) == 0 && (o >> 12) <= 4095) {
+        HcEmit(0x91400000 | (((U64)o >> 12) << 10));  // add x0, x0, #imm12, lsl #12
+    } else {
+        HcEmitImm64(1, o);
+        HcEmit(0x8B010000);                           // add x0, x0, x1
+    }
+}
+
 U0 HcEmitPush(I64 reg) {
     // str x(reg), [sp, #-16]!
     HcEmit(0xF81F0FE0 | reg);
@@ -1058,6 +1083,40 @@ U0 HcEmitStoreSized(I64 rt, I64 rn, I64 sz) {
         HcEmit(0xF9000000 | (rn << 5) | rt);
     }
 }
+
+// Load/store with an unsigned-immediate offset (AArch64 scaled forms). `off` must
+// be a multiple of the access width and off/width < 4096; otherwise the offset is
+// materialized into X16 first (large/odd offsets still work).
+U0 HcEmitLoadSizedOff(I64 rd, I64 rn, I64 sz, I64 off) {
+    I64 unit = (sz == 1) ? 1 : ((sz == 2) ? 2 : ((sz == 4) ? 4 : 8));
+    if (off >= 0 && (off % unit) == 0 && (off / unit) <= 4095) {
+        I64 imm = off / unit;
+        if (sz == 1) HcEmit(0x39400000 | (imm << 10) | (rn << 5) | rd);
+        else if (sz == 2) HcEmit(0x79400000 | (imm << 10) | (rn << 5) | rd);
+        else if (sz == 4) HcEmit(0xB9400000 | (imm << 10) | (rn << 5) | rd);
+        else HcEmit(0xF9400000 | (imm << 10) | (rn << 5) | rd);
+    } else {
+        HcEmitImm64(16, off);
+        HcEmit(0x8B100000 | (16 << 16) | (rn << 5) | 16); // add x16, xN, x16
+        HcEmitLoadSized(rd, 16, sz);
+    }
+}
+
+U0 HcEmitStoreSizedOff(I64 rt, I64 rn, I64 sz, I64 off) {
+    I64 unit = (sz == 1) ? 1 : ((sz == 2) ? 2 : ((sz == 4) ? 4 : 8));
+    if (off >= 0 && (off % unit) == 0 && (off / unit) <= 4095) {
+        I64 imm = off / unit;
+        if (sz == 1) HcEmit(0x39000000 | (imm << 10) | (rn << 5) | rt);
+        else if (sz == 2) HcEmit(0x79000000 | (imm << 10) | (rn << 5) | rt);
+        else if (sz == 4) HcEmit(0xB9000000 | (imm << 10) | (rn << 5) | rt);
+        else HcEmit(0xF9000000 | (imm << 10) | (rn << 5) | rt);
+    } else {
+        HcEmitImm64(16, off);
+        HcEmit(0x8B100000 | (16 << 16) | (rn << 5) | 16); // add x16, xN, x16
+        HcEmitStoreSized(rt, 16, sz);
+    }
+}
+
 
 U0 HcEmitPrologue() {
     // stp x29, x30, [sp, #-16]!
@@ -1801,6 +1860,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
     I64 cur_is_float = 0;
     I64 arr_sym = 0;  // 1 while indexing the base array symbol's own subscripts
     I64 sub_k = 0;    // current subscript depth (0 = first dimension)
+    g_hc_lv_off = 0;  // P7.4 F1: pending member byte offset (folded into the load/store)
 
     if (loc_idx >= 0) {
         I64 rlv_off = g_hc_local_offsets[loc_idx];
@@ -1878,8 +1938,9 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
         *out_is_float = cur_is_float;
         if (cur_mode == 2 || cur_mode == 3) {
             *out_addr_only = 1;
+            HcFlushLvOff();  // an ADDRESS is needed -> materialize base+off into X0
         } else {
-            *out_addr_only = 0;
+            *out_addr_only = 0;  // value: leave g_hc_lv_off for the caller's load
         }
         return;
     }
@@ -1889,6 +1950,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             I64 is_arrow = (g_hc_tok == TOK_ARROW);
             arr_sym = 0; // member access ends the base array's subscript chain
             if (is_arrow && cur_mode == 1) {
+                HcFlushLvOff();     // the pointer cell is at base+pending; load from it
                 HcEmit(0xF9400000); // ldr x0, [x0]
             }
             HcLexNext(); // eat '.' or '->'
@@ -1906,10 +1968,9 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                 I64 m_elem = 8;
                 if (HcFindMember(cur_st_idx, mname, &m_off, &m_sz, &m_arr, &m_ptr, &m_sub, &m_flt)) {
                     m_elem = g_hc_found_member_elem;
-                    if (m_off != 0) {
-                        HcEmitImm64(1, m_off);
-                        HcEmit(0x8B010000); // add x0, x0, x1
-                    }
+                    // P7.4 F1: accumulate the member offset; the consuming load/store
+                    // folds it into the instruction (no eager base+off add).
+                    if (m_off != 0) g_hc_lv_off = g_hc_lv_off + m_off;
                     cur_scale = m_sz;
                     cur_st_idx = m_sub;
                     cur_is_float = m_flt;
@@ -1927,8 +1988,10 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
             }
         } else if (g_hc_tok == TOK_LBRACKET) {
             if (cur_mode == 1) {
+                HcFlushLvOff();
                 HcEmit(0xF9400000); // ldr x0, [x0] (dereference pointer before indexing)
             }
+            HcFlushLvOff();      // X0 becomes the index base -> materialize base+off
             HcLexNext(); // eat '['
             HcEmitPush(0); // save base address
             HcOpPush(cur_scale);
@@ -2008,8 +2071,9 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
     *out_is_float = cur_is_float;
     if (cur_mode == 2 || cur_mode == 3) {
         *out_addr_only = 1;
+        HcFlushLvOff();  // an ADDRESS is needed -> materialize base+off into X0
     } else {
-        *out_addr_only = 0;
+        *out_addr_only = 0;  // value: leave g_hc_lv_off for the caller's load
     }
 }
 
@@ -2134,21 +2198,28 @@ U0 HcParsePrimary() {
         if (g_hc_tok == TOK_PLUSPLUS || g_hc_tok == TOK_MINUSMINUS) {
             I64 is_pinc = (g_hc_tok == TOK_PLUSPLUS);
             HcLexNext();
+            I64 pinc_off = g_hc_lv_off; g_hc_lv_off = 0; // consume the pending member offset
             HcEmit(0xAA0003E1); // mov x1, x0 (address in x1)
-            HcEmitLoadSized(0, 1, lv_scale); // x0 = old value
+            HcEmitLoadSizedOff(0, 1, lv_scale, pinc_off); // x0 = old value
             if (is_pinc) HcEmit(0x91000402); // add x2, x0, #1
             else HcEmit(0xD1000402);         // sub x2, x0, #1
-            HcEmitStoreSized(2, 1, lv_scale);
+            HcEmitStoreSizedOff(2, 1, lv_scale, pinc_off);
             return;
         }
 
         if (!lv_addr_only) {
+            I64 lv_off = g_hc_lv_off; g_hc_lv_off = 0; // consume the pending member offset
             if (lv_is_float) {
-                HcEmit(0xFD400000); // ldr d0, [x0]  (F64 scalar/array element)
+                // ldr d0, [x0, #off]  (offset scaled by 8)
+                if (lv_off > 0 && (lv_off % 8) == 0 && (lv_off / 8) <= 4095)
+                    HcEmit(0xFD400000 | (((U64)lv_off / 8) << 10));
+                else { if (lv_off != 0) { HcEmitImm64(1, lv_off); HcEmit(0x8B010000); } HcEmit(0xFD400000); }
                 g_hc_expr_float = 1;
             } else {
-                HcEmitLoadSized(0, 0, lv_scale);
+                HcEmitLoadSizedOff(0, 0, lv_scale, lv_off);
             }
+        } else {
+            g_hc_lv_off = 0; // addr_only already flushed inside HcResolveLValue
         }
 
         // Indirect Function Pointer or Struct Method Call: obj->fn(arg1, ...)
@@ -2221,6 +2292,7 @@ U0 HcParseUnary() {
             I64 amp_ao = 0;
             I64 amp_flt = 0;
             HcResolveLValue(amp_name, &amp_scale, &amp_ao, &amp_flt);
+            HcFlushLvOff();      // &x needs the real address -> materialize base+off
             g_hc_expr_float = 0; // address-of yields an integer pointer
             return;
         }
@@ -2301,11 +2373,14 @@ U0 HcParseUnary() {
         HcParseUnary();
         deref_flt = HcOpPop();
         deref_sz = HcOpPop();
+        I64 deref_off = g_hc_lv_off; g_hc_lv_off = 0; // consume any member offset on the pointer
         if (deref_flt) {
-            HcEmit(0xFD400000); // ldr d0, [x0]  (F64 pointee)
+            if (deref_off > 0 && (deref_off % 8) == 0 && (deref_off / 8) <= 4095)
+                HcEmit(0xFD400000 | (((U64)deref_off / 8) << 10)); // ldr d0, [x0, #off]
+            else { if (deref_off != 0) { HcEmitImm64(1, deref_off); HcEmit(0x8B010000); } HcEmit(0xFD400000); }
             g_hc_expr_float = 1;
         } else {
-            HcEmitLoadSized(0, 0, deref_sz);
+            HcEmitLoadSizedOff(0, 0, deref_sz, deref_off);
             g_hc_expr_float = 0; // integer-sized dereference load
         }
         return;
@@ -2802,6 +2877,7 @@ I64 HcIsAssignOp(I64 tok) {
 }
 
 U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
+    I64 lhs_off = g_hc_lv_off; g_hc_lv_off = 0; // consume the pending member offset
     if (g_hc_tok == TOK_EQUAL) {
         HcLexNext(); // eat '='
         HcEmitPush(0); // save target address
@@ -2809,12 +2885,20 @@ U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
         if (is_float) {
             if (!g_hc_expr_float) HcEmit(0x9E620000); // scvtf d0, x0
             HcEmitPop(1);        // target address in x1
-            HcEmit(0xFD000020);  // str d0, [x1]
+            if (lhs_off > 0 && (lhs_off % 8) == 0 && (lhs_off / 8) <= 4095)
+                HcEmit(0xFD000020 | (((U64)lhs_off / 8) << 10)); // str d0, [x1, #off]
+            else if (lhs_off == 0)
+                HcEmit(0xFD000020);                              // str d0, [x1]
+            else {
+                HcEmitImm64(16, lhs_off);
+                HcEmit(0x8B100000 | (16 << 16) | (1 << 5) | 16); // add x16, x1, x16
+                HcEmit(0xFD000200);                              // str d0, [x16]
+            }
             g_hc_expr_float = 0;
             return;
         }
         HcEmitPop(1);  // target address in x1
-        HcEmitStoreSized(0, 1, mem_scale);
+        HcEmitStoreSizedOff(0, 1, mem_scale, lhs_off);
         return;
     }
     if (is_float) {
@@ -2826,10 +2910,10 @@ U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
         I64 is_inc = (g_hc_tok == TOK_PLUSPLUS);
         HcLexNext();
         HcEmit(0xAA0003E1); // mov x1, x0
-        HcEmitLoadSized(0, 1, mem_scale);
+        HcEmitLoadSizedOff(0, 1, mem_scale, lhs_off);
         if (is_inc) HcEmit(0x91000400); // add x0, x0, #1
         else HcEmit(0xD1000400);        // sub x0, x0, #1
-        HcEmitStoreSized(0, 1, mem_scale);
+        HcEmitStoreSizedOff(0, 1, mem_scale, lhs_off);
         return;
     }
     if (HcIsAssignOp(g_hc_tok)) {
@@ -2839,7 +2923,7 @@ U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
         HcParseExpr(); // RHS in x0
         HcEmit(0xAA0003E2); // mov x2, x0 (RHS in x2)
         HcEmitPop(1);       // target address in x1
-        HcEmitLoadSized(0, 1, mem_scale); // LHS in x0
+        HcEmitLoadSizedOff(0, 1, mem_scale, lhs_off); // LHS in x0
 
         if (cop == TOK_PLUSEQ) HcEmit(0x8B020000);       // add x0, x0, x2
         else if (cop == TOK_MINUSEQ) HcEmit(0xCB020000); // sub x0, x0, x2
@@ -2855,7 +2939,7 @@ U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
         else if (cop == TOK_SHLEQ) HcEmit(0x9AC22000);   // lsl x0, x0, x2
         else if (cop == TOK_SHREQ) HcEmit(0x9AC22800);   // asr x0, x0, x2
 
-        HcEmitStoreSized(0, 1, mem_scale);
+        HcEmitStoreSizedOff(0, 1, mem_scale, lhs_off);
     }
 }
 
