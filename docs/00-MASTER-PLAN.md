@@ -1,10 +1,12 @@
 # NeoOS — 00 MASTER PLAN (objectives, priorities, architecture)
 
-> Consolidation doc 1 of 5. Sources: all 44 `docs/*.md` + `docs/master/*.md` + repo `README.md`/`SKILL.md`.
+> Consolidation doc 1 of 6. Sources: all 44 `docs/*.md` + `docs/master/*.md` + repo `README.md`/`SKILL.md`.
 > This is the **plan** (what we are building and why). Reality is in `01-REALITY-AUDIT.md`; the task list is in
 > `02-TASKLIST.md`; ideas/research in `03-IDEAS-AND-RESEARCH.md`; contradictions/decisions in
-> `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`. Nothing from the old docs is dropped — outdated/superseded
-> claims are preserved in doc 4.
+> `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`; the partial-implementation audit (ADR D55) is
+> `05-PARTIAL-IMPLEMENTATION-AUDIT.md`. Nothing from the old docs is dropped — outdated/superseded claims are
+> preserved in doc 4. *(Doc 05 was added by explicit user order; the earlier "exactly 5 docs" rule is
+> superseded.)*
 
 ---
 
@@ -332,7 +334,11 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **stopped and deferred to the very end (P11 LAST)** — the compiler already builds every module and passes
 > every test. **Priority is now FASE G — the Sovereign GUI Continuum (integral Raven-GUI adoption).** The
 > Raven dossier (`oscar-soirey/Raven`) is only *partly* ported so far (springs + Kawase blur + basic Slate
-> layout + node kinds); the G1–G5 ladder (§G) closes the gap. **next = G1 (universal harmonic physics).**
+> layout + node kinds); the G1–G5 ladder (§G) closes the gap. **G1 ✅ DONE** (universal harmonic physics,
+> `SPRING: PASS 6/6`) and **G2 ✅ DONE** (photorealistic glassmorphism: dual-Kawase **pyramid**, SDF rounded
+> corners + gradient normal, refraction, chromatic aberration, specular rim, grain; plus the elastic
+> transition suite — `GLASS: PASS 4/4`, `TRANS: PASS 6/6`). **next = G3 (industrial widgets).** Invariant
+> **D55** (no partial implementations) governs every step; the exhaustive audit is `docs/05`.
 > Gate (standard **and** `-icount`): `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`,
 > `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`, `GPUCFG: PASS`,
 > `TELEMETRY: PASS`, `EFFECTS: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`,

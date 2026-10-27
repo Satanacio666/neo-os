@@ -1800,8 +1800,12 @@ keeps:** `RENDER: PASS (0xD28836F)` bit-exact, `CENSUS <= 181`, pure HolyC, no s
   control: `$SL$` sliders (inertia/overshoot), `$WIN$` window drag (elastic), the editor caret (sub-pixel
   glide), and visibility transitions with Raven's zeta (`Pop` 0.52, `Drop` 0.32, `SlideLeft/Right` 0.90) and
   motions (`SNAPPY`/`SMOOTH`/`BOUNCY`/`WOBBLY`); reduce-motion honoured. Gate: `SPRING: PASS`.
-- **G2 — Materials & transitions.** `Solid`/`Glass`/`FrostedGlass`/`TintedGlass` (blur + rim bend + top-left
-  light) + `BackgroundBlur` styles; widget transitions (`Appear=`/`Play`) on the G1 engine. Gate: `GLASS: PASS`.
+- **G2 — Photorealistic glassmorphism & transitions — ✅ DONE (D56).** Full dual-Kawase **pyramid**
+  (`EffectsKawasePyramid`) over the captured framebuffer; the analytic material `FxSdRoundRect` (SDF) + gradient
+  normal + **refraction** + **chromatic aberration** + **specular rim light** + **grain**
+  (`EffectsGlassMaterial`, params packed in `CGlassParams`), wired into `DolDocDrawGlass`; the **elastic
+  transition suite** (`TRANS_FADE/POP/DROP/SLIDE_L/SLIDE_R/FLYUP/FLYD/ZOOM`, `EffectsTransitionApply`) on the G1
+  spring engine. Gates: **`GLASS: PASS (4/4)`**, **`TRANS: PASS (6/6)`**.
 - **G3 — Industrial widgets.** `$NODE_GRAPH$` (pins, Bezier cables hanging/swinging, canvas pan),
   `$BLOCK_EDITOR$` (Scratch-style blocks, notches, mouths, magnetic snap), `$DOCK$`+splitters (BSP partition,
   elastic resize), `$ISLAND$` (Dynamic Island morphing + status cross-fade). Gate: `INDUS: PASS`.
