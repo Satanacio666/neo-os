@@ -8,6 +8,17 @@
 
 ---
 
+## 0.1 LOCKED INVARIANT — NO PARTIAL IMPLEMENTATIONS (ADR D55, user order 2026-10)
+
+> **"nunca implementar parcialmente nada, sempre tomar a melhor decisão sempre."** — Carlos (user)
+
+From this revision, it is **expressly forbidden to commit a sketch, stub, partial implementation or temporary
+simplification**. When a feature is addressed it MUST be built at its **full architectural depth** — real HolyC
+production code, no shortcuts, every edge case and the mathematical/visual fidelity resolved. A phase may only
+be started when it can be finished in full; if it cannot, it is not started (the feature stays honestly marked
+"not started", never "partial"). This invariant supersedes the earlier "partial by design" wording in D53/D54.
+See `docs/04` **D55** and the exhaustive audit in `docs/research/PARTIAL_IMPLEMENTATIONS_AUDIT.md`.
+
 ## 1. Vision & objectives (the whole project, fully looked upon)
 
 **NeoOS** is a **64-bit AArch64 Ring-0 (EL1) Single Address Space OS (SASOS)** in the TempleOS tradition —
@@ -321,7 +332,11 @@ citations live in `docs/research/NEO_OS_AARCH64_ENGINEERING_BRIEF.md` and
 > **stopped and deferred to the very end (P11 LAST)** — the compiler already builds every module and passes
 > every test. **Priority is now FASE G — the Sovereign GUI Continuum (integral Raven-GUI adoption).** The
 > Raven dossier (`oscar-soirey/Raven`) is only *partly* ported so far (springs + Kawase blur + basic Slate
-> layout + node kinds); the G1–G5 ladder (§G) closes the gap. **next = G1 (universal harmonic physics).**
+> layout + node kinds); the G1–G5 ladder (§G) closes the gap. **G1 ✅ DONE** (universal harmonic physics,
+> `SPRING: PASS 6/6`) and **G2 ✅ DONE** (photorealistic glassmorphism: dual-Kawase **pyramid**, SDF rounded
+> corners + gradient normal, refraction, chromatic aberration, specular rim, grain; plus the elastic
+> transition suite — `GLASS: PASS 4/4`, `TRANS: PASS 6/6`). **next = G3 (industrial widgets).** Invariant
+> **D55** (no partial implementations) governs every step; the exhaustive audit is `docs/05`.
 > Gate (standard **and** `-icount`): `SELFTEST 123/123`, `PARITY 92/92 (0 diff)`,
 > `RENDER: PASS (0xD28836F)` bit-exact, `TILE: PASS`, `MESH: PASS`, `MATH3DPAR: PASS`, `GPUCFG: PASS`,
 > `TELEMETRY: PASS`, `EFFECTS: PASS`, `DETERMINISM: PASS (1 vs 4 cores identical)`, `CENSUS 179`,

@@ -266,6 +266,20 @@ else
         echo "  [FAIL] spring physics: ${spline:-<none>} (want SPRING: PASS)"
         fail=1
     fi
+    glline="$(printf '%s\n' "$out" | grep -a 'GLASS: ' | tail -1)"
+    if printf '%s' "$glline" | grep -aq 'PASS'; then
+        echo "  [PASS] $glline (glass SDF + refraction + chromatic aberration + rim)"
+    else
+        echo "  [FAIL] glass material: ${glline:-<none>} (want GLASS: PASS)"
+        fail=1
+    fi
+    trline="$(printf '%s\n' "$out" | grep -a 'TRANS: ' | tail -1)"
+    if printf '%s' "$trline" | grep -aq 'PASS'; then
+        echo "  [PASS] $trline (elastic transition suite: Fade/Pop/Drop/Slide/Fly/Zoom)"
+    else
+        echo "  [FAIL] transitions: ${trline:-<none>} (want TRANS: PASS)"
+        fail=1
+    fi
     fntline="$(printf '%s\n' "$out" | grep -a 'FONTS: ' | tail -1)"
     if printf '%s' "$fntline" | grep -aq 'PASS'; then
         echo "  [PASS] $fntline (fonts: bitmap + vector + AA atlas)"

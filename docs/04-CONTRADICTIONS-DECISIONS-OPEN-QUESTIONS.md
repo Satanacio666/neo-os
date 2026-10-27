@@ -1150,3 +1150,29 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   census **neutral** (179), pure HolyC. Gate (standard **and** `-icount`): `GOLDEN BOOT: PASS`,
   `RENDER 0xD28836F`, `SPRING: PASS (6/6)`, `LAYOUT: PASS`, `EFFECTS: PASS`, `SELFTEST 123/123`, `PARITY 92/92`,
   `CENSUS 179`, `SELF-HOST: PASS`.
+- **D55 — LOCKED INVARIANT: NO PARTIAL IMPLEMENTATIONS (user order, 2026-10).** *"nunca implementar parcialmente
+  nada, sempre tomar a melhor decisão sempre."* It is now **expressly forbidden** to commit a sketch, stub,
+  partial implementation or temporary simplification. When a feature is addressed it MUST be implemented at its
+  **full architectural depth**: real HolyC production code, no shortcuts, all edge cases and the
+  mathematical/visual fidelity resolved. A phase may only be started when it can be finished in full; otherwise
+  it is not started (and is marked "not started", never "partial"). This supersedes the "partial by design"
+  wording used in D53/D54. The exhaustive catalogue of everything previously done partially — and the
+  completeness plan for each — is `docs/research/PARTIAL_IMPLEMENTATIONS_AUDIT.md` (audit of the Raven dossier,
+  glassmorphism/optical physics, Slate layout, industrial widgets, typography, and the WM/Shell/Compositor
+  dissolution). **Self-hosting stays frozen at P11 (last); the focus is 100 % GUI, sovereign unification,
+  system minimisation and absolute HolyC perfection.** D55 is enforced by the phase gates: no gate may be
+  declared green for a feature that is only partly built.
+- **D56 — FASE G2 COMPLETE: photorealistic glassmorphism + the elastic transition suite (user order, D55).**
+  Built in **full** (no stubs, per D55). `apps/Effects.HC` gains: (1) a real **dual-Kawase pyramid**
+  (`EffectsKawasePyramid`, `EffectsPyrDown` 4-tap / `EffectsPyrUp` blend, exact UHADD, `g_fx_pyr` ping-pong
+  buffers) over the captured framebuffer region (`EffectsGlassRegion`); (2) the analytic **SDF rounded rect**
+  (`FxSdRoundRect`), its **gradient normal**, **optical refraction** (`edge²·9` along the normal), **per-channel
+  chromatic aberration** (±`edge·2.5`), a **specular rim light** (`|n·l|⁴·edge·230`, top-left light) and
+  **procedural grain**; the material is composited by `EffectsGlassMaterial` (params packed in `CGlassParams` to
+  respect the 8-argument cap) and wired into `DolDocDrawGlass`. (3) The **elastic transition suite**
+  (`TRANS_FADE/POP/DROP/SLIDE_L/SLIDE_R/FLYUP/FLYD/ZOOM`) via `EffectsTransitionApply` (alpha/scale/offset) on
+  the G1 spring engine, with the Raven ζ values. Tests: `EffectsGlassSelfTest` → **`GLASS: PASS (4/4)`** and
+  `EffectsTransitionSelfTest` → **`TRANS: PASS (6/6)`**, both asserted by `golden-boot.sh`. **Invariants held:**
+  golden hash `0xD28836F` bit-exact, census neutral (179), pure HolyC. Gate (standard **and** `-icount`):
+  `GOLDEN BOOT: PASS`, `RENDER 0xD28836F`, `GLASS: PASS`, `TRANS: PASS`, `SPRING: PASS`, `EFFECTS: PASS`,
+  `LAYOUT: PASS`, `SELFTEST 123/123`, `PARITY 92/92`, `CENSUS 179`, `SELF-HOST: PASS`.

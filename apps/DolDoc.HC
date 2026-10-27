@@ -2287,9 +2287,14 @@ U0 DolDocDrawShadow(I64 x, I64 y, I64 w, I64 h, I64 spread) {
 
 U0 DolDocDrawGlass(I64 x, I64 y, I64 w, I64 h, I64 alpha) {
     if (alpha <= 0) alpha = 0xC8;
-    // P8.0: dual-Kawase frosted glass — blur what is behind the panel (NEON UHADD)
-    // before tinting, so the acrylic look is real, not a flat translucent fill.
-    if (g_comp.glass_enabled) EffectsBlurFramebuffer(x, y, w, h, 2);
+    // G2: photorealistic glass — a dual-Kawase PYRAMID backdrop plus the analytic SDF
+    // material (rounded corners, refraction, chromatic aberration, specular rim
+    // light, grain). Falls back to a translucent fill only if the region is too small.
+    if (g_comp.glass_enabled && w >= 8 && h >= 8) {
+        I64 rad = g_theme.corner_radius;
+        if (rad < 4) rad = 4;
+        if (EffectsGlassRegion(x, y, w, h, rad, g_theme.glass_tint & 0x00FFFFFF, alpha, 3) == 0) return;
+    }
     U32 col = ((alpha & 0xFF) << 24) | (g_theme.glass_tint & 0x00FFFFFF);
     gfx_blend_rect(x, y, w, h, col);
     gfx_blend_rect(x + 2, y, w - 4, 1, 0x30FFFFFF);
