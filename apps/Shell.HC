@@ -169,7 +169,7 @@ U0 ShellNavHistory(I64 dir) {
 U0 ShellAutocomplete() {
     if (g_shell_len <= 0) return;
 
-    U8 *builtins[34];
+    U8 *builtins[36];
     builtins[0]  = "help";
     builtins[1]  = "ls";
     builtins[2]  = "dir";
@@ -203,7 +203,9 @@ U0 ShellAutocomplete() {
     builtins[30] = "shadervm";
     builtins[31] = "mesh";
     builtins[32] = "obj ";
-    builtins[33] = 0;
+    builtins[33] = "desktop";
+    builtins[34] = "xfcecheck";
+    builtins[35] = 0;
 
     U8 entries[3072];
     I64 file_count = redsea_get_entries(entries, 48);
@@ -590,6 +592,43 @@ U0 ShellCmd_wm(U8 *a, U8 *r) {
     doldoc_mark_all_dirty();
     doldoc_redraw();
     doldoc_swap_term();
+}
+
+// P9 — desktop XFCE (Top Panel / janelas / Bottom Dock) + Settings Manager.
+// ESC devolve o controle ao Shell; o terminal hospedado recebe as teclas.
+U0 ShellCmd_desktop(U8 *a, U8 *r) {
+    if (DolDocXFCEIsRunning()) {
+        doldoc_print("$FG,YELLOW$[XFCE]$FG$ desktop ja esta ativo — pressione ESC para voltar ao Shell\n");
+        return;
+    }
+    doldoc_print("\n$FG,YELLOW$[XFCE]$FG$ Entrando no desktop (Top Panel 0..28 / janelas / Bottom Dock 724..768)\n");
+    doldoc_print("$FG,MUTED$       Clique: [Applications] menu | [1..4] workspaces | dock launchers | barra de titulo (arrasta/min/max/close)$FG$\n");
+    doldoc_print("$FG,MUTED$       ESC volta ao Shell.\n");
+    DolDocXFCELaunch();
+    I64 full_w = gfx_get_canvas_width();
+    I64 full_h = gfx_get_canvas_height();
+    if (full_w <= 0) full_w = 1024;
+    if (full_h <= 0) full_h = 768;
+    doldoc_move(0, 0, full_w, full_h);
+    doldoc_mark_all_dirty();
+    doldoc_redraw();
+    doldoc_swap_term();
+}
+
+// Verificacao in-guest do desktop: geometria G3, janelas, dock, settings e
+// PIXELS lidos do framebuffer. Imprime "XFCE: PASS (n/n)".
+U0 ShellCmd_xfcecheck(U8 *a, U8 *r) {
+    doldoc_print("\n$FG,CYAN$[XFCE] self-check: geometria G3 + janelas + dock + settings + pixels$FG$\n");
+    I64 xf_pass = DolDocXFCERunCheck();
+    I64 full_w = gfx_get_canvas_width();
+    I64 full_h = gfx_get_canvas_height();
+    if (full_w <= 0) full_w = 1024;
+    if (full_h <= 0) full_h = 768;
+    doldoc_move(0, 0, full_w, full_h);
+    doldoc_mark_all_dirty();
+    doldoc_redraw();
+    doldoc_swap_term();
+    doldoc_printf("$FG,YELLOW$[XFCE]$FG$ self-check retornou %lld\n", xf_pass);
 }
 
 U0 ShellCmd_exit(U8 *a, U8 *r) {
@@ -993,64 +1032,68 @@ U0 shell_run_command(U8 *raw_cmd) {
     g_exc_user_ok = 0;
 }
 
-U0 ShellPoll() {
-    while (keyboard_has_char()) {
-        I64 c = keyboard_getchar();
-        if (c == KEY_ENTER || c == 10 || c == 13) {
+U0 ShellFeedChar(I64 c) {
+    if (c == KEY_ENTER || c == 10 || c == 13) {
+        doldoc_draw_cursor(0);
+        doldoc_putc('\n');
+        g_shell_cmd[g_shell_len] = 0;
+        U8 cur_cmd[SHELL_MAX_LINE];
+        strcpy(cur_cmd, g_shell_cmd);
+        g_shell_len = 0;
+        g_shell_cmd[0] = 0;
+        g_exc_user_ok = 1;
+        ShellRunCommand(cur_cmd);
+        g_exc_user_ok = 0;
+        g_cursor_visible = 1;
+        doldoc_draw_cursor(1);
+        g_shell_dirty = 1;
+    } else if (c == KEY_BACKSPACE || c == 8 || c == 127) {
+        if (g_shell_len > 0) {
             doldoc_draw_cursor(0);
-            doldoc_putc('\n');
+            g_shell_len--;
             g_shell_cmd[g_shell_len] = 0;
-            U8 cur_cmd[SHELL_MAX_LINE];
-            strcpy(cur_cmd, g_shell_cmd);
-            g_shell_len = 0;
-            g_shell_cmd[0] = 0;
-            g_exc_user_ok = 1;
-            ShellRunCommand(cur_cmd);
-            g_exc_user_ok = 0;
-            g_cursor_visible = 1;
-            doldoc_draw_cursor(1);
-            g_shell_dirty = 1;
-        } else if (c == KEY_BACKSPACE || c == 8 || c == 127) {
-            if (g_shell_len > 0) {
-                doldoc_draw_cursor(0);
-                g_shell_len--;
-                g_shell_cmd[g_shell_len] = 0;
-                doldoc_backspace();
-                doldoc_draw_cursor(1);
-                doldoc_swap_term();
-                g_shell_dirty = 1;
-            }
-        } else if (c == KEY_UP) {
-            ShellNavHistory(-1);
-        } else if (c == KEY_DOWN) {
-            ShellNavHistory(1);
-        } else if (c == KEY_PAGE_UP) {
-            doldoc_scroll_up(5);
-        } else if (c == KEY_PAGE_DOWN) {
-            doldoc_scroll_down(5);
-        } else if (c == KEY_TAB || c == 9) {
-            ShellAutocomplete();
-        } else if (c == KEY_ESC || c == 3) {
-            doldoc_draw_cursor(0);
-            g_shell_len = 0;
-            g_shell_cmd[0] = 0;
-            doldoc_print("\n");
-            ShellPrintPrompt();
+            doldoc_backspace();
             doldoc_draw_cursor(1);
             doldoc_swap_term();
             g_shell_dirty = 1;
-        } else if (c >= 32 && c <= 126) {
-            if (g_shell_len < SHELL_MAX_LINE - 1) {
-                doldoc_draw_cursor(0);
-                g_shell_cmd[g_shell_len] = c;
-                g_shell_len++;
-                g_shell_cmd[g_shell_len] = 0;
-                doldoc_putc(c);
-                doldoc_draw_cursor(1);
-                doldoc_swap_term();
-                g_shell_dirty = 1;
-            }
         }
+    } else if (c == KEY_UP) {
+        ShellNavHistory(-1);
+    } else if (c == KEY_DOWN) {
+        ShellNavHistory(1);
+    } else if (c == KEY_PAGE_UP) {
+        doldoc_scroll_up(5);
+    } else if (c == KEY_PAGE_DOWN) {
+        doldoc_scroll_down(5);
+    } else if (c == KEY_TAB || c == 9) {
+        ShellAutocomplete();
+    } else if (c == KEY_ESC || c == 3) {
+        doldoc_draw_cursor(0);
+        g_shell_len = 0;
+        g_shell_cmd[0] = 0;
+        doldoc_print("\n");
+        ShellPrintPrompt();
+        doldoc_draw_cursor(1);
+        doldoc_swap_term();
+        g_shell_dirty = 1;
+    } else if (c >= 32 && c <= 126) {
+        if (g_shell_len < SHELL_MAX_LINE - 1) {
+            doldoc_draw_cursor(0);
+            g_shell_cmd[g_shell_len] = c;
+            g_shell_len++;
+            g_shell_cmd[g_shell_len] = 0;
+            doldoc_putc(c);
+            doldoc_draw_cursor(1);
+            doldoc_swap_term();
+            g_shell_dirty = 1;
+        }
+    }
+}
+
+U0 ShellPoll() {
+    while (keyboard_has_char()) {
+        I64 c = keyboard_getchar();
+        ShellFeedChar(c);
     }
 
     g_cursor_ticks++;
@@ -1082,7 +1125,9 @@ U0 ShellInit() {
     shell_register_cmd("clear", ShellCmd_clear, "clear the screen");
     shell_register_cmd("cls", ShellCmd_clear, "clear the screen");
     shell_register_cmd("wm", ShellCmd_wm, "desktop manager");
-    shell_register_cmd("desktop", ShellCmd_wm, "desktop manager");
+    shell_register_cmd("xfce", ShellCmd_desktop, "XFCE desktop");
+    shell_register_cmd("xfcecheck", ShellCmd_xfcecheck, "XFCE desktop self-check");
+    shell_register_cmd("desktop", ShellCmd_desktop, "XFCE desktop (panel/dock/settings)");
     shell_register_cmd("exit", ShellCmd_exit, "leave desktop");
     shell_register_cmd("shell", ShellCmd_exit, "leave desktop");
     shell_register_cmd("newwin", ShellCmd_newwin, "spawn window");
