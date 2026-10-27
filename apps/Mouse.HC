@@ -19,6 +19,7 @@ U32 s_cursor_save_under[256];
 I64 s_cursor_saved_x = -1;
 I64 s_cursor_saved_y = -1;
 I64 s_cursor_is_drawn = 0;
+I64 s_compose_diag_done = 0;
 
 U32 s_front_save_under[256];
 I64 s_front_saved_x = -1;
@@ -170,21 +171,42 @@ U0 MouseDrawCursor() {
 }
 
 U0 MouseEraseCursorFront() {
-  U32 *front = gfx_get_frontbuffer();
-  if (!s_front_is_drawn || !front) return;
-  MouseEraseOnBuffer(front, &s_front_save_under[0], s_front_saved_x, s_front_saved_y);
+  // P8/Passo 2: nada a apagar no front — o cursor vive no back buffer e o loop do
+  // shell redesenha a area a cada frame. Apenas acorda o loop.
+  if (!s_front_is_drawn) return;
   s_front_is_drawn = 0;
+  g_shell_dirty = 1;
 }
 
 U0 MouseDrawCursorFront() {
-  U32 *front = gfx_get_frontbuffer();
+  // P8/Passo 2: o cursor NAO escreve mais no FRONT buffer (VRAM do GOP). Escrever
+  // la fura o double-buffer do compositor e exige save-under fragil.
+  // Agora esta rota apenas ACORDA o loop do shell: o cursor e composto como
+  // camada Z-topo pelo proprio loop, entre o redraw e o swap.
   if (!g_mouse.visible) return;
-  if (!front) { MouseDrawCursor(); return; }
-  if (s_front_is_drawn) MouseEraseCursorFront();
-  MouseDrawOnBuffer(front, &s_front_save_under[0], g_mouse.x, g_mouse.y);
-  s_front_saved_x = g_mouse.x;
-  s_front_saved_y = g_mouse.y;
-  s_front_is_drawn = 1;
+  g_shell_dirty = 1;
+}
+
+// P8/Passo 2: composicao do cursor na camada Z-topo do BACK buffer, antes do
+// present. RenderGoldenScene() NAO passa por aqui — por isso o hash golden
+// 0xD28836F permanece intacto.
+U0 MouseComposeCursor() {
+  U32 *back = gfx_get_backbuffer();
+  // Diagnostico (uma vez): por que o cursor nao aparece?
+  if (!s_compose_diag_done) {
+    s_compose_diag_done = 1;
+    doldoc_printf("$FG,MUTED$[MOUSE-DIAG] compose: back=%llX visible=%lld x=%lld y=%lld drawn=%lld$FG$\n",
+                  (U64)back, g_mouse.visible, g_mouse.x, g_mouse.y, s_cursor_is_drawn);
+  }
+  if (!back) return;
+  if (s_cursor_is_drawn) MouseEraseCursor();
+  if (g_mouse.visible) {
+    MouseDrawOnBuffer(back, &s_cursor_save_under[0], g_mouse.x, g_mouse.y);
+    s_cursor_saved_x = g_mouse.x;
+    s_cursor_saved_y = g_mouse.y;
+    s_cursor_is_drawn = 1;
+    DolDocDamageRect(g_mouse.x - 1, g_mouse.y - 1, 18, 18);
+  }
 }
 
 U0 MouseSetPos(I64 x, I64 y) {

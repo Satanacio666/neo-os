@@ -2355,6 +2355,11 @@ U0 DolDocCompositorEndFrame() {
 
 U0 DolDocPresent() {
     g_comp.last_frame_start_us = timer_get_uptime_us();
+    // P8/Passo 2: compoe o cursor no BACK buffer como camada Z-topo, ANTES do
+    // present. RenderGoldenScene() NAO passa por aqui — por isso o hash golden
+    // 0xD28836F permanece intacto. O cursor entra no dirty rect via
+    // DolDocDamageRect() dentro de MouseComposeCursor().
+    MouseComposeCursor();
     if (g_comp.dirty_blit_enabled && RenderDirtyActive()) {
         I64 c_x = 0; I64 c_y = 0; I64 c_w = 0; I64 c_h = 0;
         RenderDirtyBounds(&c_x, &c_y, &c_w, &c_h);

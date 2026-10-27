@@ -1234,6 +1234,10 @@ U0 DolDocShellEventLoop() {
 
         if (g_shell_dirty != 0) {
             doldoc_redraw();
+            // P8/Passo 2: compoe o cursor como camada Z-topo do BACK buffer, DEPOIS
+            // do redraw (senao o redraw o apagaria) e ANTES do swap (para entrar no
+            // frame apresentado). Zero save-under no front buffer.
+            MouseComposeCursor();
             doldoc_swap_term();
             g_shell_dirty = 0;
             did_work = 1;
