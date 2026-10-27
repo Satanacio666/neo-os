@@ -3,11 +3,43 @@
 # Target: UEFI Application (BOOTAA64.EFI)
 
 ARCH = aarch64
-CC = aarch64-linux-gnu-gcc
-AS = aarch64-linux-gnu-as
-LD = aarch64-linux-gnu-ld
-OBJCOPY = aarch64-linux-gnu-objcopy
-AR = aarch64-linux-gnu-ar
+
+# ---------------------------------------------------------------------------
+# P1.1 — Toolchain selection.
+#
+# x86_64 host  : the GNU cross toolchain (aarch64-linux-gnu-*).
+# AArch64 host : the NATIVE toolchain works and produces identical objects —
+#                the output is AArch64 ELF either way, the prebuilt objects in
+#                boot/uefi are AArch64 ELF, and binutils supports the
+#                pei-aarch64-little target used to emit BOOTAA64.EFI.
+#                (Validated on a POCO X3 Pro running Alpine under PRoot.)
+#
+# Override on the command line when needed:  make all CC=clang AS=llvm-as
+# ---------------------------------------------------------------------------
+UNAME_M    := $(shell uname -m)
+HAVE_CROSS := $(shell command -v aarch64-linux-gnu-gcc 2>/dev/null)
+
+ifeq ($(UNAME_M),aarch64)
+  ifeq ($(HAVE_CROSS),)
+    CC ?= gcc
+    AS ?= as
+    LD ?= ld
+    OBJCOPY ?= objcopy
+    AR ?= ar
+  else
+    CC ?= aarch64-linux-gnu-gcc
+    AS ?= aarch64-linux-gnu-as
+    LD ?= aarch64-linux-gnu-ld
+    OBJCOPY ?= aarch64-linux-gnu-objcopy
+    AR ?= aarch64-linux-gnu-ar
+  endif
+else
+  CC ?= aarch64-linux-gnu-gcc
+  AS ?= aarch64-linux-gnu-as
+  LD ?= aarch64-linux-gnu-ld
+  OBJCOPY ?= aarch64-linux-gnu-objcopy
+  AR ?= aarch64-linux-gnu-ar
+endif
 
 # Locate a FAT image tool across distros (dosfstools ships mkfs.vfat or mkfs.fat).
 MKFS_VFAT := $(shell command -v mkfs.vfat 2>/dev/null || command -v mkfs.fat 2>/dev/null \
@@ -19,6 +51,7 @@ BUILD_DIR = build
 TARGET_EFI = $(BUILD_DIR)/BOOTAA64.EFI
 TARGET_SO = $(BUILD_DIR)/boot.so
 DISK_IMG = $(BUILD_DIR)/disk.img
+FAT_IMG  = $(BUILD_DIR)/fat.img
 REDSEA_IMG = $(BUILD_DIR)/redsea.img
 
 UEFI_DIR = boot/uefi
@@ -29,10 +62,18 @@ SRCS_C = boot/main.c \
          boot/seed/jit_arm64.c \
          boot/seed/seed_fs.c \
          boot/runtime/kheap.c \
-         boot/runtime/symbols.c
+         boot/runtime/symbols.c \
+         boot/runtime/blockio.c \
+         boot/runtime/fwdesc.c \
+         boot/runtime/acpi.c \
+         boot/runtime/fdt.c \
+         boot/runtime/profile.c \
+         boot/runtime/jitcache.c \
+         kernel/arch/aarch64/gicv3.c
 
 SRCS_S = kernel/sched/switch.S \
          kernel/arch/aarch64/vectors.S \
+         kernel/arch/aarch64/el2_drop.S \
          kernel/arch/aarch64/smp_entry.S \
          kernel/arch/aarch64/ffi_arm64.S
 
@@ -40,8 +81,19 @@ OBJS_C = $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C))
 OBJS_S = $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_S))
 ALL_OBJS = $(OBJS_C) $(OBJS_S)
 
+# --- Disk layout (P7.2) ------------------------------------------------------
+# O crash dump vai para setores CRUS no fim da midia, FORA da FAT. Um caminho de
+# falha nao pode alocar, nao pode montar estrutura de diretorio e nao pode
+# depender de heap: se o panic vier de heap corrompido, um logger FAT travaria e
+# apagaria o rastro. Estes numeros tambem sao passados ao C via -D.
+FAT_SIZE_MB    = 64
+CRASH_ZONE_MB  = 4
+DISK_SIZE_MB   = 68
+CRASH_ZONE_LBA = 131072          # FAT_SIZE_MB * 1024 * 1024 / 512
+
 CFLAGS = -fshort-wchar -fno-strict-aliasing -funsigned-char -ffreestanding -fno-stack-protector \
          -fno-stack-check -I$(UEFI_DIR) -Ikernel -Iboot/seed -Igui -Idrivers -Ifs -D__aarch64__ \
+         -DNEO_CRASH_ZONE_LBA=$(CRASH_ZONE_LBA) -DNEO_FAT_SIZE_MB=$(FAT_SIZE_MB) \
          -Wno-builtin-declaration-mismatch -fpic -fPIC -O2 -Wall -MMD -MP
 
 ASFLAGS = -Ikernel
@@ -49,11 +101,18 @@ ASFLAGS = -Ikernel
 LDFLAGS = -nostdlib -shared -Bsymbolic -T $(UEFI_DIR)/elf_aarch64_efi.lds -L$(UEFI_DIR)
 LIBS = $(UEFI_DIR)/crt_aarch64.o $(UEFI_DIR)/reloc.o $(ALL_OBJS) -luefi
 
-QEMU = taskset -c 0 qemu-system-aarch64
+# Determinism first: the defaults below are what the golden gate asserts.
+# For fast interactive runs on a same-ISA host (e.g. an ARM64 phone) override
+# without touching the gate, e.g.:
+#   make run QEMU_ACCEL=thread=multi,tb-size=1024 QEMU_CPU=cortex-a76 QEMU_TASKSET=
+QEMU_TASKSET ?= taskset -c 0
+QEMU_ACCEL ?= thread=single,tb-size=512
+QEMU_CPU ?= cortex-a72
+QEMU = $(QEMU_TASKSET) qemu-system-aarch64
 QEMU_BIOS = /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 QEMU_FLAGS = -M virt,gic-version=2 \
-             -accel tcg,thread=single,tb-size=512 \
-             -cpu cortex-a72 \
+             -accel tcg,$(QEMU_ACCEL) \
+             -cpu $(QEMU_CPU) \
              -smp 4 \
              -m 1024 \
              -bios $(QEMU_BIOS) \
@@ -115,17 +174,25 @@ $(TARGET_EFI): $(TARGET_SO)
 	@echo ">>> Successfully built $(TARGET_EFI) <<<"
 
 disk: $(TARGET_EFI)
-	@echo "Creating FAT32 UEFI bootable disk image..."
-	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=64 status=none
-	$(MKFS_VFAT) -F 32 $(DISK_IMG) >/dev/null
-	mmd -i $(DISK_IMG) ::/EFI
-	mmd -i $(DISK_IMG) ::/EFI/BOOT
-	mcopy -i $(DISK_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI
+	@echo "Creating FAT32 UEFI bootable disk image ($(FAT_SIZE_MB) MB FAT + $(CRASH_ZONE_MB) MB crash zone)..."
+	dd if=/dev/zero of=$(FAT_IMG) bs=1M count=$(FAT_SIZE_MB) status=none
+	$(MKFS_VFAT) -F 32 $(FAT_IMG) >/dev/null
+	mmd -i $(FAT_IMG) ::/EFI
+	mmd -i $(FAT_IMG) ::/EFI/BOOT
+	mcopy -i $(FAT_IMG) $(TARGET_EFI) ::/EFI/BOOT/BOOTAA64.EFI
 	@printf "FS0:\r\ncd EFI\\\\BOOT\r\nBOOTAA64.EFI\r\n" > $(BUILD_DIR)/startup.nsh
-	mcopy -i $(DISK_IMG) $(BUILD_DIR)/startup.nsh ::/startup.nsh
+	mcopy -i $(FAT_IMG) $(BUILD_DIR)/startup.nsh ::/startup.nsh
 	@echo "Copying HolyC sources to the ESP (::/holyc) for the P2.2 bootstrap..."
-	mmd -i $(DISK_IMG) ::/holyc
-	mcopy -i $(DISK_IMG) apps/*.HC ::/holyc/
+	mmd -i $(FAT_IMG) ::/holyc
+	mcopy -i $(FAT_IMG) apps/*.HC ::/holyc/
+	@echo "Instalando perfis de hardware (DADOS, nao codigo — E5)..."
+	-@mmd -i $(FAT_IMG) ::/profiles
+	-@mcopy -i $(FAT_IMG) profiles/*.conf ::/profiles/
+	@echo "Diretorio do cache de JIT (P8, Nivel 1)..."
+	-@mmd -i $(FAT_IMG) ::/NEOJIT
+	@echo "Assembling $(DISK_SIZE_MB) MB image: FAT in LBA 0..$(CRASH_ZONE_LBA), crash zone from LBA $(CRASH_ZONE_LBA)"
+	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=$(DISK_SIZE_MB) status=none
+	dd if=$(FAT_IMG) of=$(DISK_IMG) conv=notrunc status=none
 	@echo "Packaging RedSea 32MB disk image from apps/..."
 	python3 scripts/mkredsea.py $(REDSEA_IMG) apps/
 	@echo ">>> Boot disk image ready at $(DISK_IMG) <<<"

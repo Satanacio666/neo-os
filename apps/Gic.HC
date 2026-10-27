@@ -20,7 +20,29 @@
 #define GICC_IAR        0x00C
 #define GICC_EOIR       0x010
 
+// P5.2 — GICv3 (Snapdragon 860 / servidores ARM modernos / QEMU -M virt,gic-version=3).
+//
+// No GICv3 a interface de CPU SAI do MMIO e vira registradores de sistema
+// (ICC_*_EL1). Por isso 0x08010000 deixa de existir: a escrita em
+// GICC_DEFAULT_BASE + GICC_PMR toma Data Abort — medido como
+// `FAR_EL1 = 0x08010004` no QEMU com -M virt,gic-version=3.
+// As PPIs (IRQ < 32, onde vive o timer) migram para o Redistribuidor (GICR),
+// um por core, com stride 0x20000 e o frame de SGI em +0x10000.
+#define GICD_PIDR2        0xFFE8        // bits [7:4] = arch rev: 2 = GICv2, 3/4 = GICv3/v4
+#define GICR_DEFAULT_BASE 0x080A0000    // QEMU virt GICv3 (SM8150: 0x17A60000)
+#define GICR_STRIDE       0x20000
+#define GICR_WAKER        0x0014
+#define GICR_SGI_OFFSET   0x10000
+#define GICR_IGROUPR0     0x0080
+#define GICR_ISENABLER0   0x0100
+#define GICR_ICENABLER0   0x0180
+#define GICR_IPRIORITYR   0x0400
+#define GICR_IGRPMODR0    0x0D00
+
 #define MAX_GIC_INTERRUPTS 128
+
+U64 g_gic_version;
+U64 g_gicr_base;
 
 class CIrqEntry {
   U64 handler_fn;
@@ -59,6 +81,110 @@ CIrqEntry* GicGetEntry(I64 irq) {
   return g_gic.irq_table + irq * 32;
 }
 
+U64 GicGetRedistBase() {
+  if (g_gicr_base != 0) return g_gicr_base;
+  // P1.2: o endereco vem da HAL, escolhida por MIDR_EL1 em HalPlatformDetectByMidr().
+  //   QEMU virt .......... 0x080A0000
+  //   SM8150 (POCO vayu) .. 0x17A60000  (DTS oficial, stride 0x20000, 8 cores)
+  if (g_hal_gicr_base != 0) return g_hal_gicr_base;
+  return GICR_DEFAULT_BASE;
+}
+
+// P5.2 — Descobre a versao do GIC pelo registrador de arquitetura do distribuidor.
+// GICD_PIDR2[7:4]: 2 = GICv2, 3 = GICv3, 4 = GICv4. Leitura de MMIO segura nos dois.
+U0 GicDetectVersion() {
+  // P1.2: se a HAL ja conhece a versao da plataforma (escolhida por MIDR_EL1 em
+  // HalPlatformDetectByMidr), usa direto — evita a sonda e a chance de fault.
+  if (g_hal_gic_version == 2 || g_hal_gic_version == 3) {
+    g_gic_version = g_hal_gic_version;
+    return;
+  }
+  U64 gicd_base = GicGetDistBase();
+  I64 faulted = 0;
+  // P5.2: leitura com recuperacao. No GICv2 do QEMU o distribuidor e mapeado em
+  // 4 KB e 0xFFE8 cai fora — a sonda captura o Data Abort em vez de derrubar o
+  // boot (ver early_sync_panic em vectors.S).
+  U32 pidr2 = neo_probe_mmio_read32(gicd_base + GICD_PIDR2, &faulted);
+  if (faulted != 0) {
+    g_gic_version = 2;
+    return;
+  }
+  U32 arch = (pidr2 >> 4) & 0xF;
+  if (arch == 3 || arch == 4) {
+    g_gic_version = 3;
+  } else {
+    g_gic_version = 2;
+  }
+}
+
+U0 GicInitV3() {
+  U64 gicd_base = GicGetDistBase();
+  U64 gicr_base = GicGetRedistBase();
+  U64 sgi = gicr_base + GICR_SGI_OFFSET;
+
+  // 1. Interface de system registers em EL1. Sem ICC_SRE_EL1.SRE=1 todo acesso a
+  //    ICC_*_EL1 e Undefined Instruction.
+  gicv3_sre_enable();
+  // 2. PMR: aceita todas as prioridades (o equivalente do GICC_PMR do v2).
+  gicv3_pmr_set(0xFF);
+  // 3. EOImode = 0: EOIR faz priority drop E deactivate de uma vez.
+  gicv3_ctlr_set(gicv3_ctlr_get() & ~2);
+  // 3b. BPR1 = 0: sem isto o agrupamento de prioridade preempta de forma
+  //     inesperada entre PPIs e SPIs.
+  gicv3_bpr1_set(0);
+
+  // 4. Acordar o redistribuidor deste core (GICR_WAKER.ProcessorSleep = 0) e
+  //    esperar ChildrenAsleep limpar.
+  U64 waker = gicr_base + GICR_WAKER;
+  U32 w = __mmio_r32(waker);
+  w = w & ~2;
+  __mmio_w32(waker, w);
+  I64 spins = 0;
+  while ((__mmio_r32(waker) & 4) != 0 && spins < 1000000) {
+    spins = spins + 1;
+  }
+
+  // 5. PPIs (IRQ < 32): Grupo 1, prioridade default 0xA0, todas desabilitadas.
+  //
+  // ARMADILHA CLASSICA DO GICv3: no reset os PPIs podem vir em Group 0 (FIQ).
+  // Se IGROUPR0 ficar 0, habilitar ICC_IGRPEN1_EL1 nao faz o timer chegar como
+  // IRQ — ele vai como FIQ e o handler nunca roda. Por isso IGROUPR0 = 0xFFFFFFFF
+  // E IGRPMODR0 = 0 (Group 1 Non-Secure, sem modificacao de grupo).
+  __mmio_w32(sgi + GICR_IGROUPR0, 0xFFFFFFFF);
+  __mmio_w32(sgi + GICR_IGRPMODR0, 0x00000000);
+  I64 p = 0;
+  while (p < 32) {
+    __mmio_w32(sgi + GICR_IPRIORITYR + (p / 4) * 4, 0xA0A0A0A0);
+    p = p + 4;
+  }
+  __mmio_w32(sgi + GICR_ICENABLER0, 0xFFFFFFFF);
+
+  // 6. Distribuidor.
+  U32 typer = __mmio_r32(gicd_base + GICD_TYPER);
+  g_gic.total_irq_lines = 32 * ((typer & 0x1F) + 1);
+  if (g_gic.total_irq_lines < 32) g_gic.total_irq_lines = 64;
+  if (g_gic.total_irq_lines > MAX_GIC_INTERRUPTS) g_gic.total_irq_lines = MAX_GIC_INTERRUPTS;
+
+  __mmio_w32(gicd_base + GICD_CTLR, 0);
+  I64 i = 32;
+  while (i < g_gic.total_irq_lines) {
+    U64 reg = (i / 32) * 4;
+    __mmio_w32(gicd_base + GICD_IGROUPR + reg, 0xFFFFFFFF);   // SPI -> Grupo 1
+    __mmio_w32(gicd_base + GICD_ICENABLER + reg, 0xFFFFFFFF);
+    __mmio_w32(gicd_base + GICD_ICPENDR + reg, 0xFFFFFFFF);
+    i = i + 32;
+  }
+  i = 32;
+  while (i < g_gic.total_irq_lines) {
+    __mmio_w32(gicd_base + GICD_IPRIORITYR + (i / 4) * 4, 0xA0A0A0A0);
+    i = i + 4;
+  }
+  // ARE_NS (bit 4) roteia por afinidade; EnableGrp1NS (bit 1) liga o Grupo 1.
+  __mmio_w32(gicd_base + GICD_CTLR, 0x12);
+  gicv3_igrpen1_set(1);
+  __dmb_ish();
+}
+
 U0 GicInit() {
   if (!g_gic.irq_table) {
     g_gic.irq_table = kmalloc(MAX_GIC_INTERRUPTS * 32);
@@ -77,6 +203,14 @@ U0 GicInit() {
     e->enabled = 0;
     e->priority = 0xA0;
     gic_i++;
+  }
+
+  // P5.2: descobre a versao. No GICv3 o caminho e outro — e nao se toca em
+  // 0x08010000, que num SoC GICv3 nao esta mapeado (Data Abort).
+  GicDetectVersion();
+  if (g_gic_version == 3) {
+    GicInitV3();
+    return;
   }
 
   // 1. Query GICD_TYPER
@@ -126,35 +260,52 @@ U0 GicInit() {
 
 U0 GicEnableIrq(U32 irq) {
   if (irq >= g_gic.total_irq_lines) return;
+  CIrqEntry *e = GicGetEntry(irq);
+  // P5.2: no GICv3 as PPIs (IRQ < 32, onde vive o timer) moram no Redistribuidor.
+  if (g_gic_version == 3 && irq < 32) {
+    U64 sgi = GicGetRedistBase() + GICR_SGI_OFFSET;
+    __mmio_w32(sgi + GICR_ISENABLER0, 1 << irq);
+    e->enabled = 1;
+    return;
+  }
   U64 gicd_base = GicGetDistBase();
   U32 reg = irq / 32;
   U32 bit = irq % 32;
   __mmio_w32(gicd_base + GICD_ISENABLER + reg * 4, 1 << bit);
-  CIrqEntry *e = GicGetEntry(irq);
   e->enabled = 1;
 }
 
 U0 GicDisableIrq(U32 irq) {
   if (irq >= g_gic.total_irq_lines) return;
+  CIrqEntry *e = GicGetEntry(irq);
+  if (g_gic_version == 3 && irq < 32) {
+    U64 sgi = GicGetRedistBase() + GICR_SGI_OFFSET;
+    __mmio_w32(sgi + GICR_ICENABLER0, 1 << irq);
+    e->enabled = 0;
+    return;
+  }
   U64 gicd_base = GicGetDistBase();
   U32 reg = irq / 32;
   U32 bit = irq % 32;
   __mmio_w32(gicd_base + GICD_ICENABLER + reg * 4, 1 << bit);
-  CIrqEntry *e = GicGetEntry(irq);
   e->enabled = 0;
 }
 
 U0 GicSetPriority(U32 irq, U8 prio) {
   if (irq >= g_gic.total_irq_lines) return;
-  U64 gicd_base = GicGetDistBase();
-  U32 reg = irq / 4;
+  CIrqEntry *e = GicGetEntry(irq);
   U32 shift = (irq % 4) * 8;
-  U64 p_addr = gicd_base + GICD_IPRIORITYR + reg * 4;
+  U64 p_addr;
+  if (g_gic_version == 3 && irq < 32) {
+    U64 sgi = GicGetRedistBase() + GICR_SGI_OFFSET;
+    p_addr = sgi + GICR_IPRIORITYR + (irq / 4) * 4;
+  } else {
+    p_addr = GicGetDistBase() + GICD_IPRIORITYR + (irq / 4) * 4;
+  }
   U32 cur = __mmio_r32(p_addr);
   cur = cur & ~(0xFF << shift);
   cur = cur | (prio << shift);
   __mmio_w32(p_addr, cur);
-  CIrqEntry *e = GicGetEntry(irq);
   e->priority = prio;
 }
 
@@ -183,8 +334,14 @@ I64 GicDispatch(U32 sim_irq) {
 // P3.5: returns the SP to resume (the interrupted task's frame, or the next
 // task's frame when the scheduler preempts). The IRQ vector honors x0.
 U64 GicHardwareIrqHandler(U64 trap_frame) {
-  U64 gicc_base = GicGetCpuBase();
-  U32 iar = __mmio_r32(gicc_base + GICC_IAR);
+  // P5.2: no GICv3 o acknowledge e o EOI sao registradores de sistema (ICC_*_EL1),
+  // nao MMIO. Ler GICC_IAR num SoC GICv3 daria Data Abort.
+  U32 iar;
+  if (g_gic_version == 3) {
+    iar = (U32)gicv3_iar1();
+  } else {
+    iar = __mmio_r32(GicGetCpuBase() + GICC_IAR);
+  }
   U32 irq = iar & 0x3FF;
   if (irq >= 1020) return trap_frame;
   if (irq < MAX_GIC_INTERRUPTS) {
@@ -198,7 +355,11 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
       GicDisableIrq(irq);
     }
   }
-  __mmio_w32(gicc_base + GICC_EOIR, iar);
+  if (g_gic_version == 3) {
+    gicv3_eoir1(iar);
+  } else {
+    __mmio_w32(GicGetCpuBase() + GICC_EOIR, iar);
+  }
   // P3.5: only hand the frame to the scheduler once it exists (g_sched_ready is
   // set by SchedInit). A firmware-armed timer IRQ during boot must not call the
   // not-yet-defined SchedOnTick.

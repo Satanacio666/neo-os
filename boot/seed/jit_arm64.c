@@ -37,6 +37,11 @@ static uint32_t *s_jit_scratch_code = NULL;
 static const size_t JIT_SCRATCH_BYTES = 64 * 1024;
 static const size_t JIT_SCRATCH_INSTRS = 16384;
 
+/* P8 — cache de JIT (boot/runtime/jitcache.c). */
+extern int  jitcache_try(const char *name, const char *source);
+extern void jitcache_begin(const char *name, const char *source);
+extern int  jitcache_end_and_store(void);
+
 void jit_init_code_pool(void *pool_start, size_t pool_size) {
     if (!pool_start || pool_size <= JIT_SCRATCH_BYTES) {
         s_jit_pool_start = (uint8_t*)pool_start;
@@ -4055,3 +4060,43 @@ int jit_run_self_tests(void) {
     return (passed == total);
 }
 
+
+/* ---------------------------------------------------------------------------
+ * P8 — acessores para o cache de JIT (boot/runtime/jitcache.c).
+ * O cache vive fora deste arquivo, mas precisa destas quatro coisas do pool.
+ * ------------------------------------------------------------------------- */
+uint8_t *jit_pool_base(void)        { return s_jit_pool_start; }
+uint32_t jit_pool_used(void)        { return (uint32_t)s_jit_pool_offset; }
+/* Avanca o bump-allocator como se tivesse compilado `bytes`.
+ * O cache PRECISA disto: sem avancar, a proxima compilacao sobrescreve
+ * o codigo restaurado. Alinhamento identico ao cb_alloc (64 B). */
+void jit_pool_advance(uint32_t bytes) {
+    s_jit_pool_offset += (bytes + 63u) & ~63ULL;
+}
+uint8_t *jit_scratch_ptr(void)      { return (uint8_t*)s_jit_scratch_code; }
+uint32_t jit_scratch_capacity(void) { return (uint32_t)JIT_SCRATCH_BYTES; }
+void     jit_flush(void *addr, uint32_t bytes) {
+    if (addr && bytes) arm64_flush_cache(addr, bytes);
+}
+
+/* Cache de nivel 1: usado para o Compiler.HC (o modulo mais caro do boot).
+ *
+ * O cache substitui a COMPILACAO, nunca a INICIALIZACAO: o entrypoint do
+ * top-level continua sendo chamado, porque e ele que roda o HcInit() e monta o
+ * compilador auto-hospedado. Pular o entrypoint economizaria milissegundos e
+ * deixaria o sistema sem compilador.
+ *
+ * Fail-safe: qualquer divergencia de ancora ou de hash vira MISS — compila pelo
+ * caminho normal e regrava. O cache nunca e uma aposta. */
+int64_t jit_compile_and_run_cached(const char *name, const char *source) {
+    if (name && source && jitcache_try(name, source)) {
+        jit_func_t fn = (jit_func_t)jit_scratch_ptr();
+        int64_t r = fn();
+        printf("[JIT-CACHE] %s entrypoint RESTAURADO retornou %lld\n", name, (long long)r);
+        return r;
+    }
+    if (name && source) jitcache_begin(name, source);
+    int64_t r = jit_compile_and_run(source);
+    if (name && source) jitcache_end_and_store();
+    return r;
+}

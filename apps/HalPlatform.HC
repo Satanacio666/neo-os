@@ -19,6 +19,9 @@ class CHalPlatform {
   U32 irq_timer;
   U32 irq_uart;
   U64 timer_freq_hz;
+  // P1.2 — acrescentados no FIM de proposito: nao deslocam nenhum campo existente.
+  U64 gicr_base;    // redistribuidor do GICv3 (0 = a plataforma nao tem)
+  U64 gic_version;  // 2 = GICv2, 3 = GICv3, 0 = autodetectar em runtime (QEMU)
 };
 
 CHalPlatform g_plat_qemu;
@@ -35,6 +38,8 @@ U64 g_hal_virtio_base;
 U32 g_hal_virtio_slots;
 U32 g_hal_virtio_stride;
 U64 g_hal_timer_freq;
+U64 g_hal_gicr_base;
+U64 g_hal_gic_version;
 
 U0 HalStrCpy(U8 *dst_buf, U8 *src_buf) {
   if (!dst_buf || !src_buf) return;
@@ -66,9 +71,16 @@ U0 HalSetPlatform(CHalPlatform *p) {
   g_hal_virtio_slots  = p->virtio_slots;
   g_hal_virtio_stride = p->virtio_stride;
   g_hal_timer_freq    = p->timer_freq_hz;
+  g_hal_gicr_base     = p->gicr_base;
+  g_hal_gic_version   = p->gic_version;
 }
 
 U64 HalGetUartBase() {
+  // P5.1: 0x09000000 so e um PL011 na maquina virt do QEMU. No Snapdragon 860
+  // (Qualcomm) esse endereco NAO esta mapeado — a primeira leitura de UARTFR
+  // (+0x18) seria Data Abort. Devolver 0 faz todos os callers de UART saírem
+  // cedo, porque eles ja checam `if (!uart_base) return;`.
+  if (neo_pl011_available() == 0) return 0;
   if (g_hal_uart_base == 0) return 0x09000000;
   return g_hal_uart_base;
 }
@@ -175,6 +187,87 @@ U0 hal_reset_system() {
   HalSystemReset();
 }
 
+// P1.2 — Escolhe a plataforma pelo silicio (MIDR_EL1), em vez de fixar QEMU.
+//
+// Implementer medido:
+//   0x51 Qualcomm     -> POCO X3 Pro (SM8150/vayu), part 0x804 (Kryo Gold) / 0x805 (Silver)
+//   0x41 ARM          -> QEMU virt (cortex-a72, part 0xD08) — e tambem RPi4/RK3399
+//   0x50 AppliedMicro -> APM X-Gene (CloudLab m400)
+//
+// RESSALVA HONESTA: 0x41 e ambiguo — QEMU e Cortex-A72 real compartilham o MIDR.
+// Como o QEMU e o alvo de desenvolvimento e o unico alvo de hardware aqui e
+// Qualcomm, a regra pratica e: 0x51 -> SM8150, resto -> QEMU virt. Um
+// discriminador melhor (DTB/ACPI ou FirmwareVendor) fica como pendencia.
+U0 HalPlatformDetectByMidr() {
+  U64 impl = neo_midr_implementer();
+  U64 part = neo_midr_partnum();
+  if (impl == 0x51 && (part == 0x804 || part == 0x805)) {
+    HalSetPlatform(&g_plat_sm8150);
+    return;
+  }
+  HalSetPlatform(&g_plat_qemu);
+}
+
+// E3 — Sobreposicao da descoberta de firmware (ACPI agora, FDT depois).
+//
+// PRIORIDADE: descoberta > tabela estatica > defaults. So os campos que o
+// firmware descreve sao sobrescritos; o que ele NAO descreve permanece da tabela.
+//
+// POR QUE SOBREPOR E NAO SUBSTITUIR: o ACPI descreve os dispositivos
+// ARQUITETURAIS (GIC, UART, timer, CPUs) mas NAO descreve dispositivos de PLACA
+// — o virtio-mmio do QEMU nao aparece em ACPI nenhuma. Zerar a tabela inteira
+// quebraria o virtio, e o virtio nao e "hardware suportado": e o barramento de
+// disco/entrada desta plataforma.
+//
+// INVARIANTE DA UNIVERSALIDADE: sem descoberta, nada muda => boota igual.
+// Nunca "boota ou nao".
+U0 HalPlatformOverlayDiscovery() {
+  if (acpi_source() == 0) return;          // descoberta INATIVA: nada muda
+  if (!g_current_platform) return;
+
+  U64 gicd = acpi_gicd_base();
+  U64 uart = acpi_uart_base();
+  if (gicd == 0 && uart == 0) return;      // firmware nao descreveu nada util
+
+  // Descoberta ATIVA: ela e a autoridade sobre os campos que possui. Atribuicao
+  // direta, sem "so se for diferente de zero" — porque zero e um valor legitimo
+  // (o GICv2 nao tem redistribuidor, e o MADT simplesmente nao traz o registro
+  // 0x0E). Confundir "ausente" com "nao descoberto" deixaria lixo da tabela.
+  g_current_platform->gicd_base   = gicd;
+  g_current_platform->gicr_base   = acpi_gicr_base();
+  g_current_platform->gicc_base   = acpi_gicc_base();
+  g_current_platform->uart_base   = uart;
+  g_current_platform->gic_version = acpi_gic_version();
+
+  g_hal_gicd_base    = g_current_platform->gicd_base;
+  g_hal_gicr_base    = g_current_platform->gicr_base;
+  g_hal_gicc_base    = g_current_platform->gicc_base;
+  g_hal_uart_base    = g_current_platform->uart_base;
+  g_hal_gic_version  = g_current_platform->gic_version;
+
+  // O timer so vem do firmware se o GTDT existir; sem ele, mantem o da tabela.
+  U32 tv = acpi_timer_virt();
+  if (tv != 0) g_current_platform->irq_timer = tv;
+
+  // Dispositivos de PLACA: SO o FDT descreve. O ACPI nao tem virtio-mmio — ele
+  // e topologia desta placa, nao arquitetura ARM. Se o FDT nao rodou, isto fica
+  // 0 e a tabela mantem o que tinha (fallback preservado).
+  U64 vb = acpi_virtio_base();
+  if (vb != 0) {
+    g_current_platform->virtio_base   = vb;
+    g_hal_virtio_base = vb;
+    U32 vs = acpi_virtio_stride();
+    if (vs != 0) {
+      g_current_platform->virtio_stride = vs;
+      g_hal_virtio_stride = vs;
+    }
+    U32 vn = acpi_virtio_slots();
+    if (vn != 0) g_current_platform->virtio_slots = vn;
+  }
+
+  HalStrCpy(g_current_platform->name, "Firmware Discovered (ACPI)");
+}
+
 U0 HalPlatformInit() {
   U64 boot_frq = __mrs_cntfrq();
   if (boot_frq == 0) boot_frq = 62500000;
@@ -191,6 +284,8 @@ U0 HalPlatformInit() {
   g_plat_qemu.irq_timer     = 27;
   g_plat_qemu.irq_uart      = 33;
   g_plat_qemu.timer_freq_hz = boot_frq;
+  g_plat_qemu.gicr_base     = 0x080A0000;
+  g_plat_qemu.gic_version   = 0;   // QEMU: v2 ou v3 e opcao de linha de comando -> sondar
 
   // 2. Raspberry Pi 4 (BCM2711)
   g_plat_rpi4.id            = HAL_PLATFORM_RPI4;
@@ -243,8 +338,16 @@ U0 HalPlatformInit() {
   g_plat_sm8150.irq_timer     = 27;
   g_plat_sm8150.irq_uart      = 108;
   g_plat_sm8150.timer_freq_hz = 19200000;
+  // Fonte primaria: arch/arm64/boot/dts/qcom/sm8150.dtsi (kernel oficial Xiaomi,
+  // branch vayu-r-oss) — `interrupt-controller@17a00000`, `compatible = arm,gic-v3`,
+  // `redistributor-stride = <0x0 0x20000>`, GICR em 0x17a60000 (* 8 cores).
+  g_plat_sm8150.gicr_base     = 0x17A60000;
+  g_plat_sm8150.gic_version   = 3;
 
-  HalSetPlatform(&g_plat_qemu);
+  // P1.2: escolhe a plataforma pelo silicio (MIDR_EL1), em vez de fixar o QEMU.
+  HalPlatformDetectByMidr();
+  // E3: e o firmware tem a palavra final sobre o que ele mesmo descreve.
+  HalPlatformOverlayDiscovery();
 }
 
 I64 HalPlatformSelect(I64 p_id) {

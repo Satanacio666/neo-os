@@ -773,22 +773,43 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
      correct — only the read-side flag was missing. Locked by `SelfTestCheck f64_ptr_out_param` (2.5 →
      `0x4004000000000000`) and `f64_struct_array_member_read` (1.5+2.5 = 4.0 → `0x4010000000000000`), 0 parity
      diff. Gate: `GL: PASS`.
-- **D35 — The kernel heap must be executable: `EfiLoaderData` → `EfiLoaderCode` + clear `SCTLR_EL1.WXN`
-  (ROOT-FIXED, boot).** The self-hosted compiler kmallocs its 4 MB machine-code buffer
-  (`g_hc_code = kmalloc(HC_CODE_CAPACITY*4)`, `Compiler.HC:418`) from the seed heap and `BLR`s into it. The heap
+- **D35 — The kernel heap must be executable: `EfiLoaderData` -> `EfiLoaderCode` + clear `SCTLR_EL1.WXN`
+  (ROOT-FIXED, boot). Found independently on TWO hosts (ARM64 POCO X3 Pro / Alpine QEMU 9.1.2 and the E2B
+  container): the boot died at `heap + 0x47CC98`, the very first `BLR` into code emitted by the self-hosted
+  compiler. The self-hosted compiler kmallocs its 4 MB machine-code buffer
+  (`g_hc_code = kmalloc(HC_CODE_CAPACITY*4)`, `Compiler.HC`) from the seed heap and `BLR`s into it. The heap
   was allocated **`EfiLoaderData`** (`boot/main.c`), which strict EDK2 2024/2025 firmwares map **execute-never**
-  (and/or set `SCTLR_EL1.WXN`), so the first `BLR` into freshly compiled code raised an Instruction Abort — the
-  EDK2 `Synchronous Exception` whose target lands inside `heap + 0x47CC98` (the JIT buffer `g_hc_code` living in
-  the heap). **Fix:** allocate the heap **`EfiLoaderCode`** (executable) and clear **`SCTLR_EL1.WXN`** (bit 19)
-  in `boot/main.c` before the JIT runs; the kernel execution stack stays `EfiLoaderData` (data, NX). Also added
-  `-funsigned-char` to `CFLAGS`.
-  **Rejected, with cause (do NOT re-add):** installing the NeoOS vector table (`VBAR_EL1`) *early* in
-  `boot/main.c`. NeoOS runs **entirely under UEFI Boot Services** — it never calls `ExitBootServices` — so the
-  firmware's own exception handling must stay live for the whole boot. Stealing `VBAR_EL1` early routed a
-  firmware exception (an SError during the ESP FAT read) into our not-yet-populated table and **halted the boot**
-  (reproduced: the boot stalls at `Sovereign Handover: Loading holyc/KernelInit.HC`). `Exceptions.HC` installs
-  the NeoOS table at Stage 1 (module 5) exactly as before; early faults stay reported by the firmware's own
-  `Synchronous Exception` handler. Gate: `GOLDEN BOOT: PASS`.
+  (and/or set `SCTLR_EL1.WXN`), so the first `BLR` raised an Instruction Abort (EC=0x21). In a SASOS the heap
+  *is* the code space. **Fix:** allocate the heap **`EfiLoaderCode`** (executable) and clear **`SCTLR_EL1.WXN`**
+  (bit 19) in `boot/main.c` before the JIT runs; the kernel execution stack stays `EfiLoaderData` (data, NX).
+  Also added `-funsigned-char` to `CFLAGS`. Gate: `GOLDEN BOOT: PASS`.
+  - **Rejected, with cause (do NOT re-add): stealing `VBAR_EL1` in the memory-setup section.** NeoOS runs
+    **entirely under UEFI Boot Services** — it never calls `ExitBootServices` — so the firmware's own exception
+    handling must stay live while boot services are being used. Stealing `VBAR_EL1` at that point routed a
+    firmware exception (an SError during the ESP FAT read) into our not-yet-populated table and **halted the
+    boot** (reproduced: stalls at `Sovereign Handover: Loading holyc/KernelInit.HC`). The comment in
+    `boot/main.c` at the WXN clear records this.
+  - **The handover-time install WORKS, with two additional root fixes (P0.8).** Installing the NeoOS table
+    **at the `.HC` handover** (not earlier) is safe *provided* both of these land with it:
+    1. **Tier-0 fault reporter.** `neo_early_panic` is exported through the `g_early_panic_hook` symbol, so an
+       unhandled synchronous fault (or SError) prints `ESR_EL1` (EC + name + ISS), `ELR_EL1`, `FAR_EL1`,
+       `SPSR_EL1` and the heap-relative fault offset, then halts — instead of the firmware's opaque
+       `Synchronous Exception` with no syndrome, which is why this bug was invisible for so long.
+    2. **IRQ livelock (P0.8a).** With the vectors live before `apps/Gic.HC` exists, an IRQ arriving while
+       `g_arch_vectors[1] == 0` was returned **without acknowledging the GIC** -> the PPI stayed asserted ->
+       **1,583,803 IRQs in 30 s** and a boot livelock. A handler may not simply mask the live `SPSR_EL1`:
+       `RESTORE_ALL` reloads `SPSR_EL1` **from the trap frame** (`[sp, #256]`). The fix masks IRQs **in the saved
+       frame** (`ldr x17,[sp,#256]; orr x17,x17,#0x80; str x17,[sp,#256]`) for both the SPx and SP0 IRQ entries,
+       so `eret` returns with `PSTATE.I=1` until the real handler registers.
+  - **Verification (Alpine QEMU 9.1.2, AAVMF Dec-2024):** boot reaches `ALL 34 HOLYC SUBSYSTEMS COMPILED &
+    ACTIVE IN RING 0`; in-guest `selftest` -> **`SELFTEST 99/99 PASS`**, **`PARITY 68/68`**,
+    **`RENDER: PASS (golden=0xD28836F)`**, with zero unexpected `Synchronous Exception`. Regression guard:
+    `boot/main.c` asserts the memory map still reports the heap region as `EfiLoaderCode` right after
+    allocation and prints `FATAL` + halts otherwise.
+  - **Environment-independence:** the failure reproduced with `-O0`/`-O2`, `cortex-a72`/`a76`/`max`, `-smp 1`/`4`,
+    `thread=single`/`multi`, `tb-size` 512/1024/2048, `-m` 512/1024/2048/4096, `-icount`, both firmware builds,
+    and at commits `d657e70` (P6) and `61b5546` (P7.0) — never a host-speed, QEMU-version or toolchain artefact.
+
 - **D36 — P7.2 near-plane clipper + NEON memory kernels — DONE; the blend hang was a missing `S` flag
   (ROOT-FIXED).** The Sutherland–Hodgman near-plane clipper landed: `HolyGLLerpVertex` + `HolyGLClipNear` (clip
   against `d = z + w - 0.001 >= 0`, interpolating every attribute) + `HolyGLSubmitClipped` (fan-triangulate

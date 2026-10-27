@@ -22,8 +22,8 @@ if [ "${NEO_MTTCG:-0}" = "1" ]; then ACCEL_THREAD=multi; fi
 
 QEMU_ARGS=(
   -M virt,gic-version=2
-  -accel "tcg,thread=${ACCEL_THREAD},tb-size=512"
-  -cpu cortex-a72
+  -accel "tcg,${NEO_QEMU_ACCEL:-thread=${ACCEL_THREAD},tb-size=512}"
+  -cpu "${NEO_QEMU_CPU:-cortex-a72}"
   -smp "${NEO_SMP:-4}"
   # P7.4 F1: deterministic measurement mode. `-icount shift=0,align=off,sleep=off`
   # drives the guest's virtual clock from the instruction count, so CNTVCT_EL0

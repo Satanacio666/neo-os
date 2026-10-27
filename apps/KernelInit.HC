@@ -21,6 +21,11 @@ U0 KInitLog(U8 *msg) {
 #define HC_MODULE_MAX 1048576
 
 U0 KInitLoad(U8 *fname) {
+    // P7.2: registra QUAL modulo esta sendo carregado/compilado. Se o NeoOS falhar
+    // aqui, o crash dump no disco traz o nome do arquivo — sem isso, "tela preta"
+    // na POCO nao diz nada. Sem alocacao: so copia ate 31 bytes para uma global.
+    neo_crash_set_module(0, fname);
+
     U8 *kinit_load_buf = kmalloc(HC_MODULE_MAX);
     if (!kinit_load_buf) {
         doldoc_printf("[KERNEL-INIT] FATAL: Out of memory loading %s\n", fname);
@@ -33,6 +38,10 @@ U0 KInitLoad(U8 *fname) {
         kinit_load_buf[fsize] = 0;
         doldoc_printf("[KERNEL-INIT] Compiling %s (%lld bytes)...\n", fname, fsize);
         I64 res;
+        // P8 (Nivel 1) esta implementado mas DESLIGADO: o entrypoint restaurado do
+        // cache nao retorna ao chamador, e o seed acaba recompilando tudo — o cache
+        // sai mais caro que a compilacao. Reativar quando o retorno for resolvido:
+        //   ... else { res = jit_compile_and_run_cached(fname, kinit_load_buf); }
         if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }
         doldoc_printf("[KERNEL-INIT] %s compiled, res = %lld\n", fname, res);
     } else {

@@ -30,6 +30,44 @@
 
 #include <uefi.h>
 
+/*
+ * P1.1 / D36 — Console UEFI (ConOut) so pode ser usado enquanto o NeoOS estiver
+ * no MESMO EL em que o firmware foi inicializado. Depois do drop EL2->EL1
+ * (kernel/arch/aarch64/el2_drop.S) o codigo dos Boot Services do firmware, ao
+ * ser executado a partir de EL1, toma excecao e derruba o boot.
+ *
+ * boot/main.c zera esta flag imediatamente antes do drop. A partir dai o console
+ * e o espelho cru da UART (e o framebuffer, quando ativo) — nunca o ConOut.
+ */
+int g_uefi_console_enabled = 1;
+
+/*
+ * P5.1 — 0x09000000 so e um PL011 na maquina `virt` do QEMU.
+ *
+ * No Snapdragon 860 (POCO X3 Pro) esse endereco NAO esta mapeado: a primeira
+ * escrita ali e um Data Abort, e o boot morre na PRIMEIRA linha de printf —
+ * antes de o GOP aparecer. A deteccao e por MIDR_EL1 (implementer), que e
+ * seguro de ler em qualquer plataforma: nenhum ARM real tem PL011 em
+ * 0x09000000, e o QEMU virt reporta implementer 0x41 (ARM).
+ *   -1 = ainda nao sondado · 0 = sem PL011 · 1 = PL011 presente
+ */
+int g_pl011_mmio_enabled = -1;
+
+static int pl011_available(void) {
+    if (g_pl011_mmio_enabled >= 0) return g_pl011_mmio_enabled;
+    uint64_t midr = 0;
+    __asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
+    uint32_t impl = (uint32_t)((midr >> 24) & 0xFFu);
+    /* 0x51 = Qualcomm. 0x50 = AppliedMicro. Nenhum tem PL011 em 0x09000000. */
+    g_pl011_mmio_enabled = (impl == 0x51u || impl == 0x50u) ? 0 : 1;
+    return g_pl011_mmio_enabled;
+}
+
+/* P5.1 — versao exportada para o HolyC (registrada como simbolo em boot/main.c).
+ * Os modulos apps/Keyboard.HC e apps/HalPlatform.HC tambem acessam 0x09000000
+ * direto (PL011 FR em +0x18); sem esta guarda eles dariam Data Abort na POCO. */
+int neo_pl011_available(void) { return pl011_available(); }
+
 static efi_file_handle_t *__root_dir = NULL;
 static efi_serial_io_protocol_t *__ser = NULL;
 static block_file_t *__blk_devs = NULL;
@@ -735,22 +773,27 @@ int vprintf(const char_t* fmt, __builtin_va_list args)
 #ifndef UEFI_NO_UTF8
     ret = vsnprintf(s_vprintf_tmp, sizeof(s_vprintf_tmp), fmt, args);
 
-    // Mirror to PL011 UART so debug logs appear cleanly in serial output
-    volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
-    const char *p = s_vprintf_tmp;
-    while (*p) {
-        if (*p == '\n') *uartdr = '\r';
-        *uartdr = (uint32_t)(*p++);
+    // Mirror to PL011 UART so debug logs appear cleanly in serial output.
+    // Guarded: 0x09000000 is only a PL011 on the QEMU virt machine — writing it
+    // on a Snapdragon is a Data Abort on the first printf (see pl011_available).
+    if (pl011_available()) {
+        volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
+        const char *p = s_vprintf_tmp;
+        while (*p) {
+            if (*p == '\n') *uartdr = '\r';
+            *uartdr = (uint32_t)(*p++);
+        }
     }
 
-    // Only draw via UEFI ConOut if GUI framebuffer is not yet active
-    if (!gfx_is_active || !gfx_is_active()) {
+    // Only draw via UEFI ConOut if the GUI framebuffer is not yet active AND we are
+    // still at the EL the firmware was initialised in (see g_uefi_console_enabled).
+    if (g_uefi_console_enabled && (!gfx_is_active || !gfx_is_active())) {
         mbstowcs(s_vprintf_dst, s_vprintf_tmp, (sizeof(s_vprintf_dst) / sizeof(wchar_t)) - 1);
         ST->ConOut->OutputString(ST->ConOut, s_vprintf_dst);
     }
 #else
     ret = vsnprintf(s_vprintf_dst, sizeof(s_vprintf_dst) / sizeof(wchar_t), fmt, args);
-    if (!gfx_is_active || !gfx_is_active()) {
+    if (g_uefi_console_enabled && (!gfx_is_active || !gfx_is_active())) {
         ST->ConOut->OutputString(ST->ConOut, s_vprintf_dst);
     }
 #endif
@@ -829,11 +872,14 @@ int getchar (void)
 
 int putchar (int __c)
 {
-    volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
-    if (__c == '\n') *uartdr = '\r';
-    *uartdr = (uint32_t)(uint8_t)__c;
+    // Guarded like the vprintf mirror: 0x09000000 is a PL011 only on QEMU virt.
+    if (pl011_available()) {
+        volatile uint32_t *uartdr = (volatile uint32_t*)0x09000000ULL;
+        if (__c == '\n') *uartdr = '\r';
+        *uartdr = (uint32_t)(uint8_t)__c;
+    }
 
-    if (!gfx_is_active || !gfx_is_active()) {
+    if (g_uefi_console_enabled && (!gfx_is_active || !gfx_is_active())) {
         wchar_t tmp[2];
         tmp[0] = (wchar_t)__c;
         tmp[1] = 0;
