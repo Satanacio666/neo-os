@@ -195,10 +195,15 @@ U0 SelfTestFs() {
     U8 rbuf[64];
     I64 i = 0;
     while (i < 64) { wbuf[i] = (i * 3 + 1) & 0xFF; rbuf[i] = 0; i++; }
-    redsea_write_file("__p2_rt.HC", wbuf, 64);
+    // P8-fix: checar o retorno da ESCRITA e o contador de falhas de I/O. Antes o
+    // teste so olhava o tamanho lido, entao 'n=0' nao dizia se falhou a escrita
+    // ou a leitura — foi por isso que a causa raiz demorou a aparecer.
+    I64 fs_wr = redsea_write_file("__p2_rt.HC", wbuf, 64);
+    I64 fs_io0 = g_rs_io_errors;
     g_fs_rt_size = 0;
-    redsea_read_file("__p2_rt.HC", rbuf, 64, &g_fs_rt_size);
-    I64 ok = (g_fs_rt_size == 64);
+    I64 fs_rd = redsea_read_file("__p2_rt.HC", rbuf, 64, &g_fs_rt_size);
+    I64 fs_io1 = g_rs_io_errors;
+    I64 ok = (g_fs_rt_size == 64 && fs_wr >= 0 && fs_io1 == fs_io0);
     if (ok) {
         i = 0;
         while (i < 64) { if (rbuf[i] != wbuf[i]) { ok = 0; break; } i++; }
@@ -207,7 +212,8 @@ U0 SelfTestFs() {
         doldoc_print("[SELFTEST] PASS fs round-trip (RedSea.HC)\n");
         doldoc_print("FSRT: PASS\n");
     } else {
-        doldoc_printf("[SELFTEST] FAIL fs round-trip (n=%lld)\n", g_fs_rt_size);
+        doldoc_printf("[SELFTEST] FAIL fs round-trip (n=%lld wr=%lld rd=%lld io=%lld->%lld)\n",
+                      g_fs_rt_size, fs_wr, fs_rd, fs_io0, fs_io1);
         doldoc_print("FSRT: FAIL\n");
     }
 }

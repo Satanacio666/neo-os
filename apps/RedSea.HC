@@ -120,8 +120,17 @@ I64 RsReadSectors(U64 lba, U32 num_sec, U8 *buf) {
   return rs_r;
 }
 
+// P8-fix: contador de falhas de escrita. Havia 8 chamadores que descartavam o
+// retorno de RsWriteSectors — o pior deles em RedSeaWriteFile, que gravava,
+// ignorava a falha e atualizava a entrada do diretorio mesmo assim. A leitura
+// posterior achava o arquivo e recebia lixo ('fs round-trip (n=0)'). Contar aqui
+// cobre TODOS os chamadores de uma vez, inclusive os futuros.
+I64 g_rs_io_errors = 0;
+
 I64 RsWriteSectors(U64 lba, U32 num_sec, U8 *buf) {
-  return VirtioBlkWriteSectors(lba, num_sec, buf);
+  I64 rs_w = VirtioBlkWriteSectors(lba, num_sec, buf);
+  if (rs_w < 0) g_rs_io_errors = g_rs_io_errors + 1;
+  return rs_w;
 }
 
 // -------------------------------------------------------------
@@ -340,8 +349,15 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
         if (!p_buf) return -1;
         RsMemSet(p_buf, 0, need_sec * 512);
         RsMemCpy(p_buf, data, sz);
-        RsWriteSectors(target_cl, need_sec, p_buf);
+        // P8-fix: sem checar aqui, a entrada do diretorio era atualizada mesmo
+        // com a gravacao falhando — e a leitura seguinte devolvia lixo.
+        I64 rs_wr = RsWriteSectors(target_cl, need_sec, p_buf);
         kfree(p_buf);
+        if (rs_wr < 0) {
+          doldoc_printf("$FG,RED$[REDSEA] escrita falhou em '%s' (LBA %lld, res=%lld)$FG$\n",
+                        fname, target_cl, rs_wr);
+          return -1;
+        }
 
         ent->size = sz;
         ent->datetime = 0x202610170000 + timer_get_uptime_sec();
