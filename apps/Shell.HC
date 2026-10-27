@@ -506,7 +506,10 @@ U0 ShellInspectSource(U8 *target) {
 U0 ShellProfilerBoot() {
     ProfilerReset();
     ProfilerSetOn(1);
-    ProfilerSetTrace(1);
+    // P9.1: espelho serial DESLIGADO por padrao. O painel agora e um node DolDoc
+    // na tela; o espelho a 1 Hz enchia o log (107 blocos / 158 KB medidos) e
+    // atrapalhava o debug. `profiler on` religa quando for preciso ler o serial.
+    ProfilerSetTrace(0);
     ProfilerSampleLoad();
 
     // 1. o no DolDoc do painel (desenhado por ultimo, sempre no topo)
