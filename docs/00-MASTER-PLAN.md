@@ -1,10 +1,12 @@
 # NeoOS — 00 MASTER PLAN (objectives, priorities, architecture)
 
-> Consolidation doc 1 of 5. Sources: all 44 `docs/*.md` + `docs/master/*.md` + repo `README.md`/`SKILL.md`.
+> Consolidation doc 1 of 6. Sources: all 44 `docs/*.md` + `docs/master/*.md` + repo `README.md`/`SKILL.md`.
 > This is the **plan** (what we are building and why). Reality is in `01-REALITY-AUDIT.md`; the task list is in
 > `02-TASKLIST.md`; ideas/research in `03-IDEAS-AND-RESEARCH.md`; contradictions/decisions in
-> `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`. Nothing from the old docs is dropped — outdated/superseded
-> claims are preserved in doc 4.
+> `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`; the partial-implementation audit (ADR D55) is
+> `05-PARTIAL-IMPLEMENTATION-AUDIT.md`. Nothing from the old docs is dropped — outdated/superseded claims are
+> preserved in doc 4. *(Doc 05 was added by explicit user order; the earlier "exactly 5 docs" rule is
+> superseded.)*
 
 ---
 
