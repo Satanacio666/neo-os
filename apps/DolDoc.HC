@@ -1406,6 +1406,11 @@ U0 DolDocSlateSelfTest() {
         g_doc_nodes[t5r].x = 0; g_doc_nodes[t5r].y = 0;
         DolDocMeasureNode(t5r);
         DolDocArrangeNode(t5r, 0, 0, g_doc_nodes[t5r].w, g_doc_nodes[t5r].h);
+        // G3-fix: captura y IMEDIATAMENTE apos o arranjo. Os doldoc_printf
+        // abaixo escrevem no documento vivo e disparam um re-layout que
+        // reposiciona estes mesmos nos — ler depois mede outra coisa.
+        I64 t5r_y = g_doc_nodes[t5r].y;
+        I64 t5a_y = g_doc_nodes[t5a].y, t5b_y = g_doc_nodes[t5b].y, t5c_y = g_doc_nodes[t5c].y;
         doldoc_printf("[G3-T5c] sn=%lld cnt=%lld kind=%lld first=%lld last=%lld\n",
                       g_g3_sn_nodes, g_doc_node_count, g_doc_nodes[t5r].kind,
                       g_doc_nodes[t5r].first, g_doc_nodes[t5r].last);
@@ -1422,6 +1427,9 @@ U0 DolDocSlateSelfTest() {
                     g_doc_nodes[t5r].meas_w == 140 && g_doc_nodes[t5r].meas_h == 120 &&
                     g_doc_nodes[t5a].w == 100 && g_doc_nodes[t5b].w == 153 && g_doc_nodes[t5c].w == 307 &&
                     g_doc_nodes[t5a].x == 10 && g_doc_nodes[t5b].x == 120 && g_doc_nodes[t5c].x == 283 &&
+                    // G3-fix: Y tambem cobrado (antes so x e w eram). row y=0;
+                    // filhos y=pad=10. Usa os valores capturados acima.
+                    t5r_y == 0 && t5a_y == 10 && t5b_y == 10 && t5c_y == 10 &&
                     g_doc_nodes[t5a].size_mode_w == DOC_SIZE_FIXED &&
                     g_doc_nodes[t5b].size_mode_w == DOC_SIZE_FLEX &&
                     g_doc_nodes[t5c].size_mode_w == DOC_SIZE_FLEX);
