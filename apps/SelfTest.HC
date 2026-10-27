@@ -1416,6 +1416,8 @@ U0 SelfTestRun() {
     TelemetrySelfTest();
     EffectsSelfTest();
     EffectsSpringSelfTest();
+    EffectsGlassSelfTest();
+    EffectsTransitionSelfTest();
     SelfTestMath3DParallel();
     FontsSelfTest();
     SelfTest3D();

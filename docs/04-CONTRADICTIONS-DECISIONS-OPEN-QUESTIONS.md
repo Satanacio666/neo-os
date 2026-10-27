@@ -1171,3 +1171,15 @@ best-in-class) and persist their briefs under `docs/research/`, **then** impleme
   census **neutral** (179), pure HolyC. Gate (standard **and** `-icount`): `GOLDEN BOOT: PASS`,
   `RENDER 0xD28836F`, `SPRING: PASS (6/6)`, `LAYOUT: PASS`, `EFFECTS: PASS`, `SELFTEST 123/123`, `PARITY 92/92`,
   `CENSUS 179`, `SELF-HOST: PASS`.
+- **D55 — LOCKED INVARIANT: NO PARTIAL IMPLEMENTATIONS (user order, 2026-10).** *"nunca implementar parcialmente
+  nada, sempre tomar a melhor decisão sempre."* It is now **expressly forbidden** to commit a sketch, stub,
+  partial implementation or temporary simplification. When a feature is addressed it MUST be implemented at its
+  **full architectural depth**: real HolyC production code, no shortcuts, all edge cases and the
+  mathematical/visual fidelity resolved. A phase may only be started when it can be finished in full; otherwise
+  it is not started (and is marked "not started", never "partial"). This supersedes the "partial by design"
+  wording used in D53/D54. The exhaustive catalogue of everything previously done partially — and the
+  completeness plan for each — is `docs/research/PARTIAL_IMPLEMENTATIONS_AUDIT.md` (audit of the Raven dossier,
+  glassmorphism/optical physics, Slate layout, industrial widgets, typography, and the WM/Shell/Compositor
+  dissolution). **Self-hosting stays frozen at P11 (last); the focus is 100 % GUI, sovereign unification,
+  system minimisation and absolute HolyC perfection.** D55 is enforced by the phase gates: no gate may be
+  declared green for a feature that is only partly built.
