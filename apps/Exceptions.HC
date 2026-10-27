@@ -193,6 +193,21 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
   if (is_user_jit || g_exc_user_ok) {
     g_exc.recovered_exceptions = g_exc.recovered_exceptions + 1;
     doldoc_print("<<<EXC:RECOVERED>>>\n");
+    // ------------------------------------------------------------------------
+    // [F0RE-A] INSTRUMENTACAO FORENSE (agente A): prova a ORIGEM da recuperacao.
+    // Imprime o trap frame (ESR/ELR/FAR), as duas flags que autorizam a
+    // recuperacao (g_exc_selftest_active, g_exc_user_ok) e o flag de JIT task.
+    // Remove-se depois; nao altera o fluxo de recuperacao.
+    // ------------------------------------------------------------------------
+    doldoc_printf("<<<EXC:DIAG>>> ESR_EL1=0x%016llX ELR_EL1=0x%016llX FAR_EL1=0x%016llX selftest_active=%lld user_ok=%lld is_user_jit=%lld\n",
+                  esr, f->elr_el1, far, g_exc_selftest_active, g_exc_user_ok, is_user_jit);
+    U8 *exd_sym;
+    exd_sym = SymNearestName(f->elr_el1);
+    if (exd_sym != 0) {
+      doldoc_printf("<<<EXC:DIAG-SYM>>> nearest_symbol_at_or_below_ELR = %s\n", exd_sym);
+    } else {
+      doldoc_print("<<<EXC:DIAG-SYM>>> nearest_symbol_at_or_below_ELR = NONE\n");
+    }
     if (!g_exc_selftest_active) {
       doldoc_print("\n$CARD,title=\"Sovereign Ring-0 Fault Recovery (JIT Task Unwound)\",w=96,h=6,bg=0xFF1E1E2E,border=0xFFF38BA8$\n");
       doldoc_printf("  $FG,RED$[EXC #%lld]$FG$ EC=0x%02X ($FG,YELLOW$%s$FG$) | Insn=0x%08X\n",

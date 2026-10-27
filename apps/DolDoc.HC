@@ -2201,7 +2201,12 @@ I64 DolDocHandleClick(I64 mx, I64 my) {
                 DolDocMarkAllDirty();
             }
         } else if (cmd[0]) {
-            strcpy(g_click_cmd_buf, cmd);
+            // P8-fix: `cmd` aponta para g_doc_args (argumento de tag, pode ter
+            // dezenas de KB); g_click_cmd_buf tem 256 bytes. O strcpy transbordava
+            // a BSS. Copia limitada com terminador garantido.
+            I64 cc_i = 0;
+            while (cc_i < 255 && cmd[cc_i] != 0) { g_click_cmd_buf[cc_i] = cmd[cc_i]; cc_i++; }
+            g_click_cmd_buf[cc_i] = 0;
             DolDocPrint("\n$FG,YELLOW$[CLICK]$FG$ $FG,CYAN$");
             DolDocPrint(g_click_cmd_buf);
             DolDocPrint("$FG$\n");

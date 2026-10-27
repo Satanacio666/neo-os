@@ -107,7 +107,17 @@ U0 RsMemCpy(U8 *dst, U8 *src, I64 count) {
 I64 g_rs_hw_mode = 1;
 
 I64 RsReadSectors(U64 lba, U32 num_sec, U8 *buf) {
-  return VirtioBlkReadSectors(lba, num_sec, buf);
+  I64 rs_r = VirtioBlkReadSectors(lba, num_sec, buf);
+  if (rs_r < 0 && buf != 0) {
+    // P8-fix (blindagem na FONTE): uma falha de I/O nunca pode deixar o buffer
+    // com lixo. Sem isto, TODO chamador que ignorasse o retorno (eram 7 nesta
+    // arvore) interpretava memoria nao inicializada como dado valido — foi a
+    // causa do `ls` com lixo, e a mesma classe em `cat`, `cd`, `save` e `mkdir`.
+    // Blindar aqui cobre todos os chamadores de uma vez, inclusive os futuros.
+    U64 rs_z;
+    for (rs_z = 0; rs_z < (U64)num_sec * 512; rs_z++) buf[rs_z] = 0;
+  }
+  return rs_r;
 }
 
 I64 RsWriteSectors(U64 lba, U32 num_sec, U8 *buf) {
@@ -299,7 +309,16 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
   // Search current directory
   I64 rsw_s = 0;
   while (rsw_s < g_rs.current_dir_sectors) {
-    RsReadSectors(g_rs.current_dir_lba + rsw_s, 1, s_buf);
+    // P8-fix: retorno descartado aqui fazia o `save` varrer um diretorio de lixo e
+    // escolher um slot livre inexistente — podendo sobrescrever arquivo existente.
+    I64 rsw_z;
+    for (rsw_z = 0; rsw_z < 512; rsw_z++) s_buf[rsw_z] = 0;
+    I64 rsw_rd = RsReadSectors(g_rs.current_dir_lba + rsw_s, 1, s_buf);
+    if (rsw_rd < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] I/O falhou no save (LBA %lld, res=%lld)$FG$\n",
+                    g_rs.current_dir_lba + rsw_s, rsw_rd);
+      return -1;
+    }
     I64 rsw_i = 0;
     while (rsw_i < REDSEA_ENTRIES_PER_SECTOR) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rsw_i);
@@ -533,7 +552,16 @@ I64 RedSeaChangeDir(U8 *dname) {
   U8 s_buf[512];
   I64 rscd_s = 0;
   while (rscd_s < g_rs.current_dir_sectors) {
-    RsReadSectors(g_rs.current_dir_lba + rscd_s, 1, s_buf);
+    // P8-fix: retorno descartado aqui gravava lixo em current_dir_lba — dano
+    // PERSISTENTE no estado do diretorio, nao so uma tela errada.
+    I64 rscd_z;
+    for (rscd_z = 0; rscd_z < 512; rscd_z++) s_buf[rscd_z] = 0;
+    I64 rscd_rd = RsReadSectors(g_rs.current_dir_lba + rscd_s, 1, s_buf);
+    if (rscd_rd < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] I/O falhou em cd (LBA %lld, res=%lld)$FG$\n",
+                    g_rs.current_dir_lba + rscd_s, rscd_rd);
+      return -1;
+    }
     I64 rscd_i = 0;
     while (rscd_i < REDSEA_ENTRIES_PER_SECTOR) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rscd_i);
@@ -766,6 +794,14 @@ I64 redsea_delete_file(U8 *fname) {
 }
 
 // P0.5 twin-liveness probe: proves RedSea.HC is loaded and callable.
+I64 RedSeaTwinProbe() { return 0x52534431; }
+
+if (g_kernel_booting) {
+  RedSeaMountHardware(1);
+} else {
+  RedSeaSelfTest();
+}
+nd callable.
 I64 RedSeaTwinProbe() { return 0x52534431; }
 
 if (g_kernel_booting) {

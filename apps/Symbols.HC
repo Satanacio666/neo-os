@@ -210,6 +210,40 @@ U64 SymLookup(U8 *name) {
 }
 
 // ------------------------------------------------------------------------------
+// [F0RE-A] Reverse lookup (agente A, forense de runtime): devolve o NOME do
+// simbolo DEFINIDO de maior endereco <= addr (o "mais proximo para tras").
+// Nao existia nenhuma busca reversa na arvore (so SymLookup nome->endereco e
+// SymDump); esta funcao e a equivalente a symbols_reverse_lookup. Usada pela
+// instrumentacao de Exceptions.HC para nomear o ELR_EL1 de um fault recuperado.
+// Nao altera nenhum simbolo: varredura somente-leitura dos 1024 baldes.
+// ------------------------------------------------------------------------------
+U8* SymNearestName(U64 addr) {
+  U8 *best_name = 0;
+  U64 best_addr = 0;
+  I64 snn_b = 0;
+  while (snn_b < SYM_HASH_BUCKETS) {
+    CSymbol *snn_c = g_sym_buckets[snn_b];
+    while (snn_c) {
+      if (snn_c->address != 0 && snn_c->address <= addr) {
+        if (best_name == 0 || snn_c->address > best_addr) {
+          best_addr = snn_c->address;
+          best_name = snn_c->name;
+        }
+      }
+      snn_c = snn_c->next;
+    }
+    snn_b++;
+  }
+  return best_name;
+}
+
+U64 SymNearestAddr(U64 addr) {
+  U8 *nm = SymNearestName(addr);
+  if (!nm) return 0;
+  return SymLookup(nm);
+}
+
+// ------------------------------------------------------------------------------
 // P3.8 sovereign handover: Symbols.HC becomes the runtime owner of the symbol
 // table. The seed's symbols_* entries are SIC-patched to point here so every
 // .HC caller (compiled with SIC cells) uses this table; the seed table is frozen.

@@ -437,7 +437,11 @@ U0 ShellInspectSource(U8 *target) {
         return;
     }
     U8 fname[64];
-    strcpy(fname, target);
+    // P8-fix: `target` vem do REPL com ate 1023 bytes. O strcpy em fname[64]
+    // transbordava ~960 bytes de PILHA — disparavel digitando `src <1000 chars>`.
+    I64 fn_i = 0;
+    while (fn_i < 63 && target[fn_i] != 0) { fname[fn_i] = target[fn_i]; fn_i++; }
+    fname[fn_i] = 0;
     I64 len = strlen(fname);
     if (len < 3 || strcmp(fname + len - 3, ".HC") != 0) {
         if (len < 59) {
