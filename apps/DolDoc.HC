@@ -58,6 +58,7 @@
 #define DOC_BLOCKEDIT  31
 #define DOC_ISLAND     32
 #define DOC_REPL       33   // a live Shell input node on the tape
+#define DOC_PROF       34   // P9.0: live profiler panel (drawn last, always on top)
 
 // ---- Node flags --------------------------------------------------------------
 #define DOCF_OPEN      1
@@ -1259,6 +1260,30 @@ U0 DolDocParseRepl(U8 *tag) {
     DolDocAdvance(1);
 }
 
+// P9.0 $PROF$: the live profiler panel. It is a first-class DolDoc node whose
+// CONTENT is not baked text: DolDocRedraw draws it last (always on top) by
+// calling ProfilerDrawPanel(), which reads the live counters in Telemetry.HC.
+// So the panel updates every refresh without ever growing the node tree.
+U0 DolDocParseProfiler(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 760);
+    I64 h = DolDocGetAttrInt(tag, "h=", 215);
+    I64 px = DolDocFlowPx();
+    I64 py = DolDocFlowPy();
+    I64 n = DolDocWidget(DOC_PROF, px, py, w, h, tag);
+    if (n >= 0) {
+        DolDocSetLabel(n, "NeoOS Live Profiler");
+        ProfilerSetNodeId(n);
+        ProfilerSetNodeRect(px, py, w, h);
+        // The panel is a block: push the text flow below it so the following
+        // text is not hidden behind the panel.
+        I64 rows = (h + 17) / 18;
+        g_doc_row = g_doc_row + rows;
+        if (g_doc_row >= g_doc_rows) g_doc_row = g_doc_rows - 1;
+        DolDocBreakRun();
+        DolDocUpdateCursor();
+    }
+}
+
 // The Slate pass: after parsing, arrange each container's following sibling run.
 U0 DolDocSlatePass() {
     I64 n = 0;
@@ -1478,6 +1503,7 @@ U0 DolDocExecTag(U8 *tag) {
     if (strncmp(tag, "BLOCK_EDITOR", 12) == 0) { DolDocParseIndustrial(tag, DOC_BLOCKEDIT); return; }
     if (strncmp(tag, "ISLAND", 6) == 0) { DolDocParseIndustrial(tag, DOC_ISLAND); return; }
     if (strncmp(tag, "REPL", 4) == 0) { DolDocParseRepl(tag); return; }
+    if (strncmp(tag, "PROF", 4) == 0) { DolDocParseProfiler(tag); return; }
     if (strncmp(tag, "CARD", 4) == 0) { DolDocParseCard(tag, DOC_CARD); return; }
     if (strncmp(tag, "H1", 2) == 0) { DolDocParseFontText(tag); return; }
     if (strncmp(tag, "BOX", 3) == 0) { DolDocParseCard(tag, DOC_BOX); return; }
@@ -2068,6 +2094,7 @@ U0 DolDocDrawNode(I64 nid, I64 scroll) {
         return;
     }
     if (nd->kind == DOC_WINDOW) { DolDocDrawWindowNode(nid, scroll); return; }
+    if (nd->kind == DOC_PROF) return;   // P9.0: drawn by the last pass in DolDocRedraw
     DolDocDrawWidget(nd, scroll);
 }
 
@@ -2080,6 +2107,14 @@ U0 DolDocRedraw() {
     gfx_draw_rect(g_doc_x, g_doc_y, g_doc_w, 1, DolDocResolveColor(SEM_COLOR_SURFACE0));
     DolDocDrawChildren(g_doc_root, g_doc_scroll_offset * 18);
     if (g_doc_inspected_nid >= 0 && g_doc_inspected_nid < g_doc_node_count) DolDocDrawHalo(g_doc_inspected_nid);
+    // P9.0: the live profiler panel is drawn LAST so it is never covered.
+    for (I64 pn = 0; pn < g_doc_node_count; pn++) {
+        if (g_doc_nodes[pn].kind == DOC_PROF) {
+            ProfilerDrawPanel(g_doc_nodes[pn].x,
+                              g_doc_nodes[pn].y + g_doc_scroll_offset * 18,
+                              g_doc_nodes[pn].w, g_doc_nodes[pn].h);
+        }
+    }
     gfx_reset_clip();
     g_doc_dirty_mask = 0;
     g_doc_dirty = 0;

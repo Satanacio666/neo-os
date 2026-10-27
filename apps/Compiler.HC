@@ -2153,7 +2153,15 @@ U0 HcParsePrimary() {
                 // AArch64 passes the first 8 integer/FP arguments in X0-X7. More
                 // requires stack spilling, which is not implemented; hard-error
                 // instead of silently clobbering registers past X7 (matches the C JIT).
+                //
+                // P9.0: e PARA DE EMITIR aqui. Antes o emissor continuava e gerava
+                // a sequencia de pops para o 9o argumento (`ldr x8, [sp], #16`), o
+                // que deixava um fluxo de instrucoes malformado no code pool do JIT
+                // mesmo com g_hc_error setado. Medido: o caso `known_over8_args` do
+                // selftest e seguido de uma execucao selvagem que terminava em
+                // instruction abort com ELR_EL1 = 0xFFFFFFFFFFFFFFFF (ver relatorio).
                 g_hc_error = 1;
+                return;
             }
 
             I64 a_reg = 0;

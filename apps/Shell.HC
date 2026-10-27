@@ -207,6 +207,9 @@ U0 ShellAutocomplete() {
 
     U8 entries[3072];
     I64 file_count = redsea_get_entries(entries, 48);
+    // P8-fix: -1 = falha de I/O. Tratar como zero impede que o autocompletar
+    // percorra um laco com contador negativo sobre lixo de pilha.
+    if (file_count < 0) file_count = 0;
 
     U8 match_buf[256];
     match_buf[0] = 0;
@@ -484,19 +487,33 @@ U0 ShellInspectSource(U8 *target) {
     kfree(src_buf);
 }
 
-U0 ShellPrintBootBanner() {
-    I64 sw = gfx_get_canvas_width();
-    I64 sh = gfx_get_canvas_height();
-    I64 cw = (sw - 32) / 8;
-    if (cw < 72) cw = 72;
+// ============================================================================
+// P9.0: o banner de boot virou um PAINEL DE PROFILER VIVO.
+//
+// O que estava aqui antes (Substrate/Continuum/Flagship & Desktop/Semantic
+// Themes/Compiler & Tools) era texto estatico impresso uma unica vez. Agora o
+// Shell cria um NODE DolDoc ($PROF$ -> kind DOC_PROF) que o proprio pipeline do
+// DolDoc redesenha por cima de tudo a cada 250 ms, lendo os contadores vivos de
+// Telemetry.HC (FPS, ms/frame, ms por subsistema, ocioso, excecoes, heap).
+// O mesmo painel vai para o log serial (UART) a cada 1 s.
+// ============================================================================
+U0 ShellProfilerBoot() {
+    ProfilerReset();
+    ProfilerSetOn(1);
+    ProfilerSetTrace(1);
+    ProfilerSampleLoad();
 
-    doldoc_printf("\n$CARD,title=\"NeoOS 3.0 Sovereign Continuum (ARM64 Ring-0)\",w=%lld,h=11$\n", cw);
-    doldoc_print("  $FONT,text=\"NEO-OS 3.0 PURE HOLYC RING-0\",scale=130,color=\"CYAN\"$\n\n");
-    doldoc_printf("  $FG,SAPPHIRE$Substrate:$FG$ 100%% Native AArch64 JIT | $FG,SAPPHIRE$Skin:$FG$ $FG,YELLOW$%s$FG$ | $FG,SAPPHIRE$Storage:$FG$ RedSea 64-bit FS\n", g_theme.name);
-    doldoc_print("  $FG,SAPPHIRE$Continuum:$FG$ Unified Scene-Graph, OmniTape Stream, Morton 64x64 Tiles & Native Shadertoy ($$SHADER$$)\n\n");
-    doldoc_print("  $FG,YELLOW$Flagship & Desktop:$FG$ $BT,\"Shadertoy IDE\",LM=\"shader\"$  $BT,\"Desktop WM\",LM=\"wm\"$  $BT,\"GLXGears 3D\",LM=\"gears\"$  $BT,\"HolyBenchmark\",LM=\"bench\"$\n");
-    doldoc_print("  $FG,YELLOW$Semantic Themes   :$FG$ $BT,\"Mocha\",LM=\"theme mocha\"$  $BT,\"Latte\",LM=\"theme latte\"$  $BT,\"Tokyo\",LM=\"theme tokyo\"$  $BT,\"Nord\",LM=\"theme nord\"$  $BT,\"TempleOS\",LM=\"theme temple\"$  $BT,\"Cyberpunk\",LM=\"theme cyberpunk\"$\n");
-    doldoc_print("  $FG,YELLOW$Compiler & Tools  :$FG$ $BT,\"Disasm (uf)\",LM=\"uf DolDocRedraw\"$  $BT,\"Inspect Src\",LM=\"src DolDoc.HC\"$  $BT,\"Compiler.HC\",LM=\"run Compiler.HC\"$  $BT,\"Files (ls)\",LM=\"ls\"$  $BT,\"Memory\",LM=\"mem\"$\n\n\n");
+    // 1. o no DolDoc do painel (desenhado por ultimo, sempre no topo)
+    doldoc_print("\n$PROF,w=760,h=215$\n");
+    // 2. o painel tambem sai no serial, que e onde a prova de vida e observada
+    uart_puts("[PROF:BOOT] NeoOS live profiler panel online (comando: profiler on|off)\n");
+    ProfilerSerialMirror("BOOT");
+    // 3. uma linha de contexto (o resto do banner antigo foi removido de proposito)
+    doldoc_print("  $FG,MUTED$NeoOS 3.0 Sovereign Continuum (AArch64 Ring-0) - profiler vivo; 'profiler off' esconde, 'help' lista os comandos.$FG$\n\n");
+}
+
+U0 ShellPrintBootBanner() {
+    ShellProfilerBoot();
 }
 
 // ============================================================================
@@ -668,6 +685,43 @@ U0 ShellCmd_perf(U8 *a, U8 *r) {
     doldoc_print("$HR$\n");
 }
 
+// P9.0: liga/desliga o painel de profiler vivo.
+U0 ShellCmd_profiler(U8 *a, U8 *r) {
+    while (*a == ' ' || *a == '\t') a++;
+    if (strncmp(a, "trace", 5) == 0) {
+        U8 *t = a + 5; while (*t == ' ') t++;
+        if (strncmp(t, "on", 2) == 0) { ProfilerSetTrace(1); doldoc_print("$FG,GREEN$[PROFILER]$FG$ espelho serial [PROF] LIGADO (1 Hz).\n"); }
+        else { ProfilerSetTrace(0); doldoc_print("$FG,YELLOW$[PROFILER]$FG$ espelho serial [PROF] DESLIGADO.\n"); }
+        return;
+    }
+    if (strncmp(a, "status", 6) == 0) {
+        ProfilerSampleLoad();
+        ProfilerSerialMirror("STATUS");
+        doldoc_printf("$FG,CYAN$[PROFILER]$FG$ on=%lld node=%lld refreshes=%lld draws=%lld trace=%lld period=%lld ms\n",
+                      ProfilerIsOn(), ProfilerNodeId(), ProfilerRefreshes(), ProfilerDraws(),
+                      ProfilerTraceOn(), 250);
+        return;
+    }
+    I64 want = -1;
+    if (strncmp(a, "on", 2) == 0) want = 1;
+    else if (strncmp(a, "off", 3) == 0) want = 0;
+    else want = ProfilerIsOn() ? 0 : 1;      // sem argumento: alterna
+
+    if (want == 1 && ProfilerNodeId() < 0) {
+        // primeiro uso: cria o no DolDoc do painel
+        doldoc_print("\n$PROF,w=760,h=215$\n");
+    }
+    ProfilerSetOn(want);
+    if (want == 1) {
+        ProfilerSampleLoad();
+        ProfilerSerialMirror("ON");
+        doldoc_print("$FG,GREEN$[PROFILER]$FG$ painel LIGADO (DolDoc node DOC_PROF; refresh 250 ms; 'profiler off' esconde).\n");
+    } else {
+        doldoc_print("$FG,YELLOW$[PROFILER]$FG$ painel DESLIGADO.\n");
+    }
+    g_shell_dirty = 1;
+}
+
 U0 ShellCmd_vsync(U8 *a, U8 *r) {
     if (strcmp(a, "on") == 0 || strcmp(a, "60") == 0) { gfx_vsync_set(1, 60); doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 60 Hz.\n"); }
     else if (strcmp(a, "120") == 0) { gfx_vsync_set(1, 120); doldoc_print("$FG,GREEN$[VSYNC]$FG$ V-Sync locked to 120 Hz.\n"); }
@@ -792,6 +846,12 @@ U0 ShellCmd_top(U8 *a, U8 *r) {
 U0 ShellCmd_filer(U8 *a, U8 *r) {
     U8 *entries = g_filer_entries;
     I64 n = redsea_get_entries(entries, 128);
+    // P8-fix: -1 = falha de I/O. Sem isto o filer listava lixo de pilha.
+    if (n < 0) {
+        doldoc_printf("\n$CARD,title=\"RedSea Filer\",w=110,h=4$\n");
+        doldoc_printf("  $FG,RED$Erro de I/O — disco indisponivel. Nada a listar.$FG$\n\n");
+        return;
+    }
     doldoc_printf("\n$CARD,title=\"RedSea Filer\",w=110,h=4$\n");
     doldoc_printf("  $FG,YELLOW$Path:$FG$ %s  |  $FG,CYAN$%lld entries$FG$\n", redsea_get_pwd(), n);
     doldoc_print("  $BT,\"Up (cd ..)\",LM=\"cd ..\"$  $BT,\"Root (cd /)\",LM=\"cd /\"$  $BT,\"Refresh\",LM=\"filer\"$  $BT,\"Shell\",LM=\"exit\"$\n");
@@ -1051,6 +1111,7 @@ U0 ShellInit() {
     shell_register_cmd("impulse", ShellCmd_impulse, "physics impulse");
     shell_register_cmd("compositor", ShellCmd_compositor, "compositor/theme");
     shell_register_cmd("perf", ShellCmd_perf, "perf overlay");
+    shell_register_cmd("profiler", ShellCmd_profiler, "live profiler panel on|off|status|trace");
     shell_register_cmd("vsync", ShellCmd_vsync, "vsync control");
     shell_register_cmd("zeroram", ShellCmd_zeroram, "zero-ram mode");
     shell_register_cmd("render", ShellCmd_render, "render backend");
@@ -1128,9 +1189,13 @@ U0 DolDocShellEventLoop() {
     I64 last_anim_ms = timer_get_uptime_ms();
 
     while (g_shell_running) {
+        // P9.0: carimbo por subsistema (CNTVCT_EL0) para o painel do profiler.
+        I64 pf_t0 = (I64)__mrs_cntvct();
         virtio_input_poll();
         keyboard_poll();
         mouse_poll();
+        I64 pf_t1 = (I64)__mrs_cntvct();
+        ProfilerMarkInput(ProfilerUsBetween(pf_t0, pf_t1));
 
         I64 mb = mouse_get_buttons();
         if (mb != 0) {
@@ -1151,6 +1216,8 @@ U0 DolDocShellEventLoop() {
         if (g_shell_dirty != 0) did_work = 1;
 
         shell_poll();
+        I64 pf_t2 = (I64)__mrs_cntvct();
+        ProfilerMarkShell(ProfilerUsBetween(pf_t1, pf_t2));
 
         I64 cur_anim_ms = timer_get_uptime_ms();
         if (cur_anim_ms - last_anim_ms >= 33) {
@@ -1158,6 +1225,8 @@ U0 DolDocShellEventLoop() {
             doldoc_animate_tick();
             did_work = 1;
         }
+        I64 pf_t3 = (I64)__mrs_cntvct();
+        ProfilerMarkDolDoc(ProfilerUsBetween(pf_t2, pf_t3));
 
         if (g_shell_dirty != 0) {
             doldoc_redraw();
@@ -1165,10 +1234,35 @@ U0 DolDocShellEventLoop() {
             g_shell_dirty = 0;
             did_work = 1;
         }
+        I64 pf_t4 = (I64)__mrs_cntvct();
+        ProfilerMarkRender(ProfilerUsBetween(pf_t3, pf_t4));
+
+        // P9.0: refresh do painel (250 ms). O node DOC_PROF e redesenhado por
+        // DolDocRedraw lendo os contadores vivos -> o painel atualiza ao vivo
+        // sem nunca crescer a arvore de documentos.
+        if (ProfilerTickDue(cur_anim_ms)) {
+            // DolDocRedraw() so redesenha se o documento estiver sujo: marcar
+            // tudo sujo e o que faz o painel sair atualizado na tela.
+            doldoc_mark_all_dirty();
+            doldoc_redraw();
+            // Apresenta SO o retangulo do painel: o resto do documento nao mudou,
+            // e um blit de 1024x768 a cada 250 ms custava caro em TCG.
+            if (ProfilerPanelW() > 0) {
+                gfx_swap_rect(ProfilerPanelX(), ProfilerPanelY(), ProfilerPanelW(), ProfilerPanelH());
+            } else {
+                doldoc_swap_term();
+            }
+            did_work = 1;
+        }
+        I64 pf_t5 = (I64)__mrs_cntvct();
+        ProfilerMarkRender(ProfilerUsBetween(pf_t4, pf_t5));
 
         // P6: hardware idle when there is no work this frame (WFE wakes on the
         // 1 kHz timer PPI); otherwise yield cooperatively to the scheduler.
         if (did_work) { task_yield(); } else { __wfe(); task_yield(); }
+        I64 pf_t6 = (I64)__mrs_cntvct();
+        ProfilerMarkIdle(ProfilerUsBetween(pf_t5, pf_t6));
+        ProfilerEndFrame(ProfilerUsBetween(pf_t0, pf_t6));
     }
 }
 

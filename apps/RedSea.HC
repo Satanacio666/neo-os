@@ -671,7 +671,19 @@ I64 redsea_get_entries(U8 *out_entries, I64 max_entries) {
   I64 count = 0;
   I64 rse_s = 0;
   while (rse_s < g_rs.current_dir_sectors && count < max_entries) {
-    RsReadSectors(g_rs.current_dir_lba + rse_s, 1, s_buf);
+    // P8-fix (raiz do `ls` com lixo): RsReadSectors devolve -1 quando o VirtioBlk
+    // nao esta ativo e NAO TOCA no buffer. Ignorar esse retorno fazia o `ls`
+    // interpretar lixo de pilha como CRedSeaEntry, imprimindo nomes e tamanhos
+    // aleatorios. Zera antes de ler e aborta com erro limpo na falha de I/O.
+    I64 rse_z;
+    for (rse_z = 0; rse_z < 512; rse_z++) s_buf[rse_z] = 0;
+    I64 rd = RsReadSectors(g_rs.current_dir_lba + rse_s, 1, s_buf);
+    if (rd < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] I/O falhou no LBA %lld (res=%lld) — listagem abortada$FG$\n",
+                    g_rs.current_dir_lba + rse_s, rd);
+      for (rse_z = 0; rse_z < max_entries * 64; rse_z++) out_entries[rse_z] = 0;
+      return -1;
+    }
     I64 rse_i = 0;
     while (rse_i < REDSEA_ENTRIES_PER_SECTOR && count < max_entries) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rse_i);

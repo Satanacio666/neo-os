@@ -323,6 +323,13 @@ I64 ExceptionsSelfTest() {
   return 1;
 }
 
+// P9.0: read-only accessors so the live profiler panel (Telemetry.HC) can show
+// the recovery counters WITHOUT touching the recovery path itself.
+I64 ExceptionsRecoveredCount() { return (I64)g_exc.recovered_exceptions; }
+I64 ExceptionsTotalCount()     { return (I64)g_exc.total_exceptions; }
+I64 ExceptionsPanicCount()     { return (I64)g_exc.panic_count; }
+I64 ExceptionsInFault()        { return g_exc.in_fault; }
+
 if (g_kernel_booting) {
   ExceptionsInit();
 } else {

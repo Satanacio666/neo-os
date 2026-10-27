@@ -119,6 +119,11 @@ I64 VirtioBlkInit() {
     U32 magic = VBlkMmioRead32(base, VIRTIO_MMIO_MAGIC_VALUE);
     if (magic == VIRTIO_MMIO_MAGIC) {
       U32 dev_id = VBlkMmioRead32(base, VIRTIO_MMIO_DEVICE_ID);
+      // Diagnostico MMIO: mostra em 1 segundo qual slot tem o virtio-blk.
+      // Se o RedSea estiver ligado em PCI (virtio-blk-pci) ele NAO aparece aqui
+      // e esta funcao devolve -1 — foi exatamente essa a causa do `ls` com lixo.
+      doldoc_printf("$FG,MUTED$[VIRTIO-BLK] Slot %lld @ 0x%llX: Magic=0x%X DevID=%lld$FG$\n",
+                    vb_slot, base, magic, (I64)dev_id);
       if (dev_id == VIRTIO_DEV_BLOCK) {
         g_vblk.mmio_base = base;
         break;
@@ -127,8 +132,11 @@ I64 VirtioBlkInit() {
   }
 
   if (g_vblk.mmio_base == 0) {
+    doldoc_printf("$FG,RED$[VIRTIO-BLK] Nenhum device bloco em MMIO (0x%llX..+%lld slots) — RedSea indisponivel$FG$\n",
+                  slot_base, max_slots);
     return -1;
   }
+  doldoc_printf("$FG,GREEN$[VIRTIO-BLK] Bloco achado em MMIO @ 0x%llX — RedSea OK$FG$\n", g_vblk.mmio_base);
 
   U64 b = g_vblk.mmio_base;
 
