@@ -284,6 +284,7 @@ I64   g_hc_op_stack[HC_OP_STACK];
 I64   g_hc_op_sp;
 I64   g_hc_expr_float;   // 1 if the current expression result is in D0 (F64)
 I64   g_hc_error;        // set on any compiler internal error (stack overflow, cap, etc.)
+I64   g_hc_err_pos = -1; // G3-DIAG: posicao do PRIMEIRO erro (para diagnostico)
 
 U0 HcCallParseExpr() {
     g_fn_parse_expr();
@@ -1148,16 +1149,20 @@ U0 HcEmitEpilogue() {
 U0 HcFinalizeFrame() {
     I64 frame_sz = (g_hc_frame_offset + 15) & (~15);
     if (frame_sz < 64) frame_sz = 64;
-    if (frame_sz > 4080) { frame_sz = 4080; g_hc_error = 1; }
+    if (frame_sz > 4080) { frame_sz = 4080; g_hc_error = 1;
+        doldoc_printf("$FG,RED$[HCLX] FRAME OVERFLOW frame=%lld locals=%lld$FG$\n",
+                      g_hc_frame_offset, g_hc_local_count); }
     if (g_hc_pro_sub_idx >= 0 && g_hc_pro_sub_idx < HC_CODE_CAPACITY)
         g_hc_code[g_hc_pro_sub_idx] = 0xD10003FF | ((frame_sz & 0xFFF) << 10);
-    else g_hc_error = 1;
+    else { g_hc_error = 1;
+        doldoc_printf("$FG,RED$[HCLX] PRO_SUB FORA DE FAIXA idx=%lld$FG$\n", g_hc_pro_sub_idx); }
     I64 ep_i = 0;
     for (ep_i = 0; ep_i < g_hc_epi_count; ep_i++) {
         I64 p_idx = g_hc_epi_patches[ep_i];
         if (p_idx >= 0 && p_idx < HC_CODE_CAPACITY)
             g_hc_code[p_idx] = 0x910003FF | ((frame_sz & 0xFFF) << 10);
-        else g_hc_error = 1;
+        else { g_hc_error = 1;
+            doldoc_printf("$FG,RED$[HCLX] EPI PATCH FORA DE FAIXA p=%lld i=%lld$FG$\n", p_idx, ep_i); }
     }
 }
 
@@ -1391,6 +1396,13 @@ U0 HcSkipWhitespaceAndComments() {
 }
 
 U0 HcLexNext() {
+    // G3-DIAG: registra a posicao do PRIMEIRO erro (g_hc_error e' pegajoso e o
+    // parser segue ate o EOF, entao a mensagem final aponta para o fim do arquivo).
+    if (g_hc_error && g_hc_err_pos < 0) {
+        g_hc_err_pos = g_hc_pos;
+        doldoc_printf("$FG,RED$[HCLX] PRIMEIRO ERRO linha=%lld tok=%lld pos=%lld$FG$\n",
+                      HcLineOf(g_hc_pos), g_hc_tok, g_hc_pos);
+    }
     HcSkipWhitespaceAndComments();
     if (g_hc_pos >= g_hc_len) {
         g_hc_tok = TOK_EOF;
@@ -3598,7 +3610,11 @@ U0 HcParseFunction(U8 *func_name) {
     HcAddFunc(func_name, fn_entry);
     HcParseStatement();
     HcEmitEpilogue();
+    I64 g3_pre_err = g_hc_error;
     HcFinalizeFrame();
+    if (g_hc_error != g3_pre_err)
+        doldoc_printf("$FG,RED$[HCLX] ERRO AO FINALIZAR '%s' frame=%lld locals=%lld$FG$\n",
+                      func_name, g_hc_frame_offset, g_hc_local_count);
 }
 
 // Emit runtime initialization for top-level globals whose initializer was not a

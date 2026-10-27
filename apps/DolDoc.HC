@@ -59,6 +59,12 @@
 #define DOC_ISLAND     32
 #define DOC_REPL       33   // a live Shell input node on the tape
 #define DOC_PROF       34   // P9.0: live profiler panel (drawn last, always on top)
+// G3 (motor de layout de 2 passes): containers de fluxo real + widgets compostos.
+#define DOC_ROW        35   // $ROW,gap=,pad=$ ... $END$  (eixo horizontal)
+#define DOC_COL        36   // $COL,gap=,pad=$ ... $END$  (eixo vertical)
+#define DOC_SLOT       37   // $SLOT,w=,h=,min=,flex=,split=$ (painel; split=1 arrasta)
+#define DOC_TABS       38   // $TABS,id=,items="A|B|C",val=$
+#define DOC_CANVAS     39   // $CANVAS,id=,w=,h=$
 
 // ---- Node flags --------------------------------------------------------------
 #define DOCF_OPEN      1
@@ -70,6 +76,11 @@
 #define DOCF_WRAP      64
 #define DOCF_INVERT    128
 #define DOCF_SPRING    256   // P8.0: node position is driven by a harmonic spring
+#define DOCF_ACTION    512   // G3: click deste widget empurra um CDocAction com id
+// G3 layout engine: size_mode_w / size_mode_h of a child inside ROW/COL/SLOT.
+#define DOC_SIZE_AUTO  0     // fits to the intrinsic size measured in pass 1
+#define DOC_SIZE_FIXED 1     // exact px declared in the tag (w=/h=)
+#define DOC_SIZE_FLEX  2     // shares the leftover by flex_weight (clamped by min/max)
 
 // Semantic Color Token IDs (resolved dynamically via g_theme at render time)
 #define SEM_COLOR_TEXT      0x01000001
@@ -117,6 +128,14 @@ class CDocNode {
     U32 bg;
     I64 state;
     I64 win_id;
+    // ---- G3: motor de layout de 2 passes -----------------------------------
+    // ADICIONADO NO FIM da classe de proposito: os offsets dos campos acima
+    // (usados pelo OmniTape e pelo resto do kernel) NAO mudam.
+    I64 meas_w, meas_h;             // tamanho intrinseco medido no Passe 1
+    I64 size_mode_w, size_mode_h;   // 0=AUTO fit, 1=FIXED px, 2=FLEX
+    I64 flex_weight;                // peso no rateio do restante (Passe 2)
+    I64 gap, pad;                   // espaco entre filhos / margem interna
+    I64 split_draggable;            // 1 = barra divisoria arrastavel (hit-test 4px)
 };
 
 // Live reactive parameters for shaders, 3D sprites & oscilloscopes
@@ -424,6 +443,10 @@ I64 DolDocNewNode(I64 kind, I64 parent) {
     nd->text_off = 0; nd->text_len = 0; nd->arg_off = 0;
     nd->fg = SEM_COLOR_TEXT; nd->bg = SEM_COLOR_MANTLE;
     nd->state = 0; nd->win_id = 0;
+    // G3: zera os campos novos (determinismo para o motor de layout)
+    nd->meas_w = 0; nd->meas_h = 0;
+    nd->size_mode_w = DOC_SIZE_AUTO; nd->size_mode_h = DOC_SIZE_AUTO;
+    nd->flex_weight = 0; nd->gap = 0; nd->pad = 0; nd->split_draggable = 0;
     if (parent >= 0) DolDocLink(parent, n);
     return n;
 }
@@ -1286,6 +1309,25 @@ U0 DolDocParseProfiler(U8 *tag) {
 
 // The Slate pass: after parsing, arrange each container's following sibling run.
 U0 DolDocSlatePass() {
+    // G3: Passe 1 (MEASURE, bottom-up) + Passe 2 (ARRANGE, top-down) sobre a
+    // arvore REAL de filhos dos containers ROW/COL/SLOT. Os pais tem indice
+    // menor que os filhos (DolDocNewNode anexa no fim), entao a varredura em
+    // ordem crescente ja respeita "mede de baixo para cima, arranja de cima
+    // para baixo" — e re-arranjar um no' ja arranjado e' idempotente.
+    I64 g3n = 0;
+    while (g3n < g_doc_node_count) {
+        I64 g3k = g_doc_nodes[g3n].kind;
+        if (g3k == DOC_ROW || g3k == DOC_COL || g3k == DOC_SLOT) {
+            DolDocMeasureNode(g3n);
+            I64 bw = g_doc_nodes[g3n].w;
+            I64 bh = g_doc_nodes[g3n].h;
+            if (bw <= 0) bw = g_doc_nodes[g3n].meas_w;
+            if (bh <= 0) bh = g_doc_nodes[g3n].meas_h;
+            if (bh <= 0) bh = 18;
+            DolDocArrangeNode(g3n, g_doc_nodes[g3n].x, g_doc_nodes[g3n].y, bw, bh);
+        }
+        g3n = g3n + 1;
+    }
     I64 n = 0;
     while (n < g_doc_node_count) {
         I64 k = g_doc_nodes[n].kind;
@@ -1344,8 +1386,762 @@ U0 DolDocSlateSelfTest() {
     total++; if (g_doc_nodes[base + 1].w == 100 && g_doc_nodes[base + 2].x == 100 &&
                 g_doc_nodes[base + 2].w == 100 && g_doc_nodes[base + 2].h == 100) pass++;
 
+    // ========================================================================
+    // G3 — 4 testes NOVOS do motor de layout de 2 passes (5..8).
+    // Os 4 testes acima continuam INTACTOS: nenhum foi apagado nem afrouxado.
+    // Todos rodam sobre o documento vivo com snapshot/restore (DolDocG3Save /
+    // DolDocG3Restore) para nao sujar o DolDocShell.
+    // ========================================================================
+
+    // ---- Teste 5: $ROW$ 600, pad=10, gap=10, filhos FIXED 100 / FLEX 1 / FLEX 2
+    //      -> larguras exatas 100/153/307 e x exatos 10/120/283 ---------------
+    DolDocG3Save();
+    DolDocPrint("$ROW,gap=10,pad=10,w=600,h=100$");
+    DolDocPrint("$SLOT,w=100,h=100$$END$");
+    DolDocPrint("$SLOT,flex=1,h=100$$END$");
+    DolDocPrint("$SLOT,flex=2,h=100$$END$");
+    DolDocPrint("$END$");
+    {
+        I64 t5r = g_g3_sn_nodes, t5a = t5r + 1, t5b = t5r + 2, t5c = t5r + 3;
+        g_doc_nodes[t5r].x = 0; g_doc_nodes[t5r].y = 0;
+        DolDocMeasureNode(t5r);
+        DolDocArrangeNode(t5r, 0, 0, g_doc_nodes[t5r].w, g_doc_nodes[t5r].h);
+        doldoc_printf("[G3-T5c] sn=%lld cnt=%lld kind=%lld first=%lld last=%lld\n",
+                      g_g3_sn_nodes, g_doc_node_count, g_doc_nodes[t5r].kind,
+                      g_doc_nodes[t5r].first, g_doc_nodes[t5r].last);
+        doldoc_printf("[G3-T5d] row w=%lld h=%lld gap=%lld pad=%lld x=%lld y=%lld\n",
+                      g_doc_nodes[t5r].w, g_doc_nodes[t5r].h, g_doc_nodes[t5r].gap,
+                      g_doc_nodes[t5r].pad, g_doc_nodes[t5r].x, g_doc_nodes[t5r].y);
+        doldoc_printf("[G3-T5e] kid=(%lld,%lld,%lld) par=(%lld,%lld,%lld)\n",
+                      g_doc_nodes[t5a].kind, g_doc_nodes[t5b].kind, g_doc_nodes[t5c].kind,
+                      g_doc_nodes[t5a].parent, g_doc_nodes[t5b].parent, g_doc_nodes[t5c].parent);
+        doldoc_printf("[G3-T5f] nx=(%lld,%lld,%lld) mw=(%lld,%lld,%lld)\n",
+                      g_doc_nodes[t5a].next, g_doc_nodes[t5b].next, g_doc_nodes[t5c].next,
+                      g_doc_nodes[t5a].meas_w, g_doc_nodes[t5b].meas_w, g_doc_nodes[t5c].meas_w);
+        I64 t5ok = (g_doc_nodes[t5r].w == 600 && g_doc_nodes[t5r].h == 100 &&
+                    g_doc_nodes[t5r].meas_w == 140 && g_doc_nodes[t5r].meas_h == 120 &&
+                    g_doc_nodes[t5a].w == 100 && g_doc_nodes[t5b].w == 153 && g_doc_nodes[t5c].w == 307 &&
+                    g_doc_nodes[t5a].x == 10 && g_doc_nodes[t5b].x == 120 && g_doc_nodes[t5c].x == 283 &&
+                    g_doc_nodes[t5a].size_mode_w == DOC_SIZE_FIXED &&
+                    g_doc_nodes[t5b].size_mode_w == DOC_SIZE_FLEX &&
+                    g_doc_nodes[t5c].size_mode_w == DOC_SIZE_FLEX);
+        total++; if (t5ok) pass++;
+        doldoc_printf("[G3-T5a] meas=(%lld,%lld) w=(%lld,%lld,%lld)\n",
+                      g_doc_nodes[t5r].meas_w, g_doc_nodes[t5r].meas_h,
+                      g_doc_nodes[t5a].w, g_doc_nodes[t5b].w, g_doc_nodes[t5c].w);
+        doldoc_printf("[G3-T5b] x=(%lld,%lld,%lld) modes=(%lld,%lld,%lld) ok=%lld\n",
+                      g_doc_nodes[t5a].x, g_doc_nodes[t5b].x, g_doc_nodes[t5c].x,
+                      g_doc_nodes[t5a].size_mode_w, g_doc_nodes[t5b].size_mode_w,
+                      g_doc_nodes[t5c].size_mode_w, t5ok);
+    }
+    DolDocG3Restore();
+
+    // ---- Teste 6: min=180 do $SLOT$ nunca encolhe + splitter arrastavel -------
+    DolDocG3Save();
+    DolDocPrint("$ROW,gap=10,pad=0,w=400,h=100$");
+    DolDocPrint("$SLOT,flex=1,h=100,min=180,split=1$$END$");
+    DolDocPrint("$SLOT,flex=3,h=100$$END$");
+    DolDocPrint("$END$");
+    {
+        I64 t6r = g_g3_sn_nodes, t6a = t6r + 1, t6b = t6r + 2;
+        g_doc_nodes[t6r].x = 0; g_doc_nodes[t6r].y = 0;
+        DolDocMeasureNode(t6r);
+        DolDocArrangeNode(t6r, 0, 0, g_doc_nodes[t6r].w, g_doc_nodes[t6r].h);
+        // sem clamp o FLEX 1 levaria 97 (390/4); com min=180 tem de dar 180
+        I64 t6clamp = (g_doc_nodes[t6a].w == 180 && g_doc_nodes[t6a].min == 180);
+        I64 t6sib = (g_doc_nodes[t6b].w == 293 && g_doc_nodes[t6b].x == 190);
+        // hit-test do splitter: banda de 4px em x+w (180) -> 178..181
+        I64 t6hit = (DolDocSplitterHitTest(180, 50) == t6a &&
+                     DolDocSplitterHitTest(177, 50) == -1 &&
+                     DolDocSplitterHitTest(183, 50) == -1);
+        I64 t6drag = 0, t6dragmin = 0;
+        if (DolDocSplitterDrag(t6a, 220) == 1) {
+            t6drag = (g_doc_nodes[t6a].w == 220 && g_doc_nodes[t6b].w == 170 &&
+                      g_doc_nodes[t6b].x == 230);
+        }
+        if (DolDocSplitterDrag(t6a, 50) == 1) t6dragmin = (g_doc_nodes[t6a].w == 180);
+        total++;
+        if (t6clamp && t6sib && t6hit && t6drag && t6dragmin) pass++;
+        doldoc_printf("[G3-T6a] clamp=%lld sib=%lld hit=%lld drag=%lld dragmin=%lld\n",
+                      t6clamp, t6sib, t6hit, t6drag, t6dragmin);
+        doldoc_printf("[G3-T6b] wA=%lld wB=%lld xB=%lld\n",
+                      g_doc_nodes[t6a].w, g_doc_nodes[t6b].w, g_doc_nodes[t6b].x);
+    }
+    DolDocG3Restore();
+
+    // ---- Teste 7: $TABS$ / $SLIDER$ / $TOGGLE$ — clique muda val + acao ------
+    DolDocG3Save();
+    DolDocPrint("$TABS,id=\"tabs1\",items=\"A|B|C\",val=0,w=240,h=24$");
+    DolDocPrint("$SLIDER,id=\"sl1\",min=0,max=100,val=75,w=200,label=\"Vol\"$");
+    DolDocPrint("$TOGGLE,id=\"tg1\",val=1,label=\"On\"$");
+    {
+        I64 t7t = g_g3_sn_nodes, t7s = t7t + 1, t7g = t7t + 2;
+        g_doc_nodes[t7t].x = 0; g_doc_nodes[t7t].y = 0;
+        g_doc_nodes[t7s].x = 0; g_doc_nodes[t7s].y = 40;
+        g_doc_nodes[t7g].x = 0; g_doc_nodes[t7g].y = 80;
+        I64 t7q0 = g_doc_act_head;
+        I64 t7c1 = DolDocWidgetClick(t7t, 200, 10);     // 3o de 3 segmentos de 80px -> val 2
+        I64 t7c2 = DolDocWidgetClick(t7s, 100, 45);     // 100 de 200px em 0..100 -> val 50
+        I64 t7c3 = DolDocWidgetClick(t7g, 10, 85);      // toggle 1 -> 0
+        I64 t7miss = DolDocWidgetClick(t7t, 900, 900);  // fora da caixa -> nada
+        I64 t7q = g_doc_act_head - t7q0; if (t7q < 0) t7q = t7q + DOC_ACT_Q;
+        I64 t7i0 = t7q0 % DOC_ACT_Q;
+        CDocAction *t7a1 = &g_doc_act_q[t7i0];
+        CDocAction *t7a2 = &g_doc_act_q[(t7i0 + 1) % DOC_ACT_Q];
+        CDocAction *t7a3 = &g_doc_act_q[(t7i0 + 2) % DOC_ACT_Q];
+        I64 t7ok = (t7c1 == 1 && t7c2 == 1 && t7c3 == 1 && t7miss == 0 && t7q == 3 &&
+                    g_doc_nodes[t7t].val == 2 && g_doc_nodes[t7s].val == 50 &&
+                    g_doc_nodes[t7g].val == 0 && g_doc_nodes[t7g].state == 0 &&
+                    t7a1->kind == DOC_ACT_SET && t7a1->target_id == t7t && t7a1->val == 2 &&
+                    strcmp(t7a1->payload, "tabs1") == 0 &&
+                    t7a2->kind == DOC_ACT_SET && t7a2->target_id == t7s && t7a2->val == 50 &&
+                    strcmp(t7a2->payload, "sl1") == 0 &&
+                    t7a3->kind == DOC_ACT_SET && t7a3->target_id == t7g && t7a3->val == 0 &&
+                    strcmp(t7a3->payload, "tg1") == 0);
+        total++; if (t7ok) pass++;
+        doldoc_printf("[G3-T7a] click=(%lld,%lld,%lld) miss=%lld q=%lld\n",
+                      t7c1, t7c2, t7c3, t7miss, t7q);
+        doldoc_printf("[G3-T7b] val=(%lld,%lld,%lld) act=(%lld,%lld,%lld)\n",
+                      g_doc_nodes[t7t].val, g_doc_nodes[t7s].val, g_doc_nodes[t7g].val,
+                      t7a1->val, t7a2->val, t7a3->val);
+        doldoc_printf("[G3-T7c] pay=(%s,%s,%s) ok=%lld\n",
+                      t7a1->payload, t7a2->payload, t7a3->payload, t7ok);
+    }
+    DolDocG3Restore();
+
+    // ---- Teste 8: parser dual — HTML gera a MESMA arvore que $ROW$ ----------
+    DolDocG3Save();
+    I64 t8hb = g_doc_node_count;
+    DolDocPrint("<div style=\"display:row; gap:8\" w=400 h=60><button onclick=\"help\">OK</button></div>");
+    I64 t8hc = g_doc_node_count - t8hb;
+    I64 t8nb = g_doc_node_count;
+    DolDocPrint("$ROW,gap=8,w=400,h=60$$BT,\"OK\",LM=\"help\"$$END$");
+    I64 t8nc = g_doc_node_count - t8nb;
+    {
+        I64 t8hr = t8hb, t8hbt = t8hb + 1;
+        I64 t8nr = t8nb, t8nbt = t8nb + 1;
+        g_doc_nodes[t8hr].x = 0; g_doc_nodes[t8hr].y = 0;
+        g_doc_nodes[t8nr].x = 0; g_doc_nodes[t8nr].y = 0;
+        DolDocMeasureNode(t8hr); DolDocMeasureNode(t8nr);
+        DolDocArrangeNode(t8hr, 0, 0, g_doc_nodes[t8hr].w, g_doc_nodes[t8hr].h);
+        DolDocArrangeNode(t8nr, 0, 0, g_doc_nodes[t8nr].w, g_doc_nodes[t8nr].h);
+        I64 t8ok = (t8hc == 2 && t8nc == 2);
+        CDocNode *hr = &g_doc_nodes[t8hr]; CDocNode *nr = &g_doc_nodes[t8nr];
+        CDocNode *hb = &g_doc_nodes[t8hbt]; CDocNode *nb = &g_doc_nodes[t8nbt];
+        doldoc_printf("[G3-T8c] hr=(%lld,%lld,%lld,%lld,%lld,%lld)\n",
+                      hr->kind, hr->first, hr->pad, hr->x, hr->y, hr->w);
+        doldoc_printf("[G3-T8d] nr=(%lld,%lld,%lld,%lld,%lld,%lld)\n",
+                      nr->kind, nr->first, nr->pad, nr->x, nr->y, nr->w);
+        doldoc_printf("[G3-T8e] hb=(%lld,%lld,%lld,%lld)\n", hb->x, hb->y, hb->w, hb->h);
+        doldoc_printf("[G3-T8f] nb=(%lld,%lld,%lld,%lld) par=(%lld,%lld)\n",
+                      nb->x, nb->y, nb->w, nb->h, hb->parent, nb->parent);
+        if (hr->kind != nr->kind || hr->gap != nr->gap || hr->pad != nr->pad) t8ok = 0;
+        if (hr->w != nr->w || hr->h != nr->h) t8ok = 0;
+        if (hr->meas_w != nr->meas_w || hr->meas_h != nr->meas_h) t8ok = 0;
+        if (hr->first != t8hbt || nr->first != t8nbt) t8ok = 0;
+        if (hb->kind != nb->kind) t8ok = 0;
+        if (hb->x != nb->x || hb->y != nb->y || hb->w != nb->w || hb->h != nb->h) t8ok = 0;
+        if (hb->meas_w != nb->meas_w || hb->meas_h != nb->meas_h) t8ok = 0;
+        if ((hb->flags & DOCF_ACTION) != (nb->flags & DOCF_ACTION)) t8ok = 0;
+        if (hb->text_len != nb->text_len) t8ok = 0;
+        else {
+            I64 t8i = 0;
+            while (t8i < hb->text_len) {
+                if (g_doc_text[hb->text_off + t8i] != g_doc_text[nb->text_off + t8i]) { t8ok = 0; break; }
+                t8i = t8i + 1;
+            }
+        }
+        U8 *ha = hb->arg_off ? (g_doc_args + hb->arg_off) : "";
+        U8 *na = nb->arg_off ? (g_doc_args + nb->arg_off) : "";
+        if (strcmp(ha, na) != 0) t8ok = 0;
+        total++; if (t8ok) pass++;
+        doldoc_printf("[G3-T8a] n=(%lld,%lld) html_box=(%lld,%lld,%lld,%lld)\n",
+                      t8hc, t8nc, hb->x, hb->y, hb->w, hb->h);
+        doldoc_printf("[G3-T8b] nat_box=(%lld,%lld,%lld,%lld) args=(%s,%s) ok=%lld\n",
+                      nb->x, nb->y, nb->w, nb->h, ha, na, t8ok);
+    }
+    DolDocG3Restore();
+
     if (pass == total) doldoc_printf("LAYOUT: PASS (%lld/%lld)\n", pass, total);
     else doldoc_printf("LAYOUT: FAIL (%lld/%lld)\n", pass, total);
+}
+
+// ============================================================================
+// G3 — MOTOR DE LAYOUT DE 2 PASSES (estilo nicbarker/clay + rxi/microui)
+//
+// Passe 1 DolDocMeasureNode: bottom-up, calcula meas_w/meas_h intrinsecos.
+// Passe 2 DolDocArrangeNode: top-down, distribui x/y/w/h reais; subtrai 2*pad e
+// (n-1)*gap, tira o espaco dos filhos FIXED/AUTO e rateia o restante entre os
+// FLEX por flex_weight, respeitando min/max do CDocNode.
+//
+// Toda a aritmetica e' inteira (nenhum float): os testes sao deterministas.
+// ============================================================================
+
+// pilha de containers abertos ($ROW$/$COL$/$SLOT$ ... $END$, ou <div>...</div>)
+I64 g_doc_cont_stack[32];
+I64 g_doc_cont_depth = 0;
+// splitter em arraste (-1 = nenhum)
+I64 g_doc_split_nid = -1;
+// snapshot nao-destrutivo usado pelos testes G3 do SelfTest
+I64 g_g3_sn_nodes = 0, g_g3_sn_text = 0, g_g3_sn_args = 0, g_g3_sn_cur = 0;
+I64 g_g3_sn_run = 0, g_g3_sn_col = 0, g_g3_sn_row = 0, g_g3_sn_wid = 0;
+I64 g_g3_sn_tape = 0, g_g3_sn_tcmd = 0, g_g3_sn_anc = 0, g_g3_sn_mac = 0;
+I64 g_g3_sn_parent = -1, g_g3_sn_pfirst = -1, g_g3_sn_plast = -1, g_g3_sn_plast_next = -1;
+I64 g_g3_sn_contdepth = 0, g_g3_sn_split = -1, g_g3_sn_drag = -1;
+U64 g_g3_sn_mask = 0; I64 g_g3_sn_dirty = 0;
+
+U0 DolDocG3Save() {
+    g_g3_sn_nodes = g_doc_node_count; g_g3_sn_text = g_doc_text_used;
+    g_g3_sn_args = g_doc_args_used; g_g3_sn_cur = g_doc_cur;
+    g_g3_sn_run = g_doc_cur_run; g_g3_sn_col = g_doc_col; g_g3_sn_row = g_doc_row;
+    g_g3_sn_wid = g_widget_count; g_g3_sn_tape = g_omnitape_tail;
+    g_g3_sn_tcmd = g_omnitape_cmd_count; g_g3_sn_anc = g_doc_anchor_count;
+    g_g3_sn_mac = g_doc_macro_count; g_g3_sn_mask = g_doc_dirty_mask;
+    g_g3_sn_dirty = g_doc_dirty;
+    g_g3_sn_parent = g_doc_cur;
+    g_g3_sn_pfirst = (g_doc_cur >= 0) ? g_doc_nodes[g_doc_cur].first : -1;
+    g_g3_sn_plast  = (g_doc_cur >= 0) ? g_doc_nodes[g_doc_cur].last : -1;
+    g_g3_sn_plast_next = (g_g3_sn_plast >= 0) ? g_doc_nodes[g_g3_sn_plast].next : -1;
+    g_g3_sn_contdepth = g_doc_cont_depth; g_g3_sn_split = g_doc_split_nid;
+    g_g3_sn_drag = g_doc_drag_nid;
+}
+
+U0 DolDocG3Restore() {
+    if (g_g3_sn_parent >= 0 && g_g3_sn_parent < g_doc_node_count) {
+        g_doc_nodes[g_g3_sn_parent].first = g_g3_sn_pfirst;
+        g_doc_nodes[g_g3_sn_parent].last  = g_g3_sn_plast;
+        if (g_g3_sn_plast >= 0) g_doc_nodes[g_g3_sn_plast].next = g_g3_sn_plast_next;
+    }
+    g_doc_node_count = g_g3_sn_nodes; g_doc_text_used = g_g3_sn_text;
+    g_doc_args_used = g_g3_sn_args; g_doc_cur = g_g3_sn_cur;
+    g_doc_cur_run = g_g3_sn_run; g_doc_col = g_g3_sn_col; g_doc_row = g_g3_sn_row;
+    g_widget_count = g_g3_sn_wid; g_omnitape_tail = g_g3_sn_tape;
+    g_omnitape_cmd_count = g_g3_sn_tcmd; g_doc_anchor_count = g_g3_sn_anc;
+    g_doc_macro_count = g_g3_sn_mac; g_doc_dirty_mask = g_g3_sn_mask;
+    g_doc_dirty = g_g3_sn_dirty;
+    g_doc_cont_depth = g_g3_sn_contdepth; g_doc_split_nid = g_g3_sn_split;
+    g_doc_drag_nid = g_g3_sn_drag;
+}
+
+U0 DolDocPushContainer(I64 nid) {
+    if (nid < 0) return;
+    if (g_doc_cont_depth < 32) { g_doc_cont_stack[g_doc_cont_depth] = nid; g_doc_cont_depth++; }
+    g_doc_cur = nid;
+}
+
+U0 DolDocCloseContainer() {
+    if (g_doc_cont_depth > 0) {
+        g_doc_cont_depth--;
+        I64 cid = g_doc_cont_stack[g_doc_cont_depth];
+        I64 p = g_doc_nodes[cid].parent;
+        g_doc_cur = (p >= 0) ? p : g_doc_root;
+    }
+}
+
+// ---- Passe 1: MEASURE (bottom-up) ------------------------------------------
+U0 DolDocMeasureNode(I64 nid) {
+    if (nid < 0 || nid >= g_doc_node_count) return;
+    CDocNode *nd = &g_doc_nodes[nid];
+    I64 c = nd->first;
+    while (c >= 0) { DolDocMeasureNode(c); c = g_doc_nodes[c].next; }
+    I64 k = nd->kind;
+    if (k == DOC_ROW || k == DOC_COL || k == DOC_SLOT) {
+        I64 gp = nd->gap; if (gp < 0) gp = 0;
+        I64 pd = nd->pad; if (pd < 0) pd = 0;
+        I64 cnt = 0, sumw = 0, sumh = 0, maxw = 0, maxh = 0;
+        c = nd->first;
+        while (c >= 0) {
+            I64 cw = g_doc_nodes[c].meas_w;
+            I64 chh = g_doc_nodes[c].meas_h;
+            cnt = cnt + 1;
+            sumw = sumw + cw; sumh = sumh + chh;
+            if (cw > maxw) maxw = cw;
+            if (chh > maxh) maxh = chh;
+            c = g_doc_nodes[c].next;
+        }
+        if (k == DOC_ROW) {
+            nd->meas_w = sumw + (cnt - 1) * gp + 2 * pd;
+            nd->meas_h = maxh + 2 * pd;
+        } else {
+            nd->meas_w = maxw + 2 * pd;
+            nd->meas_h = sumh + (cnt - 1) * gp + 2 * pd;
+        }
+        if (cnt == 0) {
+            // container vazio: o tamanho intrinseco e' o declarado na tag
+            nd->meas_w = (nd->w > 0) ? nd->w : 2 * pd;
+            nd->meas_h = (nd->h > 0) ? nd->h : 2 * pd;
+        }
+        return;
+    }
+    I64 w = 0, h = 0;
+    if (k == DOC_BUTTON) { w = nd->text_len * 8 + 16; h = 18; }
+    else if (k == DOC_LINK) { w = nd->text_len * 8; h = 18; }
+    else if (k == DOC_TOGGLE) { w = 20 + nd->text_len * 8; h = 18; }
+    else if (k == DOC_SLIDER) { w = (nd->w > 0) ? nd->w : 140; h = 18; }
+    else if (k == DOC_TABS) { w = (nd->text_len > 0) ? (nd->text_len * 10 + 24) : 120; h = 20; }
+    else if (k == DOC_CANVAS) { w = (nd->w > 0) ? nd->w : 200; h = (nd->h > 0) ? nd->h : 120; }
+    else if (k == DOC_TEXT) { w = nd->text_len * 8; h = 18; }
+    else { w = (nd->w > 0) ? nd->w : 80; h = (nd->h > 0) ? nd->h : 18; }
+    nd->meas_w = w; nd->meas_h = h;
+}
+
+// ---- Passe 2: ARRANGE (top-down) -------------------------------------------
+I64 DolDocChildModeW(CDocNode *ch) {
+    if (ch->size_mode_w == DOC_SIZE_FIXED) return DOC_SIZE_FIXED;
+    if (ch->size_mode_w == DOC_SIZE_FLEX) return DOC_SIZE_FLEX;
+    return DOC_SIZE_AUTO;
+}
+
+I64 DolDocBaseW(CDocNode *ch) {
+    if (DolDocChildModeW(ch) == DOC_SIZE_AUTO) return ch->meas_w;
+    return ch->w;
+}
+
+// min/max so' valem para PAINEIS (SLOT/ROW/COL): nos folha (SLIDER etc.) os
+// campos min/max guardam outra coisa (faixa de valor / cor de borda).
+I64 DolDocClampChildW(CDocNode *ch, I64 cw) {
+    if (ch->kind == DOC_SLOT || ch->kind == DOC_ROW || ch->kind == DOC_COL) {
+        if (cw < ch->min) cw = ch->min;
+        if (ch->max > 0 && cw > ch->max) cw = ch->max;
+    }
+    if (cw < 0) cw = 0;
+    return cw;
+}
+
+I64 DolDocClampChildH(CDocNode *ch, I64 chh) {
+    if (ch->kind == DOC_SLOT || ch->kind == DOC_ROW || ch->kind == DOC_COL) {
+        if (chh < ch->min) chh = ch->min;
+        if (ch->max > 0 && chh > ch->max) chh = ch->max;
+    }
+    if (chh < 0) chh = 0;
+    return chh;
+}
+
+U0 DolDocArrangeNode(I64 nid, I64 x, I64 y, I64 w, I64 h) {
+    if (nid < 0 || nid >= g_doc_node_count) return;
+    CDocNode *nd = &g_doc_nodes[nid];
+    nd->x = x; nd->y = y; nd->w = w; nd->h = h;
+    I64 k = nd->kind;
+    if (k != DOC_ROW && k != DOC_COL && k != DOC_SLOT) return;
+    I64 gp = nd->gap; if (gp < 0) gp = 0;
+    I64 pd = nd->pad; if (pd < 0) pd = 0;
+    I64 ix = x + pd; I64 iy = y + pd;
+    I64 iw = w - 2 * pd; if (iw < 0) iw = 0;
+    I64 ih = h - 2 * pd; if (ih < 0) ih = 0;
+    I64 cnt = 0; I64 c = nd->first;
+    while (c >= 0) { cnt = cnt + 1; c = g_doc_nodes[c].next; }
+    if (cnt == 0) return;
+    I64 tg = (cnt - 1) * gp;
+    if (k == DOC_ROW) {
+        I64 avail = iw - tg; if (avail < 0) avail = 0;
+        I64 fixed_sum = 0, flex_weight = 0, last_flex = -1;
+        c = nd->first;
+        while (c >= 0) {
+            if (DolDocChildModeW(&g_doc_nodes[c]) == DOC_SIZE_FLEX) {
+                I64 fw = g_doc_nodes[c].flex_weight; if (fw < 1) fw = 1;
+                flex_weight = flex_weight + fw; last_flex = c;
+            } else {
+                fixed_sum = fixed_sum + DolDocBaseW(&g_doc_nodes[c]);
+            }
+            c = g_doc_nodes[c].next;
+        }
+        I64 rest = avail - fixed_sum; if (rest < 0) rest = 0;
+        I64 unit = (flex_weight > 0) ? (rest / flex_weight) : 0;
+        I64 cx = ix;
+        c = nd->first;
+        while (c >= 0) {
+            CDocNode *ch = &g_doc_nodes[c];
+            I64 cw = 0;
+            if (DolDocChildModeW(ch) == DOC_SIZE_FLEX) {
+                I64 fw = ch->flex_weight; if (fw < 1) fw = 1;
+                // o ULTIMO FLEX absorve o resto da divisao inteira
+                if (c == last_flex) cw = rest - unit * (flex_weight - fw);
+                else cw = unit * fw;
+            } else {
+                cw = DolDocBaseW(ch);
+            }
+            cw = DolDocClampChildW(ch, cw);
+            I64 nx = cx + cw + gp;
+            DolDocArrangeNode(c, cx, iy, cw, ih);
+            cx = nx;
+            c = ch->next;
+        }
+        return;
+    }
+    // COL (e SLOT, que empilha os filhos na vertical)
+    I64 avail = ih - tg; if (avail < 0) avail = 0;
+    I64 fixed_sum = 0, flex_weight = 0, last_flex = -1;
+    c = nd->first;
+    while (c >= 0) {
+        CDocNode *ch = &g_doc_nodes[c];
+        if (ch->size_mode_h == DOC_SIZE_FLEX) {
+            I64 fw = ch->flex_weight; if (fw < 1) fw = 1;
+            flex_weight = flex_weight + fw; last_flex = c;
+        } else {
+            I64 bh = (ch->size_mode_h == DOC_SIZE_AUTO) ? ch->meas_h : ch->h;
+            fixed_sum = fixed_sum + bh;
+        }
+        c = ch->next;
+    }
+    I64 rest = avail - fixed_sum; if (rest < 0) rest = 0;
+    I64 unit = (flex_weight > 0) ? (rest / flex_weight) : 0;
+    I64 cy = iy;
+    c = nd->first;
+    while (c >= 0) {
+        CDocNode *ch = &g_doc_nodes[c];
+        I64 chh = 0;
+        if (ch->size_mode_h == DOC_SIZE_FLEX) {
+            I64 fw = ch->flex_weight; if (fw < 1) fw = 1;
+            if (c == last_flex) chh = rest - unit * (flex_weight - fw);
+            else chh = unit * fw;
+        } else if (ch->size_mode_h == DOC_SIZE_AUTO) {
+            chh = ch->meas_h;
+        } else {
+            chh = ch->h;
+        }
+        chh = DolDocClampChildH(ch, chh);
+        I64 ny = cy + chh + gp;
+        DolDocArrangeNode(c, ix, cy, iw, chh);
+        cy = ny;
+        c = ch->next;
+    }
+}
+
+// ---- Emissores compartilhados (tag nativa e HTML criam o MESMO no) ---------
+I64 DolDocEmitRowCol(I64 kind, I64 gap, I64 pad, I64 w, I64 h, U8 *tagstr) {
+    I64 n = DolDocWidget(kind, DolDocFlowPx(), DolDocFlowPy(), w, h, tagstr);
+    if (n < 0) return -1;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->gap = gap; nd->pad = pad;
+    nd->size_mode_w = DOC_SIZE_FIXED; nd->size_mode_h = DOC_SIZE_FIXED;
+    DolDocPushContainer(n);
+    return n;
+}
+
+U0 DolDocEmitButton(U8 *lbl, U8 *cmd, U8 *tagstr) {
+    I64 vw = strlen(lbl) * 8 + 16;
+    I64 cols = (vw + 7) / 8 + 1;
+    I64 n = DolDocWidget(DOC_BUTTON, DolDocFlowPx(), DolDocFlowPy(), vw, 18, tagstr);
+    if (n >= 0) {
+        strncpy(g_doc_args + g_doc_nodes[n].arg_off, cmd, strlen(cmd) + 1);
+        DolDocSetLabel(n, lbl);
+    }
+    DolDocAdvance(cols);
+}
+
+U0 DolDocEmitSlider(U8 *id, I64 mn, I64 mx, I64 val, I64 w, U8 *tagstr, U8 *lbl) {
+    I64 n = DolDocWidget(DOC_SLIDER, DolDocFlowPx(), DolDocFlowPy(), w, 18, tagstr);
+    if (n < 0) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->min = mn; nd->max = mx; nd->val = val;
+    nd->flags = nd->flags | DOCF_ACTION;
+    nd->size_mode_w = DOC_SIZE_FIXED; nd->size_mode_h = DOC_SIZE_FIXED;
+    if (lbl && lbl[0]) DolDocSetLabel(n, lbl);
+    if (id && id[0]) strncpy(g_doc_args + nd->arg_off, id, strlen(id) + 1);
+    DolDocAdvance((w + 7) / 8 + 1);
+}
+
+U0 DolDocEmitToggle(U8 *id, I64 val, U8 *tagstr, U8 *lbl) {
+    I64 w = 120;
+    if (lbl && lbl[0]) w = 20 + strlen(lbl) * 8 + 8;
+    I64 n = DolDocWidget(DOC_TOGGLE, DolDocFlowPx(), DolDocFlowPy(), w, 18, tagstr);
+    if (n < 0) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->val = (val != 0) ? 1 : 0;
+    nd->state = (val != 0) ? 1 : 0;
+    nd->flags = nd->flags | DOCF_ACTION;
+    nd->size_mode_w = DOC_SIZE_FIXED; nd->size_mode_h = DOC_SIZE_FIXED;
+    if (lbl && lbl[0]) DolDocSetLabel(n, lbl);
+    if (id && id[0]) strncpy(g_doc_args + nd->arg_off, id, strlen(id) + 1);
+    DolDocAdvance((w + 7) / 8 + 1);
+}
+
+U0 DolDocEmitTabs(U8 *id, U8 *items, I64 val, I64 w, I64 h, U8 *tagstr) {
+    I64 n = DolDocWidget(DOC_TABS, DolDocFlowPx(), DolDocFlowPy(), w, h, tagstr);
+    if (n < 0) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->val = val;
+    nd->flags = nd->flags | DOCF_ACTION;
+    nd->size_mode_w = DOC_SIZE_FIXED; nd->size_mode_h = DOC_SIZE_FIXED;
+    DolDocSetLabel(n, items);
+    if (id && id[0]) strncpy(g_doc_args + nd->arg_off, id, strlen(id) + 1);
+    DolDocAdvance((w + 7) / 8 + 1);
+}
+
+U0 DolDocEmitCanvas(U8 *id, I64 w, I64 h) {
+    I64 n = DolDocWidget(DOC_CANVAS, DolDocFlowPx(), DolDocFlowPy(), w, h, id);
+    if (n < 0) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->size_mode_w = DOC_SIZE_FIXED; nd->size_mode_h = DOC_SIZE_FIXED;
+    if (id && id[0]) {
+        DolDocSetLabel(n, id);
+        strncpy(g_doc_args + nd->arg_off, id, strlen(id) + 1);
+    }
+    DolDocAdvance((w + 7) / 8 + 1);
+}
+
+// ---- Tags estruturais nativas ----------------------------------------------
+// $ROW,gap=N,pad=N,w=,h=$ ... $END$
+U0 DolDocParseRowCol(U8 *tag, I64 kind) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 320);
+    I64 h = DolDocGetAttrInt(tag, "h=", 0);
+    I64 gap = DolDocGetAttrInt(tag, "gap=", 0);
+    I64 pad = DolDocGetAttrInt(tag, "pad=", 0);
+    DolDocEmitRowCol(kind, gap, pad, w, h, tag);
+}
+
+// $SLOT,w=,h=,min=,max=,flex=N,flexh=N,split=1,gap=,pad=$ ... $END$
+U0 DolDocParseSlot(U8 *tag) {
+    I64 wd = DolDocGetAttrInt(tag, "w=", -1);
+    I64 hd = DolDocGetAttrInt(tag, "h=", -1);
+    I64 fl = DolDocGetAttrInt(tag, "flex=", 0);
+    I64 flh = DolDocGetAttrInt(tag, "flexh=", 0);
+    I64 mn = DolDocGetAttrInt(tag, "min=", 0);
+    I64 mx = DolDocGetAttrInt(tag, "max=", 0);
+    I64 sp = DolDocGetAttrInt(tag, "split=", 0);
+    I64 gap = DolDocGetAttrInt(tag, "gap=", 0);
+    I64 pad = DolDocGetAttrInt(tag, "pad=", 0);
+    I64 w = (wd >= 0) ? wd : 0;
+    I64 h = (hd >= 0) ? hd : 0;
+    I64 n = DolDocWidget(DOC_SLOT, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n < 0) return;
+    CDocNode *nd = &g_doc_nodes[n];
+    nd->min = mn; nd->max = mx; nd->gap = gap; nd->pad = pad;
+    nd->split_draggable = (sp == 1) ? 1 : 0;
+    if (fl > 0) { nd->size_mode_w = DOC_SIZE_FLEX; nd->flex_weight = fl; }
+    else if (wd >= 0) nd->size_mode_w = DOC_SIZE_FIXED;
+    else nd->size_mode_w = DOC_SIZE_AUTO;
+    if (flh > 0) { nd->size_mode_h = DOC_SIZE_FLEX; nd->flex_weight = flh; }
+    else if (hd >= 0) nd->size_mode_h = DOC_SIZE_FIXED;
+    else nd->size_mode_h = DOC_SIZE_AUTO;
+    DolDocPushContainer(n);
+}
+
+// ---- Widgets compostos (render + hit-test + acao na fila do DolDoc) ---------
+// $TABS,id="...",items="A|B|C",val=0,w=,h=$
+U0 DolDocParseTabs(U8 *tag) {
+    U8 items[128]; items[0] = 0; DolDocGetAttrStr(tag, "items=", items, 120);
+    U8 id[64]; id[0] = 0; DolDocGetAttrStr(tag, "id=", id, 60);
+    I64 val = DolDocGetAttrInt(tag, "val=", 0);
+    I64 w = DolDocGetAttrInt(tag, "w=", 240);
+    I64 h = DolDocGetAttrInt(tag, "h=", 24);
+    DolDocEmitTabs(id, items, val, w, h, tag);
+}
+
+// $SLIDER,id="...",min=0,max=100,val=75,label="...",w=$
+U0 DolDocParseSlider2(U8 *tag) {
+    U8 id[64]; id[0] = 0; DolDocGetAttrStr(tag, "id=", id, 60);
+    U8 lbl[64]; lbl[0] = 0; DolDocGetAttrStr(tag, "label=", lbl, 60);
+    I64 mn = DolDocGetAttrInt(tag, "min=", 0);
+    I64 mx = DolDocGetAttrInt(tag, "max=", 100);
+    I64 val = DolDocGetAttrInt(tag, "val=", 50);
+    I64 w = DolDocGetAttrInt(tag, "w=", 160);
+    DolDocEmitSlider(id, mn, mx, val, w, tag, lbl);
+}
+
+// $TOGGLE,id="...",val=1,label="...",w=$
+U0 DolDocParseToggle2(U8 *tag) {
+    U8 id[64]; id[0] = 0; DolDocGetAttrStr(tag, "id=", id, 60);
+    U8 lbl[64]; lbl[0] = 0; DolDocGetAttrStr(tag, "label=", lbl, 60);
+    I64 val = DolDocGetAttrInt(tag, "val=", 0);
+    DolDocEmitToggle(id, val, tag, lbl);
+}
+
+// $CANVAS,id=,w=,h=$
+U0 DolDocParseCanvas(U8 *tag) {
+    U8 id[64]; id[0] = 0; DolDocGetAttrStr(tag, "id=", id, 60);
+    I64 w = DolDocGetAttrInt(tag, "w=", 200);
+    I64 h = DolDocGetAttrInt(tag, "h=", 120);
+    DolDocEmitCanvas(id, w, h);
+}
+
+I64 DolDocTabCount(CDocNode *nd) {
+    if (nd->text_len <= 0) return 0;
+    I64 n = 1;
+    for (I64 i = 0; i < nd->text_len; i++) {
+        if (g_doc_text[nd->text_off + i] == '|') n = n + 1;
+    }
+    return n;
+}
+
+// ---- Hit-test + acao dos widgets compostos ---------------------------------
+I64 DolDocWidgetHitTest(I64 mx, I64 my) {
+    for (I64 n = g_doc_node_count - 1; n >= 0; n--) {
+        I64 k = g_doc_nodes[n].kind;
+        if (k != DOC_TABS && k != DOC_SLIDER && k != DOC_TOGGLE && k != DOC_CANVAS) continue;
+        CDocNode *nd = &g_doc_nodes[n];
+        if (mx >= nd->x && mx < nd->x + nd->w && my >= nd->y && my < nd->y + nd->h) return n;
+    }
+    return -1;
+}
+
+I64 DolDocWidgetClick(I64 nid, I64 mx, I64 my) {
+    if (nid < 0 || nid >= g_doc_node_count) return 0;
+    CDocNode *nd = &g_doc_nodes[nid];
+    if (mx < nd->x || mx >= nd->x + nd->w || my < nd->y || my >= nd->y + nd->h) return 0;
+    U8 *wid = (nd->arg_off != 0) ? (g_doc_args + nd->arg_off) : "";
+    if (nd->kind == DOC_TABS) {
+        I64 ns = DolDocTabCount(nd);
+        if (ns < 1) return 0;
+        I64 idx = ((mx - nd->x) * ns) / (nd->w > 0 ? nd->w : 1);
+        if (idx < 0) idx = 0;
+        if (idx >= ns) idx = ns - 1;
+        nd->val = idx;
+        DolDocPushAction(DOC_ACT_SET, nid, idx, wid);
+        return 1;
+    }
+    if (nd->kind == DOC_SLIDER) {
+        I64 mn = nd->min; I64 mxv = nd->max; if (mxv <= mn) mxv = mn + 100;
+        I64 nv = mn + ((mx - nd->x) * (mxv - mn)) / (nd->w > 0 ? nd->w : 1);
+        if (nv < mn) nv = mn;
+        if (nv > mxv) nv = mxv;
+        nd->val = nv;
+        if (nd->target != 0) DolDocPatchTarget(nd->target, nv);
+        g_doc_drag_nid = nid;
+        DolDocPushAction(DOC_ACT_SET, nid, nv, wid);
+        return 1;
+    }
+    if (nd->kind == DOC_TOGGLE) {
+        nd->state = 1 - nd->state;
+        nd->val = nd->state;
+        if (nd->target != 0) DolDocPatchTarget(nd->target, nd->state);
+        DolDocPushAction(DOC_ACT_SET, nid, nd->state, wid);
+        return 1;
+    }
+    return 0;
+}
+
+// ---- Splitter arrastavel (barra no gap, hit-test de 4px) -------------------
+// A barra fica na BORDA DIREITA do painel (x+w), dentro do gap do pai.
+I64 DolDocSplitterHitTest(I64 mx, I64 my) {
+    for (I64 n = 0; n < g_doc_node_count; n++) {
+        CDocNode *nd = &g_doc_nodes[n];
+        if (nd->split_draggable != 1) continue;
+        if (my < nd->y || my >= nd->y + nd->h) continue;
+        I64 sx = nd->x + nd->w;
+        if (mx >= sx - 2 && mx < sx + 2) return n;
+    }
+    return -1;
+}
+
+// Arrasta o splitter do painel `nid` para a coordenada absoluta `mx`:
+// altera node->w (com clamp de min/max), fixa o painel em FIXED e RE-ARRANJA o
+// pai inteiro — o irmao FLEX recalcula sozinho.
+I64 DolDocSplitterDrag(I64 nid, I64 mx) {
+    if (nid < 0 || nid >= g_doc_node_count) return 0;
+    CDocNode *nd = &g_doc_nodes[nid];
+    I64 p = nd->parent;
+    if (p < 0) return 0;
+    if (g_doc_nodes[p].kind != DOC_ROW && g_doc_nodes[p].kind != DOC_COL) return 0;
+    I64 nw = mx - nd->x;
+    if (nw < nd->min) nw = nd->min;
+    if (nd->max > 0 && nw > nd->max) nw = nd->max;
+    if (nw < 0) nw = 0;
+    nd->w = nw;
+    nd->size_mode_w = DOC_SIZE_FIXED;
+    DolDocArrangeNode(p, g_doc_nodes[p].x, g_doc_nodes[p].y, g_doc_nodes[p].w, g_doc_nodes[p].h);
+    return 1;
+}
+
+// ---- Parser dual: HTML (5 formas) -> os MESMOS nos das tags nativas --------
+I64 DolDocHtmlStyleInt(U8 *style, U8 *key, I64 def) {
+    U8 *p = strstr(style, key);
+    if (!p) return def;
+    p = p + strlen(key);
+    while (*p == ' ' || *p == ':' || *p == '=') p++;
+    return DolDocAtoi(p);
+}
+
+I64 DolDocHtmlAttrInt(U8 *t, U8 *key, I64 def) {
+    U8 *p = strstr(t, key);
+    if (!p) return def;
+    p = p + strlen(key);
+    while (*p == ' ' || *p == '=' || *p == '"' || *p == '\'') p++;
+    return DolDocAtoi(p);
+}
+
+U0 DolDocHtmlAttrStr(U8 *t, U8 *key, U8 *out, I64 max_len) {
+    out[0] = 0;
+    U8 *p = strstr(t, key);
+    if (!p) return;
+    p = p + strlen(key);
+    while (*p == ' ' || *p == '=') p++;
+    I64 i = 0;
+    if (*p == '"' || *p == '\'') {
+        I64 q = *p; p++;
+        while (*p && *p != q && i < max_len - 1) { out[i] = *p; i++; p++; }
+    } else {
+        while (*p && *p != ' ' && *p != '>' && *p != '/' && i < max_len - 1) { out[i] = *p; i++; p++; }
+    }
+    out[i] = 0;
+}
+
+// Reconhece UMA forma HTML em `p` (que aponta para '<') e emite os mesmos nos
+// que a tag nativa correspondente. Devolve o novo ponteiro de leitura, ou 0 se
+// nao for uma das 5 formas (o '<' entao sai literal, preservando <<<NEO-DONE>>>).
+U8* DolDocHtmlParse(U8 *p) {
+    if (!p || *p != '<') return 0;
+    if (p[1] == '/') {
+        if (strncmp(p, "</div>", 6) == 0) { DolDocCloseContainer(); return p + 6; }
+        if (strncmp(p, "</button>", 9) == 0) return p + 9;
+        if (strncmp(p, "</canvas>", 9) == 0) return p + 9;
+        return 0;
+    }
+    U8 hb[512];
+    I64 i = 0;
+    U8 *q = p;
+    while (*q && *q != '>' && i < 500) { hb[i] = *q; i++; q++; }
+    if (*q != '>') return 0;
+    hb[i] = 0;
+    if (strncmp(hb, "<div", 4) == 0) {
+        U8 style[256]; style[0] = 0;
+        DolDocHtmlAttrStr(hb, "style=", style, 250);
+        I64 gap = DolDocHtmlStyleInt(style, "gap:", 0);
+        I64 pad = DolDocHtmlStyleInt(style, "pad:", 0);
+        I64 col = (strstr(style, "display:col") != 0) ? 1 : 0;
+        I64 w = DolDocHtmlAttrInt(hb, "w=", 320);
+        I64 h = DolDocHtmlAttrInt(hb, "h=", 0);
+        DolDocEmitRowCol(col ? DOC_COL : DOC_ROW, gap, pad, w, h, hb);
+        return q + 1;
+    }
+    if (strncmp(hb, "<button", 7) == 0) {
+        U8 cmd[128]; cmd[0] = 0;
+        DolDocHtmlAttrStr(hb, "onclick=", cmd, 120);
+        U8 lbl[64]; I64 li = 0;
+        U8 *t = q + 1;
+        while (*t && *t != '<' && li < 60) { lbl[li] = *t; li++; t++; }
+        lbl[li] = 0;
+        DolDocEmitButton(lbl, cmd, hb);
+        if (strncmp(t, "</button>", 9) == 0) t = t + 9;
+        return t;
+    }
+    if (strncmp(hb, "<input", 6) == 0) {
+        U8 ty[32]; ty[0] = 0; DolDocHtmlAttrStr(hb, "type=", ty, 30);
+        U8 id[64]; id[0] = 0; DolDocHtmlAttrStr(hb, "id=", id, 60);
+        if (strcmp(ty, "range") == 0) {
+            I64 mn = DolDocHtmlAttrInt(hb, "min=", 0);
+            I64 mx = DolDocHtmlAttrInt(hb, "max=", 100);
+            I64 vv = DolDocHtmlAttrInt(hb, "val=", -1);
+            if (vv < 0) vv = DolDocHtmlAttrInt(hb, "value=", 50);
+            I64 w = DolDocHtmlAttrInt(hb, "w=", 140);
+            DolDocEmitSlider(id, mn, mx, vv, w, hb, 0);
+            return q + 1;
+        }
+        if (strcmp(ty, "checkbox") == 0) {
+            I64 ck = (strstr(hb, "checked") != 0) ? 1 : 0;
+            DolDocEmitToggle(id, ck, hb, 0);
+            return q + 1;
+        }
+        return 0;
+    }
+    if (strncmp(hb, "<canvas", 7) == 0) {
+        U8 id[64]; id[0] = 0; DolDocHtmlAttrStr(hb, "id=", id, 60);
+        I64 w = DolDocHtmlAttrInt(hb, "w=", 200);
+        I64 h = DolDocHtmlAttrInt(hb, "h=", 120);
+        DolDocEmitCanvas(id, w, h);
+        return q + 1;
+    }
+    return 0;
 }
 
 U0 DolDocParseShadow(U8 *tag) {
@@ -1362,6 +2158,18 @@ U0 DolDocParseShadow(U8 *tag) {
 U0 DolDocExecTag(U8 *tag) {
     if (!tag || !*tag) return;
     I64 t0 = tag[0]; I64 t1 = tag[1];
+
+    // ---- G3: tags estruturais e widgets compostos ---------------------------
+    // Vem ANTES das tags de duas letras porque $ROW$ colidiria com $RO$,
+    // $SLOT$ com $SL$, $COL$ com $CO$, $CANVAS$ com $CA$ (card).
+    if (strncmp(tag, "ROW", 3) == 0) { DolDocParseRowCol(tag, DOC_ROW); return; }
+    if (strncmp(tag, "COL", 3) == 0) { DolDocParseRowCol(tag, DOC_COL); return; }
+    if (strncmp(tag, "SLOT", 4) == 0) { DolDocParseSlot(tag); return; }
+    if (strncmp(tag, "END", 3) == 0) { DolDocCloseContainer(); return; }
+    if (strncmp(tag, "TABS", 4) == 0) { DolDocParseTabs(tag); return; }
+    if (strncmp(tag, "SLIDER", 6) == 0) { DolDocParseSlider2(tag); return; }
+    if (strncmp(tag, "TOGGLE", 6) == 0) { DolDocParseToggle2(tag); return; }
+    if (strncmp(tag, "CANVAS", 6) == 0) { DolDocParseCanvas(tag); return; }
 
     // ---- colour tags ----
     if (t0 == 'F' && t1 == 'G') {
@@ -1450,14 +2258,7 @@ U0 DolDocExecTag(U8 *tag) {
         U8 lbl[64]; lbl[0] = 0; U8 cmd[128]; cmd[0] = 0;
         U8 *p = DolDocParseQuoted(tag + 2, lbl, 60);
         U8 *lp = strstr(p, "LM="); if (lp) DolDocParseQuoted(lp + 3, cmd, 120);
-        I64 vw = strlen(lbl) * 8 + 16;
-        I64 cols = (vw + 7) / 8 + 1;
-        I64 n = DolDocWidget(DOC_BUTTON, DolDocFlowPx(), DolDocFlowPy(), vw, 18, tag);
-        if (n >= 0) {
-            strncpy(g_doc_args + g_doc_nodes[n].arg_off, cmd, strlen(cmd) + 1);
-            DolDocSetLabel(n, lbl);
-        }
-        DolDocAdvance(cols);
+        DolDocEmitButton(lbl, cmd, tag);
         return;
     }
     if (t0 == 'D' && t1 == 'A') { DolDocParseData(tag); return; }
@@ -1528,6 +2329,13 @@ U0 DolDocPrint(U8 *str) {
             DolDocExecTag(g_tag_buf);
             continue;
         }
+        // G3: parser dual — as 5 formas HTML reconhecidas viram os MESMOS nos
+        // que as tags nativas. Um '<' que nao casa nenhuma forma sai literal
+        // (preserva <<<NEO-DONE:selftest>>> e qualquer texto com '<').
+        if (*str == '<') {
+            U8 *hnext = DolDocHtmlParse(str);
+            if (hnext) { str = hnext; continue; }
+        }
         DolDocPutc(*str);
         str++;
     }
@@ -1550,6 +2358,8 @@ U0 DolDocClear() {
     g_doc_scroll_offset = 0;
     g_doc_inspected_nid = -1;
     g_doc_anchor_count = 0;
+    g_doc_cont_depth = 0;      // G3: nenhum container aberto depois de um clear
+    g_doc_split_nid = -1;      // G3: nenhum splitter em arraste
     g_doc_cursor_x = g_doc_x + 8;
     g_doc_cursor_y = g_doc_y + 8;
     g_omnitape_tail = 0;
@@ -1932,11 +2742,66 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
     if (kind == DOC_GLASS) { DolDocDrawGlass(vx, vy, vw, vh, nd->val); return; }
     if (kind == DOC_SHADOW) { DolDocDrawShadow(vx, vy, vw, vh, nd->val); return; }
     // P8.0 Slate containers: a subtle frame makes the slot structure visible.
-    if (kind == DOC_VBOX || kind == DOC_HBOX || kind == DOC_GRIDC || kind == DOC_SPLIT) {
+    if (kind == DOC_VBOX || kind == DOC_HBOX || kind == DOC_GRIDC || kind == DOC_SPLIT ||
+        kind == DOC_ROW || kind == DOC_COL) {
         gfx_draw_rect(vx, vy, vw, 1, surface1);
         gfx_draw_rect(vx, vy + vh - 1, vw, 1, surface1);
         gfx_draw_rect(vx, vy, 1, vh, surface1);
         gfx_draw_rect(vx + vw - 1, vy, 1, vh, surface1);
+        return;
+    }
+    // G3: $SLOT$ — painel; quando split=1 desenha a barra divisoria NO GAP
+    // (borda direita) que o hit-test de 4px usa para o arraste.
+    if (kind == DOC_SLOT) {
+        gfx_draw_rect(vx, vy, 1, vh, surface1);
+        gfx_draw_rect(vx + vw - 1, vy, 1, vh, surface1);
+        if (nd->split_draggable == 1) {
+            gfx_draw_rect(vx + vw, vy + 2, 2, vh - 4, sapphire);
+            gfx_draw_rect(vx + vw - 1, vy + vh / 2 - 6, 2, 12, sky);
+        }
+        return;
+    }
+    // G3: $TABS$ — controle segmentado; o segmento ativo (val) fica elevado.
+    if (kind == DOC_TABS) {
+        I64 nseg = DolDocTabCount(nd);
+        if (nseg < 1) nseg = 1;
+        gfx_draw_rounded_rect(vx, vy, vw, vh, 4, surface0);
+        if (vw > 0) {
+            I64 segw = vw / nseg;
+            I64 seg = 0;
+            I64 off = 0;
+            while (seg < nseg && segw > 0) {
+                I64 sx = vx + seg * segw;
+                I64 sw = (seg == nseg - 1) ? (vw - seg * segw) : segw;
+                if (seg == nd->val) {
+                    gfx_draw_rounded_rect(sx + 1, vy + 1, sw - 2, vh - 2, 3, surface1);
+                    gfx_draw_rect(sx + 1, vy + vh - 2, sw - 2, 2, sapphire);
+                }
+                I64 ls = off; I64 le = off;
+                while (le < nd->text_len && g_doc_text[nd->text_off + le] != '|') le++;
+                I64 ll = le - ls;
+                if (ll > 0) {
+                    U8 sb[40]; I64 k = 0;
+                    while (k < ll && k < 38) { sb[k] = g_doc_text[nd->text_off + ls + k]; k++; }
+                    sb[k] = 0;
+                    gfx_draw_string(sx + (sw - ll * 8) / 2, vy + (vh - 16) / 2, sb,
+                                    (seg == nd->val) ? text_col : DolDocResolveColor(SEM_COLOR_SUBTEXT), 0);
+                }
+                off = le + 1;
+                seg = seg + 1;
+            }
+        }
+        return;
+    }
+    // G3: $CANVAS$ — superficie de desenho com grade de referencia.
+    if (kind == DOC_CANVAS) {
+        gfx_draw_rounded_rect(vx, vy, vw, vh, 6, surface0);
+        gfx_draw_rect(vx + 1, vy + 1, vw - 2, vh - 2, crust);
+        I64 cgx = vx + 24;
+        while (cgx < vx + vw - 4) { gfx_draw_rect(cgx, vy + 2, 1, vh - 4, surface1); cgx = cgx + 24; }
+        I64 cgy = vy + 24;
+        while (cgy < vy + vh - 4) { gfx_draw_rect(vx + 2, cgy, vw - 4, 1, surface1); cgy = cgy + 24; }
+        if (lbl[0]) gfx_draw_string(vx + 6, vy + 2, lbl, sky, 0);
         return;
     }
     // P8.0 industrial nodes + the live Shell node.
@@ -2000,6 +2865,10 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
         if (tv <= 0) { vs[0] = '0'; vs[1] = 0; }
         else { U8 rev[16]; I64 ri = 0; while (tv > 0 && ri < 12) { rev[ri] = '0' + (tv % 10); ri++; tv /= 10; } for (I64 d = 0; d < ri; d++) vs[d] = rev[ri - 1 - d]; vs[ri] = 0; }
         gfx_draw_string(vx + vw + 8, vy + 2, vs, yellow, 0);
+        // G3: $SLIDER,label="..."$ desenha o rotulo acima do trilho
+        if ((nd->flags & DOCF_ACTION) != 0 && lbl[0]) {
+            gfx_draw_string(vx, vy - 12, lbl, DolDocResolveColor(SEM_COLOR_SUBTEXT), 0);
+        }
         return;
     }
     if (kind == DOC_DATA) {
@@ -2192,6 +3061,14 @@ I64 DolDocHandleClick(I64 mx, I64 my) {
         return 1;
     }
 
+    // G3: widgets compostos com id (TABS/SLIDER/TOGGLE) — hit-test + acao
+    if ((nd->flags & DOCF_ACTION) != 0) {
+        if (DolDocWidgetClick(nid, mx, my)) {
+            DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+            return 1;
+        }
+    }
+
     U8 *cmd = nd->arg_off ? (g_doc_args + nd->arg_off) : "";
     if (nd->kind == DOC_BUTTON || nd->kind == DOC_LINK) {
         if (cmd[0] == '#') {
@@ -2246,6 +3123,13 @@ I64 DolDocHandleClick(I64 mx, I64 my) {
 }
 
 I64 DolDocHandleDrag(I64 mx, I64 my) {
+    // G3: arraste da barra divisoria de um $SLOT,split=1$
+    if (g_doc_split_nid >= 0) {
+        if (DolDocSplitterDrag(g_doc_split_nid, mx) == 1) {
+            DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
+            return 1;
+        }
+    }
     if (g_doc_drag_nid >= 0 && g_doc_drag_nid < g_doc_node_count) {
         CDocNode *nd = &g_doc_nodes[g_doc_drag_nid];
         if (nd->kind == DOC_SLIDER) {
@@ -2259,8 +3143,10 @@ I64 DolDocHandleDrag(I64 mx, I64 my) {
 }
 
 I64 DolDocHandleMouseUp() {
-    if (g_doc_drag_nid >= 0) { g_doc_drag_nid = -1; return 1; }
-    return 0;
+    I64 done = 0;
+    if (g_doc_split_nid >= 0) { g_doc_split_nid = -1; done = 1; }   // G3: solta o splitter
+    if (g_doc_drag_nid >= 0) { g_doc_drag_nid = -1; done = 1; }
+    return done;
 }
 
 U0 DolDocMove(I64 x, I64 y, I64 w, I64 h) {
