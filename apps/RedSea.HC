@@ -245,7 +245,13 @@ I64 RedSeaFormat(U64 part_lba, U64 sec_count) {
 
   I64 rsf_s = 0;
   while (rsf_s < 16) {
-    RsWriteSectors(part_lba + rsf_s, 1, zbuf);
+    // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+    // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+    if (RsWriteSectors(part_lba + rsf_s, 1, zbuf) < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                    (I64)(part_lba + rsf_s));
+      return -1;
+    }
     rsf_s++;
   }
 
@@ -361,7 +367,13 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
 
         ent->size = sz;
         ent->datetime = 0x202610170000 + timer_get_uptime_sec();
-        RsWriteSectors(g_rs.current_dir_lba + rsw_s, 1, s_buf);
+        // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+        // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+        if (RsWriteSectors(g_rs.current_dir_lba + rsw_s, 1, s_buf) < 0) {
+          doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                        (I64)(g_rs.current_dir_lba + rsw_s));
+          return -1;
+        }
         return 0;
       }
       if ((ent->attr == 0 || ent->name[0] == 0) && free_s == -1) {
@@ -385,8 +397,14 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
   if (!payload_buf) return -1;
   RsMemSet(payload_buf, 0, payload_sec * 512);
   RsMemCpy(payload_buf, data, sz);
-  RsWriteSectors(target_cluster, payload_sec, payload_buf);
   kfree(payload_buf);
+  // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+  // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+  if (RsWriteSectors(target_cluster, payload_sec, payload_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                  (I64)(target_cluster));
+    return -1;
+  }
 
   // Write directory entry
   RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
@@ -396,7 +414,13 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
   entries->cluster = target_cluster;
   entries->size = sz;
   entries->datetime = 0x202610170000 + timer_get_uptime_sec();
-  RsWriteSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
+  // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+  // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+  if (RsWriteSectors(g_rs.current_dir_lba + free_s, 1, s_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                  (I64)(g_rs.current_dir_lba + free_s));
+    return -1;
+  }
   return 0;
 }
 
@@ -418,7 +442,15 @@ I64 RedSeaReadFile(U8 *fname, U8 *buf, I64 max_bytes, I64 *out_size) {
 
         U8 *t_buf = kmalloc(sec_to_read * 512);
         if (!t_buf) return -1;
-        RsReadSectors(ent->cluster, sec_to_read, t_buf);
+        // F2-01: o retorno era descartado e a funcao devolvia 0 = SUCESSO mesmo
+        // com a leitura falhando. O consumidor disto e CompilerCompileAndRun.
+        I64 rs_rr = RsReadSectors(ent->cluster, sec_to_read, t_buf);
+        if (rs_rr < 0) {
+          kfree(t_buf);
+          doldoc_printf("$FG,RED$[REDSEA] leitura falhou em '%s' (LBA %lld, res=%lld)$FG$\n",
+                        fname, ent->cluster, rs_rr);
+          return -1;
+        }
         RsMemCpy(buf, t_buf, bytes_copy);
         kfree(t_buf);
 
@@ -449,7 +481,13 @@ I64 RedSeaDeleteFile(U8 *fname) {
           g_rs.next_alloc_lba = ent->cluster;
         }
         RsMemSet(ent, 0, 64);
-        RsWriteSectors(g_rs.current_dir_lba + rsd_s, 1, s_buf);
+        // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+        // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+        if (RsWriteSectors(g_rs.current_dir_lba + rsd_s, 1, s_buf) < 0) {
+          doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                        (I64)(g_rs.current_dir_lba + rsd_s));
+          return -1;
+        }
         return 0;
       }
       rsd_i++;
@@ -503,8 +541,14 @@ I64 RedSeaMkDir(U8 *dname) {
   new_ent1->cluster = g_rs.current_dir_lba;
   new_ent1->size = g_rs.current_dir_sectors * 512;
 
-  RsWriteSectors(new_dir_lba, 2, new_dir_buf);
   kfree(new_dir_buf);
+  // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+  // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+  if (RsWriteSectors(new_dir_lba, 2, new_dir_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                  (I64)(new_dir_lba));
+    return -1;
+  }
 
   // Write entry into parent
   RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
@@ -514,7 +558,13 @@ I64 RedSeaMkDir(U8 *dname) {
   entries->cluster = new_dir_lba;
   entries->size = 1024;
   entries->datetime = 0x202610170000 + timer_get_uptime_sec();
-  RsWriteSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
+  // P8-fix: escrita sem checagem deixava a funcao seguir, avancar
+  // next_alloc_lba e retornar 0 (sucesso) com o dado perdido.
+  if (RsWriteSectors(g_rs.current_dir_lba + free_s, 1, s_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] escrita falhou em LBA %lld$FG$\n",
+                  (I64)(g_rs.current_dir_lba + free_s));
+    return -1;
+  }
   return 0;
 }
 
