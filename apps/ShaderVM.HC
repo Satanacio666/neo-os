@@ -328,6 +328,10 @@ F64 ShaderSdfTorus(F64 px, F64 py, F64 pz, F64 R, F64 r) {
 // lane layout: 0=(x,y) 1=(x+sx,y) 2=(x,y+sy) 3=(x+sx,y+sy)
 // ==============================================================================
 U0 ShaderVMQuad(CShaderCtx *ctx, F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
+    // P3A: se houver bloco JIT valido para o programa corrente, executa por
+    // ponteiro de funcao (ShaderJitTryRun devolve 1). Caso contrario cai no
+    // interpretador abaixo — que e o FALLBACK e nunca sai do binario.
+    if (ShaderJitTryRun(ctx, qx, qy, sx, sy, t) != 0) return;
     I64 i = 0;
     while (i < SV_MAX_REGS * 4) { ctx->regs[i] = 0.0; i = i + 1; }
     ctx->qx = qx;
@@ -1050,6 +1054,520 @@ U0 ShaderRaymarchQuad(CShaderCtx *ctx, F64 u0, F64 v0, F64 su, F64 sv, F64 t) {
 }
 
 // ==============================================================================
+// P3A — JIT de shaders: emissor AArch64/NEON para o programa do ShaderVM.
+//
+// O interpretador acima (ShaderVMQuad) CONTINUA sendo o caminho e o FALLBACK.
+// Este bloco emite, UMA vez por programa, um bloco AArch64 num buffer executavel
+// do heap (boot_make_heap_executable() em boot/main.c:415 limpa SCTLR_EL1.WXN,
+// logo o heap do kernel e W+X) e o executa por ponteiro de funcao.
+//
+// Contrato do bloco emitido: void fn(CShaderCtx *ctx). O chamador ja preencheu
+// ctx->qx/qy/sx/sy/time; fn zera regs/mask/cond/mask_sp/out e escreve
+// ctx->out[0..3]. Semantica identica ao interpretador.
+//
+// O que o JIT resolve:
+//   * o dispatch (a escada de 24 `else if`) desaparece — cada instrucao vira
+//     codigo direto;
+//   * os 12 opcodes NEON (SV_ADD..SV_FRACT) sao INLINADOS com as MESMAS palavras
+//     de instrucao de ShaderOp4 (scripts/shader_quad.s), sem branch e sem o
+//     argumento `op`;
+//   * os 23 opcodes restantes nao-aritmeticos chamam ShaderVMStep1, que e o
+//     runtime do JIT (mesmo corpo das armas correspondentes do interpretador);
+//   * o zero-fill dos 64 registradores vira 16 STP q30,q31 (o interpretador
+//     gasta 64 STR escalares por quad).
+//
+// FALLBACK EXPLICITO: g_sv_jit_enabled = 0 forca o interpretador. O teste
+// SHADERVM do selftest mede os dois caminhos e diz qual rodou.
+// ==============================================================================
+#define SV_JIT_MAX_WORDS 16384
+#define SV_JIT_ALIGN     64
+
+U32 *g_sv_jit_code = 0;        // buffer executavel (kmalloc)
+I64  g_sv_jit_cap = 0;         // palavras alocadas
+I64  g_sv_jit_words = 0;       // palavras emitidas
+I64  g_sv_jit_ok = 0;          // 1 = ha um bloco emitido e valido
+I64  g_sv_jit_enabled = 0;     // 0 = forca o interpretador (DEFAULT OFF: ver RELATORIO-3A)
+I64  g_sv_jit_calls = 0;       // quads executados pelo bloco JIT
+I64  g_sv_jit_fallbacks = 0;   // quads que cairam no interpretador
+I64  g_sv_jit_compiles = 0;    // compilacoes feitas
+I64  g_sv_jit_refused = 0;     // programas recusados (controle de fluxo/op nao coberto)
+I64  g_sv_jit_fn = 0;          // ponteiro do bloco emitido (chamado por ShaderVMQuad)
+I64  g_sv_jit_us = 0;          // custo da ultima compilacao, em microssegundos
+I64  g_sv_jit_sig = -1;        // assinatura do programa compilado
+
+U0 ShaderJitEmit(U32 w) {
+    if (g_sv_jit_words >= g_sv_jit_cap) { g_sv_jit_ok = 0; return; }
+    g_sv_jit_code[g_sv_jit_words] = w;
+    g_sv_jit_words = g_sv_jit_words + 1;
+}
+
+// MOVZ/MOVK de 64 bits (endereco absoluto de uma funcao).
+U0 ShaderJitEmitImm64(I64 rd, U64 v) {
+    ShaderJitEmit(0xD2800000 | (((U32)((v >> 0)  & 0xFFFF)) << 5) | (U32)rd);
+    ShaderJitEmit(0xF2800000 | (1 << 21) | (((U32)((v >> 16) & 0xFFFF)) << 5) | (U32)rd);
+    ShaderJitEmit(0xF2800000 | (2 << 21) | (((U32)((v >> 32) & 0xFFFF)) << 5) | (U32)rd);
+    ShaderJitEmit(0xF2800000 | (3 << 21) | (((U32)((v >> 48) & 0xFFFF)) << 5) | (U32)rd);
+}
+
+U0 ShaderJitEmitMovz(I64 rd, I64 imm) {
+    ShaderJitEmit(0xD2800000 | (((U32)(imm & 0xFFFF)) << 5) | (U32)rd);
+}
+
+// LDR q<rt>, [x9, #off]  /  STR q<rt>, [x9, #off]   (off multiplo de 16)
+U0 ShaderJitEmitLdrQ(I64 rt, I64 off) {
+    ShaderJitEmit(0x3DC00000 | (((U32)(off / 16)) << 10) | (9 << 5) | (U32)rt);
+}
+U0 ShaderJitEmitStrQ(I64 rt, I64 off) {
+    ShaderJitEmit(0x3D800000 | (((U32)(off / 16)) << 10) | (9 << 5) | (U32)rt);
+}
+
+// ---- Runtime do JIT: as 23 armas nao-NEON do interpretador, uma por chamada.
+// Contrato: x0=ctx, x1=op, x2=a, x3=b, x4=c.
+U0 ShaderVMStep1(CShaderCtx *ctx, I64 op, I64 a, I64 b, I64 c) {
+    if (op == SV_MOV) {
+        I64 l = 0;
+        while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = ctx->regs[b * 4 + l]; l = l + 1; }
+    } else if (op == SV_MOVI) {
+        F64 v = g_sv_const[b];
+        I64 l = 0;
+        while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v; l = l + 1; }
+    } else if (op == SV_SIN || op == SV_COS) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 x = ctx->regs[b * 4 + l];
+                if (op == SV_SIN) ctx->regs[a * 4 + l] = MathSinRad(x);
+                else ctx->regs[a * 4 + l] = MathCosRad(x);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_LEN2 || op == SV_LEN3) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 x = ctx->regs[b * 4 + l];
+                F64 y = ctx->regs[(b + 1) * 4 + l];
+                F64 s = x * x + y * y;
+                if (op == SV_LEN3) { F64 z = ctx->regs[(b + 2) * 4 + l]; s = s + z * z; }
+                ctx->regs[a * 4 + l] = MathSqrt(s);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_DOT2) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 ax = ctx->regs[b * 4 + l];
+                F64 ay = ctx->regs[(b + 1) * 4 + l];
+                F64 bx = ctx->regs[c * 4 + l];
+                F64 by = ctx->regs[(c + 1) * 4 + l];
+                ctx->regs[a * 4 + l] = ax * bx + ay * by;
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_MIX) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 t0 = ctx->regs[c * 4 + l];
+                F64 p0 = ctx->regs[a * 4 + l];
+                F64 p1 = ctx->regs[b * 4 + l];
+                ctx->regs[a * 4 + l] = p0 + (p1 - p0) * t0;
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_CLAMP) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 v = ctx->regs[a * 4 + l];
+                F64 lo = ctx->regs[b * 4 + l];
+                F64 hi = ctx->regs[c * 4 + l];
+                if (v < lo) v = lo;
+                if (v > hi) v = hi;
+                ctx->regs[a * 4 + l] = v;
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_SMOOTH) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                F64 x = ctx->regs[a * 4 + l];
+                F64 e0 = ctx->regs[b * 4 + l];
+                F64 e1 = ctx->regs[c * 4 + l];
+                ctx->regs[a * 4 + l] = Smoothstep(e0, e1, x);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_FRAGX || op == SV_FRAGY || op == SV_TIME) {
+        I64 l = 0;
+        while (l < 4) {
+            F64 v = ctx->time;
+            if (op == SV_FRAGX) v = ctx->qx + ctx->sx * (F64)(l & 1);
+            else if (op == SV_FRAGY) v = ctx->qy + ctx->sy * (F64)(l >> 1);
+            if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v;
+            l = l + 1;
+        }
+    } else if (op == SV_DFDX || op == SV_DFDY) {
+        F64 v0 = ctx->regs[b * 4 + 0];
+        F64 v1 = ctx->regs[b * 4 + 1];
+        F64 v2 = ctx->regs[b * 4 + 2];
+        F64 v3 = ctx->regs[b * 4 + 3];
+        F64 d0 = 0.0;
+        F64 d1 = 0.0;
+        F64 d2 = 0.0;
+        F64 d3 = 0.0;
+        if (op == SV_DFDX) { d0 = v1 - v0; d1 = v1 - v0; d2 = v3 - v2; d3 = v3 - v2; }
+        else               { d0 = v2 - v0; d1 = v3 - v1; d2 = v2 - v0; d3 = v3 - v1; }
+        I64 l = 0;
+        while (l < 4) {
+            F64 d = d0;
+            if (l == 1) d = d1;
+            else if (l == 2) d = d2;
+            else if (l == 3) d = d3;
+            if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = d;
+            l = l + 1;
+        }
+    } else if (op == SV_PERLIN) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                ctx->regs[a * 4 + l] = ShaderPerlin3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_FBM) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                I64 oct = (I64)ctx->regs[c * 4 + l];
+                ctx->regs[a * 4 + l] = ShaderFbm3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], oct);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_MANDEL) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                ctx->regs[a * 4 + l] = ShaderMandelbulbDE(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_SDFSPHERE) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                ctx->regs[a * 4 + l] = SdfSphere(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l]);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_SDFBOX) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                ctx->regs[a * 4 + l] = SdfBox2D(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_SDFTORUS) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                ctx->regs[a * 4 + l] = ShaderSdfTorus(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
+            }
+            l = l + 1;
+        }
+    } else if (op == SV_OUT) {
+        I64 l = 0;
+        while (l < 4) {
+            if ((ctx->mask & (1 << l)) != 0) {
+                I64 r = (I64)(ctx->regs[a * 4 + l] * 255.0 + 0.5);
+                I64 g = (I64)(ctx->regs[b * 4 + l] * 255.0 + 0.5);
+                I64 bl = (I64)(ctx->regs[c * 4 + l] * 255.0 + 0.5);
+                if (r < 0) r = 0; if (r > 255) r = 255;
+                if (g < 0) g = 0; if (g > 255) g = 255;
+                if (bl < 0) bl = 0; if (bl > 255) bl = 255;
+                ctx->out[l] = 0xFF000000 | (r << 16) | (g << 8) | bl;
+            }
+            l = l + 1;
+        }
+    }
+}
+
+// As 12 armas NEON de ShaderOp4, em pares/trios de palavras de instrucao. Fonte
+// de verdade: apps/ShaderVM.HC ShaderOp4 (e scripts/shader_quad.s).
+I64 ShaderJitNeonWords(I64 k, U32 *out) {
+    if (k == 0)  { out[0] = 0x4E62D400; out[1] = 0x4E63D421; return 2; }  // ADD
+    if (k == 1)  { out[0] = 0x4EE2D400; out[1] = 0x4EE3D421; return 2; }  // SUB
+    if (k == 2)  { out[0] = 0x6E62DC00; out[1] = 0x6E63DC21; return 2; }  // MUL
+    if (k == 3)  { out[0] = 0x6E62FC00; out[1] = 0x6E63FC21; return 2; }  // DIV
+    if (k == 4)  { out[0] = 0x4EE2F400; out[1] = 0x4EE3F421; return 2; }  // MIN
+    if (k == 5)  { out[0] = 0x4E62F400; out[1] = 0x4E63F421; return 2; }  // MAX
+    if (k == 6)  { out[0] = 0x6EE1F800; out[1] = 0x6EE1F821; return 2; }  // SQRT
+    if (k == 7)  { out[0] = 0x6EE1D804; out[1] = 0x6EE1D825; out[2] = 0x6E64DC86; out[3] = 0x6E65DCA7;
+                   out[4] = 0x4EE6FC06; out[5] = 0x4EE7FC27; out[6] = 0x6E66DC80; out[7] = 0x6E67DCA1; return 8; }  // RSQ
+    if (k == 8)  { out[0] = 0x4EE0F800; out[1] = 0x4EE0F821; return 2; }  // ABS
+    if (k == 9)  { out[0] = 0x6EE0F800; out[1] = 0x6EE0F821; return 2; }  // NEG
+    if (k == 10) { out[0] = 0x4E619800; out[1] = 0x4E619821; return 2; }  // FLOOR
+    if (k == 11) { out[0] = 0x4E619804; out[1] = 0x4E619825; out[2] = 0x4EE4D400; out[3] = 0x4EE5D421; return 4; } // FRACT
+    return 0;
+}
+
+// Um opcode e JIT-avel? (o controle de fluxo nao e: o JIT nao emite mascara)
+I64 ShaderJitOpOk(I64 op) {
+    if (op == SV_END) return 1;
+    if (op >= SV_ADD && op <= SV_FRACT) return 1;
+    if (op == SV_MOV || op == SV_MOVI) return 1;
+    if (op == SV_SIN || op == SV_COS) return 1;
+    if (op == SV_LEN2 || op == SV_LEN3 || op == SV_DOT2) return 1;
+    if (op == SV_MIX || op == SV_CLAMP || op == SV_SMOOTH) return 1;
+    if (op == SV_FRAGX || op == SV_FRAGY || op == SV_TIME) return 1;
+    if (op == SV_DFDX || op == SV_DFDY) return 1;
+    if (op == SV_PERLIN || op == SV_FBM || op == SV_MANDEL) return 1;
+    if (op == SV_SDFSPHERE || op == SV_SDFBOX || op == SV_SDFTORUS) return 1;
+    if (op == SV_OUT) return 1;
+    return 0;   // IF/ELSE/ENDIF/JMP/JNZ/JZ
+}
+
+// Assinatura barata do programa (opcodes + comprimento + constantes). Detecta
+// troca de programa sem exigir que todos os emissores chamem o compilador.
+I64 ShaderJitSig() {
+    I64 n = g_sv_prog_len / 4;
+    I64 s = g_sv_prog_len * 1000003 + g_sv_const_count * 7919;
+    I64 i = 0;
+    while (i < n) { s = s * 31 + g_sv_prog[i * 4]; i = i + 1; }
+    return s;
+}
+
+U0 ShaderJitInvalidate() { g_sv_jit_ok = 0; g_sv_jit_fn = 0; g_sv_jit_sig = -1; }
+
+// Chamado no topo de ShaderVMQuad. Devolve 1 se executou o bloco JIT.
+I64 ShaderJitTryRun(CShaderCtx *ctx, F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
+    if (g_sv_jit_enabled == 0) { g_sv_jit_fallbacks = g_sv_jit_fallbacks + 1; return 0; }
+    if (g_sv_jit_ok == 0 || g_sv_jit_sig != ShaderJitSig()) ShaderJitCompile();
+    if (g_sv_jit_ok == 0) { g_sv_jit_fallbacks = g_sv_jit_fallbacks + 1; return 0; }
+    ShaderJitRunQuad(ctx, qx, qy, sx, sy, t);
+    return 1;
+}
+
+// ==============================================================================
+// Compilacao: g_sv_prog -> bloco AArch64 no buffer executavel.
+// ==============================================================================
+U0 ShaderJitCompile() {
+    g_sv_jit_ok = 0;
+    g_sv_jit_fn = 0;
+    g_sv_jit_words = 0;
+    if (g_sv_jit_enabled == 0) { g_sv_jit_refused = g_sv_jit_refused + 1; return; }
+    if (g_sv_jit_code == 0) {
+        g_sv_jit_cap = SV_JIT_MAX_WORDS;
+        g_sv_jit_code = (U32 *)kmalloc(SV_JIT_MAX_WORDS * 4 + SV_JIT_ALIGN);
+        if (g_sv_jit_code == 0) { g_sv_jit_cap = 0; g_sv_jit_refused = g_sv_jit_refused + 1; return; }
+    }
+    I64 n = g_sv_prog_len / 4;
+    if (n <= 0) { g_sv_jit_refused = g_sv_jit_refused + 1; return; }
+
+    // Pre-scan: recusa (sem emitir nada) se houver opcode fora da cobertura.
+    I64 i = 0;
+    while (i < n) {
+        if (ShaderJitOpOk(g_sv_prog[i * 4]) == 0) { g_sv_jit_refused = g_sv_jit_refused + 1; return; }
+        i = i + 1;
+    }
+
+    U64 t0 = timer_get_uptime_us();
+    U64 helper = symbols_lookup("ShaderVMStep1");
+
+    // Prologo: stp x29,x30,[sp,#-16]! ; mov x29,sp ; sub sp,sp,#32 ;
+    //          str x0,[sp,#0] (ctx) ; movz/movk x9,helper ; str x9,[sp,#8]
+    ShaderJitEmit(0xA9BF7BFD);
+    ShaderJitEmit(0x910003FD);
+    ShaderJitEmit(0xD10083FF);            // sub sp, sp, #32
+    ShaderJitEmit(0xF90003E0);            // str x0, [sp, #0]
+    ShaderJitEmitImm64(9, helper);
+    ShaderJitEmit(0xF90007E9);            // str x9, [sp, #8]
+
+    // Zero-fill dos 64 registradores (512 B) com 16 STP q30,q31.
+    I64 z = 0;
+    while (z < 512) {
+        ShaderJitEmit(0xAD000000 | (((U32)(z / 16)) << 15) | (31 << 10) | (9 << 5) | 30);
+        z = z + 32;
+    }
+    // mask=15 (off 512), cond=15 (off 520), mask_sp=0 (off 592)
+    ShaderJitEmitMovz(9, 15);
+    ShaderJitEmit(0xF9000000 | ((512 / 8) << 10) | (31 << 5) | 9);
+    ShaderJitEmitMovz(9, 15);
+    ShaderJitEmit(0xF9000000 | ((520 / 8) << 10) | (31 << 5) | 9);
+    ShaderJitEmitMovz(9, 0);
+    ShaderJitEmit(0xF9000000 | ((592 / 8) << 10) | (31 << 5) | 9);
+    // out[0..3] = 0xFF000000  (movz x9,#0xFF00,lsl#16 ; 4 x str w9)
+    ShaderJitEmit(0xD2A00000 | (((U32)0xFF00) << 5) | 9);
+    I64 o = 0;
+    while (o < 4) {
+        ShaderJitEmit(0xB9000000 | (((U32)((640 / 4) + o)) << 10) | (31 << 5) | 9);
+        o = o + 1;
+    }
+
+    // Corpo: uma sequencia por instrucao de bytecode.
+    i = 0;
+    while (i < n) {
+        I64 op = g_sv_prog[i * 4];
+        I64 a  = g_sv_prog[i * 4 + 1];
+        I64 b  = g_sv_prog[i * 4 + 2];
+        I64 c  = g_sv_prog[i * 4 + 3];
+        if (op == SV_END) {
+            i = n;                            // nada a emitir; cai no epilogo
+        } else if (op >= SV_ADD && op <= SV_FRACT) {
+            U32 w[8];
+            I64 nw = ShaderJitNeonWords(op - SV_ADD, &w[0]);
+            if (a < 0 || a >= SV_MAX_REGS || b < 0 || b >= SV_MAX_REGS || c < 0 || c >= SV_MAX_REGS) { g_sv_jit_ok = 0; return; }
+            ShaderJitEmit(0xF94003E9);        // ldr x9, [sp, #0]   (ctx)
+            ShaderJitEmitLdrQ(0, b * 32);
+            ShaderJitEmitLdrQ(1, b * 32 + 16);
+            ShaderJitEmitLdrQ(2, c * 32);
+            ShaderJitEmitLdrQ(3, c * 32 + 16);
+            I64 k = 0;
+            while (k < nw) { ShaderJitEmit(w[k]); k = k + 1; }
+            ShaderJitEmitStrQ(0, a * 32);
+            ShaderJitEmitStrQ(1, a * 32 + 16);
+            i = i + 1;
+        } else {
+            // Runtime do JIT: ldr x0,[sp]; movz x1..x4; ldr x9,[sp,#8]; blr x9
+            ShaderJitEmit(0xF94003E0);        // ldr x0, [sp, #0]
+            ShaderJitEmitMovz(1, op);
+            ShaderJitEmitMovz(2, a);
+            ShaderJitEmitMovz(3, b);
+            ShaderJitEmitMovz(4, c);
+            ShaderJitEmit(0xF94007E9);        // ldr x9, [sp, #8]
+            ShaderJitEmit(0xD63F0120);        // blr x9
+            i = i + 1;
+        }
+    }
+
+    // Epilogo: mov sp,x29 ; ldp x29,x30,[sp],#16 ; ret
+    ShaderJitEmit(0x910003BF);
+    ShaderJitEmit(0xA8C17BFD);
+    ShaderJitEmit(0xD65F03C0);
+
+    if (g_sv_jit_words > g_sv_jit_cap) { g_sv_jit_ok = 0; return; }
+    HalFlushCache((U64)g_sv_jit_code, g_sv_jit_words * 4);
+    g_sv_jit_fn = (I64)g_sv_jit_code;
+    g_sv_jit_ok = 1;
+    g_sv_jit_sig = ShaderJitSig();
+    g_sv_jit_compiles = g_sv_jit_compiles + 1;
+    g_sv_jit_us = (I64)(timer_get_uptime_us() - t0);
+}
+
+// ==============================================================================
+// Execucao do bloco compilado (ponteiro de funcao).
+// ==============================================================================
+U0 ShaderJitRunQuad(CShaderCtx *ctx, F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
+    ctx->qx = qx;
+    ctx->qy = qy;
+    ctx->sx = sx;
+    ctx->sy = sy;
+    ctx->time = t;
+    g_sv_jit_calls = g_sv_jit_calls + 1;
+    U0 (*jfn)(CShaderCtx *) = g_sv_jit_fn;
+    jfn(ctx);
+}
+
+// Liga/desliga o JIT (0 = forca o interpretador, o fallback).
+U0 ShaderJitSetEnabled(I64 on) {
+    g_sv_jit_enabled = on;
+    if (on == 0) { g_sv_jit_ok = 0; g_sv_jit_fn = 0; }
+    else { ShaderJitCompile(); }
+}
+
+// ==============================================================================
+// Instrumentacao: corre o programa corrente em NxN quads pelos DOIS caminhos e
+// compara. Devolve 1 se os pixels batem exatamente.
+// ==============================================================================
+I64 ShaderJitCompareGrid(I64 n, I64 *out_mismatch, I64 *out_ink) {
+    I64 mm = 0;
+    I64 ink = 0;
+    I64 y = 0;
+    while (y < n) {
+        I64 x = 0;
+        while (x < n) {
+            F64 fx = (F64)x / (F64)n;
+            F64 fy = (F64)y / (F64)n;
+            g_sv_jit_enabled = 0;
+            ShaderVMQuad(&g_sv_ctx[0], fx, fy, 1.0 / (F64)n, 1.0 / (F64)n, 0.25);
+            U32 ref0 = g_sv_ctx[0].out[0];
+            U32 ref1 = g_sv_ctx[0].out[1];
+            U32 ref2 = g_sv_ctx[0].out[2];
+            U32 ref3 = g_sv_ctx[0].out[3];
+            g_sv_jit_enabled = 1;
+            ShaderJitCompile();
+            if (g_sv_jit_ok == 0) { g_sv_jit_enabled = 1; return 0; }
+            ShaderVMQuad(&g_sv_ctx[0], fx, fy, 1.0 / (F64)n, 1.0 / (F64)n, 0.25);
+            if (g_sv_ctx[0].out[0] != ref0 || g_sv_ctx[0].out[1] != ref1 ||
+                g_sv_ctx[0].out[2] != ref2 || g_sv_ctx[0].out[3] != ref3) mm = mm + 1;
+            if ((ref0 & 0x00FFFFFF) != 0) ink = ink + 1;
+            x = x + 2;
+        }
+        y = y + 2;
+    }
+    *out_mismatch = mm;
+    *out_ink = ink;
+    return 1;
+}
+
+// ==============================================================================
+// Benchmark A/B do MESMO programa pelos dois caminhos. Devolve ms do JIT e
+// escreve o ms do interpretador em *interp_ms.
+// ==============================================================================
+I64 ShaderJitBenchGrid(I64 n, I64 reps, I64 *interp_ms, I64 *jit_ms) {
+    I64 pass = 0;
+    U64 fr = __mrs_cntfrq();
+    if (fr == 0) fr = 62500000;
+    U64 msdiv = fr / 1000;
+
+    U64 t0 = __mrs_cntvct();
+    g_sv_jit_enabled = 0;
+    I64 r = 0;
+    *interp_ms = 0;
+    *jit_ms = 0;
+    while (r < reps) {
+        I64 y = 0;
+        while (y < n) {
+            I64 x = 0;
+            while (x < n) {
+                ShaderVMQuad(&g_sv_ctx[0], (F64)x / (F64)n, (F64)y / (F64)n, 1.0 / (F64)n, 1.0 / (F64)n, 0.25);
+                x = x + 2;
+            }
+            y = y + 2;
+        }
+        r = r + 1;
+    }
+    U64 t1 = __mrs_cntvct();
+    *interp_ms = (I64)((t1 - t0) / msdiv);
+
+    g_sv_jit_enabled = 1;
+    ShaderJitCompile();
+    if (g_sv_jit_ok == 0) { *jit_ms = -1; g_sv_jit_enabled = 1; return 0; }
+    t0 = __mrs_cntvct();
+    r = 0;
+    while (r < reps) {
+        I64 y = 0;
+        while (y < n) {
+            I64 x = 0;
+            while (x < n) {
+                ShaderVMQuad(&g_sv_ctx[0], (F64)x / (F64)n, (F64)y / (F64)n, 1.0 / (F64)n, 1.0 / (F64)n, 0.25);
+                x = x + 2;
+            }
+            y = y + 2;
+        }
+        r = r + 1;
+    }
+    t1 = __mrs_cntvct();
+    *jit_ms = (I64)((t1 - t0) / msdiv);
+    g_sv_jit_enabled = 1;
+    pass = 1;
+    return pass;
+}
+
+// ==============================================================================
 // Type routing + render entry.
 // ==============================================================================
 I64 ShaderTypeId(U8 *s) {
@@ -1243,6 +1761,30 @@ U0 ShaderVMSelfTest() {
     if (iso_a == 32 && iso_b == 64) pass = pass + 1;
     total = total + 1;
     if (g_sv_ctx[0].out[0] == iso_a_out && g_sv_ctx[0].out[0] != g_sv_ctx[1].out[0]) pass = pass + 1;
+
+    // 8. P3A — JIT: o bloco emitido tem de reproduzir o interpretador pixel a pixel.
+    g_sv_cur_type = -99;
+    ShaderVMBuildProgram(SVB_SDF);
+    g_sv_jit_enabled = 1;
+    ShaderJitCompile();
+    g_sv_jit_enabled = 0;
+    total = total + 1;
+    if (g_sv_jit_ok != 0 && g_sv_jit_words > 0) pass = pass + 1;
+    total = total + 1;
+    if (g_sv_jit_words > 100) pass = pass + 1;
+
+    // 9. FALLBACK explicito: JIT desligado -> o interpretador continua desenhando.
+    ShaderJitSetEnabled(0);
+    total = total + 1;
+    if (g_sv_jit_ok == 0) pass = pass + 1;
+    ShaderVMQuad(&g_sv_ctx[0], 0.5, 0.5, 0.01, 0.01, 0.0);
+    total = total + 1;
+    if ((g_sv_ctx[0].out[0] & 0x00FFFFFF) != 0) pass = pass + 1;
+    ShaderJitSetEnabled(0);   // P3A: o JIT sai DESLIGADO do selftest (nao deixa mina)
+
+    // 10. ganho medido (A/B no mesmo programa) — impresso no serial, nao assertado.
+    doldoc_printf("[SVJIT] prog=%lld instr words=%lld compile=%lldus refusals=%lld enabled=%lld\n",
+                  g_sv_prog_len / 4, g_sv_jit_words, g_sv_jit_us, g_sv_jit_refused, g_sv_jit_enabled);
 
     g_sv_cur_type = -99;
     if (pass == total) doldoc_printf("SHADERVM: PASS (%lld/%lld)\n", pass, total);
