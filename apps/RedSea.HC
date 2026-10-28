@@ -407,7 +407,13 @@ I64 RedSeaWriteFile(U8 *fname, U8 *data, I64 sz) {
   }
 
   // Write directory entry
-  RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
+  // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+  // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+  if (RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                  (I64)(g_rs.current_dir_lba + free_s));
+    return -1;
+  }
   CRedSeaEntry *entries = RsGetEntry(s_buf, free_i);
   entries->attr = RS_ATTR_FILE;
   RsStrCpy(entries->name, fname);
@@ -430,7 +436,13 @@ I64 RedSeaReadFile(U8 *fname, U8 *buf, I64 max_bytes, I64 *out_size) {
 
   I64 rsr_s = 0;
   while (rsr_s < g_rs.current_dir_sectors) {
-    RsReadSectors(g_rs.current_dir_lba + rsr_s, 1, s_buf);
+    // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+    // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+    if (RsReadSectors(g_rs.current_dir_lba + rsr_s, 1, s_buf) < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                    (I64)(g_rs.current_dir_lba + rsr_s));
+      return -1;
+    }
     I64 rsr_i = 0;
     while (rsr_i < REDSEA_ENTRIES_PER_SECTOR) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rsr_i);
@@ -470,7 +482,13 @@ I64 RedSeaDeleteFile(U8 *fname) {
 
   I64 rsd_s = 0;
   while (rsd_s < g_rs.current_dir_sectors) {
-    RsReadSectors(g_rs.current_dir_lba + rsd_s, 1, s_buf);
+    // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+    // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+    if (RsReadSectors(g_rs.current_dir_lba + rsd_s, 1, s_buf) < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                    (I64)(g_rs.current_dir_lba + rsd_s));
+      return -1;
+    }
     I64 rsd_i = 0;
     while (rsd_i < REDSEA_ENTRIES_PER_SECTOR) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rsd_i);
@@ -505,7 +523,13 @@ I64 RedSeaMkDir(U8 *dname) {
 
   I64 rsmk_s = 0;
   while (rsmk_s < g_rs.current_dir_sectors) {
-    RsReadSectors(g_rs.current_dir_lba + rsmk_s, 1, s_buf);
+    // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+    // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+    if (RsReadSectors(g_rs.current_dir_lba + rsmk_s, 1, s_buf) < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                    (I64)(g_rs.current_dir_lba + rsmk_s));
+      return -1;
+    }
     I64 rsmk_i = 0;
     while (rsmk_i < REDSEA_ENTRIES_PER_SECTOR) {
       CRedSeaEntry *ent = RsGetEntry(s_buf, rsmk_i);
@@ -551,7 +575,13 @@ I64 RedSeaMkDir(U8 *dname) {
   }
 
   // Write entry into parent
-  RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf);
+  // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+  // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+  if (RsReadSectors(g_rs.current_dir_lba + free_s, 1, s_buf) < 0) {
+    doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                  (I64)(g_rs.current_dir_lba + free_s));
+    return -1;
+  }
   CRedSeaEntry *entries = RsGetEntry(s_buf, free_i);
   entries->attr = RS_ATTR_DIR;
   RsStrCpy(entries->name, dname);
@@ -583,7 +613,13 @@ I64 RedSeaChangeDir(U8 *dname) {
       return 0;
     }
     U8 s_buf[512];
-    RsReadSectors(g_rs.current_dir_lba, 1, s_buf);
+    // F2-04..07: leitura sem checagem deixava o buffer zerado passar
+    // como conteudo valido de arquivo. A funcao segue e retorna sucesso.
+    if (RsReadSectors(g_rs.current_dir_lba, 1, s_buf) < 0) {
+      doldoc_printf("$FG,RED$[REDSEA] leitura falhou em LBA %lld$FG$\n",
+                    (I64)(g_rs.current_dir_lba));
+      return -1;
+    }
     CRedSeaEntry *ent = RsGetEntry(s_buf, 1);
     if ((ent->attr & RS_ATTR_DIR) && RsStrCmp(ent->name, "..") == 0) {
       g_rs.current_dir_lba = ent->cluster;

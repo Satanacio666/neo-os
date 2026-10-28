@@ -229,6 +229,23 @@ I64   g_hc_global_strides[HC_MAX_GLOBALS * 4]; // per-dim byte strides for array
 I64   g_hc_global_alloc[HC_MAX_GLOBALS];
 I64   g_hc_global_count;
 
+// BLOCO 2: a guarda de HC_MAX_GLOBALS pulava EM SILENCIO — o global nao era
+// registrado, a falha aparecia longe daqui e o sintoma era um Data Abort
+// (FAR=0x0) que parecia bug de emissao de codigo. Este helper reporta o estouro
+// UMA vez, no momento em que acontece. (O baseline estava em 502/512 = 98%.)
+I64   g_hc_globals_overflowed = 0;
+U0 HcGlobalOverflowReport() {
+    if (g_hc_globals_overflowed) return;
+    g_hc_globals_overflowed = 1;
+    doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_GLOBALS overflow (%lld/%lld) — globais a partir daqui NAO serao registrados$FG$\n",
+                  g_hc_global_count, (I64)HC_MAX_GLOBALS);
+}
+I64 HcGlobalSlotOk() {
+    if (g_hc_global_count < HC_MAX_GLOBALS) return 1;
+    HcGlobalOverflowReport();
+    return 0;
+}
+
 // Preprocessor #define Table in Compiler.HC
 #define HC_MAX_DEFINES 1024
 U8    g_hc_def_names[HC_MAX_DEFINES * 64];
@@ -1680,7 +1697,7 @@ U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_st_idx[i] = st_idx; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = st_idx;
         g_hc_global_count++;
@@ -1691,7 +1708,7 @@ U0 HcRegisterGlobalArray(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_arr[i] = 1; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_arr[g_hc_global_count] = 1;
@@ -1713,7 +1730,7 @@ U0 HcRegisterGlobalPtr(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_ptr[i] = 1; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_ptr[g_hc_global_count] = 1;
@@ -1732,7 +1749,7 @@ U0 HcRegisterGlobalFloat(U8 *name) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_float[i] = 1; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_float[g_hc_global_count] = 1;
@@ -1755,7 +1772,7 @@ U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_elem_scale[i] = scale; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_elem_scale[g_hc_global_count] = scale;
@@ -1784,7 +1801,7 @@ U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
             return;
         }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_strides[g_hc_global_count * 4 + 0] = s0;
@@ -1838,7 +1855,7 @@ U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
     for (I64 i = 0; i < g_hc_global_count; i++) {
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_alloc[i] = bytes; return; }
     }
-    if (g_hc_global_count < HC_MAX_GLOBALS) {
+    if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_alloc[g_hc_global_count] = bytes;
