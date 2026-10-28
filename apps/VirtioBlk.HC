@@ -274,18 +274,35 @@ I64 VirtioBlkReadSectors(U64 lba, U32 count, U8 *buf) {
   hal_flush_cache(g_vblk.ring_base, 16384 + 64);
   hal_flush_cache(buf, count * SECTOR_SIZE);
 
+  // P8-fix: barreira COMPLETA antes de avisar o device. O __dmb_ish() acima
+  // publica o avail idx; o __dsb_sy() garante que descritores, avail idx e
+  // dados chegaram a RAM antes de o QEMU olhar.
+  __dsb_sy();
   VBlkMmioWrite32(b, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-  I64 vb_timeout = 5000000;
-  while (vused->idx == last_used && *st_ptr == 0xFF && vb_timeout > 0) {
+  // P8-fix: espera por TEMPO REAL, nao por contagem de iteracoes. Um contador
+  // fixo nao mede tempo: sob carga do host ele estoura enquanto o QEMU ainda
+  // vai responder, e a resposta atrasada desalinha o anel (a proxima requisicao
+  // ve used->idx adiantado e acha que terminou).
+  U64 vb_t0 = timer_get_uptime_us();
+  I64 vb_timedout = 0;
+  while (vused->idx == last_used && *st_ptr == 0xFF) {
     hal_flush_cache(g_vblk.vq_used, 64);
     hal_flush_cache(st_ptr, 16);
-    vb_timeout--;
+    if (timer_get_uptime_us() - vb_t0 > 500000) { vb_timedout = 1; break; }
+  }
+  if (vb_timedout) {
+    // DRENA a resposta atrasada antes de desistir, para o anel ficar
+    // consistente e a proxima requisicao nao contar a conclusao alheia.
+    U64 vb_t1 = timer_get_uptime_us();
+    while (vused->idx == last_used && timer_get_uptime_us() - vb_t1 < 500000) {
+      hal_flush_cache(g_vblk.vq_used, 64);
+    }
+    if (vused->idx == last_used) return -1;
   }
 
   hal_flush_cache(buf, count * SECTOR_SIZE);
 
-  if (vb_timeout == 0) return -1;
   if (*st_ptr != 0) return -1;
   return 0;
 }
@@ -332,16 +349,33 @@ I64 VirtioBlkWriteSectors(U64 lba, U32 count, U8 *buf) {
   hal_flush_cache(g_vblk.ring_base, 16384 + 64);
   hal_flush_cache(buf, count * SECTOR_SIZE);
 
+  // P8-fix: barreira COMPLETA antes de avisar o device. O __dmb_ish() acima
+  // publica o avail idx; o __dsb_sy() garante que descritores, avail idx e
+  // dados chegaram a RAM antes de o QEMU olhar.
+  __dsb_sy();
   VBlkMmioWrite32(b, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-  I64 vb_timeout = 5000000;
-  while (vused->idx == last_used && *st_ptr == 0xFF && vb_timeout > 0) {
+  // P8-fix: espera por TEMPO REAL, nao por contagem de iteracoes. Um contador
+  // fixo nao mede tempo: sob carga do host ele estoura enquanto o QEMU ainda
+  // vai responder, e a resposta atrasada desalinha o anel (a proxima requisicao
+  // ve used->idx adiantado e acha que terminou).
+  U64 vb_t0 = timer_get_uptime_us();
+  I64 vb_timedout = 0;
+  while (vused->idx == last_used && *st_ptr == 0xFF) {
     hal_flush_cache(g_vblk.vq_used, 64);
     hal_flush_cache(st_ptr, 16);
-    vb_timeout--;
+    if (timer_get_uptime_us() - vb_t0 > 500000) { vb_timedout = 1; break; }
+  }
+  if (vb_timedout) {
+    // DRENA a resposta atrasada antes de desistir, para o anel ficar
+    // consistente e a proxima requisicao nao contar a conclusao alheia.
+    U64 vb_t1 = timer_get_uptime_us();
+    while (vused->idx == last_used && timer_get_uptime_us() - vb_t1 < 500000) {
+      hal_flush_cache(g_vblk.vq_used, 64);
+    }
+    if (vused->idx == last_used) return -1;
   }
 
-  if (vb_timeout == 0) return -1;
   if (*st_ptr != 0) return -1;
   return 0;
 }
