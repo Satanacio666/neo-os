@@ -1386,24 +1386,29 @@ U0 ShaderJitCompile() {
     ShaderJitEmitImm64(9, helper);
     ShaderJitEmit(0xF90007E9);            // str x9, [sp, #8]
 
-    // Zero-fill dos 64 registradores (512 B) com 16 STP q30,q31.
+    // CORRIGIDO: x9 neste ponto contem o HELPER (carregado por EmitImm64 acima),
+    // nao o ctx. Sem recarregar, o zero-fill escrevia 512 B por cima do codigo de
+    // ShaderVMStep1 (heap W+X) e o `blr x9` seguinte caia em codigo destruido ->
+    // EC 0x00. Medido: helper=0x405C0880, ELR=helper+4, LR=code+0xAC.
+    ShaderJitEmit(0xF94003E9);            // ldr x9, [sp, #0]  -> x9 = ctx
+    // Zero-fill dos 64 registradores (512 B): 64 x STR xzr,[x9,#z].
     I64 z = 0;
     while (z < 512) {
-        ShaderJitEmit(0xAD000000 | (((U32)(z / 16)) << 15) | (31 << 10) | (9 << 5) | 30);
-        z = z + 32;
+        ShaderJitEmit(0xF9000000 | (((U32)(z / 8)) << 10) | (9 << 5) | 31);
+        z = z + 8;
     }
     // mask=15 (off 512), cond=15 (off 520), mask_sp=0 (off 592)
     ShaderJitEmitMovz(9, 15);
-    ShaderJitEmit(0xF9000000 | ((512 / 8) << 10) | (31 << 5) | 9);
+    ShaderJitEmit(0xF9000000 | ((512 / 8) << 10) | (9 << 5) | 9);
     ShaderJitEmitMovz(9, 15);
-    ShaderJitEmit(0xF9000000 | ((520 / 8) << 10) | (31 << 5) | 9);
+    ShaderJitEmit(0xF9000000 | ((520 / 8) << 10) | (9 << 5) | 9);
     ShaderJitEmitMovz(9, 0);
-    ShaderJitEmit(0xF9000000 | ((592 / 8) << 10) | (31 << 5) | 9);
+    ShaderJitEmit(0xF9000000 | ((592 / 8) << 10) | (9 << 5) | 9);
     // out[0..3] = 0xFF000000  (movz x9,#0xFF00,lsl#16 ; 4 x str w9)
     ShaderJitEmit(0xD2A00000 | (((U32)0xFF00) << 5) | 9);
     I64 o = 0;
     while (o < 4) {
-        ShaderJitEmit(0xB9000000 | (((U32)((640 / 4) + o)) << 10) | (31 << 5) | 9);
+        ShaderJitEmit(0xB9000000 | (((U32)((640 / 4) + o)) << 10) | (9 << 5) | 9);
         o = o + 1;
     }
 
