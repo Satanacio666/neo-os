@@ -452,6 +452,7 @@ U0 ShellInspectSource(U8 *target) {
     }
     U8 *src_buf = kmalloc(SHELL_MODULE_MAX);
     I64 fsize = 0;
+    if (!src_buf) { doldoc_print("$FG,RED$[SRC] out of memory (1 MB) - aborting$FG$\n"); return; }
     if (redsea_read_file(fname, src_buf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
         src_buf[fsize] = 0;
         doldoc_printf("\n$CARD,title=\"HolyC Source Inspector: %s (%lld bytes)\",w=108,h=2$\n", fname, fsize);
@@ -824,6 +825,7 @@ U0 ShellCmd_kpanic(U8 *a, U8 *r) {
 U0 ShellCmd_hcrun(U8 *a, U8 *r) {
     U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
     I64 fsize = 0;
+    if (!fbuf) { doldoc_print("$FG,RED$[SHELL] out of memory (1 MB module buffer) - aborting$FG$\n"); return; }
     if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
         fbuf[fsize] = 0;
         I64 hcrun_save_boot = g_kernel_booting;
@@ -840,6 +842,7 @@ U0 ShellCmd_hcrun(U8 *a, U8 *r) {
 U0 ShellCmd_run(U8 *a, U8 *r) {
     U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
     I64 fsize = 0;
+    if (!fbuf) { doldoc_print("$FG,RED$[SHELL] out of memory (1 MB module buffer) - aborting$FG$\n"); return; }
     if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
         fbuf[fsize] = 0;
         doldoc_printf("$FG,GREEN$[RUN]$FG$ Compiling and executing %s (%lld bytes)...\n", a, fsize);
@@ -854,6 +857,7 @@ U0 ShellCmd_run(U8 *a, U8 *r) {
 U0 ShellCmd_cat(U8 *a, U8 *r) {
     U8 *fbuf = kmalloc(SHELL_MODULE_MAX);
     I64 fsize = 0;
+    if (!fbuf) { doldoc_print("$FG,RED$[SHELL] out of memory (1 MB module buffer) - aborting$FG$\n"); return; }
     if (redsea_read_file(a, fbuf, SHELL_MODULE_MAX - 1, &fsize) == 0) {
         fbuf[fsize] = 0;
         doldoc_printf("\n$CARD,title=\"RedSea File Content: %s (%lld bytes)\",w=108,h=2$\n", a, fsize);
@@ -1246,6 +1250,9 @@ U0 DolDocShellEventLoop() {
         virtio_input_poll();
         keyboard_poll();
         mouse_poll();
+        // BLOCO 2: unico consumidor do duto de entrada. O DolDoc tem o primeiro
+        // olhar (atalhos globais); o que sobrar desce para o Shell.
+        DolDocDispatchInput();
         I64 pf_t1 = (I64)__mrs_cntvct();
         ProfilerMarkInput(ProfilerUsBetween(pf_t0, pf_t1));
 

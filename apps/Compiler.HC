@@ -211,7 +211,10 @@ I64   g_hc_fnf_flags[HC_FNF_MAX];
 I64   g_hc_fnf_count;
 
 // Global variable struct-type registry (scoped member lookup for globals).
-#define HC_MAX_GLOBALS 512
+// BLOCO 2: 512 estava em 98% de uso no baseline 7bda729 (o proprio compilador
+// imprime globals=502 no caminho de erro de re-declaracao). O duto de entrada
+// precisa de 6 globais e a tabela passava a estourar -> corrupcao silenciosa.
+#define HC_MAX_GLOBALS 768
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
 I64   g_hc_global_is_arr[HC_MAX_GLOBALS];

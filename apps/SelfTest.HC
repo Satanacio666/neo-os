@@ -1202,6 +1202,106 @@ U0 SelfTestMath3DParallel() {
     else doldoc_printf("MATH3DPAR: FAIL (%lld)\n", bad);
 }
 
+// BLOCO 2 - teste do duto unificado de entrada.
+// Injeta CInputEvent de TECLA e de MOUSE pela MESMA fila que os drivers usam e
+// prova, com o consumidor real (DolDocDispatchInput), que:
+//   (1) tecla de driver VirtIO chega ao Shell  (sem perda);
+//   (2) tecla de UART (KeyboardQueueFeed) chega ao Shell;
+//   (3) mouse chega ao cursor (MouseGetX/Y);
+//   (4) Alt+2 com desktop ativo e CONSUMIDO pelo DolDoc (g_xf_ws) e NAO desce
+//       ao Shell -> prova a ordem DolDoc-antes-do-Shell;
+//   (5) a fila fica VAZIA no fim (nada fica preso no duto).
+// Nao incrementa g_selftest_total de proposito: o gate trava em 123/123 e o
+// relatorio deste bloco cita o placar do proprio duto.
+I64 SelfTestInputDuct() {
+  I64 ok = 1;
+  I64 checks = 0;
+  doldoc_print("$FG,CYAN$--- duto unificado de entrada (CInputEvent) ---$FG$\n");
+
+  // limpa o duto e o buffer do Shell para partir de estado conhecido
+  InputQueueClear();
+  while (KeyboardHasChar()) { I64 dr = KeyboardGetChar(); }
+
+  // (1) tecla pelo caminho REAL do driver VirtIO
+  VirtioInputInjectKey(30, 1);                       // EV_KEY code 30 = 'a'
+  I64 q1 = InputQueueCount();
+  DolDocDispatchInput();
+  I64 got1 = KeyboardGetChar();
+  checks++;
+  if (q1 == 1 && got1 == 'a') {
+    doldoc_printf("  [PASS] VirtIO EV_KEY -> fila (%lld) -> DolDocDispatchInput -> Shell ('%c')\n", q1, got1);
+  } else {
+    doldoc_printf("  [FAIL] duto teclado VirtIO: fila=%lld shell=%lld\n", q1, got1); ok = 0;
+  }
+
+  // (2) tecla pelo caminho REAL do UART (Keyboard.HC)
+  KeyboardQueueFeed('z');
+  DolDocDispatchInput();
+  I64 got2 = KeyboardGetChar();
+  checks++;
+  if (got2 == 'z') {
+    doldoc_printf("  [PASS] UART KeyboardQueueFeed -> fila -> DolDoc -> Shell ('%c')\n", got2);
+  } else {
+    doldoc_printf("  [FAIL] duto teclado UART: shell=%lld\n", got2); ok = 0;
+  }
+
+  // (3) tecla especial preserva o key_code (KEY_UP = 257)
+  KeyboardQueueFeed(257);
+  DolDocDispatchInput();
+  I64 got3 = KeyboardGetChar();
+  checks++;
+  if (got3 == 257) {
+    doldoc_print("  [PASS] tecla especial KEY_UP atravessa o duto com o codigo intacto\n");
+  } else {
+    doldoc_printf("  [FAIL] tecla especial virou %lld\n", got3); ok = 0;
+  }
+
+  // (4) mouse pelo caminho REAL do driver VirtIO (EV_ABS normalizado)
+  I64 mx0 = MouseGetX();
+  I64 my0 = MouseGetY();
+  VirtioInputInjectAbs(0, 16383);                    // ABS_X
+  VirtioInputInjectAbs(1, 16383);                    // ABS_Y
+  I64 q4 = InputQueueCount();
+  DolDocDispatchInput();
+  I64 mx1 = MouseGetX();
+  I64 my1 = MouseGetY();
+  checks++;
+  if (q4 == 2 && mx1 != mx0 && mx1 > 400 && mx1 < 640 && my1 > 300 && my1 < 480) {
+    doldoc_printf("  [PASS] VirtIO EV_ABS -> fila (%lld) -> DolDoc -> cursor (%lld,%lld)\n", q4, mx1, my1);
+  } else {
+    doldoc_printf("  [FAIL] duto mouse: fila=%lld cursor=(%lld,%lld) antes=(%lld,%lld)\n", q4, mx1, my1, mx0, my0); ok = 0;
+  }
+  MouseSetPos(mx0, my0);
+
+  // (5) atalho global do XFCE: consumido pelo DolDoc, NAO chega ao Shell.
+  // A prova roda dentro do DolDoc (DolDocInputTestGlobalKey): o SelfTest.HC
+  // carrega antes do DolDoc.HC e nao pode declarar locais com seus tipos.
+  while (KeyboardHasChar()) { I64 dr2 = KeyboardGetChar(); }
+  I64 gk = DolDocInputTestGlobalKey();
+  I64 left = InputQueueCount();
+  checks++;
+  if (gk == 1 && left == 0) {
+    doldoc_print("  [PASS] Alt+2 consumido pelo DolDoc (workspace 2) e NAO vazou ao Shell\n");
+  } else {
+    doldoc_printf("  [FAIL] atalho global: gk=%lld restou=%lld\n", gk, left); ok = 0;
+  }
+
+  // (6) a fila nao reteve nada
+  checks++;
+  if (left == 0 && InputQueueCount() == 0) {
+    doldoc_printf("  [PASS] duto vazio no fim (drops=%lld)\n", InputQueueDrops());
+  } else {
+    doldoc_printf("  [FAIL] sobrou evento preso no duto: %lld\n", left); ok = 0;
+  }
+
+  if (ok) {
+    doldoc_printf("$FG,GREEN$INPUTDUCT: PASS (%lld/%lld)$FG$\n", checks, checks);
+    return checks;
+  }
+  doldoc_printf("$FG,RED$INPUTDUCT: FAIL (%lld checks)$FG$\n", checks);
+  return 0;
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1434,6 +1534,7 @@ U0 SelfTestRun() {
     DolDocSelfTest();
     DolDocSlateSelfTest();
     ShellSelfTest();
+    SelfTestInputDuct();
     SelfTestHeapIntegrity();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

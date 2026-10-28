@@ -1074,6 +1074,9 @@ U0 ShaderVMRenderNodeCore(CShaderCtx *ctx, I64 vx, I64 vy, I64 vw, I64 vh, U8 *s
 
     g_sv_fb = RenderGetTargetBuffer();
     g_sv_pit = gfx_get_canvas_pitch();
+    // F4-04: o viewport do shader escreve pixel a pixel no alvo sancionado mas
+    // NUNCA entrava no retangulo sujo -> podia ficar invisivel. Marca uma vez.
+    gfx_dirty_expand(vx, vy, vw, vh);
     g_sv_cw = gfx_get_canvas_width();
     g_sv_ch = gfx_get_canvas_height();
 
@@ -1083,9 +1086,6 @@ U0 ShaderVMRenderNodeCore(CShaderCtx *ctx, I64 vx, I64 vy, I64 vw, I64 vh, U8 *s
 
     I64 qy = 0;
     while (qy < vh - 1) {
-        if (g_sv_present_band != 0 && (qy & 15) == 0) {
-            GfxPresent(vx, vy + qy, vw, 16, 0);
-        }
         I64 qx = 0;
         while (qx < vw - 1) {
             F64 u0 = (F64)qx * invw - 0.5;
@@ -1269,7 +1269,7 @@ U0 ShaderVMDemo() {
     // Render the raymarched SDF scene, presenting each band as it completes so
     // the frame appears progressively (the field eval is 4-lane NEON but the
     // per-lane ray march is the bottleneck).
-    g_sv_present_band = 1;
+    g_sv_present_band = 0;   // F4-03: sem present no meio do frame
     ShaderVMRenderNode(vx, vy, vw, vh, "bulb");
     g_sv_present_band = 0;
     GfxPresent(0, 0, w, h, 1);

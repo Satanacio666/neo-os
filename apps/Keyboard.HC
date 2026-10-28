@@ -136,12 +136,12 @@ I64 KeyboardPoll() {
                 if (c2 == '[') {
                     if (UartWaitRx(3000)) {
                         I64 c3 = UartGetChar();
-                        if (c3 == 'A') { KeyboardQueueChar(KEY_UP); continue; }
-                        if (c3 == 'B') { KeyboardQueueChar(KEY_DOWN); continue; }
-                        if (c3 == 'C') { KeyboardQueueChar(KEY_RIGHT); continue; }
-                        if (c3 == 'D') { KeyboardQueueChar(KEY_LEFT); continue; }
-                        if (c3 == 'H') { KeyboardQueueChar(KEY_HOME); continue; }
-                        if (c3 == 'F') { KeyboardQueueChar(KEY_END); continue; }
+                        if (c3 == 'A') { KeyboardQueueFeed(KEY_UP); continue; }
+                        if (c3 == 'B') { KeyboardQueueFeed(KEY_DOWN); continue; }
+                        if (c3 == 'C') { KeyboardQueueFeed(KEY_RIGHT); continue; }
+                        if (c3 == 'D') { KeyboardQueueFeed(KEY_LEFT); continue; }
+                        if (c3 == 'H') { KeyboardQueueFeed(KEY_HOME); continue; }
+                        if (c3 == 'F') { KeyboardQueueFeed(KEY_END); continue; }
                         if (c3 >= '0' && c3 <= '9') {
                             if (UartWaitRx(3000)) {
                                 I64 c4 = UartGetChar();
@@ -151,27 +151,27 @@ I64 KeyboardPoll() {
                                     if (UartWaitRx(1000)) UartGetChar();
                                 }
                             }
-                            if (c3 == '5') { KeyboardQueueChar(KEY_PAGE_UP); continue; }
-                            if (c3 == '6') { KeyboardQueueChar(KEY_PAGE_DOWN); continue; }
-                            if (c3 == '1') { KeyboardQueueChar(KEY_HOME); continue; }
-                            if (c3 == '4') { KeyboardQueueChar(KEY_END); continue; }
+                            if (c3 == '5') { KeyboardQueueFeed(KEY_PAGE_UP); continue; }
+                            if (c3 == '6') { KeyboardQueueFeed(KEY_PAGE_DOWN); continue; }
+                            if (c3 == '1') { KeyboardQueueFeed(KEY_HOME); continue; }
+                            if (c3 == '4') { KeyboardQueueFeed(KEY_END); continue; }
                         }
                     }
                 } else if (c2 == 'O') {
                     if (UartWaitRx(3000)) {
                         I64 c3 = UartGetChar();
-                        if (c3 == 'H') { KeyboardQueueChar(KEY_HOME); continue; }
-                        if (c3 == 'F') { KeyboardQueueChar(KEY_END); continue; }
+                        if (c3 == 'H') { KeyboardQueueFeed(KEY_HOME); continue; }
+                        if (c3 == 'F') { KeyboardQueueFeed(KEY_END); continue; }
                     }
                 }
             }
-            KeyboardQueueChar(KEY_ESC);
+            KeyboardQueueFeed(KEY_ESC);
         } else if (c == '\r' || c == '\n') {
-            KeyboardQueueChar(KEY_ENTER);
+            KeyboardQueueFeed(KEY_ENTER);
         } else if (c == 8 || c == 127) {
-            KeyboardQueueChar(KEY_BACKSPACE);
+            KeyboardQueueFeed(KEY_BACKSPACE);
         } else {
-            KeyboardQueueChar(c);
+            KeyboardQueueFeed(c);
         }
     }
 
@@ -181,6 +181,15 @@ I64 KeyboardPoll() {
 // ------------------------------------------------------------------------------
 // Keyboard.HC Verification Suite
 // ------------------------------------------------------------------------------
+// BLOCO 2 (duto unico): TODA tecla que entra por UART/serial vira um CInputEvent
+// na fila unica. Ela so chega ao buffer do Shell depois que DolDocDispatchInput()
+// a libera (e depois que o DolDoc decidiu que nao e atalho global).
+U0 KeyboardQueueFeed(I64 k) {
+  I64 ch = k;
+  if (k >= 256) ch = 0;   // tecla especial (KEY_UP..): so key_code, sem caractere
+  InputQueuePushKey(k, ch, 0);
+}
+
 I64 KeyboardSelfTest() {
     doldoc_print("\n$FG,CYAN$==============================================================$FG$\n");
     doldoc_print("$FG,WHITE$  [KEYBOARD.HC] Pure HolyC Keyboard & UART Scorecard           $FG$\n");

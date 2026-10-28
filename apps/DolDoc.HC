@@ -3451,6 +3451,77 @@ U0 DolDocDrawWindowNode(I64 nid, I64 scroll) {
     DolDocDrawWindowContent(win);
 }
 
+// ============================================================================
+// BLOCO 2 - DUTO UNICO DE ENTRADA: consumidor DolDoc.
+// ----------------------------------------------------------------------------
+// VirtioInput.HC (teclado + mouse VirtIO) e Keyboard.HC (UART/serial) alimentam
+// UMA fila CInputEvent (apps/InputQueue.HC). DolDocDispatchInput() e o unico
+// consumidor: o DolDoc tem o PRIMEIRO olhar (atalhos globais do XFCE), e o que
+// ele nao consumir cai no Shell (buffer de teclado) ou no cursor (mouse).
+// Nenhum driver chama MouseSetPos/KeyboardQueueChar por conta propria.
+// ============================================================================
+I64 g_input_desktop_active = 0;   // 1 enquanto um loop de desktop estiver ativo
+
+// Atalhos globais do XFCE. So consome quando ha um desktop ativo: no terminal
+// puro Alt+1 continua digitando '1' (o duto e o mesmo, a politica e que muda).
+I64 DolDocHandleGlobalKey(CInputEvent *ev) {
+  if (ev == 0) return 0;
+  if (ev->type != INPUT_EV_KEY) return 0;
+  if ((ev->modifiers & INPUT_MOD_ALT) == 0) return 0;
+  if (!g_doc_desktop_running && !g_input_desktop_active) return 0;
+  I64 k = ev->key_code;
+  if (k >= '1' && k <= '4') {
+    I64 ws = k - '1';
+    if (ws < INPUT_ALT_WS_MAX) {
+      if (g_xf_ws != ws) { g_xf_ws = ws; g_doc_dirty = 1; g_shell_dirty = 1; }
+      return 1;                       // consumido pelo DolDoc: NAO desce ao Shell
+    }
+  }
+  return 0;
+}
+
+U0 DolDocDispatchInput() {
+  CInputEvent ev;
+  I64 guard = 0;
+  while (InputQueueCount() > 0 && guard < INPUT_Q_SIZE + 8) {
+    guard++;
+    if (InputQueuePop(&ev) != 0) break;
+    if (ev.type == INPUT_EV_KEY) {
+      if (DolDocHandleGlobalKey(&ev)) continue;
+      I64 k = ev.key_char;
+      if (k == 0) k = ev.key_code;
+      if (k != 0) KeyboardQueueChar(k);
+    } else if (ev.type == INPUT_EV_MOUSE) {
+      if (ev.buttons != 0 || MouseGetButtons() != 0) {
+        MouseSetButton(ev.buttons & 1, (ev.buttons >> 1) & 1);
+      }
+      MouseSetPos(ev.mouse_x, ev.mouse_y);
+    }
+  }
+}
+
+// BLOCO 2: prova do atalho global a partir de SelfTest.HC (que carrega antes do
+// DolDoc.HC e nao pode declarar locais com os tipos/globais daqui).
+// Devolve 1 se o Alt+2 foi consumido pelo DolDoc e NAO vazou para o Shell.
+I64 DolDocInputTestGlobalKey() {
+  I64 ws_save = g_xf_ws;
+  I64 act_save = g_input_desktop_active;
+  I64 run_save = g_doc_desktop_running;
+  g_xf_ws = 0;
+  g_input_desktop_active = 1;             // finge um desktop ativo
+  g_doc_desktop_running = 0;
+  InputQueueClear();
+  InputQueuePushKey('2', '2', INPUT_MOD_ALT);
+  DolDocDispatchInput();
+  I64 ws_now = g_xf_ws;
+  I64 leaked = KeyboardHasChar();
+  g_xf_ws = ws_save;
+  g_input_desktop_active = act_save;
+  g_doc_desktop_running = run_save;
+  if (ws_now == 1 && leaked == 0) return 1;
+  return 0;
+}
+
 U0 DolDocDesktopDraw() {
     I64 sw = g_comp.screen_w; I64 sh = g_comp.screen_h;
     gfx_draw_rect(0, 0, sw, sh - 40, g_theme.bg_crust);
@@ -3682,6 +3753,7 @@ U0 DolDocDesktopLoop() {
     I64 last_anim_ms = timer_get_uptime_ms();
     while (g_doc_desktop_running) {
         virtio_input_poll();
+        DolDocDispatchInput();
         if (g_doc_pump_cb) g_doc_pump_cb();
         mouse_poll();
         DolDocDesktopMouse();
@@ -4761,7 +4833,7 @@ U0 DolDocXFCEInit() {
     g_xf_ready = 1;
 }
 
-U0 DolDocXFCEClose() { g_xf_running = 0; }
+U0 DolDocXFCEClose() { g_xf_running = 0; g_input_desktop_active = 0; }
 
 U0 DolDocXFCELoop() {
     uart_puts("[XFCE] Entered desktop continuum (Top Panel / windows / Bottom Dock)\n");
@@ -4775,8 +4847,10 @@ U0 DolDocXFCELoop() {
     g_xf_running = 1;
     I64 last_sec = timer_get_uptime_sec();
     I64 last_ms = timer_get_uptime_ms();
+    g_input_desktop_active = 1;
     while (g_xf_running) {
         virtio_input_poll();
+        DolDocDispatchInput();
         I64 exit_req = 0;
         while (keyboard_has_char()) {
             I64 c = keyboard_getchar();

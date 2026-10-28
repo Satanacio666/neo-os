@@ -156,6 +156,8 @@ U0 MouseDrawOnBuffer(U32 *buf, U32 *save_under, I64 cur_x, I64 cur_y) {
 U0 MouseEraseCursor() {
   U32 *back = gfx_get_backbuffer();
   if (!s_cursor_is_drawn || !back) return;
+  // F4-02: apagar pixel sem marcar dano deixa o cursor na tela velha.
+  gfx_dirty_expand(s_cursor_saved_x, s_cursor_saved_y, 16, 16);
   MouseEraseOnBuffer(back, &s_cursor_save_under[0], s_cursor_saved_x, s_cursor_saved_y);
   s_cursor_is_drawn = 0;
 }
@@ -164,6 +166,7 @@ U0 MouseDrawCursor() {
   U32 *back = gfx_get_backbuffer();
   if (!g_mouse.visible || !back) return;
   if (s_cursor_is_drawn) MouseEraseCursor();
+  gfx_dirty_expand(g_mouse.x, g_mouse.y, 16, 16);   // F4-02
   MouseDrawOnBuffer(back, &s_cursor_save_under[0], g_mouse.x, g_mouse.y);
   s_cursor_saved_x = g_mouse.x;
   s_cursor_saved_y = g_mouse.y;

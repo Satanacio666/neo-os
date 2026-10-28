@@ -51,6 +51,8 @@
 #define KEY_TAB_CODE       15
 #define KEY_ENTER_CODE     28
 #define KEY_LSHIFT_CODE    42
+#define KEY_LEFTALT_CODE   56
+#define KEY_RIGHTALT_CODE  100
 #define KEY_RSHIFT_CODE    54
 #define KEY_HOME_CODE      102
 #define KEY_UP_CODE        103
@@ -114,6 +116,7 @@ I64 g_num_input_devs = 0;
 I64 g_vinput_screen_w = 1024;
 I64 g_vinput_screen_h = 768;
 I64 g_vinput_shift_state = 0;
+I64 g_vinput_alt_state = 0;
 I64 g_vinput_mouse_x = 512;
 I64 g_vinput_mouse_y = 384;
 I64 g_vinput_mouse_btn_l = 0;
@@ -205,6 +208,23 @@ U0 VirtioMmioWrite32(U64 base, U64 offset, U32 val) {
 
 I64 g_vinput_test_mode = 0;
 
+// BLOCO 2: modificadores do duto unificado.
+I64 VirtioInputMods() {
+  I64 m = 0;
+  if (g_vinput_shift_state) m = m | INPUT_MOD_SHIFT;
+  if (g_vinput_alt_state)   m = m | INPUT_MOD_ALT;
+  return m;
+}
+
+// BLOCO 2: o mouse entra no duto unico. Ninguem aqui fala com o cursor nem com
+// o buffer do Shell - quem decide isso e DolDocDispatchInput().
+U0 VirtioInputEmitMouse() {
+  I64 b = 0;
+  if (g_vinput_mouse_btn_l) b = b | 1;
+  if (g_vinput_mouse_btn_r) b = b | 2;
+  InputQueuePushMouse(g_vinput_mouse_x, g_vinput_mouse_y, 0, 0, b, VirtioInputMods());
+}
+
 U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
   if (!p_ev) return;
 
@@ -219,14 +239,17 @@ U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
     if (p_ev->code == BTN_LEFT) {
       if (p_ev->value != 0) g_vinput_mouse_btn_l = 1;
       else g_vinput_mouse_btn_l = 0;
-      if (!g_vinput_test_mode) MouseSetButton(g_vinput_mouse_btn_l, g_vinput_mouse_btn_r);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     } else if (p_ev->code == BTN_RIGHT) {
       if (p_ev->value != 0) g_vinput_mouse_btn_r = 1;
       else g_vinput_mouse_btn_r = 0;
-      if (!g_vinput_test_mode) MouseSetButton(g_vinput_mouse_btn_l, g_vinput_mouse_btn_r);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     } else if (p_ev->code == KEY_LSHIFT_CODE || p_ev->code == KEY_RSHIFT_CODE) {
       if (p_ev->value != 0) g_vinput_shift_state = 1;
       else g_vinput_shift_state = 0;
+    } else if (p_ev->code == KEY_LEFTALT_CODE || p_ev->code == KEY_RIGHTALT_CODE) {
+      if (p_ev->value != 0) g_vinput_alt_state = 1;
+      else g_vinput_alt_state = 0;
     } else if (p_ev->value == 1 || p_ev->value == 2) {
       // Key press or repeat
       if (p_ev->code < 128) {
@@ -234,7 +257,7 @@ U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
         if (g_vinput_shift_state) ch = g_vinput_keymap_upper[p_ev->code];
         else ch = g_vinput_keymap_lower[p_ev->code];
         if (ch != 0 && !g_vinput_test_mode) {
-          KeyboardQueueChar(ch);
+          InputQueuePushKey(p_ev->code, ch, VirtioInputMods());
         }
       }
     }
@@ -244,12 +267,12 @@ U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
       g_vinput_mouse_x = ((p_ev->value * g_vinput_screen_w) / 32767);
       if (g_vinput_mouse_x < 0) g_vinput_mouse_x = 0;
       if (g_vinput_mouse_x >= g_vinput_screen_w) g_vinput_mouse_x = g_vinput_screen_w - 1;
-      if (!g_vinput_test_mode) MouseSetPos(g_vinput_mouse_x, g_vinput_mouse_y);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     } else if (p_ev->code == ABS_Y) {
       g_vinput_mouse_y = ((p_ev->value * g_vinput_screen_h) / 32767);
       if (g_vinput_mouse_y < 0) g_vinput_mouse_y = 0;
       if (g_vinput_mouse_y >= g_vinput_screen_h) g_vinput_mouse_y = g_vinput_screen_h - 1;
-      if (!g_vinput_test_mode) MouseSetPos(g_vinput_mouse_x, g_vinput_mouse_y);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     }
   } else if (p_ev->type == EV_REL) {
     // Relative mouse movement: EV_REL value is signed 32-bit two's complement
@@ -262,12 +285,12 @@ U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
       g_vinput_mouse_x = g_vinput_mouse_x + rel_val;
       if (g_vinput_mouse_x < 0) g_vinput_mouse_x = 0;
       if (g_vinput_mouse_x >= g_vinput_screen_w) g_vinput_mouse_x = g_vinput_screen_w - 1;
-      if (!g_vinput_test_mode) MouseSetPos(g_vinput_mouse_x, g_vinput_mouse_y);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     } else if (p_ev->code == REL_Y) {
       g_vinput_mouse_y = g_vinput_mouse_y + rel_val;
       if (g_vinput_mouse_y < 0) g_vinput_mouse_y = 0;
       if (g_vinput_mouse_y >= g_vinput_screen_h) g_vinput_mouse_y = g_vinput_screen_h - 1;
-      if (!g_vinput_test_mode) MouseSetPos(g_vinput_mouse_x, g_vinput_mouse_y);
+      if (!g_vinput_test_mode) VirtioInputEmitMouse();
     }
   }
 }
@@ -395,6 +418,25 @@ I64 VirtioInputScanAndInit(I64 screen_w, I64 screen_h) {
 
   doldoc_printf("[VIRTIO-INPUT] Initialized %d VirtIO input device(s)\n", g_num_input_devs);
   return g_num_input_devs;
+}
+
+// BLOCO 2: injecao usada pelo teste do duto em SelfTest.HC. Existe porque
+// SelfTest.HC carrega ANTES deste arquivo e nao pode declarar CVirtioInputEvent.
+// Passa pelo caminho REAL do driver (VirtioInputProcessEvent).
+U0 VirtioInputInjectKey(I64 code, I64 value) {
+  CVirtioInputEvent ev;
+  ev.type = EV_KEY;
+  ev.code = code;
+  ev.value = value;
+  VirtioInputProcessEvent(&ev);
+}
+
+U0 VirtioInputInjectAbs(I64 code, I64 value) {
+  CVirtioInputEvent ev;
+  ev.type = EV_ABS;
+  ev.code = code;
+  ev.value = value;
+  VirtioInputProcessEvent(&ev);
 }
 
 U0 VirtioInputPoll() {

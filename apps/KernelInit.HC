@@ -89,6 +89,8 @@ U0 KernelInitMain() {
     KInitLog("Stage 4: Hardware Storage & Input Drivers...");
     KInitLoad("VirtioBlk.HC");
     KInitLoad("RedSea.HC");
+    // BLOCO 2: duto unico de entrada - carrega ANTES dos drivers que o alimentam.
+    KInitLoad("InputQueue.HC");
     KInitLoad("Keyboard.HC");
     KInitLoad("Mouse.HC");
     KInitLoad("VirtioInput.HC");

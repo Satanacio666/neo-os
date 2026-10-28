@@ -250,7 +250,8 @@ I64 EffectsKawaseBlur(U32 *buf, I64 w, I64 h, I64 passes) {
 
 // Blur a sub-rectangle of the framebuffer in place (frosted glass behind a panel).
 I64 EffectsBlurFramebuffer(I64 x, I64 y, I64 w, I64 h, I64 passes) {
-  U32 *fb = GfxDeviceTarget();
+  // F4-05: alvo explicito do compositor (nunca o front buffer) + dano.
+  U32 *fb = gfx_get_backbuffer();
   I64 pit = gfx_get_canvas_pitch();
   if (!fb || w < 2 || h < 2) return -1;
   if (x < 0) { w = w + x; x = 0; }
@@ -272,6 +273,7 @@ I64 EffectsBlurFramebuffer(I64 x, I64 y, I64 w, I64 h, I64 passes) {
     while (c < w) { fb[(y + r) * pit + x + c] = tmp[r * w + c]; c = c + 1; }
     r = r + 1;
   }
+  gfx_dirty_expand(x, y, w, h);   // F4-05: o efeito passa a entrar no retangulo sujo
   return 0;
 }
 
