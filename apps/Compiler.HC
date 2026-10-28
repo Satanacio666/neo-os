@@ -112,7 +112,12 @@
 // members away with no diagnostic, which is exactly the class of bug F0 removes.
 #define HC_MAX_STRUCTS   128
 #define HC_STRUCT_MEMBERS 128
-#define HC_MAX_FUNCS     512
+// BLOCO 3: a arvore tem 1475 definicoes de funcao. Com 512 o registro estourava EM
+// SILENCIO: a funcao nao era registrada, o simbolo ficava no TRAP DE NAO-RESOLVIDO,
+// e a ULTIMA funcao do arquivo virava um stub de 8 bytes (MOVZ X0,#0 ; RET). O
+// sintoma era 'o comando nao faz nada' — sem BSOD, sem excecao, sem pista. Medido
+// no relatorio da Fase 3 §2c (symbol audit: '1 unresolved').
+#define HC_MAX_FUNCS     2048
 // Max `return` statements per function (epilogue back-patches). A large
 // two-letter tag dispatcher legitimately needs well over the old 64.
 #define HC_MAX_EPILOGUES 512
@@ -192,6 +197,21 @@ I64   g_hc_frame_offset;
 U8    g_hc_func_names[HC_MAX_FUNCS * 32];
 U64   g_hc_func_addrs[HC_MAX_FUNCS];
 I64   g_hc_func_count;
+
+// BLOCO 3: a guarda de HC_MAX_FUNCS pulava em silencio (mesma classe do
+// HC_MAX_GLOBALS). Reporta o estouro UMA vez, quando acontece.
+I64   g_hc_funcs_overflowed = 0;
+U0 HcFuncOverflowReport() {
+    if (g_hc_funcs_overflowed) return;
+    g_hc_funcs_overflowed = 1;
+    doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_FUNCS overflow (%lld/%lld) — a funcao NAO sera registrada e o simbolo ficara no trap$FG$\n",
+                  g_hc_func_count, (I64)HC_MAX_FUNCS);
+}
+I64 HcFuncSlotOk() {
+    if (g_hc_func_count < HC_MAX_FUNCS) return 1;
+    HcFuncOverflowReport();
+    return 0;
+}
 I64   g_hc_func_ret_float[HC_MAX_FUNCS];  // 1 if the function returns F64 (result in D0)
 I64   g_hc_fn_ret_float;         // transient: current function return type is F64
 I64   g_hc_arg_float[32];        // transient: which call args are F64
@@ -791,7 +811,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
             return;
         }
     }
-    if (g_hc_func_count < HC_MAX_FUNCS) {
+    if (HcFuncSlotOk()) {
         HcSafeCopy(&g_hc_func_names[g_hc_func_count * 32], name, 32);
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
