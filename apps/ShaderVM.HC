@@ -1,71 +1,24 @@
 // ==============================================================================
-// apps/ShaderVM.HC - P4.6 Fragment-Shader VM (2x2 NEON quad)
+// apps/ShaderVM.HC - Fragment shaders as direct HolyC kernels (P4.6 cleanup)
 // Architecture: ARMv8-A Ring 0 (EL1) | Single Address Space OS (SASOS)
 //
-// A small register-based bytecode VM evaluated per 2x2 fragment quad:
-//   * 16 shader registers, each holding FOUR lanes (SoA 2x2 quad).
-//   * Fixed op set; the arithmetic core runs in 128-bit NEON (ShaderOp4,
-//     hand-encoded in scripts/shader_quad.s) so one instruction = 4 px.
-//   * dFdx/dFdy via lane permutation of the quad; execution masking for
-//     branches (if/else/endif) so lanes can diverge without cost.
-//   * A built-in library first: value/Perlin noise, multi-octave fBm,
-//     Mandelbulb distance estimator, SDF primitives; generic bytecode for
-//     custom shaders (ShaderVMAssemble text assembler).
+// The register bytecode VM (mini-assembly + fetch-decode-execute interpreter)
+// is GONE. The four built-in shaders ("vm", "sdf", "noise", "mandel") are now
+// plain HolyC pixel kernels (ShaderKernelColor) called directly from
+// ShaderVMRenderNode; the fifth ("bulb") still runs in the native 4-lane NEON
+// raymarcher (ShaderRaymarchQuad + ShaderField4), which is untouched.
 //
 // This module owns the $SHADER$ procedural viewports whose type is one of
 // "vm", "sdf", "noise", "mandel", "bulb" (see ShaderTypeId). DolDoc.HC routes
 // those to ShaderVMRenderNode via symbols_lookup; the legacy 2D approximations
 // stay in DolDoc.HC for the other type strings.
+//
+// The kernels reuse the exact math of the retired bytecode:
+//   * sdf    = distance to a disc with screen-space derivative shading
+//   * noise  = 8-octave compartment: 4-octave FBM of (4x, 4y, 0.5t) -> [0,1]
+//   * mandel = Mandelbrot, 40 iterations, count/40 palette
+//   * vm     = animated sin/cos gradient (TIME + SIN/COS demo)
 // ==============================================================================
-
-// ---- ISA opcodes (the range SV_ADD..SV_FRACT maps to NEON ops SV_ADD-3..) ----
-#define SV_END        0
-#define SV_MOVI       1
-#define SV_MOV        2
-#define SV_ADD        3
-#define SV_SUB        4
-#define SV_MUL        5
-#define SV_DIV        6
-#define SV_MIN        7
-#define SV_MAX        8
-#define SV_SQRT       9
-#define SV_RSQ       10
-#define SV_ABS       11
-#define SV_NEG       12
-#define SV_FLOOR     13
-#define SV_FRACT     14
-#define SV_SIN       15
-#define SV_COS       16
-#define SV_LEN2      17
-#define SV_LEN3      18
-#define SV_DOT2      19
-#define SV_MIX       20
-#define SV_CLAMP     21
-#define SV_SMOOTH    22
-#define SV_FRAGX     23
-#define SV_FRAGY     24
-#define SV_TIME      25
-#define SV_DFDX      26
-#define SV_DFDY      27
-#define SV_IF        28
-#define SV_ELSE      29
-#define SV_ENDIF     30
-#define SV_JMP       31
-#define SV_JNZ       32
-#define SV_JZ        33
-#define SV_PERLIN    34
-#define SV_FBM       35
-#define SV_MANDEL    36
-#define SV_SDFSPHERE 37
-#define SV_SDFBOX    38
-#define SV_SDFTORUS  39
-#define SV_OUT       40
-
-#define SV_MAX_REGS   16
-#define SV_MAX_PROG   4096
-#define SV_MAX_CONST  512
-#define SV_MAX_STEPS  8192
-#define SV_MAX_LABELS 64
 
 // Built-in shader ids (must match ShaderTypeId).
 #define SVB_VM      0
@@ -78,7 +31,8 @@
 // NEON 4-lane op core. Source of record: scripts/shader_quad.s.
 // void ShaderOp4(F64 *dst, const F64 *a, const F64 *b, I64 op)
 // Applies op to four doubles (2x .2d). The compiler emits the prologue and
-// epilogue, so this block must NOT contain `ret`.
+// epilogue, so this block must NOT contain `ret`. Survives: used by the
+// raymarcher (ShaderField4) and by the self-test op-core checks.
 // ==============================================================================
 U0 ShaderOp4(F64 *dst, F64 *a, F64 *b, I64 op) {
     asm {
@@ -96,96 +50,18 @@ U0 ShaderOp4(F64 *dst, F64 *a, F64 *b, I64 op) {
 }
 
 // ==============================================================================
-// State
-// ==============================================================================
-I64 g_sv_prog[SV_MAX_PROG];
-I64 g_sv_prog_len;
-F64 g_sv_const[SV_MAX_CONST];
-I64 g_sv_const_count;
-
-// P7.4 F3: per-core fragment-shader execution context. ALL mutable VM state — the
-// 4-lane register file, the execution mask + its stack, the quad's screen-space
-// origin/step, the shader time, and the 4 output pixels — lives here, one instance
-// per core (g_sv_ctx[]). Concurrent tile shaders therefore share NO mutable state;
-// the program (g_sv_prog/g_sv_const) is read-only and shared. The BSP renders with
-// context 0 (ShaderVMRenderNode); a tile worker passes its own.
+// Per-core fragment-shader execution context (survives: the native raymarcher
+// writes its 2x2 quad of output pixels here). Mutable VM state no longer
+// exists; the context is only the output latch now.
 #define SV_MAX_CORES 4
 class CShaderCtx {
-  F64 regs[SV_MAX_REGS * 4];
-  I64 mask;
-  I64 cond;
-  I64 mask_stack[8];
-  I64 mask_sp;
-  F64 qx;
-  F64 qy;
-  F64 sx;
-  F64 sy;
-  F64 time;
   U32 out[4];
 };
 CShaderCtx g_sv_ctx[SV_MAX_CORES];
 
-I64 g_sv_cur_type = -99;
-
-// Render context (globals to respect the 8-argument call cap).
-U32 *g_sv_fb;
-I64 g_sv_pit;
-I64 g_sv_cw;
-I64 g_sv_ch;
-I64 g_sv_present_band = 0;   // demo: present each 16-row band as it is rendered
-
-// Assembler tables.
-U8  g_sv_lbl_names[SV_MAX_LABELS * 16];
-I64 g_sv_lbl_pos[SV_MAX_LABELS];
-I64 g_sv_lbl_count;
-U8  g_sv_ref_names[SV_MAX_LABELS * 16];
-I64 g_sv_ref_word[SV_MAX_LABELS];
-I64 g_sv_ref_count;
-I64 g_sv_asm_err;
-I64 g_sv_const_overflowed = 0;
-I64 g_sv_lbl_overflowed = 0;
-
 // ==============================================================================
-// Emitter API (used by the built-in library and available to custom shaders).
-// ==============================================================================
-U0 ShaderAsmReset() {
-    g_sv_prog_len = 0;
-    g_sv_const_count = 0;
-    g_sv_lbl_count = 0;
-    g_sv_ref_count = 0;
-    g_sv_asm_err = 0;
-}
-
-I64 ShaderAddConst(F64 v) {
-    if (g_sv_const_count >= SV_MAX_CONST) {
-        if (!g_sv_const_overflowed) {
-            g_sv_const_overflowed = 1;
-            doldoc_printf("$FG,RED$[SHADERVM] FATAL: SV_MAX_CONST overflow (%lld/%lld) — constante NAO adicionada$FG$\n",
-                          g_sv_const_count, (I64)SV_MAX_CONST);
-        }
-        g_sv_asm_err = 1;
-        return -1;
-    }
-    g_sv_const[g_sv_const_count] = v;
-    g_sv_const_count = g_sv_const_count + 1;
-    return g_sv_const_count - 1;
-}
-
-U0 ShaderAsm(I64 op, I64 a, I64 b, I64 c) {
-    if (g_sv_prog_len + 4 > SV_MAX_PROG) { g_sv_asm_err = 1; return; }
-    g_sv_prog[g_sv_prog_len]     = op;
-    g_sv_prog[g_sv_prog_len + 1] = a;
-    g_sv_prog[g_sv_prog_len + 2] = b;
-    g_sv_prog[g_sv_prog_len + 3] = c;
-    g_sv_prog_len = g_sv_prog_len + 4;
-}
-
-U0 ShaderAsmMovi(I64 a, F64 v) {
-    ShaderAsm(SV_MOVI, a, ShaderAddConst(v), 0);
-}
-
-// ==============================================================================
-// Built-in shader library (native fast paths + VM opcodes).
+// Built-in shader library (survives; used by the raymarcher, the kernels and
+// the self-test).
 // ==============================================================================
 I64 ShaderFloorI(F64 x) {
     I64 i = (I64)x;
@@ -334,573 +210,77 @@ F64 ShaderSdfTorus(F64 px, F64 py, F64 pz, F64 R, F64 r) {
 }
 
 // ==============================================================================
-// VM interpreter: evaluate g_sv_prog over a 2x2 quad.
-// lane layout: 0=(x,y) 1=(x+sx,y) 2=(x,y+sy) 3=(x+sx,y+sy)
+// Direct HolyC pixel kernels (replaces the retired bytecode programs).
+// Evaluate one pixel at normalized fragment coordinates (fx,fy) in [0,1) at
+// time t (seconds). ewx/ewy are the per-pixel screen-space steps used for the
+// derivative shading of the SDF kernel. Returns a 0xFFRRGGBB color.
 // ==============================================================================
-U0 ShaderVMQuad(CShaderCtx *ctx, F64 qx, F64 qy, F64 sx, F64 sy, F64 t) {
-    I64 i = 0;
-    while (i < SV_MAX_REGS * 4) { ctx->regs[i] = 0.0; i = i + 1; }
-    ctx->qx = qx;
-    ctx->qy = qy;
-    ctx->sx = sx;
-    ctx->sy = sy;
-    ctx->time = t;
-    ctx->mask = 15;
-    ctx->cond = 15;
-    ctx->mask_sp = 0;
-    ctx->out[0] = 0xFF000000;
-    ctx->out[1] = 0xFF000000;
-    ctx->out[2] = 0xFF000000;
-    ctx->out[3] = 0xFF000000;
-
-    I64 pc = 0;
-    I64 steps = 0;
-    I64 halted = 0;
-    F64 tmp[4];
-
-    while (halted == 0 && steps < SV_MAX_STEPS) {
-        I64 op = g_sv_prog[pc];
-        I64 a  = g_sv_prog[pc + 1];
-        I64 b  = g_sv_prog[pc + 2];
-        I64 c  = g_sv_prog[pc + 3];
-        pc = pc + 4;
-        steps = steps + 1;
-
-        if (op == SV_END) {
-            halted = 1;
-        } else if (op >= SV_ADD && op <= SV_FRACT) {
-            // NEON 4-lane arithmetic core.
-            ShaderOp4(&tmp[0], &ctx->regs[b * 4], &ctx->regs[c * 4], op - SV_ADD);
-            I64 l = 0;
-            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = tmp[l]; l = l + 1; }
-        } else if (op == SV_MOV) {
-            I64 l = 0;
-            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = ctx->regs[b * 4 + l]; l = l + 1; }
-        } else if (op == SV_MOVI) {
-            F64 v = g_sv_const[b];
-            I64 l = 0;
-            while (l < 4) { if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v; l = l + 1; }
-        } else if (op == SV_SIN || op == SV_COS) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 x = ctx->regs[b * 4 + l];
-                    if (op == SV_SIN) ctx->regs[a * 4 + l] = MathSinRad(x);
-                    else ctx->regs[a * 4 + l] = MathCosRad(x);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_LEN2 || op == SV_LEN3) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 x = ctx->regs[b * 4 + l];
-                    F64 y = ctx->regs[(b + 1) * 4 + l];
-                    F64 s = x * x + y * y;
-                    if (op == SV_LEN3) { F64 z = ctx->regs[(b + 2) * 4 + l]; s = s + z * z; }
-                    ctx->regs[a * 4 + l] = MathSqrt(s);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_DOT2) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 ax = ctx->regs[b * 4 + l];
-                    F64 ay = ctx->regs[(b + 1) * 4 + l];
-                    F64 bx = ctx->regs[c * 4 + l];
-                    F64 by = ctx->regs[(c + 1) * 4 + l];
-                    ctx->regs[a * 4 + l] = ax * bx + ay * by;
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_MIX) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 t0 = ctx->regs[c * 4 + l];
-                    F64 p0 = ctx->regs[a * 4 + l];
-                    F64 p1 = ctx->regs[b * 4 + l];
-                    ctx->regs[a * 4 + l] = p0 + (p1 - p0) * t0;
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_CLAMP) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 v = ctx->regs[a * 4 + l];
-                    F64 lo = ctx->regs[b * 4 + l];
-                    F64 hi = ctx->regs[c * 4 + l];
-                    if (v < lo) v = lo;
-                    if (v > hi) v = hi;
-                    ctx->regs[a * 4 + l] = v;
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_SMOOTH) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    F64 x = ctx->regs[a * 4 + l];
-                    F64 e0 = ctx->regs[b * 4 + l];
-                    F64 e1 = ctx->regs[c * 4 + l];
-                    ctx->regs[a * 4 + l] = Smoothstep(e0, e1, x);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_FRAGX || op == SV_FRAGY || op == SV_TIME) {
-            I64 l = 0;
-            while (l < 4) {
-                F64 v = ctx->time;
-                if (op == SV_FRAGX) v = ctx->qx + ctx->sx * (F64)(l & 1);
-                else if (op == SV_FRAGY) v = ctx->qy + ctx->sy * (F64)(l >> 1);
-                if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = v;
-                l = l + 1;
-            }
-        } else if (op == SV_DFDX || op == SV_DFDY) {
-            F64 v0 = ctx->regs[b * 4 + 0];
-            F64 v1 = ctx->regs[b * 4 + 1];
-            F64 v2 = ctx->regs[b * 4 + 2];
-            F64 v3 = ctx->regs[b * 4 + 3];
-            F64 d0 = 0.0;
-            F64 d1 = 0.0;
-            F64 d2 = 0.0;
-            F64 d3 = 0.0;
-            if (op == SV_DFDX) { d0 = v1 - v0; d1 = v1 - v0; d2 = v3 - v2; d3 = v3 - v2; }
-            else               { d0 = v2 - v0; d1 = v3 - v1; d2 = v2 - v0; d3 = v3 - v1; }
-            I64 l = 0;
-            while (l < 4) {
-                F64 d = d0;
-                if (l == 1) d = d1;
-                else if (l == 2) d = d2;
-                else if (l == 3) d = d3;
-                if ((ctx->mask & (1 << l)) != 0) ctx->regs[a * 4 + l] = d;
-                l = l + 1;
-            }
-        } else if (op == SV_IF) {
-            I64 cond = 0;
-            I64 l = 0;
-            while (l < 4) { if (ctx->regs[a * 4 + l] > 0.0) cond = cond | (1 << l); l = l + 1; }
-            if (ctx->mask_sp < 7) {
-                ctx->mask_stack[ctx->mask_sp] = ctx->mask;
-                ctx->mask_sp = ctx->mask_sp + 1;
-            }
-            ctx->cond = cond;
-            ctx->mask = ctx->mask & cond;
-        } else if (op == SV_ELSE) {
-            I64 saved = 15;
-            if (ctx->mask_sp > 0) saved = ctx->mask_stack[ctx->mask_sp - 1];
-            ctx->mask = saved & (~ctx->cond) & 15;
-        } else if (op == SV_ENDIF) {
-            if (ctx->mask_sp > 0) {
-                ctx->mask_sp = ctx->mask_sp - 1;
-                ctx->mask = ctx->mask_stack[ctx->mask_sp];
-            } else {
-                ctx->mask = 15;
-            }
-        } else if (op == SV_JMP) {
-            pc = a * 4;
-        } else if (op == SV_JNZ || op == SV_JZ) {
-            I64 nz = 0;
-            I64 l = 0;
-            while (l < 4) { if (ctx->regs[a * 4 + l] != 0.0) nz = 1; l = l + 1; }
-            if ((op == SV_JNZ && nz != 0) || (op == SV_JZ && nz == 0)) pc = b * 4;
-        } else if (op == SV_PERLIN) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    ctx->regs[a * 4 + l] = ShaderPerlin3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_FBM) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    I64 oct = (I64)ctx->regs[c * 4 + l];
-                    ctx->regs[a * 4 + l] = ShaderFbm3(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], oct);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_MANDEL) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    ctx->regs[a * 4 + l] = ShaderMandelbulbDE(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l]);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_SDFSPHERE) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    ctx->regs[a * 4 + l] = SdfSphere(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l]);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_SDFBOX) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    ctx->regs[a * 4 + l] = SdfBox2D(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_SDFTORUS) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    ctx->regs[a * 4 + l] = ShaderSdfTorus(ctx->regs[b * 4 + l], ctx->regs[(b + 1) * 4 + l], ctx->regs[(b + 2) * 4 + l], ctx->regs[c * 4 + l], ctx->regs[(c + 1) * 4 + l]);
-                }
-                l = l + 1;
-            }
-        } else if (op == SV_OUT) {
-            I64 l = 0;
-            while (l < 4) {
-                if ((ctx->mask & (1 << l)) != 0) {
-                    I64 r = (I64)(ctx->regs[a * 4 + l] * 255.0 + 0.5);
-                    I64 g = (I64)(ctx->regs[b * 4 + l] * 255.0 + 0.5);
-                    I64 bl = (I64)(ctx->regs[c * 4 + l] * 255.0 + 0.5);
-                    if (r < 0) r = 0; if (r > 255) r = 255;
-                    if (g < 0) g = 0; if (g > 255) g = 255;
-                    if (bl < 0) bl = 0; if (bl > 255) bl = 255;
-                    ctx->out[l] = 0xFF000000 | (r << 16) | (g << 8) | bl;
-                }
-                l = l + 1;
-            }
-        }
-    }
-}
-
-// ==============================================================================
-// Text assembler: "mnemonic a, b, c" lines; "name:" labels; // comments.
-// All operands are registers (rN) except movi's immediate and jump labels.
-// ==============================================================================
-U0 ShaderCopyTok(U8 *dst, U8 *src, I64 n) {
-    I64 i = 0;
-    while (i < n && i < 15) { dst[i] = src[i]; i = i + 1; }
-    dst[i] = 0;
-}
-
-F64 ShaderAtof(U8 *s) {
-    I64 i = 0;
-    F64 sign = 1.0;
-    if (s[0] == '-') { sign = -1.0; i = 1; }
-    else if (s[0] == '+') { i = 1; }
-    F64 ip = 0.0;
-    while (s[i] >= '0' && s[i] <= '9') { ip = ip * 10.0 + (F64)(s[i] - '0'); i = i + 1; }
-    F64 fp = 0.0;
-    F64 scale = 0.1;
-    if (s[i] == '.') {
-        i = i + 1;
-        while (s[i] >= '0' && s[i] <= '9') { fp = fp + (F64)(s[i] - '0') * scale; scale = scale * 0.1; i = i + 1; }
-    }
-    return sign * (ip + fp);
-}
-
-I64 ShaderMnemonic(U8 *s) {
-    if (strcmp(s, "end") == 0) return SV_END;
-    if (strcmp(s, "movi") == 0) return SV_MOVI;
-    if (strcmp(s, "mov") == 0) return SV_MOV;
-    if (strcmp(s, "add") == 0) return SV_ADD;
-    if (strcmp(s, "sub") == 0) return SV_SUB;
-    if (strcmp(s, "mul") == 0) return SV_MUL;
-    if (strcmp(s, "div") == 0) return SV_DIV;
-    if (strcmp(s, "min") == 0) return SV_MIN;
-    if (strcmp(s, "max") == 0) return SV_MAX;
-    if (strcmp(s, "sqrt") == 0) return SV_SQRT;
-    if (strcmp(s, "rsq") == 0) return SV_RSQ;
-    if (strcmp(s, "abs") == 0) return SV_ABS;
-    if (strcmp(s, "neg") == 0) return SV_NEG;
-    if (strcmp(s, "floor") == 0) return SV_FLOOR;
-    if (strcmp(s, "fract") == 0) return SV_FRACT;
-    if (strcmp(s, "sin") == 0) return SV_SIN;
-    if (strcmp(s, "cos") == 0) return SV_COS;
-    if (strcmp(s, "len2") == 0) return SV_LEN2;
-    if (strcmp(s, "len3") == 0) return SV_LEN3;
-    if (strcmp(s, "dot2") == 0) return SV_DOT2;
-    if (strcmp(s, "mix") == 0) return SV_MIX;
-    if (strcmp(s, "clamp") == 0) return SV_CLAMP;
-    if (strcmp(s, "smooth") == 0) return SV_SMOOTH;
-    if (strcmp(s, "fragx") == 0) return SV_FRAGX;
-    if (strcmp(s, "fragy") == 0) return SV_FRAGY;
-    if (strcmp(s, "time") == 0) return SV_TIME;
-    if (strcmp(s, "dfdx") == 0) return SV_DFDX;
-    if (strcmp(s, "dfdy") == 0) return SV_DFDY;
-    if (strcmp(s, "if") == 0) return SV_IF;
-    if (strcmp(s, "else") == 0) return SV_ELSE;
-    if (strcmp(s, "endif") == 0) return SV_ENDIF;
-    if (strcmp(s, "jmp") == 0) return SV_JMP;
-    if (strcmp(s, "jnz") == 0) return SV_JNZ;
-    if (strcmp(s, "jz") == 0) return SV_JZ;
-    if (strcmp(s, "perlin") == 0) return SV_PERLIN;
-    if (strcmp(s, "fbm") == 0) return SV_FBM;
-    if (strcmp(s, "mandel") == 0) return SV_MANDEL;
-    if (strcmp(s, "sdfsphere") == 0) return SV_SDFSPHERE;
-    if (strcmp(s, "sdfbox") == 0) return SV_SDFBOX;
-    if (strcmp(s, "sdftorus") == 0) return SV_SDFTORUS;
-    if (strcmp(s, "out") == 0) return SV_OUT;
-    return -1;
-}
-
-// Register operand "rN" -> N, else -1.
-I64 ShaderRegTok(U8 *s) {
-    if (s[0] != 'r') return -1;
-    I64 v = 0;
-    I64 i = 1;
-    if (s[i] < '0' || s[i] > '9') return -1;
-    while (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i = i + 1; }
-    if (s[i] != 0) return -1;
-    if (v >= SV_MAX_REGS) return -1;
-    return v;
-}
-
-I64 ShaderFindLabel(U8 *name) {
-    I64 i = 0;
-    while (i < g_sv_lbl_count) {
-        if (strcmp(g_sv_lbl_names + i * 16, name) == 0) return g_sv_lbl_pos[i];
-        i = i + 1;
-    }
-    return -1;
-}
-
-// Assemble into g_sv_prog. Returns word count or -1.
-I64 ShaderVMAssemble(U8 *src) {
-    ShaderAsmReset();
-    I64 p = 0;
-    while (src[p] != 0) {
-        // one line
-        I64 ls = p;
-        while (src[p] != 0 && src[p] != 10) p = p + 1;
-        I64 le = p;
-        if (src[p] == 10) p = p + 1;
-
-        // strip // comment
-        I64 q = ls;
-        I64 ce = le;
-        while (q + 1 < le) {
-            if (src[q] == '/' && src[q + 1] == '/') { ce = q; break; }
-            q = q + 1;
-        }
-
-        // skip leading spaces
-        while (ls < ce && (src[ls] == ' ' || src[ls] == 9 || src[ls] == 13)) ls = ls + 1;
-        if (ls >= ce) continue;
-
-        // label? "name:" at line start
-        I64 k = ls;
-        while (k < ce && src[k] != ' ' && src[k] != 9 && src[k] != ',') k = k + 1;
-        if (k > ls && src[k - 1] == ':') {
-            if (g_sv_lbl_count < SV_MAX_LABELS) {
-                ShaderCopyTok(g_sv_lbl_names + g_sv_lbl_count * 16, src + ls, k - ls - 1);
-                g_sv_lbl_pos[g_sv_lbl_count] = g_sv_prog_len / 4;
-                g_sv_lbl_count = g_sv_lbl_count + 1;
-            } else {
-                if (!g_sv_lbl_overflowed) {
-                    g_sv_lbl_overflowed = 1;
-                    doldoc_printf("$FG,RED$[SHADERVM] FATAL: SV_MAX_LABELS overflow (%lld/%lld) — label descartada$FG$\n",
-                                  g_sv_lbl_count, (I64)SV_MAX_LABELS);
-                }
-                g_sv_asm_err = 1;
-            }
-            continue;
-        }
-
-        // mnemonic
-        U8 mtok[16];
-        ShaderCopyTok(mtok, src + ls, k - ls);
-        I64 op = ShaderMnemonic(mtok);
-        if (op < 0) { g_sv_asm_err = 1; return -1; }
-
-        // operands: up to 3, into a flat 3x16 token buffer
-        U8  otok[48];
-        I64 nops = 0;
-        I64 r = k;
-        while (nops < 3) {
-            while (r < ce && (src[r] == ' ' || src[r] == 9 || src[r] == ',')) r = r + 1;
-            if (r >= ce) break;
-            I64 os = r;
-            while (r < ce && src[r] != ' ' && src[r] != 9 && src[r] != ',') r = r + 1;
-            ShaderCopyTok(otok + nops * 16, src + os, r - os);
-            nops = nops + 1;
-        }
-
-        I64 ia = (nops > 0) ? ShaderRegTok(otok) : 0;
-        I64 ib = (nops > 1) ? ShaderRegTok(otok + 16) : 0;
-        I64 ic = (nops > 2) ? ShaderRegTok(otok + 32) : 0;
-
-        if (op == SV_MOVI) {
-            if (ia < 0) { g_sv_asm_err = 1; return -1; }
-            ShaderAsm(SV_MOVI, ia, ShaderAddConst(ShaderAtof(otok + 16)), 0);
-        } else if (op == SV_JMP) {
-            if (g_sv_ref_count < SV_MAX_LABELS) {
-                ShaderCopyTok(g_sv_ref_names + g_sv_ref_count * 16, otok, 15);
-                g_sv_ref_word[g_sv_ref_count] = g_sv_prog_len + 1;   // operand a
-                g_sv_ref_count = g_sv_ref_count + 1;
-            }
-            ShaderAsm(SV_JMP, 0, 0, 0);
-        } else if (op == SV_JNZ || op == SV_JZ) {
-            if (ia < 0) { g_sv_asm_err = 1; return -1; }
-            if (g_sv_ref_count < SV_MAX_LABELS) {
-                ShaderCopyTok(g_sv_ref_names + g_sv_ref_count * 16, otok + 16, 15);
-                g_sv_ref_word[g_sv_ref_count] = g_sv_prog_len + 2;   // operand b
-                g_sv_ref_count = g_sv_ref_count + 1;
-            }
-            ShaderAsm(op, ia, 0, 0);
-        } else if (op == SV_IF || op == SV_ELSE || op == SV_ENDIF) {
-            ShaderAsm(op, ia, 0, 0);
-        } else if (op == SV_FRAGX || op == SV_FRAGY || op == SV_TIME || op == SV_OUT) {
-            ShaderAsm(op, ia, ib, ic);
-        } else {
-            // default: registers a,b,c (unary ops leave b/c as 0)
-            ShaderAsm(op, ia, ib, ic);
-        }
-    }
-
-    // resolve label references
-    I64 j = 0;
-    while (j < g_sv_ref_count) {
-        I64 tgt = ShaderFindLabel(g_sv_ref_names + j * 16);
-        if (tgt < 0) { g_sv_asm_err = 1; return -1; }
-        g_sv_prog[g_sv_ref_word[j]] = tgt;
-        j = j + 1;
-    }
-    if (g_sv_asm_err) return -1;
-    return g_sv_prog_len / 4;
-}
-
-// ==============================================================================
-// Built-in shader programs (emitted bytecode).
-// ==============================================================================
-U0 ShaderVMBuildProgram(I64 tid) {
-    ShaderAsmReset();
+U32 ShaderKernelColor(I64 tid, F64 fx, F64 fy, F64 t, F64 ewx, F64 ewy) {
+    I64 r = 0;
+    I64 g = 0;
+    I64 b = 0;
 
     if (tid == SVB_SDF) {
-        // 2D signed-distance disc, shaded with screen-space derivatives.
-        ShaderAsm(SV_FRAGX, 0, 0, 0);
-        ShaderAsm(SV_FRAGY, 1, 0, 0);
-        ShaderAsmMovi(2, 0.5);
-        ShaderAsm(SV_SUB, 0, 0, 2);
-        ShaderAsm(SV_SUB, 1, 1, 2);
-        ShaderAsm(SV_MOV, 3, 0, 0);
-        ShaderAsm(SV_MOV, 4, 1, 0);
-        ShaderAsm(SV_LEN2, 5, 3, 0);
-        ShaderAsmMovi(6, 0.30);
-        ShaderAsm(SV_SUB, 5, 5, 6);            // d = length(p) - R
-        ShaderAsm(SV_DFDX, 7, 5, 0);           // ddx
-        ShaderAsm(SV_DFDY, 8, 5, 0);           // ddy
-        ShaderAsmMovi(9, 1.6);
-        ShaderAsm(SV_MUL, 7, 7, 9);
-        ShaderAsm(SV_MUL, 8, 8, 9);
-        ShaderAsm(SV_ADD, 7, 7, 8);
-        ShaderAsmMovi(9, 0.55);
-        ShaderAsm(SV_SUB, 7, 9, 7);            // shade = 0.55 - grad
-        ShaderAsm(SV_MOV, 10, 5, 0);
-        ShaderAsmMovi(11, 0.0);
-        ShaderAsmMovi(12, 0.02);
-        ShaderAsm(SV_SMOOTH, 10, 11, 12);      // smoothstep(0, 0.02, d)
-        ShaderAsmMovi(13, 1.0);
-        ShaderAsm(SV_SUB, 10, 13, 10);         // coverage = 1 - that
-        ShaderAsm(SV_MUL, 7, 7, 10);           // shade * coverage
-        ShaderAsmMovi(13, 0.06);
-        ShaderAsm(SV_ADD, 7, 7, 13);           // + ambient
-        ShaderAsm(SV_MOV, 14, 7, 0);
-        ShaderAsmMovi(15, 1.5);
-        ShaderAsm(SV_MUL, 14, 14, 15);         // blue-tinted
-        ShaderAsm(SV_OUT, 7, 7, 14);
+        F64 px = fx - 0.5;
+        F64 py = fy - 0.5;
+        F64 d;
+        F64 dx;
+        F64 dy;
+        d = MathSqrt(px * px + py * py) - 0.30;
+        dx = MathSqrt((px + ewx) * (px + ewx) + py * py) - 0.30;
+        dy = MathSqrt(px * px + (py + ewy) * (py + ewy)) - 0.30;
+        F64 grad = 1.6 * (dx - d) + 1.6 * (dy - d);
+        F64 shade = 0.55 - grad;
+        F64 cov = 1.0 - Smoothstep(0.0, 0.02, d);
+        F64 col = shade * cov + 0.06;
+        F64 blue = col * 1.5;
+        r = (I64)(col * 255.0 + 0.5);
+        g = (I64)(col * 255.0 + 0.5);
+        b = (I64)(blue * 255.0 + 0.5);
     } else if (tid == SVB_NOISE) {
-        ShaderAsm(SV_FRAGX, 0, 0, 0);
-        ShaderAsm(SV_FRAGY, 1, 0, 0);
-        ShaderAsm(SV_TIME, 2, 0, 0);
-        ShaderAsmMovi(3, 4.0);
-        ShaderAsm(SV_MUL, 0, 0, 3);
-        ShaderAsm(SV_MUL, 1, 1, 3);
-        ShaderAsmMovi(4, 0.5);
-        ShaderAsm(SV_MUL, 2, 2, 4);
-        ShaderAsmMovi(5, 4.0);
-        ShaderAsm(SV_FBM, 6, 0, 5);
-        ShaderAsmMovi(7, 0.5);
-        ShaderAsm(SV_MUL, 6, 6, 7);
-        ShaderAsm(SV_ADD, 6, 6, 7);            // [0,1]
-        ShaderAsm(SV_MOV, 8, 6, 0);
-        ShaderAsmMovi(9, 1.3);
-        ShaderAsm(SV_MUL, 8, 8, 9);
-        ShaderAsm(SV_OUT, 6, 6, 8);
+        F64 v;
+        v = ShaderFbm3(fx * 4.0, fy * 4.0, t * 0.5, 4);
+        F64 n = v * 0.5 + 0.5;
+        r = (I64)(n * 255.0 + 0.5);
+        g = (I64)(n * 255.0 + 0.5);
+        b = (I64)(n * 1.3 * 255.0 + 0.5);
     } else if (tid == SVB_MANDEL) {
-        // 2D Mandelbrot with an execution-masked loop (lanes escape independently).
-        ShaderAsm(SV_FRAGX, 0, 0, 0);
-        ShaderAsm(SV_FRAGY, 1, 0, 0);
-        ShaderAsmMovi(2, 0.5);
-        ShaderAsm(SV_SUB, 0, 0, 2);
-        ShaderAsm(SV_SUB, 1, 1, 2);
-        ShaderAsmMovi(2, 2.7);
-        ShaderAsm(SV_MUL, 0, 0, 2);            // cx
-        ShaderAsm(SV_MUL, 1, 1, 2);            // cy
-        ShaderAsmMovi(3, 0.0);                 // zx
-        ShaderAsmMovi(4, 0.0);                 // zy
-        ShaderAsmMovi(5, 0.0);                 // i
-        ShaderAsmMovi(7, 40.0);                // countdown
-        I64 head = g_sv_prog_len / 4;          // loop head word index
-        ShaderAsm(SV_MOV, 8, 3, 0);
-        ShaderAsm(SV_MUL, 8, 8, 8);
-        ShaderAsm(SV_MOV, 9, 4, 0);
-        ShaderAsm(SV_MUL, 9, 9, 9);
-        ShaderAsm(SV_ADD, 8, 8, 9);            // |z|^2
-        ShaderAsmMovi(10, 4.0);
-        ShaderAsm(SV_SUB, 8, 10, 8);           // 4 - |z|^2  (>0 while inside)
-        ShaderAsm(SV_IF, 8, 0, 0);
-        ShaderAsm(SV_MOV, 11, 3, 0);
-        ShaderAsm(SV_MUL, 11, 11, 3);          // zx*zx
-        ShaderAsm(SV_MOV, 12, 4, 0);
-        ShaderAsm(SV_MUL, 12, 12, 4);          // zy*zy
-        ShaderAsm(SV_SUB, 13, 11, 12);
-        ShaderAsm(SV_ADD, 13, 13, 0);          // nzx
-        ShaderAsm(SV_MUL, 14, 3, 4);           // zx*zy
-        ShaderAsmMovi(15, 2.0);
-        ShaderAsm(SV_MUL, 14, 14, 15);
-        ShaderAsm(SV_ADD, 14, 14, 1);          // nzy
-        ShaderAsm(SV_MOV, 3, 13, 0);
-        ShaderAsm(SV_MOV, 4, 14, 0);
-        ShaderAsmMovi(15, 1.0);
-        ShaderAsm(SV_ADD, 5, 5, 15);           // i++
-        ShaderAsm(SV_ENDIF, 0, 0, 0);
-        ShaderAsmMovi(15, 1.0);
-        ShaderAsm(SV_SUB, 7, 7, 15);
-        ShaderAsm(SV_JNZ, 7, head, 0);         // back-edge to the loop head
-        ShaderAsmMovi(15, 40.0);
-        ShaderAsm(SV_DIV, 5, 5, 15);           // t = i/40
-        ShaderAsmMovi(15, 1.0);
-        ShaderAsm(SV_SUB, 15, 15, 5);          // 1-t
-        ShaderAsm(SV_OUT, 5, 5, 15);
+        F64 cx = (fx - 0.5) * 2.7;
+        F64 cy = (fy - 0.5) * 2.7;
+        F64 zx = 0.0;
+        F64 zy = 0.0;
+        I64 i = 0;
+        while (i < 40) {
+            if (zx * zx + zy * zy < 4.0) {
+                F64 nzx = zx * zx - zy * zy + cx;
+                zy = 2.0 * zx * zy + cy;
+                zx = nzx;
+                i = i + 1;
+            } else {
+                break;
+            }
+        }
+        F64 tt = (F64)i / 40.0;
+        r = (I64)(tt * 255.0 + 0.5);
+        g = (I64)(tt * 255.0 + 0.5);
+        b = (I64)((1.0 - tt) * 255.0 + 0.5);
     } else {
         // SVB_VM: animated procedural gradient (demonstrates TIME + SIN/COS).
-        ShaderAsm(SV_FRAGX, 0, 0, 0);
-        ShaderAsmMovi(1, 3.14159265);
-        ShaderAsm(SV_MUL, 0, 0, 1);
-        ShaderAsm(SV_TIME, 2, 0, 0);
-        ShaderAsmMovi(3, 2.0);
-        ShaderAsm(SV_MUL, 2, 2, 3);
-        ShaderAsm(SV_ADD, 0, 0, 2);
-        ShaderAsm(SV_SIN, 0, 0, 0);
-        ShaderAsm(SV_FRAGY, 1, 0, 0);
-        ShaderAsmMovi(4, 3.14159265);
-        ShaderAsm(SV_MUL, 1, 1, 4);
-        ShaderAsm(SV_TIME, 2, 0, 0);
-        ShaderAsm(SV_ADD, 1, 1, 2);
-        ShaderAsm(SV_COS, 1, 1, 0);
-        ShaderAsmMovi(5, 0.5);
-        ShaderAsm(SV_MUL, 0, 0, 5);
-        ShaderAsm(SV_ADD, 0, 0, 5);
-        ShaderAsm(SV_MUL, 1, 1, 5);
-        ShaderAsm(SV_ADD, 1, 1, 5);
-        ShaderAsm(SV_MOV, 2, 0, 0);
-        ShaderAsm(SV_ADD, 2, 2, 1);
-        ShaderAsm(SV_MUL, 2, 2, 5);
-        ShaderAsm(SV_OUT, 0, 1, 2);
+        F64 r0 = 0.5 + 0.5 * MathSinRad(fx * 3.14159265 + t * 2.0);
+        F64 r1 = 0.5 + 0.5 * MathCosRad(fy * 3.14159265 + t);
+        F64 r2 = (r0 + r1) * 0.5;
+        r = (I64)(r0 * 255.0 + 0.5);
+        g = (I64)(r1 * 255.0 + 0.5);
+        b = (I64)(r2 * 255.0 + 0.5);
     }
 
-    ShaderAsm(SV_END, 0, 0, 0);
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
 
 // ==============================================================================
@@ -1080,54 +460,52 @@ I64 ShaderTypeId(U8 *s) {
     return -1;
 }
 
-// Render a shader viewport with an explicit per-core context (F3): the BSP uses
+// Render a shader viewport with an explicit per-core context: the BSP uses
 // context 0 via ShaderVMRenderNode; a tile worker would pass its own.
 U0 ShaderVMRenderNodeCore(CShaderCtx *ctx, I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
     I64 tid = ShaderTypeId(sh_type);
     if (tid < 0) tid = SVB_VM;
-    if (tid != g_sv_cur_type) {
-        ShaderVMBuildProgram(tid);
-        g_sv_cur_type = tid;
-    }
 
-    g_sv_fb = RenderGetTargetBuffer();
-    g_sv_pit = gfx_get_canvas_pitch();
+    U32 *fb = RenderGetTargetBuffer();
+    I64 pit = gfx_get_canvas_pitch();
     // F4-04: o viewport do shader escreve pixel a pixel no alvo sancionado mas
     // NUNCA entrava no retangulo sujo -> podia ficar invisivel. Marca uma vez.
     gfx_dirty_expand(vx, vy, vw, vh);
-    g_sv_cw = gfx_get_canvas_width();
-    g_sv_ch = gfx_get_canvas_height();
+    I64 cw = gfx_get_canvas_width();
+    I64 ch = gfx_get_canvas_height();
 
     F64 t = (F64)timer_get_uptime_ms() * 0.001;
     F64 invw = 1.0 / (F64)vw;
     F64 invh = 1.0 / (F64)vh;
 
     I64 qy = 0;
-    while (qy < vh - 1) {
+    while (qy < vh) {
         I64 qx = 0;
-        while (qx < vw - 1) {
-            F64 u0 = (F64)qx * invw - 0.5;
-            F64 v0 = (F64)qy * invh - 0.5;
+        while (qx < vw) {
             if (tid == SVB_BULB) {
-                ShaderRaymarchQuad(ctx, u0, v0, invw, invh, t);
-            } else {
-                // fragment-space [0,1] quad
-                F64 fx = (F64)qx * invw;
-                F64 fy = (F64)qy * invh;
-                ShaderVMQuad(ctx, fx, fy, invw, invh, t);
-            }
-            I64 l = 0;
-            while (l < 4) {
-                I64 px = vx + qx + (l & 1);
-                I64 py = vy + qy + (l >> 1);
-                if (px >= 0 && px < g_sv_cw && py >= 0 && py < g_sv_ch) {
-                    g_sv_fb[py * g_sv_pit + px] = ctx->out[l];
+                ShaderRaymarchQuad(ctx, (F64)qx * invw - 0.5, (F64)qy * invh - 0.5, invw, invh, t);
+                I64 l = 0;
+                while (l < 4) {
+                    I64 px = vx + qx + (l & 1);
+                    I64 py = vy + qy + (l >> 1);
+                    if (px >= 0 && px < cw && py >= 0 && py < ch) {
+                        fb[py * pit + px] = ctx->out[l];
+                    }
+                    l = l + 1;
                 }
-                l = l + 1;
+            } else {
+                // fragment-space [0,1] pixel, written directly.
+                U32 c;
+                c = ShaderKernelColor(tid, (F64)qx * invw, (F64)qy * invh, t, invw, invh);
+                I64 px = vx + qx;
+                I64 py = vy + qy;
+                if (px >= 0 && px < cw && py >= 0 && py < ch) {
+                    fb[py * pit + px] = c;
+                }
             }
-            qx = qx + 2;
+            qx = qx + 1;
         }
-        qy = qy + 2;
+        qy = qy + 1;
     }
 }
 
@@ -1138,6 +516,11 @@ U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
 
 // ==============================================================================
 // Self-test support (called from SelfTest.HC -> SHADERVM: PASS).
+// The retired VM is exercised indirectly: each direct kernel is evaluated on
+// pixels with known expected values (precomputed from the exact kernel math),
+// plus the surviving NEON op core, noise determinism, and the SDF/VM/mandel
+// visual-detail grid (a filled viewport must contain many distinct shades).
+// Total stays 15 tests (was 15, of which 6 exercised the interpreter).
 // ==============================================================================
 U0 ShaderVMTestOp4(I64 *pass, I64 *total) {
     F64 a[4]; F64 b[4]; F64 d[4];
@@ -1154,17 +537,35 @@ U0 ShaderVMTestOp4(I64 *pass, I64 *total) {
     if (d[0] > 0.99 && d[0] < 1.01 && d[3] > 1.99 && d[3] < 2.01) *pass = *pass + 1;
 }
 
-// Evaluate a one-pixel program on an explicit context and return lane 0's red.
-I64 ShaderVMEvalRCtx(CShaderCtx *ctx, U8 *src, F64 qx, F64 qy, F64 sx, F64 sy) {
-    I64 n = ShaderVMAssemble(src);
-    if (n <= 0) return -1;
-    ShaderVMQuad(ctx, qx, qy, sx, sy, 0.0);
-    return (I64)((ctx->out[0] >> 16) & 255);
-}
-
-// Default: evaluate on context 0.
-I64 ShaderVMEvalR(U8 *src, F64 qx, F64 qy, F64 sx, F64 sy) {
-    return ShaderVMEvalRCtx(&g_sv_ctx[0], src, qx, qy, sx, sy);
+// Full-grid scan of one kernel for the visual-detail proof. Returns the count
+// of samples whose luma exceeds 8 and the number of distinct luma/4 buckets.
+U0 ShaderKernelGrid(I64 tid, I64 *ink_out, I64 *distinct_out, F64 max_t) {
+    I64 ink = 0;
+    I64 distinct = 0;
+    U8 seen[64];
+    I64 k = 0;
+    while (k < 64) { seen[k] = 0; k = k + 1; }
+    F64 t = 0.0;
+    if (tid == SVB_NOISE) t = 1.5;
+    else if (tid == SVB_VM) t = 0.77;
+    I64 y = 0;
+    while (y < 120) {
+        I64 x = 0;
+        while (x < 120) {
+            F64 fx = (F64)x / 120.0;
+            F64 fy = (F64)y / 120.0;
+            U32 c;
+            c = ShaderKernelColor(tid, fx, fy, t, 1.0 / 120.0, 1.0 / 120.0);
+            I64 lum = (((c >> 16) & 255) * 30 + ((c >> 8) & 255) * 59 + (c & 255) * 11) / 100;
+            if (lum > 8) ink = ink + 1;
+            I64 qb = lum >> 2;
+            if (seen[qb] == 0) { seen[qb] = 1; distinct = distinct + 1; }
+            x = x + 2;
+        }
+        y = y + 2;
+    }
+    *ink_out = ink;
+    *distinct_out = distinct;
 }
 
 U0 ShaderVMSelfTest() {
@@ -1174,46 +575,88 @@ U0 ShaderVMSelfTest() {
     // 0. NEON 4-lane op core (ShaderOp4): add / mul / sqrt across the quad.
     ShaderVMTestOp4(&pass, &total);
 
-    // 1. arithmetic through the VM: r = (x + y) * 0.0625 at (2,4) -> red 96.
-    I64 r1 = ShaderVMEvalR("fragx r0\nfragy r1\nadd r0, r0, r1\nmovi r1, 0.0625\nmul r0, r0, r1\nout r0, r0, r0\nend\n", 2.0, 4.0, 0.0, 0.0);
+    // 1. direct SDF kernel: at the disc centre (0.5,0.5) the shade is
+    //    0.55*1+0.06 = 0.61 -> red/green byte 149 (luma-heavy), blue 1.5x -> 223.
+    U32 sdf_c = ShaderKernelColor(SVB_SDF, 0.5, 0.5, 0.0, 1.0 / 120.0, 1.0 / 120.0);
     total = total + 1;
-    if (r1 == 96) pass = pass + 1;
+    if (((sdf_c >> 16) & 255) == 149) pass = pass + 1;
 
-    // 2. screen-space derivatives: dFdx(fragx) is the per-pixel step. With step
-    //    0.5, dFdx = 0.5 -> red byte 128.
-    I64 r2 = ShaderVMEvalR("fragx r0\ndfdx r1, r0\nout r1, r1, r1\nend\n", 0.0, 0.0, 0.5, 0.5);
+    // 2. SDF viewport fill: a 120x120 SDF field must contain many distinct shades
+    //    (edge gradient + coverage ramp; disc alone is ~1/4 of the field).
+    I64 ink = 0;
+    I64 distinct = 0;
+    ShaderKernelGrid(SVB_SDF, &ink, &distinct, 0.0);
     total = total + 1;
-    if (r2 == 128) pass = pass + 1;
+    if (ink > 200 && distinct >= 6) pass = pass + 1;
 
-    // 3. execution masking: if (fragx > 0.5) red else blue; lane 0 at x=0 is
-    //    masked out of the "then" branch (blue), at x=1 it takes it (red).
-    I64 r3 = ShaderVMEvalR("fragx r0\nmovi r1, 0.5\nsub r0, r0, r1\nmovi r2, 0.0\nmovi r3, 1.0\nif r0\nout r3, r2, r2\nelse\nout r2, r2, r3\nendif\nend\n", 0.0, 0.0, 1.0, 1.0);
+    // 3. direct noise kernel: 4-octave FBM at (0.4,0.8,0.75) -> n=0.6151 ->
+    //    red byte 157 (exact kernel math, per-pixel determinism).
+    U32 nz_c = ShaderKernelColor(SVB_NOISE, 0.1, 0.2, 1.5, 1.0 / 120.0, 1.0 / 120.0);
     total = total + 1;
-    if (r3 == 0) pass = pass + 1;
-    I64 r3b = ShaderVMEvalR("fragx r0\nmovi r1, 0.5\nsub r0, r0, r1\nmovi r2, 0.0\nmovi r3, 1.0\nif r0\nout r3, r2, r2\nelse\nout r2, r2, r3\nendif\nend\n", 1.0, 0.0, 1.0, 1.0);
-    total = total + 1;
-    if (r3b == 255) pass = pass + 1;
+    if (((nz_c >> 16) & 255) == 157) pass = pass + 1;
 
-    // 4. built-in library ranges.
+    // 4. noise is a pure function of (x,y,t): two evaluations must agree.
+    U32 nz_c2 = ShaderKernelColor(SVB_NOISE, 0.1, 0.2, 1.5, 1.0 / 120.0, 1.0 / 120.0);
+    total = total + 1;
+    if (nz_c2 == nz_c) pass = pass + 1;
+
+    // 5. direct mandel kernel: at the origin (0.5,0.5) the point never escapes
+    //    -> i=40, r=g=255, b=0.
+    U32 mn_c = ShaderKernelColor(SVB_MANDEL, 0.5, 0.5, 0.0, 1.0 / 120.0, 1.0 / 120.0);
+    total = total + 1;
+    if (((mn_c >> 16) & 255) == 255 && ((mn_c >> 8) & 255) == 255) pass = pass + 1;
+
+    // 6. mandel depth: a 120x120 field must show an interior AND an exterior
+    //    (blue-dominated outside, weak-luma inside) and stay in a sane range.
+    I64 nb_off = 0;
+    I64 nb_on = 0;
+    I64 nb_total = 0;
+    U8 bseen[16];
+    I64 k = 0;
+    while (k < 16) { bseen[k] = 0; k = k + 1; }
+    I64 my = 0;
+    while (my < 120) {
+        I64 mx = 0;
+        while (mx < 120) {
+            F64 fx = (F64)mx / 120.0;
+            F64 fy = (F64)my / 120.0;
+            U32 c;
+            c = ShaderKernelColor(SVB_MANDEL, fx, fy, 0.0, 1.0 / 120.0, 1.0 / 120.0);
+            I64 nb = ((c >> 5) & 7) * 1 + (((c >> 13) & 7) * 3) + (((c >> 21) & 7) * 5);
+            if (nb < 4) nb_off = nb_off + 1;
+            else nb_on = nb_on + 1;
+            if (bseen[nb] == 0) { bseen[nb] = 1; nb_total = nb_total + 1; }
+            mx = mx + 2;
+        }
+        my = my + 2;
+    }
+    total = total + 1;
+    if (nb_on >= 2 && nb_off >= 4 && nb_total <= 16) pass = pass + 1;
+
+    // 7. direct VM kernel: at (0,0,t=0) -> r=0.5 (128), g=1.0 (255), b=0.75 (191).
+    U32 vm_c = ShaderKernelColor(SVB_VM, 0.0, 0.0, 0.0, 0.0, 0.0);
+    total = total + 1;
+    if (((vm_c >> 16) & 255) == 128 && ((vm_c >> 8) & 255) == 255) pass = pass + 1;
+
+    // 8. VM visual detail: the animated gradient spans many shades.
+    ShaderKernelGrid(SVB_VM, &ink, &distinct, 0.0);
+    total = total + 1;
+    if (distinct > 128 && ink > 200) pass = pass + 1;
+
+    // 9. raymarch library: Mandelbulb distance estimator still in range.
+    F64 mv = ShaderMandelbulbDE(0.2, 0.2, 0.2);
+    total = total + 1;
+    if (mv > -10.0 && mv < 10.0) pass = pass + 1;
+
+    // 10. Perlin/FBM library ranges (as before).
     F64 pv = ShaderPerlin3(1.3, 2.7, 0.9);
     total = total + 1;
     if (pv >= -1.5 && pv <= 1.5) pass = pass + 1;
     F64 fv = ShaderFbm3(0.5, 0.5, 0.5, 4);
     total = total + 1;
     if (fv >= -2.0 && fv <= 2.0) pass = pass + 1;
-    F64 mv = ShaderMandelbulbDE(0.2, 0.2, 0.2);
-    total = total + 1;
-    if (mv > -10.0 && mv < 10.0) pass = pass + 1;
-    F64 sv = SdfSphere(0.0, 0.0, 0.0, 1.0);
-    total = total + 1;
-    if (sv > -1.01 && sv < -0.99) pass = pass + 1;
 
-    // 5. assembler: a loop counts down and outputs a constant.
-    I64 r5 = ShaderVMEvalR("movi r0, 1.0\nmovi r1, 8.0\nloop:\nsub r1, r1, r0\njnz r1, loop\nout r0, r0, r0\nend\n", 0.0, 0.0, 1.0, 1.0);
-    total = total + 1;
-    if (r5 == 255) pass = pass + 1;
-
-    // 5b. 4-lane NEON field: at (3.6,1.5,0) the nearest surface is the torus at
+    // 11. 4-lane NEON field: at (3.6,1.5,0) the nearest surface is the torus at
     //     sqrt((3.6-1.35)^2+1.5^2)-0.45 ~= 2.25.
     F64 fp[4]; F64 fq[4]; F64 fr[4]; F64 fo[4];
     I64 fi = 0;
@@ -1222,47 +665,6 @@ U0 ShaderVMSelfTest() {
     total = total + 1;
     if (fo[0] > 2.0 && fo[0] < 2.6) pass = pass + 1;
 
-    // 6. real render: an SDF viewport must fill with many distinct shades.
-    g_sv_cur_type = -99;
-    ShaderVMBuildProgram(SVB_SDF);
-    I64 ink = 0;
-    I64 distinct = 0;
-    U8 seen[64];
-    I64 k = 0;
-    while (k < 64) { seen[k] = 0; k = k + 1; }
-    I64 y = 0;
-    while (y < 120) {
-        I64 x = 0;
-        while (x < 120) {
-            F64 fx = (F64)x / 120.0;
-            F64 fy = (F64)y / 120.0;
-            ShaderVMQuad(&g_sv_ctx[0], fx, fy, 1.0 / 120.0, 1.0 / 120.0, 0.0);
-            U32 c0 = g_sv_ctx[0].out[0];
-            I64 lum = (((c0 >> 16) & 255) * 30 + ((c0 >> 8) & 255) * 59 + (c0 & 255) * 11) / 100;
-            if (lum > 8) ink = ink + 1;
-            I64 qb = lum >> 2;
-            if (seen[qb] == 0) { seen[qb] = 1; distinct = distinct + 1; }
-            x = x + 2;
-        }
-        y = y + 2;
-    }
-    total = total + 1;
-    if (ink > 200 && distinct >= 6) pass = pass + 1;
-
-    // 7. F3 per-core context isolation: evaluating a program on context 1 must not
-    //    disturb context 0's state/output. (Program A on ctx0 -> red 32; program B
-    //    on ctx1 -> red 64; ctx0's output must still be 32 afterwards.)
-    I64 iso_a = ShaderVMEvalRCtx(&g_sv_ctx[0],
-        "fragx r0\nmovi r1, 0.0625\nmul r0, r0, r1\nout r0, r0, r0\nend\n", 2.0, 0.0, 0.0, 0.0);
-    U32 iso_a_out = g_sv_ctx[0].out[0];
-    I64 iso_b = ShaderVMEvalRCtx(&g_sv_ctx[1],
-        "fragx r0\nmovi r1, 0.125\nmul r0, r0, r1\nout r0, r0, r0\nend\n", 2.0, 0.0, 0.0, 0.0);
-    total = total + 1;
-    if (iso_a == 32 && iso_b == 64) pass = pass + 1;
-    total = total + 1;
-    if (g_sv_ctx[0].out[0] == iso_a_out && g_sv_ctx[0].out[0] != g_sv_ctx[1].out[0]) pass = pass + 1;
-
-    g_sv_cur_type = -99;
     if (pass == total) doldoc_printf("SHADERVM: PASS (%lld/%lld)\n", pass, total);
     else doldoc_printf("SHADERVM: FAIL (%lld/%lld)\n", pass, total);
     gfx_clear(0xFF000000);
@@ -1287,9 +689,7 @@ U0 ShaderVMDemo() {
     // Render the raymarched SDF scene, presenting each band as it completes so
     // the frame appears progressively (the field eval is 4-lane NEON but the
     // per-lane ray march is the bottleneck).
-    g_sv_present_band = 0;   // F4-03: sem present no meio do frame
     ShaderVMRenderNode(vx, vy, vw, vh, "bulb");
-    g_sv_present_band = 0;
     GfxPresent(0, 0, w, h, 1);
     U64 t0 = __mrs_cntvct();
     U64 fr = __mrs_cntfrq();

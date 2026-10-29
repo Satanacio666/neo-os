@@ -21,8 +21,6 @@ I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 #define HC_FNF_MAX       4096
 #define HC_MAX_DEFERRED  64
 #define HC_MAX_EPILOGUES 512
-#define SV_MAX_CONST     512
-#define SV_MAX_LABELS    64
 
 U0 KInitLog(U8 *msg) {
     doldoc_printf("[KERNEL-INIT] %s\n", msg);
@@ -178,10 +176,8 @@ U0 KernelInitMain() {
                   g_hc_local_count, HC_MAX_LOCALS, g_hc_map_count, HC_MAP_MAX);
     doldoc_printf("[BUDGET] fnf=%lld/%lld init=%lld/%lld\n",
                   g_hc_fnf_count, HC_FNF_MAX, g_hc_init_count, HC_MAX_DEFERRED);
-    doldoc_printf("[BUDGET] epi=%lld/%lld sv_const=%lld/%lld\n",
-                  g_hc_epi_count, HC_MAX_EPILOGUES, g_sv_const_count, SV_MAX_CONST);
-    doldoc_printf("[BUDGET] sv_lbl=%lld/%lld sv_ref=%lld/%lld\n",
-                  g_sv_lbl_count, SV_MAX_LABELS, g_sv_ref_count, SV_MAX_LABELS);
+    doldoc_printf("[BUDGET] epi=%lld/%lld\n",
+                  g_hc_epi_count, HC_MAX_EPILOGUES);
 
     // FASE 1 / CAMADA 1: vigia contínuo no core ocioso (sistema imunológico).
     // Carregado DEPOIS de todos os estágios — pode referenciar tudo sem forward-ref.
