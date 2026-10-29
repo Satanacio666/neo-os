@@ -1657,7 +1657,7 @@ U0 HcLexNext() {
             // NOTE: the C JIT (which compiles Compiler.HC itself) supports at most
             // 8 arguments per call, so keep this diagnostic within that budget.
             U64 sd_tot = 0; U64 sd_used = 0; U64 sd_free = 0; U64 sd_cnt = 0;
-            kheap_get_stats(&sd_tot, &sd_used, &sd_free, &sd_cnt);
+            KHeapArenaStats(&sd_tot, &sd_used, &sd_free, &sd_cnt);
             doldoc_printf("[HCLX] STRING ARENA FAILED slen=%lld pos=%lld len=%lld arena=%lld/%lld seed_free=%lld\n",
                           slen, g_hc_pos, g_hc_len, HcStrBytes(), HcStrChunks(), sd_free);
             HcRaiseError(HC_ERR_SYNTAX_TOKEN);

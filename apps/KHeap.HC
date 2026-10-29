@@ -289,7 +289,7 @@ U8* KRealloc(U8 *p_old_ptr, I64 p_new_sz) {
   return new_buf;
 }
 
-U0 kheap_get_stats(U64 *p_total_b, U64 *p_used_b, U64 *p_free_b, U64 *p_alloc_cnt) {
+U0 KHeapArenaStats(U64 *p_total_b, U64 *p_used_b, U64 *p_free_b, U64 *p_alloc_cnt) {
   U64 phys_total = g_kheap.total_memory;
   U64 phys_used  = g_kheap.used_memory;
   U64 phys_free  = g_kheap.free_memory;
@@ -339,7 +339,7 @@ U0 KHeapPrintStats() {
   U64 used_b = 0;
   U64 free_b = 0;
   U64 alloc_cnt = 0;
-  kheap_get_stats(&total_b, &used_b, &free_b, &alloc_cnt);
+  KHeapArenaStats(&total_b, &used_b, &free_b, &alloc_cnt);
 
   I64 phys_total_kb = (total_b + 1023) / 1024;
   I64 phys_used_kb  = (used_b + 1023) / 1024;
@@ -469,7 +469,7 @@ I64 KHeapSelfTest() {
   U64 st_used = 0;
   U64 st_free = 0;
   U64 st_cnt = 0;
-  kheap_get_stats(&st_tot, &st_used, &st_free, &st_cnt);
+  KHeapArenaStats(&st_tot, &st_used, &st_free, &st_cnt);
 
   // Restore active boot pool before freeing temporary test pool
   if (saved_head != 0 && saved_tot > 0) {

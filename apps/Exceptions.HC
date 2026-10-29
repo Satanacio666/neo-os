@@ -224,9 +224,20 @@ I64 ExceptionsHandleSync(CTrapFrame *f, U64 esr, U64 far, I64 is_user_jit) {
     U64 rec_addr = symbols_lookup("ShellRecover");
     if (!rec_addr) rec_addr = symbols_lookup("ShellInit");
     if (!rec_addr) rec_addr = symbols_lookup("shell_poll");
-    if (!rec_addr) rec_addr = 0x75001000;
+    // FASE 1.3: nunca usar o endereco magico 0x75001000 (fora da RAM — o eret
+    // saltava para la e gerava Instruction Abort recursivo). Se a resolucao
+    // falhar: halt controlado (WFE), nunca salto para endereco invalido.
+    if (!rec_addr) {
+        doldoc_printf("$FG,RED$[EXC] FATAL: recovery target unresolved — halting (elr=0x%016llX lr=0x%016llX)$FG$\n",
+                      f->elr_el1, f->lr);
+        while (1) { asm("wfe"); }
+    }
     f->elr_el1 = rec_addr;
     f->lr = symbols_lookup("DolDocShellEventLoop");
+    if (f->lr == 0 || f->lr == (U64)&SymUnresolvedTrap) {
+        doldoc_printf("$FG,RED$[EXC] FATAL: DolDocShellEventLoop unresolved (lr=0x%016llX) — halting$FG$\n", f->lr);
+        while (1) { asm("wfe"); }
+    }
     g_exc.in_fault = 0;
     return 1; // RECOVERED
   }

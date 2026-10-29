@@ -2528,6 +2528,14 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
     if (strcmp(stype, "cube") == 0) {
         U64 hgl_cube = symbols_lookup("HolyGLRenderCube");
         U64 hgl_vp = symbols_lookup("HolyGLViewport");
+        if (hgl_cube == 0 || hgl_cube == (U64)&SymUnresolvedTrap) {
+            doldoc_printf("$FG,RED$[SYMBOLS] FATAL: lookup failed for 'HolyGLRenderCube' (0x%016llX)$FG$\n", hgl_cube);
+            hgl_cube = 0;
+        }
+        if (hgl_vp == 0 || hgl_vp == (U64)&SymUnresolvedTrap) {
+            doldoc_printf("$FG,RED$[SYMBOLS] FATAL: lookup failed for 'HolyGLViewport' (0x%016llX)$FG$\n", hgl_vp);
+            hgl_vp = 0;
+        }
         if (hgl_cube != 0 && hgl_vp != 0) {
             gfx_draw_rect(vx, vy, vw, vh, 0xFF11111B);
             HolyGLViewport(vx + 2, vy + 2, vw - 4, vh - 4);
