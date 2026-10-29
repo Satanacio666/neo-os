@@ -166,6 +166,53 @@ U0 SelfTestSymbols() {
         doldoc_printf("[SELFTEST] FAIL symbol audit (%lld symbols, %lld unresolved)\n", n, u);
     }
     doldoc_printf("SYMS: %lld symbols, %lld unresolved\n", n, u);
+
+    // P0.3: the sovereign (.HC) table must also be scanned, and the scan must
+    // find ZERO pointing at the trap after a full boot+compile. If the scan
+    // itself reports a non-zero, the gate catches it here too.
+    I64 su_n = SymScanUnresolved();
+    if (su_n == 0) {
+        doldoc_printf("[SELFTEST] PASS sovereign symbol scan (0 unresolved)\n");
+    } else {
+        doldoc_printf("[SELFTEST] FAIL sovereign symbol scan (%lld unresolved)\n", su_n);
+    }
+}
+
+// P0.2.4: active overflow proof. NO temporary ceiling lowering, NO branch-only
+// test — the guard itself is forced to overflow by saving the count, setting it
+// to the ceiling, inserting one more, then restoring. This runs in EVERY boot.
+U0 SelfTestOverflowInjection() {
+    I64 pass = 0;
+    I64 total = 0;
+
+    // func: HcFuncSlotOk() must refuse and report once.
+    {
+        I64 saved = g_hc_func_count;
+        I64 saved_flag = g_hc_funcs_overflowed;
+        g_hc_funcs_overflowed = 0;
+        g_hc_func_count = HC_MAX_FUNCS;
+        I64 ok = HcFuncSlotOk();
+        total++; if (ok == 0) pass++;
+        total++; if (g_hc_funcs_overflowed == 1) pass++;
+        g_hc_func_count = saved;
+        g_hc_funcs_overflowed = saved_flag;
+    }
+
+    // global: same pattern.
+    {
+        I64 saved = g_hc_global_count;
+        I64 saved_flag = g_hc_globals_overflowed;
+        g_hc_globals_overflowed = 0;
+        g_hc_global_count = HC_MAX_GLOBALS;
+        I64 ok = HcGlobalSlotOk();
+        total++; if (ok == 0) pass++;
+        total++; if (g_hc_globals_overflowed == 1) pass++;
+        g_hc_global_count = saved;
+        g_hc_globals_overflowed = saved_flag;
+    }
+
+    if (pass == total) doldoc_printf("OVERFLOW: PASS (%lld/%lld)\n", pass, total);
+    else doldoc_printf("OVERFLOW: FAIL (%lld/%lld)\n", pass, total);
 }
 
 // P2.1.5: exercise the .HC-owned cache-maintenance path directly — write a
@@ -1535,6 +1582,7 @@ U0 SelfTestRun() {
     DolDocSlateSelfTest();
     ShellSelfTest();
     SelfTestInputDuct();
+    SelfTestOverflowInjection();
     SelfTestHeapIntegrity();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",

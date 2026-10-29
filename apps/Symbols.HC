@@ -248,7 +248,51 @@ U64 SymNearestAddr(U64 addr) {
 // table. The seed's symbols_* entries are SIC-patched to point here so every
 // .HC caller (compiled with SIC cells) uses this table; the seed table is frozen.
 // ------------------------------------------------------------------------------
-U64 SymUnresolvedTrap() { return 0; }
+
+// P0.3: the unresolved trap counts invocations and reports the first one. A
+// forward reference that survived to runtime (compiled but never resolved) is
+// a lie waiting to happen: calling it would silently return 0. Gritar, nao
+// ser mudo.
+I64 g_sym_trap_hits = 0;
+U64 SymUnresolvedTrap() {
+  g_sym_trap_hits++;
+  if (g_sym_trap_hits == 1) {
+    doldoc_printf("$FG,RED$[SYMBOLS] TRAP INVOKED: unresolved forward reference CALLED at runtime (hits=%lld)$FG$\n",
+                  g_sym_trap_hits);
+  }
+  return 0;
+}
+
+// P0.3: honest scan of the SOVEREIGN (.HC) symbol table — the one the seed's
+// symbols_* were SIC-patched to. Iterates all 1024 buckets, finds every symbol
+// still pointing at &SymUnresolvedTrap, prints the exact names, returns the
+// count. The boot log prints "No unresolved forward references." only when the
+// scan found zero. (The C-side scan in boot/runtime/symbols.c covers the seed
+// table; this covers the sovereign .HC table, which is the one every .HC caller
+// uses.)
+I64 SymScanUnresolved() {
+  I64 n = 0;
+  I64 su_b = 0;
+  while (su_b < SYM_HASH_BUCKETS) {
+    CSymbol *curr = g_sym_buckets[su_b];
+    while (curr) {
+      if (curr->address == (U64)&SymUnresolvedTrap && strcmp(curr->name, "SymUnresolvedTrap") != 0) {
+        if (n == 0) doldoc_printf("$FG,RED$[SYMBOLS] UNRESOLVED FORWARD REFERENCES IN SOVEREIGN TABLE:$FG$\n");
+        doldoc_printf("  - %s\n", curr->name);
+        n++;
+      }
+      curr = curr->next;
+    }
+    su_b++;
+  }
+  if (n == 0) {
+    doldoc_printf("[SYMBOLS] No unresolved forward references. (sovereign scan: %lld total, 0 pointing at trap)\n",
+                  g_sym_total_count);
+  } else {
+    doldoc_printf("$FG,RED$[SYMBOLS] %lld unresolved reference(s) — invoking them would trap.$FG$\n", n);
+  }
+  return n;
+}
 
 U0 SymIngest(U8 *name, U64 address, I64 type) {
   SymRegister(name, address, type);

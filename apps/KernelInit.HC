@@ -8,6 +8,22 @@
 I64 g_kernel_booting = 1;
 I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 
+// P0.0.3: table ceilings, mirrored from Compiler.HC/ShaderVM.HC. The #defines
+// there are per-unit and NOT visible to KernelInit.HC (which runs before they
+// load); without a local mirror they'd resolve to 0 and the [BUDGET] line would
+// print teto=0. Keep in sync with the originals.
+#define HC_MAX_FUNCS     2048
+#define HC_MAX_GLOBALS   768
+#define HC_MAX_DEFINES   1024
+#define HC_MAX_STRUCTS   128
+#define HC_MAX_LOCALS    512
+#define HC_MAP_MAX       1024
+#define HC_FNF_MAX       2048
+#define HC_MAX_DEFERRED  64
+#define HC_MAX_EPILOGUES 512
+#define SV_MAX_CONST     512
+#define SV_MAX_LABELS    64
+
 U0 KInitLog(U8 *msg) {
     doldoc_printf("[KERNEL-INIT] %s\n", msg);
 }
@@ -136,13 +152,35 @@ U0 KernelInitMain() {
 
     // Stage 7: Enter sovereign fullscreen DolDoc shell continuum
     g_kernel_booting = 0;
-    symbols_report_unresolved();
 
     // P3.8: sovereign handover — KHeap.HC takes over kmalloc/kfree (the seed
     // allocator is frozen from here on). Done before the shell allocates anything.
     KHeapHandover();
     SymbolsHandover();
+
+    // P0.3: cover BOTH books of record with a real scan:
+    //   - C seed   table (boot/runtime/symbols.c)  -> symbols_report_unresolved()
+    //   - sovereign .HC table (g_sym_buckets)      -> SymScanUnresolved() (lists names)
+    symbols_report_unresolved();
+    SymScanUnresolved();
+
     KInitLog("Sovereign handover: KHeap.HC + Symbols.HC own the runtime.");
+
+    // P0.0.3: table usage vs ceiling at end of boot. Pure HolyC reads of the
+    // compiler/VM counters (no new C runtime calls — census stays at 26 symbols_lookup).
+    // NOTE: the C JIT limits a single printf to 7 register args — split the budget.
+    doldoc_printf("[BUDGET] funcs=%lld/%lld globals=%lld/%lld\n",
+                  g_hc_func_count, HC_MAX_FUNCS, g_hc_global_count, HC_MAX_GLOBALS);
+    doldoc_printf("[BUDGET] defs=%lld/%lld structs=%lld/%lld\n",
+                  g_hc_def_count, HC_MAX_DEFINES, g_hc_struct_count, HC_MAX_STRUCTS);
+    doldoc_printf("[BUDGET] locals=%lld/%lld map=%lld/%lld\n",
+                  g_hc_local_count, HC_MAX_LOCALS, g_hc_map_count, HC_MAP_MAX);
+    doldoc_printf("[BUDGET] fnf=%lld/%lld init=%lld/%lld\n",
+                  g_hc_fnf_count, HC_FNF_MAX, g_hc_init_count, HC_MAX_DEFERRED);
+    doldoc_printf("[BUDGET] epi=%lld/%lld sv_const=%lld/%lld\n",
+                  g_hc_epi_count, HC_MAX_EPILOGUES, g_sv_const_count, SV_MAX_CONST);
+    doldoc_printf("[BUDGET] sv_lbl=%lld/%lld sv_ref=%lld/%lld\n",
+                  g_sv_lbl_count, SV_MAX_LABELS, g_sv_ref_count, SV_MAX_LABELS);
 
     // P3.4: arm the EL1 virtual timer (PPI registered at Gic.HC load) and unmask
     // IRQs last. Early IRQs (before the scheduler) are gated by g_sched_ready.
