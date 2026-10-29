@@ -110,7 +110,7 @@
 // member arrays sized `HC_MAX_STRUCTS * HC_STRUCT_MEMBERS`. Exceeding either is a
 // hard error (g_hc_error), never a silent drop — the old `m_cnt < 64` guard threw
 // members away with no diagnostic, which is exactly the class of bug F0 removes.
-#define HC_MAX_STRUCTS   128
+#define HC_MAX_STRUCTS   256
 #define HC_STRUCT_MEMBERS 128
 // BLOCO 3: a arvore tem 1475 definicoes de funcao. Com 512 o registro estourava EM
 // SILENCIO: a funcao nao era registrada, o simbolo ficava no TRAP DE NAO-RESOLVIDO,
@@ -202,6 +202,8 @@ I64   g_hc_func_count;
 // HC_MAX_GLOBALS). Reporta o estouro UMA vez, quando acontece.
 I64   g_hc_funcs_overflowed = 0;
 I64   g_hc_locals_overflowed = 0;
+I64   g_hc_defs_overflowed = 0;
+I64   g_hc_fnf_overflowed = 0;
 U0 HcFuncOverflowReport() {
     if (g_hc_funcs_overflowed) return;
     g_hc_funcs_overflowed = 1;
@@ -226,7 +228,7 @@ I64   g_hc_arg_float[32];        // transient: which call args are F64
 // This table records name -> returns-F64 and is NEVER reset; HcFuncIsFloat consults
 // it when the per-unit table has no entry. It is also filled by HcPrescanFuncs so
 // intra-unit forward references resolve too.
-#define HC_FNF_MAX 2048
+#define HC_FNF_MAX 4096
 U8    g_hc_fnf_names[HC_FNF_MAX * 24];
 I64   g_hc_fnf_flags[HC_FNF_MAX];
 I64   g_hc_fnf_count;
@@ -268,7 +270,7 @@ I64 HcGlobalSlotOk() {
 }
 
 // Preprocessor #define Table in Compiler.HC
-#define HC_MAX_DEFINES 1024
+#define HC_MAX_DEFINES 2048
 U8    g_hc_def_names[HC_MAX_DEFINES * 64];
 I64   g_hc_def_vals[HC_MAX_DEFINES];
 I64   g_hc_def_count;
@@ -547,6 +549,11 @@ U0 HcAddDefine(U8 *name, I64 val) {
         g_hc_def_vals[g_hc_def_count] = val;
         g_hc_def_count++;
     } else {
+        if (!g_hc_defs_overflowed) {
+            g_hc_defs_overflowed = 1;
+            doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_DEFINES overflow (%lld/%lld) — define NAO registrado$FG$\n",
+                          g_hc_def_count, (I64)HC_MAX_DEFINES);
+        }
         g_hc_error = 1;
     }
 }
@@ -573,6 +580,18 @@ I64 HcFindStruct(U8 *name) {
     return -1;
 }
 
+I64 g_hc_structs_overflowed = 0;
+U0 HcStructOverflowReport() {
+    if (g_hc_structs_overflowed) return;
+    g_hc_structs_overflowed = 1;
+    doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_STRUCTS overflow (%lld/%lld) — struct nao registrado$FG$\n",
+                  g_hc_struct_count, (I64)HC_MAX_STRUCTS);
+}
+I64 HcStructSlotOk() {
+    if (g_hc_struct_count < HC_MAX_STRUCTS) return 1;
+    HcStructOverflowReport();
+    return 0;
+}
 I64 HcAddStruct(U8 *name) {
     I64 ex_idx = HcFindStruct(name);
     if (ex_idx >= 0) {
@@ -580,7 +599,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (g_hc_struct_count >= HC_MAX_STRUCTS) { g_hc_error = 1; return 0; }
+    if (HcStructSlotOk() == 0) { g_hc_error = 1; return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
@@ -760,7 +779,7 @@ U64 HcFindFunc(U8 *name) {
 // P0.6: cumulative JIT symbol map (name -> addr). Stored, not printed, so the
 // boot log is not flooded; dumped on demand by the `jitmap` shell command so
 // scripts/crash-decode.py can symbolicate a faulting ELR_EL1 to function+offset.
-#define HC_MAP_MAX 1024
+#define HC_MAP_MAX 2048
 U8  g_hc_map_names[HC_MAP_MAX * 24];
 U64 g_hc_map_addrs[HC_MAP_MAX];
 I64 g_hc_map_count = 0;
@@ -800,13 +819,25 @@ U0 HcPublishFunc(U8 *name, U64 addr) {
 }
 
 // P4.5: persist a function's return-floatness (see g_hc_fnf_* above).
+I64 g_hc_fnf_overflowed = 0;
+U0 HcFnfOverflowReport() {
+    if (g_hc_fnf_overflowed) return;
+    g_hc_fnf_overflowed = 1;
+    doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_FNF_MAX overflow (%lld/%lld) — F64 return types corrompidos!$FG$\n",
+                  g_hc_fnf_count, (I64)HC_FNF_MAX);
+}
+I64 HcFnfSlotOk() {
+    if (g_hc_fnf_count < HC_FNF_MAX) return 1;
+    HcFnfOverflowReport();
+    return 0;
+}
 U0 HcFnFloatSet(U8 *name, I64 isf) {
     I64 i = 0;
     while (i < g_hc_fnf_count) {
         if (strcmp(&g_hc_fnf_names[i * 24], name) == 0) { g_hc_fnf_flags[i] = isf; return; }
         i++;
     }
-    if (g_hc_fnf_count < HC_FNF_MAX) {
+    if (HcFnfSlotOk()) {
         HcSafeCopy(&g_hc_fnf_names[g_hc_fnf_count * 24], name, 24);
         g_hc_fnf_flags[g_hc_fnf_count] = isf;
         g_hc_fnf_count++;

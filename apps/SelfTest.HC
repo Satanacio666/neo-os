@@ -227,11 +227,57 @@ U0 SelfTestOverflowInjection() {
         (void)saved_overflow;
     }
 
+    // fnf: the F64-return-type table. Overflow corrupts F64->I64 silently.
+    {
+        I64 saved = g_hc_fnf_count;
+        I64 saved_flag = g_hc_fnf_overflowed;
+        g_hc_fnf_overflowed = 0;
+        g_hc_fnf_count = HC_FNF_MAX;
+        I64 ok = HcFnfSlotOk();
+        total++; if (ok == 0) pass++;
+        total++; if (g_hc_fnf_overflowed == 1) pass++;
+        g_hc_fnf_count = saved;
+        g_hc_fnf_overflowed = saved_flag;
+    }
+
+    // structs: cumulative registry. Overflow must refuse + report.
+    {
+        I64 saved = g_hc_struct_count;
+        I64 saved_flag = g_hc_structs_overflowed;
+        I64 saved_error = g_hc_error;
+        g_hc_structs_overflowed = 0;
+        g_hc_error = 0;
+        g_hc_struct_count = HC_MAX_STRUCTS;
+        I64 ok = HcStructSlotOk();
+        total++; if (ok == 0) pass++;
+        total++; if (g_hc_structs_overflowed == 1) pass++;
+        g_hc_struct_count = saved;
+        g_hc_structs_overflowed = saved_flag;
+        g_hc_error = saved_error;
+    }
+
+    // defs: #define registry. Overflow must report (via HcAddDefine).
+    {
+        I64 saved = g_hc_def_count;
+        I64 saved_flag = g_hc_defs_overflowed;
+        I64 saved_error = g_hc_error;
+        g_hc_defs_overflowed = 0;
+        g_hc_error = 0;
+        g_hc_def_count = HC_MAX_DEFINES;
+        HcAddDefine("overflow_probe_def", 1);
+        total++; if (g_hc_def_count == HC_MAX_DEFINES) pass++;
+        total++; if (g_hc_defs_overflowed == 1) pass++;
+        g_hc_def_count = saved;
+        g_hc_defs_overflowed = saved_flag;
+        g_hc_error = saved_error;
+    }
+
     // locals: the silent-corruption guard. Forcing count=cap then declaring one
     // more local must NOT return a valid offset (the old bug returned `offset`
     // outside the if/else) and must set the overflow flag + report.
     {
         I64 saved = g_hc_local_count;
+        I64 saved_frame = g_hc_frame_offset;
         I64 saved_error = g_hc_error;
         I64 saved_flag = g_hc_locals_overflowed;
         g_hc_locals_overflowed = 0;
@@ -244,6 +290,7 @@ U0 SelfTestOverflowInjection() {
         g_hc_local_count = saved;
         g_hc_locals_overflowed = saved_flag;
         g_hc_error = saved_error;
+        g_hc_frame_offset = saved_frame;
     }
 
     if (pass == total) doldoc_printf("OVERFLOW: PASS (%lld/%lld)\n", pass, total);
