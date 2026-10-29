@@ -139,6 +139,7 @@ U0 KernelInitMain() {
     KInitLoad("Shell.HC");
     KInitLoad("ShaderEditor.HC");
     KInitLoad("HolyBenchmark.HC");
+    KInitLoad("Watchdog.HC");
 
     KInitLog("======================================================");
     KInitLog("✦ ALL 34 HOLYC SUBSYSTEMS COMPILED & ACTIVE IN RING 0 ✦");
@@ -181,6 +182,10 @@ U0 KernelInitMain() {
                   g_hc_epi_count, HC_MAX_EPILOGUES, g_sv_const_count, SV_MAX_CONST);
     doldoc_printf("[BUDGET] sv_lbl=%lld/%lld sv_ref=%lld/%lld\n",
                   g_sv_lbl_count, SV_MAX_LABELS, g_sv_ref_count, SV_MAX_LABELS);
+
+    // FASE 1 / CAMADA 1: vigia contínuo no core ocioso (sistema imunológico).
+    // Carregado DEPOIS de todos os estágios — pode referenciar tudo sem forward-ref.
+    WatchdogStart();
 
     // P3.4: arm the EL1 virtual timer (PPI registered at Gic.HC load) and unmask
     // IRQs last. Early IRQs (before the scheduler) are gated by g_sched_ready.

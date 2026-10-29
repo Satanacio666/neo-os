@@ -294,6 +294,25 @@ I64 SymScanUnresolved() {
   return n;
 }
 
+// CAMADA 1 (Watchdog): variante SILENCIOSA — só conta, não imprime. O vigia
+// imprime apenas em FALHA, para não inundar o serial a cada 250 ms (o que
+// corromperia o parsing do gate por interleaving).
+I64 SymScanUnresolvedQuiet() {
+  I64 n = 0;
+  I64 sq_b = 0;
+  while (sq_b < SYM_HASH_BUCKETS) {
+    CSymbol *curr = g_sym_buckets[sq_b];
+    while (curr) {
+      if (curr->address == (U64)&SymUnresolvedTrap && strcmp(curr->name, "SymUnresolvedTrap") != 0) {
+        n++;
+      }
+      curr = curr->next;
+    }
+    sq_b++;
+  }
+  return n;
+}
+
 U0 SymIngest(U8 *name, U64 address, I64 type) {
   SymRegister(name, address, type);
 }
