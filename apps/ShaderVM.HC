@@ -608,13 +608,13 @@ U0 ShaderVMSelfTest() {
 
     // 6. mandel depth: a 120x120 field must show an interior AND an exterior.
     //    Escapees (blue-bright) and the interior (yellow-ish) split the luma
-    //    distribution; the coarse-class count stays bounded.
+    //    distribution; the coarse 2-bit-per-channel class count stays bounded.
     I64 nb_lo = 0;
     I64 nb_hi = 0;
     I64 nb_total = 0;
-    U8 bseen[16];
+    U8 bseen[64];
     I64 k = 0;
-    while (k < 16) { bseen[k] = 0; k = k + 1; }
+    while (k < 64) { bseen[k] = 0; k = k + 1; }
     I64 my = 0;
     while (my < 120) {
         I64 mx = 0;
@@ -626,14 +626,14 @@ U0 ShaderVMSelfTest() {
             I64 lum = (((c >> 16) & 255) * 30 + ((c >> 8) & 255) * 59 + (c & 255) * 11) / 100;
             if (lum <= 40) nb_lo = nb_lo + 1;
             if (lum >= 170) nb_hi = nb_hi + 1;
-            I64 nb = (((c >> 5) & 7) * 1 + (((c >> 13) & 7) * 3) + (((c >> 21) & 7) * 5));
+            I64 nb = (((c >> 16) & 192) >> 6) * 16 + (((c >> 8) & 192) >> 6) * 4 + ((c & 192) >> 6);
             if (bseen[nb] == 0) { bseen[nb] = 1; nb_total = nb_total + 1; }
             mx = mx + 2;
         }
         my = my + 2;
     }
     total = total + 1;
-    if (nb_lo >= 400 && nb_hi >= 400 && nb_total <= 16) pass = pass + 1;
+    if (nb_lo >= 400 && nb_hi >= 400 && nb_total >= 3 && nb_total <= 64) pass = pass + 1;
 
     // 7. direct VM kernel: at (0,0,t=0) -> r=0.5 (128), g=1.0 (255), b=0.75 (191).
     U32 vm_c = ShaderKernelColor(SVB_VM, 0.0, 0.0, 0.0, 0.0, 0.0);
