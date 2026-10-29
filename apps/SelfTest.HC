@@ -211,6 +211,41 @@ U0 SelfTestOverflowInjection() {
         g_hc_globals_overflowed = saved_flag;
     }
 
+    // map (jitmap): the forensics table. Overflow must set the flag ONCE and
+    // the table must NOT grow past the ceiling.
+    {
+        I64 saved = g_hc_map_count;
+        I64 saved_flag = g_hc_map_overflowed;
+        I64 saved_overflow = g_hc_map_overflowed;
+        g_hc_map_overflowed = 0;
+        g_hc_map_count = HC_MAP_MAX;
+        HcMapAdd("overflow_probe", 0x1234);
+        total++; if (g_hc_map_count == HC_MAP_MAX) pass++;
+        total++; if (g_hc_map_overflowed == 1) pass++;
+        g_hc_map_count = saved;
+        g_hc_map_overflowed = saved_flag;
+        (void)saved_overflow;
+    }
+
+    // locals: the silent-corruption guard. Forcing count=cap then declaring one
+    // more local must NOT return a valid offset (the old bug returned `offset`
+    // outside the if/else) and must set the overflow flag + report.
+    {
+        I64 saved = g_hc_local_count;
+        I64 saved_error = g_hc_error;
+        I64 saved_flag = g_hc_locals_overflowed;
+        g_hc_locals_overflowed = 0;
+        g_hc_error = 0;
+        g_hc_local_count = HC_MAX_LOCALS;
+        I64 off = HcAddLocalTyped("overflow_probe_local", 8, 0, -1, 1);
+        total++; if (off == -1) pass++;
+        total++; if (g_hc_locals_overflowed == 1) pass++;
+        total++; if (g_hc_error == 1) pass++;
+        g_hc_local_count = saved;
+        g_hc_locals_overflowed = saved_flag;
+        g_hc_error = saved_error;
+    }
+
     if (pass == total) doldoc_printf("OVERFLOW: PASS (%lld/%lld)\n", pass, total);
     else doldoc_printf("OVERFLOW: FAIL (%lld/%lld)\n", pass, total);
 }

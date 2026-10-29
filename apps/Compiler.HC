@@ -201,6 +201,7 @@ I64   g_hc_func_count;
 // BLOCO 3: a guarda de HC_MAX_FUNCS pulava em silencio (mesma classe do
 // HC_MAX_GLOBALS). Reporta o estouro UMA vez, quando acontece.
 I64   g_hc_funcs_overflowed = 0;
+I64   g_hc_locals_overflowed = 0;
 U0 HcFuncOverflowReport() {
     if (g_hc_funcs_overflowed) return;
     g_hc_funcs_overflowed = 1;
@@ -705,10 +706,20 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         g_hc_local_strides[g_hc_local_count * 4 + 2] = 0;
         g_hc_local_strides[g_hc_local_count * 4 + 3] = 0;
         g_hc_local_count++;
-    } else {
-        g_hc_error = 1;
+        return offset;
     }
-    return offset;
+    // P0.2: HC_MAX_LOCALS overflow used to be a silent corruption — the local
+    // was dropped but `return offset` (outside the if) handed the caller a
+    // VALID frame offset for an entry that doesn't exist in the table. The
+    // generated code then referenced locals never recorded. Now: report once,
+    // return -1 (no valid offset for a dropped local).
+    if (!g_hc_locals_overflowed) {
+        g_hc_locals_overflowed = 1;
+        doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_LOCALS overflow (%lld/%lld) — local descartado, offset nao emitido$FG$\n",
+                      g_hc_local_count, (I64)HC_MAX_LOCALS);
+    }
+    g_hc_error = 1;
+    return -1;
 }
 
 I64 HcAddLocal(U8 *name) {
@@ -753,9 +764,21 @@ U64 HcFindFunc(U8 *name) {
 U8  g_hc_map_names[HC_MAP_MAX * 24];
 U64 g_hc_map_addrs[HC_MAP_MAX];
 I64 g_hc_map_count = 0;
+I64 g_hc_map_overflowed = 0;
 
+// P0.2: HcMapAdd used to truncate the jitmap in SILENCE — the very table that
+// scripts/crash-decode.py needs to symbolicate a faulting ELR_EL1. Measured at
+// end of boot: map=1024/1024 (100% full). Now it reports ONCE, at the moment
+// the table fills, so a silent post-mortem blind spot becomes a loud one.
 U0 HcMapAdd(U8 *name, U64 addr) {
-    if (g_hc_map_count >= HC_MAP_MAX) return;
+    if (g_hc_map_count >= HC_MAP_MAX) {
+        if (!g_hc_map_overflowed) {
+            g_hc_map_overflowed = 1;
+            doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAP_MAX overflow (%lld/%lld) — jitmap TRUNCADO, crash-decode.py perde resolucao$FG$\n",
+                          g_hc_map_count, (I64)HC_MAP_MAX);
+        }
+        return;
+    }
     HcSafeCopy(&g_hc_map_names[g_hc_map_count * 24], name, 24);
     g_hc_map_addrs[g_hc_map_count] = addr;
     g_hc_map_count = g_hc_map_count + 1;
