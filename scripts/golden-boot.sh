@@ -22,7 +22,9 @@ echo "== rebuilding =="
 
 echo "== booting =="
 "$ROOT/scripts/run-viewer-vm.sh" restart >/dev/null 2>&1
-for i in $(seq 1 40); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && break; sleep 1; done
+# P0.4/harness: boot medido em ~41s neste host (TCG aarch64). 40s era 1s curto
+# demais -> o gate falhava 'shell active' mesmo com o boot perfeito. 60s de margem.
+for i in $(seq 1 60); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && break; sleep 1; done
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"

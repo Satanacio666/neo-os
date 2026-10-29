@@ -576,6 +576,11 @@ static void galloc_set(const char *n, size_t b) {
         g_galloc[g_galloc_count].name[31] = '\0';
         g_galloc[g_galloc_count].bytes = b;
         g_galloc_count++;
+    } else {
+        static int warned = 0;
+        if (!warned) { warned = 1;
+            printf("[SEED-JIT] FATAL: MAX_GALLOC overflow (%d/%d) - tamanho de global nao registrado\n",
+                   g_galloc_count, MAX_GALLOC); }
     }
 }
 

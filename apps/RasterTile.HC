@@ -90,6 +90,8 @@ class CRasterBin { U16 idx[RASTER_MAX_TRIS_PER_TILE]; I64 count; };
 CTriRecord  g_rs_records[RASTER_MAX_SCENE_TRIS];
 CRasterBin  g_rs_bins[RASTER_MAX_PRODUCERS][RASTER_MAX_TILES];
 I64 g_rs_prod_count[RASTER_MAX_PRODUCERS];   // accepted records per producer
+I64 g_rs_producer_overflowed = 0;
+I64 g_rs_tris_overflowed = 0;
 I64 g_rs_cols = 0;
 I64 g_rs_rows = 0;
 I64 g_rs_tile_size = 64;
@@ -1044,8 +1046,22 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
 // with no lock; the render phase drains them in id order for a deterministic result.
 U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
   if (!v) return;
-  if (producer < 0 || producer >= RASTER_MAX_PRODUCERS) return;
-  if (g_rs_prod_count[producer] >= RS_TRIS_PER_PRODUCER) return;
+  if (producer < 0 || producer >= RASTER_MAX_PRODUCERS) {
+    if (!g_rs_producer_overflowed) {
+      g_rs_producer_overflowed = 1;
+      doldoc_printf("$FG,RED$[RASTER] FATAL: RASTER_MAX_PRODUCERS overflow (producer=%lld, max=%lld)$FG$\n",
+                    producer, (I64)RASTER_MAX_PRODUCERS);
+    }
+    return;
+  }
+  if (g_rs_prod_count[producer] >= RS_TRIS_PER_PRODUCER) {
+    if (!g_rs_tris_overflowed) {
+      g_rs_tris_overflowed = 1;
+      doldoc_printf("$FG,RED$[RASTER] FATAL: RS_TRIS_PER_PRODUCER overflow (prod=%lld count=%lld max=%lld)$FG$\n",
+                    producer, g_rs_prod_count[producer], (I64)RS_TRIS_PER_PRODUCER);
+    }
+    return;
+  }
   // F2: truncate the F64 producer coords to the rasterizer's native I64 form ONCE
   // (the same truncation the render phase used to redo per tile per triangle).
   I64 ax = (I64)v[0].x; I64 ay = (I64)v[0].y;

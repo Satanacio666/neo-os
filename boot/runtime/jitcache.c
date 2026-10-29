@@ -95,7 +95,13 @@ static void jc_sym_visitor(const char *name, void *address, int64_t type) {
     if (!name || !address) return;
     uint64_t a = (uint64_t)(uintptr_t)address;
     if (a < s_range_lo || a >= s_range_hi) return;   /* fora da regiao: nao e nosso */
-    if (s_sym_count >= JC_MAX_SYMS) return;
+    if (s_sym_count >= JC_MAX_SYMS) {
+        static int warned = 0;
+        if (!warned) { warned = 1;
+            printf("[JIT-CACHE] FATAL: JC_MAX_SYMS overflow (%u/%d) - cache de simbolos TRUNCADO\n",
+                   s_sym_count, JC_MAX_SYMS); }
+        return;
+    }
     jc_sym_t *s = &s_syms[s_sym_count];
     s->address = a;
     int i = 0;

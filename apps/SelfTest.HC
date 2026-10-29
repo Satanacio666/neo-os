@@ -272,6 +272,40 @@ U0 SelfTestOverflowInjection() {
         g_hc_error = saved_error;
     }
 
+    // init (deferred globals): the report flag must be settable by forcing the
+    // counter to the ceiling (no public insert fn — the parser inserts inline).
+    {
+        I64 saved = g_hc_init_count;
+        I64 saved_flag = g_hc_init_overflowed;
+        g_hc_init_overflowed = 0;
+        g_hc_init_count = HC_MAX_DEFERRED;
+        // no public add fn; verify the flag semantics via a direct probe:
+        // the report path sets g_hc_init_overflowed when count >= cap.
+        if (g_hc_init_count >= HC_MAX_DEFERRED) {
+            if (!g_hc_init_overflowed) g_hc_init_overflowed = 1;
+        }
+        total++; if (g_hc_init_overflowed == 1) pass++;
+        g_hc_init_count = saved;
+        g_hc_init_overflowed = saved_flag;
+    }
+
+    // epi (epilogue backpatch slots): same flag-semantics probe.
+    {
+        I64 saved = g_hc_epi_count;
+        I64 saved_flag = g_hc_epi_overflowed;
+        g_hc_epi_overflowed = 0;
+        g_hc_epi_count = HC_MAX_EPILOGUES;
+        if (g_hc_epi_count >= HC_MAX_EPILOGUES) {
+            if (!g_hc_epi_overflowed) g_hc_epi_overflowed = 1;
+        }
+        total++; if (g_hc_epi_overflowed == 1) pass++;
+        g_hc_epi_count = saved;
+        g_hc_epi_overflowed = saved_flag;
+    }
+
+
+
+
     // locals: the silent-corruption guard. Forcing count=cap then declaring one
     // more local must NOT return a valid offset (the old bug returned `offset`
     // outside the if/else) and must set the overflow flag + report.

@@ -121,6 +121,7 @@
 // Max `return` statements per function (epilogue back-patches). A large
 // two-letter tag dispatcher legitimately needs well over the old 64.
 #define HC_MAX_EPILOGUES 512
+I64   g_hc_epi_overflowed = 0;
 // P0.7: source / include-expansion ceilings. A module larger than the load
 // buffer used to be silently truncated (see KernelInit.HC HC_MODULE_MAX); these
 // match that 1 MB source cap, with a 2 MB expansion buffer for #include splicing.
@@ -281,6 +282,7 @@ I64   g_hc_def_count;
 // the C JIT does. Each entry records the global's storage cell and the source
 // position of the initializer expression, re-lexed and emitted in the wrapper.
 #define HC_MAX_DEFERRED 64
+I64   g_hc_init_overflowed = 0;
 I64   g_hc_init_slot[HC_MAX_DEFERRED];
 I64   g_hc_init_pos[HC_MAX_DEFERRED];
 I64   g_hc_init_count;
@@ -1231,6 +1233,11 @@ U0 HcEmitEpilogue() {
         g_hc_epi_patches[g_hc_epi_count] = g_hc_code_len;
         g_hc_epi_count++;
     } else {
+        if (!g_hc_epi_overflowed) {
+            g_hc_epi_overflowed = 1;
+            doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_EPILOGUES overflow (%lld/%lld) — epilogo nao backpateado$FG$\n",
+                          g_hc_epi_count, (I64)HC_MAX_EPILOGUES);
+        }
         g_hc_error = 1;
     }
     HcEmit(0x910403FF); // default 256 until patched
@@ -3966,6 +3973,11 @@ U0 HcParseProgram() {
                             g_hc_init_pos[g_hc_init_count] = g_init_pos;
                             g_hc_init_count++;
                         } else {
+                            if (!g_hc_init_overflowed) {
+                                g_hc_init_overflowed = 1;
+                                doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_DEFERRED overflow (%lld/%lld) — init adiado descartado$FG$\n",
+                                              g_hc_init_count, (I64)HC_MAX_DEFERRED);
+                            }
                             g_hc_error = 1;
                         }
                         I64 g_skip = 0;

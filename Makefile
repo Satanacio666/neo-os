@@ -145,7 +145,12 @@ check-tools:
 	  exit 1; \
 	fi
 
-all: check-tools $(TARGET_EFI) disk
+all: check-source-sanity check-tools $(TARGET_EFI) disk
+
+# P0.4: guarda-corpo do build (erro E4) — aborta rc=1 se qualquer apps/*.HC
+# encolheu>20% vs HEAD ou mudou o delta de chaves. Roda ANTES de gerar imagem.
+check-source-sanity:
+	python3 scripts/check-source-sanity.py
 
 libuefi: $(UEFI_DIR)/reloc.o
 	$(MAKE) -C $(UEFI_DIR) ARCH=aarch64 USE_GCC=1

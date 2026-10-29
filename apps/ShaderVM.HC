@@ -142,6 +142,8 @@ U8  g_sv_ref_names[SV_MAX_LABELS * 16];
 I64 g_sv_ref_word[SV_MAX_LABELS];
 I64 g_sv_ref_count;
 I64 g_sv_asm_err;
+I64 g_sv_const_overflowed = 0;
+I64 g_sv_lbl_overflowed = 0;
 
 // ==============================================================================
 // Emitter API (used by the built-in library and available to custom shaders).
@@ -155,7 +157,15 @@ U0 ShaderAsmReset() {
 }
 
 I64 ShaderAddConst(F64 v) {
-    if (g_sv_const_count >= SV_MAX_CONST) return 0;
+    if (g_sv_const_count >= SV_MAX_CONST) {
+        if (!g_sv_const_overflowed) {
+            g_sv_const_overflowed = 1;
+            doldoc_printf("$FG,RED$[SHADERVM] FATAL: SV_MAX_CONST overflow (%lld/%lld) — constante NAO adicionada$FG$\n",
+                          g_sv_const_count, (I64)SV_MAX_CONST);
+        }
+        g_sv_asm_err = 1;
+        return -1;
+    }
     g_sv_const[g_sv_const_count] = v;
     g_sv_const_count = g_sv_const_count + 1;
     return g_sv_const_count - 1;
@@ -686,6 +696,13 @@ I64 ShaderVMAssemble(U8 *src) {
                 ShaderCopyTok(g_sv_lbl_names + g_sv_lbl_count * 16, src + ls, k - ls - 1);
                 g_sv_lbl_pos[g_sv_lbl_count] = g_sv_prog_len / 4;
                 g_sv_lbl_count = g_sv_lbl_count + 1;
+            } else {
+                if (!g_sv_lbl_overflowed) {
+                    g_sv_lbl_overflowed = 1;
+                    doldoc_printf("$FG,RED$[SHADERVM] FATAL: SV_MAX_LABELS overflow (%lld/%lld) — label descartada$FG$\n",
+                                  g_sv_lbl_count, (I64)SV_MAX_LABELS);
+                }
+                g_sv_asm_err = 1;
             }
             continue;
         }
@@ -749,6 +766,7 @@ I64 ShaderVMAssemble(U8 *src) {
         g_sv_prog[g_sv_ref_word[j]] = tgt;
         j = j + 1;
     }
+    if (g_sv_asm_err) return -1;
     return g_sv_prog_len / 4;
 }
 

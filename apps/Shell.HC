@@ -77,7 +77,15 @@ I64 ShellFindCmd(U8 *name) {
 }
 
 U0 shell_register_cmd(U8 *name, U64 fn_addr, U8 *usage) {
-    if (!name || !*name || g_shell_cmd_count >= SHELL_MAX_CMDS) return;
+    if (!name || !*name) return;
+    if (g_shell_cmd_count >= SHELL_MAX_CMDS) {
+        if (!g_shell_cmds_overflowed) {
+            g_shell_cmds_overflowed = 1;
+            doldoc_printf("$FG,RED$[SHELL] FATAL: SHELL_MAX_CMDS overflow (%lld/%lld) — comando '%s' NAO registrado$FG$\n",
+                          g_shell_cmd_count, (I64)SHELL_MAX_CMDS, name);
+        }
+        return;
+    }
     I64 ex = ShellFindCmd(name);
     if (ex >= 0) { g_shell_cmds[ex].fn_addr = fn_addr; return; }
     I64 idx = g_shell_cmd_count;
