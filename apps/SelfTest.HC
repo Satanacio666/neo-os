@@ -329,6 +329,16 @@ U0 SelfTestOverflowInjection() {
 
     if (pass == total) doldoc_printf("OVERFLOW: PASS (%lld/%lld)\n", pass, total);
     else doldoc_printf("OVERFLOW: FAIL (%lld/%lld)\n", pass, total);
+
+    // P0.5: the enumerated error channel must have recorded a cause. The
+    // overflow injections above raised g_hc_error via HcRaiseError(), so the
+    // first-cause register must be non-zero and the count >= 1.
+    I64 p05_ok = 0;
+    if (g_hc_first_err_code != 0 && g_hc_err_count >= 1) p05_ok = 1;
+    doldoc_printf("ERRCHAN: %s (first=%lld '%s' count=%lld mask=0x%08X)\n",
+                  p05_ok ? "PASS" : "FAIL",
+                  g_hc_first_err_code, HcErrName(g_hc_first_err_code),
+                  g_hc_err_count, g_hc_err_mask);
 }
 
 // P2.1.5: exercise the .HC-owned cache-maintenance path directly — write a

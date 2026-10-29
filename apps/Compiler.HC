@@ -331,6 +331,61 @@ I64   g_hc_expr_float;   // 1 if the current expression result is in D0 (F64)
 I64   g_hc_error;        // set on any compiler internal error (stack overflow, cap, etc.)
 I64   g_hc_err_pos = -1; // G3-DIAG: posicao do PRIMEIRO erro (para diagnostico)
 
+// P0.5 — canal de erro enumerado. g_hc_error continua sendo o booleano que os
+// 4 leitores checam (paridade intacta); HcRaiseError() REGISTRA a causa.
+#define HC_ERR_NONE            0
+#define HC_ERR_FUNC_OVERFLOW   1
+#define HC_ERR_GLOBAL_OVERFLOW 2
+#define HC_ERR_DEF_OVERFLOW    3
+#define HC_ERR_STRUCT_OVERFLOW 4
+#define HC_ERR_LOCAL_OVERFLOW  5
+#define HC_ERR_MAP_OVERFLOW    6
+#define HC_ERR_FNF_OVERFLOW    7
+#define HC_ERR_CODE_OVERFLOW   8
+#define HC_ERR_EPI_OVERFLOW    9
+#define HC_ERR_INIT_OVERFLOW  10
+#define HC_ERR_GLOBAL_REDECL  11
+#define HC_ERR_SYNTAX_TOKEN   12
+#define HC_ERR_SYNTAX_EXPR    13
+#define HC_ERR_SYNTAX_DECL    14
+#define HC_ERR_SYNTAX_STMT    15
+#define HC_ERR_UNRESOLVED_TYPE 16
+I64 g_hc_first_err_code = 0;
+I64 g_hc_first_err_line = 0;
+I64 g_hc_err_count      = 0;
+U32 g_hc_err_mask       = 0;
+
+U0 HcRaiseError(I64 code) {
+    g_hc_error = 1;
+    g_hc_err_count++;
+    if (code >= 0 && code < 32) g_hc_err_mask = g_hc_err_mask | (1 << code);
+    if (g_hc_first_err_code == 0) {
+        g_hc_first_err_code = code;
+        if (g_hc_err_pos < 0) g_hc_err_pos = g_hc_pos;
+        g_hc_first_err_line = HcLineOf(g_hc_err_pos);
+    }
+}
+
+U8 *HcErrName(I64 code) {
+    if (code == HC_ERR_FUNC_OVERFLOW) return "FUNC_OVERFLOW";
+    if (code == HC_ERR_GLOBAL_OVERFLOW) return "GLOBAL_OVERFLOW";
+    if (code == HC_ERR_DEF_OVERFLOW) return "DEF_OVERFLOW";
+    if (code == HC_ERR_STRUCT_OVERFLOW) return "STRUCT_OVERFLOW";
+    if (code == HC_ERR_LOCAL_OVERFLOW) return "LOCAL_OVERFLOW";
+    if (code == HC_ERR_MAP_OVERFLOW) return "MAP_OVERFLOW";
+    if (code == HC_ERR_FNF_OVERFLOW) return "FNF_OVERFLOW";
+    if (code == HC_ERR_CODE_OVERFLOW) return "CODE_OVERFLOW";
+    if (code == HC_ERR_EPI_OVERFLOW) return "EPI_OVERFLOW";
+    if (code == HC_ERR_INIT_OVERFLOW) return "INIT_OVERFLOW";
+    if (code == HC_ERR_GLOBAL_REDECL) return "GLOBAL_REDECL";
+    if (code == HC_ERR_SYNTAX_TOKEN) return "SYNTAX_TOKEN";
+    if (code == HC_ERR_SYNTAX_EXPR) return "SYNTAX_EXPR";
+    if (code == HC_ERR_SYNTAX_DECL) return "SYNTAX_DECL";
+    if (code == HC_ERR_SYNTAX_STMT) return "SYNTAX_STMT";
+    if (code == HC_ERR_UNRESOLVED_TYPE) return "UNRESOLVED_TYPE";
+    return "UNKNOWN";
+}
+
 U0 HcCallParseExpr() {
     g_fn_parse_expr();
 }
@@ -340,13 +395,13 @@ U0 HcCallParseStmt() {
 }
 
 U0 HcOpPush(I64 val) {
-    if (g_hc_op_sp < 0 || g_hc_op_sp >= HC_OP_STACK) { g_hc_error = 1; return; }
+    if (g_hc_op_sp < 0 || g_hc_op_sp >= HC_OP_STACK) { HcRaiseError(HC_ERR_SYNTAX_STMT); return; }
     g_hc_op_stack[g_hc_op_sp] = val;
     g_hc_op_sp++;
 }
 
 I64 HcOpPop() {
-    if (g_hc_op_sp <= 0) { g_hc_error = 1; return 0; }
+    if (g_hc_op_sp <= 0) { HcRaiseError(HC_ERR_SYNTAX_STMT); return 0; }
     g_hc_op_sp--;
     return g_hc_op_stack[g_hc_op_sp];
 }
@@ -451,20 +506,20 @@ U0 HcStrReset() {
 U8* HcStrAlloc(I64 n) {
     if (n <= 0) n = 1;
     n = (n + 7) & ~7;
-    if (n > HC_STR_CHUNK) { g_hc_error = 1; return 0; }   // one literal must fit a chunk
+    if (n > HC_STR_CHUNK) { HcRaiseError(HC_ERR_SYNTAX_TOKEN); return 0; }   // one literal must fit a chunk
     if (g_hc_str_nchunks <= 0) HcStrReset();
     if (g_hc_str_off + n > HC_STR_CHUNK) {
         if (g_hc_str_nchunks >= HC_STR_MAX_CHUNKS) {
             doldoc_printf("[HCLX] STRING ARENA FULL (%lld chunks, %lld bytes); literal too large\n",
                           g_hc_str_nchunks, g_hc_str_bytes);
-            g_hc_error = 1;
+            HcRaiseError(HC_ERR_SYNTAX_TOKEN);
             return 0;
         }
         U8 *chunk = kmalloc(HC_STR_CHUNK);
         if (!chunk) {
             doldoc_printf("[HCLX] STRING ARENA chunk alloc failed (chunks=%lld bytes=%lld)\n",
                           g_hc_str_nchunks, g_hc_str_bytes);
-            g_hc_error = 1;
+            HcRaiseError(HC_ERR_SYNTAX_TOKEN);
             return 0;
         }
         g_hc_str_chunks[g_hc_str_nchunks] = chunk;
@@ -505,6 +560,11 @@ U0 HcReset() {
     g_hc_epi_count = 0;
     g_hc_unit_main = 0;
     g_hc_error = 0;
+    g_hc_first_err_code = 0;
+    g_hc_first_err_line = 0;
+    g_hc_err_count = 0;
+    g_hc_err_mask = 0;
+    g_hc_err_pos = -1;
     // Reset per-module tables so counts don't accumulate across compilations.
     // NOTE: the struct table is intentionally NOT reset — struct definitions must
     // persist across modules (matching the C JIT) so cross-module struct types
@@ -556,7 +616,7 @@ U0 HcAddDefine(U8 *name, I64 val) {
             doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_DEFINES overflow (%lld/%lld) — define NAO registrado$FG$\n",
                           g_hc_def_count, (I64)HC_MAX_DEFINES);
         }
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_DEF_OVERFLOW);
     }
 }
 
@@ -601,7 +661,7 @@ I64 HcAddStruct(U8 *name) {
         g_hc_struct_sizes[ex_idx] = 0;
         return ex_idx;
     }
-    if (HcStructSlotOk() == 0) { g_hc_error = 1; return 0; }
+    if (HcStructSlotOk() == 0) { HcRaiseError(HC_ERR_STRUCT_OVERFLOW); return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
     g_hc_struct_sizes[ns_idx] = 0;
@@ -739,7 +799,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_LOCALS overflow (%lld/%lld) — local descartado, offset nao emitido$FG$\n",
                       g_hc_local_count, (I64)HC_MAX_LOCALS);
     }
-    g_hc_error = 1;
+    HcRaiseError(HC_ERR_LOCAL_OVERFLOW);
     return -1;
 }
 
@@ -844,7 +904,7 @@ U0 HcFnFloatSet(U8 *name, I64 isf) {
         g_hc_fnf_flags[g_hc_fnf_count] = isf;
         g_hc_fnf_count++;
     } else {
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_FNF_OVERFLOW);
     }
 }
 
@@ -877,7 +937,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
         // "function + offset". Stored, not printed, to avoid flooding DolDoc.
         HcMapAdd(name, addr);
     } else {
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_FUNC_OVERFLOW);
     }
     HcPublishFunc(name, addr);
 }
@@ -898,7 +958,7 @@ I64 HcFuncIsFloat(U8 *name) {
 // AArch64 Machine Code Emitter
 // ------------------------------------------------------------------------------
 U0 HcEmit(U32 insn) {
-    if (g_hc_code_len >= HC_CODE_CAPACITY) { g_hc_error = 1; return; } // bounds guard: never overrun
+    if (g_hc_code_len >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; } // bounds guard: never overrun
     g_hc_code[g_hc_code_len++] = insn;
 }
 
@@ -1238,7 +1298,7 @@ U0 HcEmitEpilogue() {
             doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_EPILOGUES overflow (%lld/%lld) — epilogo nao backpateado$FG$\n",
                           g_hc_epi_count, (I64)HC_MAX_EPILOGUES);
         }
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_EPI_OVERFLOW);
     }
     HcEmit(0x910403FF); // default 256 until patched
     // ldp x29, x30, [sp], #16
@@ -1250,19 +1310,19 @@ U0 HcEmitEpilogue() {
 U0 HcFinalizeFrame() {
     I64 frame_sz = (g_hc_frame_offset + 15) & (~15);
     if (frame_sz < 64) frame_sz = 64;
-    if (frame_sz > 4080) { frame_sz = 4080; g_hc_error = 1;
+    if (frame_sz > 4080) { frame_sz = 4080; HcRaiseError(HC_ERR_CODE_OVERFLOW);
         doldoc_printf("$FG,RED$[HCLX] FRAME OVERFLOW frame=%lld locals=%lld$FG$\n",
                       g_hc_frame_offset, g_hc_local_count); }
     if (g_hc_pro_sub_idx >= 0 && g_hc_pro_sub_idx < HC_CODE_CAPACITY)
         g_hc_code[g_hc_pro_sub_idx] = 0xD10003FF | ((frame_sz & 0xFFF) << 10);
-    else { g_hc_error = 1;
+    else { HcRaiseError(HC_ERR_CODE_OVERFLOW);
         doldoc_printf("$FG,RED$[HCLX] PRO_SUB FORA DE FAIXA idx=%lld$FG$\n", g_hc_pro_sub_idx); }
     I64 ep_i = 0;
     for (ep_i = 0; ep_i < g_hc_epi_count; ep_i++) {
         I64 p_idx = g_hc_epi_patches[ep_i];
         if (p_idx >= 0 && p_idx < HC_CODE_CAPACITY)
             g_hc_code[p_idx] = 0x910003FF | ((frame_sz & 0xFFF) << 10);
-        else { g_hc_error = 1;
+        else { HcRaiseError(HC_ERR_CODE_OVERFLOW);
             doldoc_printf("$FG,RED$[HCLX] EPI PATCH FORA DE FAIXA p=%lld i=%lld$FG$\n", p_idx, ep_i); }
     }
 }
@@ -1271,19 +1331,19 @@ U0 HcBackpatchCbz(I64 patch_idx, I64 target_idx) {
     // P0.7: bounds-check. An out-of-range patch index here used to write past the
     // code pool into adjacent heap memory, corrupting a block header (a latent
     // heap-corruption vector). Fail the unit cleanly instead.
-    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; }
     I64 diff = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0xB4000000 | ((diff & 0x7FFFF) << 5);
 }
 
 U0 HcBackpatchCbnz(I64 patch_idx, I64 target_idx) {
-    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; }
     I64 rel = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0xB5000000 | ((rel & 0x7FFFF) << 5) | 0;
 }
 
 U0 HcBackpatchB(I64 patch_idx, I64 target_idx) {
-    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; }
+    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; }
     I64 diff = target_idx - patch_idx;
     g_hc_code[patch_idx] = 0x14000000 | (diff & 0x03FFFFFF);
 }
@@ -1299,7 +1359,7 @@ I64 HcPushLoopCtx(I64 is_switch) {
         g_hc_loop_is_switch[lvl] = is_switch;
         g_hc_loop_depth++;
     } else {
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_SYNTAX_STMT);
         lvl = 15;   // clamp so callers never index out of bounds
     }
     return lvl;
@@ -1600,7 +1660,7 @@ U0 HcLexNext() {
             kheap_get_stats(&sd_tot, &sd_used, &sd_free, &sd_cnt);
             doldoc_printf("[HCLX] STRING ARENA FAILED slen=%lld pos=%lld len=%lld arena=%lld/%lld seed_free=%lld\n",
                           slen, g_hc_pos, g_hc_len, HcStrBytes(), HcStrChunks(), sd_free);
-            g_hc_error = 1;
+            HcRaiseError(HC_ERR_SYNTAX_TOKEN);
             g_hc_tok = TOK_EOF;
             return;
         }
@@ -2252,7 +2312,7 @@ U0 HcParsePrimary() {
                     HcCallParseExpr();
                     cur_argc = HcOpPop();
                     if (cur_argc >= 0 && cur_argc < 32) g_hc_arg_float[cur_argc] = g_hc_expr_float;
-                    else g_hc_error = 1;
+                    else HcRaiseError(HC_ERR_SYNTAX_EXPR);
                     if (g_hc_expr_float) HcEmit(0x9E660000); // fmov x0, d0 (save bits)
                     HcEmitPush(0);
                     cur_argc++;
@@ -2273,7 +2333,7 @@ U0 HcParsePrimary() {
                 // mesmo com g_hc_error setado. Medido: o caso `known_over8_args` do
                 // selftest e seguido de uma execucao selvagem que terminava em
                 // instruction abort com ELR_EL1 = 0xFFFFFFFFFFFFFFFF (ver relatorio).
-                g_hc_error = 1;
+                HcRaiseError(HC_ERR_SYNTAX_EXPR);
                 return;
             }
 
@@ -2350,7 +2410,7 @@ U0 HcParsePrimary() {
                 }
             }
             if (g_hc_tok == TOK_RPAREN) HcLexNext(); // eat ')'
-            if (ind_argc > 8) g_hc_error = 1; // >8 args needs stack spill (see direct-call note)
+            if (ind_argc > 8) HcRaiseError(HC_ERR_SYNTAX_EXPR); // >8 args needs stack spill (see direct-call note)
             I64 ia_reg = 0;
             for (ia_reg = ind_argc - 1; ia_reg >= 0; ia_reg--) {
                 HcEmitPop(ia_reg);
@@ -2364,7 +2424,7 @@ U0 HcParsePrimary() {
     // Any other token (a binary operator, ';', ')', '}', EOF, ...) cannot begin a
     // primary expression. Flag a hard error instead of silently emitting nothing,
     // which would let malformed input like `2 + ;` miscompile.
-    g_hc_error = 1;
+    HcRaiseError(HC_ERR_SYNTAX_EXPR);
 }
 
 U0 HcParseUnary() {
@@ -2730,7 +2790,7 @@ U0 HcParseLogOr() {
         I64 p_b = HcOpPop();
         I64 patch_idx = HcOpPop();
         I64 rel = (g_hc_code_len - patch_idx) & 0x7FFFF;
-        if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { g_hc_error = 1; return; } // P0.7: bounds guard
+        if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; } // P0.7: bounds guard
         g_hc_code[patch_idx] = 0xB5000000 | (rel << 5) | 0; // Preserve CBNZ!
         HcEmit(0xD2800020); // movz x0, #1
         HcBackpatchB(p_b, g_hc_code_len);
@@ -2840,8 +2900,8 @@ I64 HcParseArrayDimExpr(I64 min_prec) {
         HcLexNext();
         I64 r = HcParseArrayDimExpr(prec + 1);
         if (op == TOK_STAR) v = v * r;
-        else if (op == TOK_SLASH) { if (r != 0) v = v / r; else g_hc_error = 1; }
-        else if (op == TOK_PERCENT) { if (r != 0) v = v % r; else g_hc_error = 1; }
+        else if (op == TOK_SLASH) { if (r != 0) v = v / r; else HcRaiseError(HC_ERR_SYNTAX_EXPR); }
+        else if (op == TOK_PERCENT) { if (r != 0) v = v % r; else HcRaiseError(HC_ERR_SYNTAX_EXPR); }
         else if (op == TOK_PLUS) v = v + r;
         else if (op == TOK_MINUS) v = v - r;
         else if (op == TOK_SHL) v = v << r;
@@ -2927,7 +2987,7 @@ U0 HcParseStructDef() {
                     g_hc_member_elem_bytes[fp_slot] = 8;
                     m_cnt++;
                 } else {
-                    g_hc_error = 1; // struct member capacity exceeded — hard fail
+                    HcRaiseError(HC_ERR_STRUCT_OVERFLOW); // struct member capacity exceeded — hard fail
                 }
             }
             cur_off += 8;
@@ -2975,7 +3035,7 @@ U0 HcParseStructDef() {
                     g_hc_member_elem_bytes[m_slot] = base_sz;
                     m_cnt++;
                 } else {
-                    g_hc_error = 1; // struct member capacity exceeded — hard fail
+                    HcRaiseError(HC_ERR_STRUCT_OVERFLOW); // struct member capacity exceeded — hard fail
                 }
                 cur_off += field_bytes;
             }
@@ -3033,7 +3093,7 @@ U0 HcFinishMemoryAssign(I64 mem_scale, I64 is_float) {
     }
     if (is_float) {
         // Float compound assignment / inc-dec is not supported: hard error, never miscompile.
-        g_hc_error = 1;
+        HcRaiseError(HC_ERR_SYNTAX_EXPR);
         return;
     }
     if (g_hc_tok == TOK_PLUSPLUS || g_hc_tok == TOK_MINUSMINUS) {
@@ -3221,7 +3281,7 @@ U0 HcParseStatement() {
                             }
                             if (g_hc_tok == TOK_RBRACE) HcLexNext();
                         } else {
-                            g_hc_error = 1; // only literal initializer lists are supported
+                            HcRaiseError(HC_ERR_SYNTAX_DECL); // only literal initializer lists are supported
                         }
                     }
                 } else if (st_idx >= 0 && is_p == 0) {
@@ -3528,7 +3588,7 @@ U0 HcParseStatement() {
                 // Invariant: a statement parser must consume >= 1 token. If it did
                 // not, raise a hard error and skip a token so the compiler can never
                 // hang on a non-advancing token.
-                g_hc_error = 1;
+                HcRaiseError(HC_ERR_SYNTAX_STMT);
                 HcLexNext();
             }
         }
@@ -3848,7 +3908,7 @@ U0 HcParseProgram() {
                             // P0.7: never memset through NULL (that was a write to
                             // address 0). Fail the unit cleanly instead.
                             doldoc_printf("[HCLX] GLOBAL ARRAY ALLOC FAILED %s bytes=%lld\n", fname, g_alloc);
-                            g_hc_error = 1;
+                            HcRaiseError(HC_ERR_GLOBAL_REDECL);
                             g_hc_tok = TOK_EOF;
                             return;
                         }
@@ -3859,7 +3919,7 @@ U0 HcParseProgram() {
                         g_slot = kmalloc(g_alloc);
                         if (!g_slot) {
                             doldoc_printf("[HCLX] GLOBAL ALLOC FAILED %s bytes=%lld\n", fname, g_alloc);
-                            g_hc_error = 1;
+                            HcRaiseError(HC_ERR_GLOBAL_REDECL);
                             g_hc_tok = TOK_EOF;
                             return;
                         }
@@ -3876,7 +3936,7 @@ U0 HcParseProgram() {
                     I64 g_known = HcGetGlobalAlloc(fname);
                     if (g_known > 0 && g_alloc > g_known) {
                         doldoc_printf("[HCLX] GLOBAL RE-DECL OVERFLOW %s want=%lld have=%lld\n", fname, g_alloc, g_known);
-                        g_hc_error = 1;
+                        HcRaiseError(HC_ERR_GLOBAL_REDECL);
                         g_hc_tok = TOK_EOF;
                         return;
                     }
@@ -3978,7 +4038,7 @@ U0 HcParseProgram() {
                                 doldoc_printf("$FG,RED$[COMPILER] FATAL: HC_MAX_DEFERRED overflow (%lld/%lld) — init adiado descartado$FG$\n",
                                               g_hc_init_count, (I64)HC_MAX_DEFERRED);
                             }
-                            g_hc_error = 1;
+                            HcRaiseError(HC_ERR_INIT_OVERFLOW);
                         }
                         I64 g_skip = 0;
                         while (g_hc_tok != TOK_SEMICOLON && g_hc_tok != TOK_EOF && g_skip < 8192) {
@@ -4028,7 +4088,7 @@ U0 HcParseProgram() {
             if (g_hc_pos <= repl_pp && g_hc_tok != TOK_EOF) {
                 // Same non-advancing-token invariant as block statements: hard error,
                 // never an infinite loop.
-                g_hc_error = 1;
+                HcRaiseError(HC_ERR_SYNTAX_STMT);
                 HcLexNext();
             }
         }
@@ -4242,6 +4302,8 @@ I64 CompilerCompileAndRun(U8 *src) {
         doldoc_printf("$FG,RED$[COMPILER.HC] internal error at line %lld (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld code=%lld)$FG$\n",
                       HcLineOf(g_hc_pos), g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
                       g_hc_global_count, g_hc_code_len);
+        doldoc_printf("$FG,RED$[COMPILER.HC] FIRST CAUSE: %s at line %lld (count=%lld mask=0x%08X)$FG$\n",
+                      HcErrName(g_hc_first_err_code), g_hc_first_err_line, g_hc_err_count, g_hc_err_mask);
         g_hc_pool_offset = start_idx;
         g_hc_compiling = 0;
         if (exp_buf) kfree(exp_buf);
