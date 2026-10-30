@@ -548,9 +548,13 @@ U0 HcInit() {
 }
 
 U0 HcReset() {
-    if (g_hc_pool_offset > 1000000) {
-        g_hc_pool_offset = 0;
-    }
+    // Code-pool exhaustion MUST NOT reuse the pool from offset 0: that would
+    // overwrite live functions compiled at boot (Timer*, Shell, Watchdog...)
+    // still being executed — the intermittent Data Abort (FAR=0x0) seen in the
+    // SELF-HOST gate. Once the linear pool is full, the emitter's OWN bounds
+    // guard (g_hc_code_len >= HC_CODE_CAPACITY, in HcEmit) fails the unit
+    // cleanly with CODE_OVERFLOW. Only the offset stays put; nothing is
+    // overwritten and no live code is corrupted.
     g_hc_code_len = g_hc_pool_offset;
     g_hc_local_count = 0;
     g_hc_frame_offset = 16;

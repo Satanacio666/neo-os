@@ -18,15 +18,19 @@ LOG="${NEO_SERIAL_LOG:-/tmp/neo-os-serial.log}"
 # driver's size-stability settle window; poll for the result marker explicitly so
 # the check is deterministic instead of racing the UART idle heuristic.
 out="$(python3 - "$ROOT" <<'PY'
-import os, sys, time
+import os, re, sys, time
 sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
 import neo_uart
 start = neo_uart.log_size()
 neo_uart.send("hcrun Compiler.HC\r")
 deadline = time.time() + 120.0
+# Wait for the COMPLETE result line (number + newline), never for the bare
+# '-> ' prefix: the UART may deliver the marker and the digits in separate
+# chunks, and grabbing the prefix alone yields a phantom empty result.
+done = re.compile(r'\[HCRUN\] Compiler\.HC -> *-?\d+\r*\n')
 while time.time() < deadline:
     out = neo_uart.read_from(start)
-    if "[HCRUN] Compiler.HC ->" in out:
+    if done.search(out):
         sys.stdout.write(out)
         break
     time.sleep(0.1)
