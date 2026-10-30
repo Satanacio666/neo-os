@@ -515,6 +515,163 @@ U0 ShaderVMRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
 }
 
 // ==============================================================================
+// FASE 2.2 - legacy $SH$ viewport kernels.
+//
+// The 15 type strings DolDoc.HC's old inline block understood are now HolyC
+// kernels here, next to the FASE 2.3 kernels, so `apps/DolDoc.HC` keeps only the
+// routing. The pixel math below is a VERBATIM copy of the retired block: same
+// formulas, same constants, same integer precedence, same DocFastSin/DocFastCos
+// table indices. The only change is WHERE it lives.
+//
+// Eight modes: 0 = plasma fallback (any unlisted name), 1..7 = the pairs
+//     torus|sdf, wave|glass, fire|flame, tunnel|grid,
+//     metaballs|blobs, stars|warp, fractal|julia
+// NOTE "sdf" never reaches mode 1 in practice: ShaderTypeId() matches it first
+// and DolDoc routes it to ShaderVMRenderNode. The alias is preserved as-is.
+//
+// Theme colours: DolDoc's SEM_COLOR_* tokens are #defines local to DolDoc.HC and
+// #define is per-file, so the same token values are respelled here and resolved
+// through DolDocResolveColor(), exactly as the original did.
+// ==============================================================================
+#define SV_SEM_BLUE     0x01000009
+#define SV_SEM_YELLOW   0x0100000E
+#define SV_SEM_SKY      0x0100000B
+
+// Type string -> legacy mode. 0 = plasma fallback. Mirrors DolDoc.HC's table.
+I64 ShaderLegacyTypeId(U8 *s) {
+    if (s == 0) return 0;
+    if (strcmp(s, "torus") == 0 || strcmp(s, "sdf") == 0) return 1;
+    if (strcmp(s, "wave") == 0 || strcmp(s, "glass") == 0) return 2;
+    if (strcmp(s, "fire") == 0 || strcmp(s, "flame") == 0) return 3;
+    if (strcmp(s, "tunnel") == 0 || strcmp(s, "grid") == 0) return 4;
+    if (strcmp(s, "metaballs") == 0 || strcmp(s, "blobs") == 0) return 5;
+    if (strcmp(s, "stars") == 0 || strcmp(s, "warp") == 0) return 6;
+    if (strcmp(s, "fractal") == 0 || strcmp(s, "julia") == 0) return 7;
+    return 0;
+}
+
+// One legacy fragment. Verbatim port of the old per-pixel body.
+U32 ShaderLegacyColor(I64 mode, I64 sx, I64 sy, I64 vw, I64 vh, I64 phase, I64 zoom, I64 morph) {
+    U32 frag_col = 0xFF181825;
+    if (mode == 0) {
+        I64 u = (sx * zoom) / 32; I64 v = (sy * zoom) / 32;
+        I64 w1 = DocFastSin(u + phase); I64 w2 = DocFastCos(v + (phase >> 1));
+        I64 w3 = DocFastSin(((u + v) >> 1) - phase);
+        I64 sum = (w1 + w2 + w3) / 3;
+        I64 r = (128 + ((DocFastSin((sum >> 3) + (morph >> 1)) * 120) >> 8)) & 0xFF;
+        I64 g = (110 + ((DocFastCos((sum >> 3) + 12) * 115) >> 8)) & 0xFF;
+        I64 b = (185 + ((sum * 68) >> 8)) & 0xFF;
+        frag_col = 0xFF000000 | (r << 16) | (g << 8) | b;
+    } else if (mode == 1) {
+        I64 cx = sx - (vw / 2); I64 cy = sy - (vh / 2);
+        I64 r2 = cx * cx + cy * cy * 2;
+        I64 torus_rad = (vh * (20 + (morph >> 2))) / 100;
+        I64 ring_r = torus_rad * torus_rad;
+        I64 diff = r2 - ring_r; if (diff < 0) diff = -diff;
+        I64 band = ring_r / 2 + 64;
+        if (diff < band) {
+            I64 inten = 255 - ((diff * 220) / band);
+            I64 lx = (DocFastCos(phase) * (vw / 4)) >> 8;
+            I64 ly = (DocFastSin(phase) * (vh / 4)) >> 8;
+            I64 spec = 64 - ((cx - lx) * (cx - lx) + (cy - ly) * (cy - ly)) / 16;
+            if (spec < 0) spec = 0;
+            I64 tr = ((inten * 90) >> 8) + spec; I64 tg = ((inten * 210) >> 8) + spec; I64 tb = ((inten * 250) >> 8) + spec;
+            if (tr > 255) tr = 255; if (tg > 255) tg = 255; if (tb > 255) tb = 255;
+            frag_col = 0xFF000000 | (tr << 16) | (tg << 8) | tb;
+        } else {
+            frag_col = (((sx + phase) & 15) == 0 || ((sy + phase) & 15) == 0) ? 0xFF283048 : 0xFF111420;
+        }
+    } else if (mode == 2) {
+        I64 wy = (DocFastSin((sx * zoom) / 40 + phase) * (vh / 4)) >> 8;
+        I64 dy = (sy - (vh / 2)) - wy; if (dy < 0) dy = -dy;
+        I64 glow = 240 - dy * 8; if (glow < 24) glow = 24;
+        frag_col = 0xFF000000 | (((glow * 140) >> 8) << 16) | (((glow * 220) >> 8) << 8) | glow;
+    } else if (mode == 3) {
+        I64 y_inv = vh - sy; I64 t_up = phase * 2;
+        I64 n1 = (DocFastSin((sx * 8) + t_up) * 28) >> 8;
+        I64 n2 = (DocFastCos((sx * 14) - t_up) * 18) >> 8;
+        I64 n3 = (DocFastSin((sx + y_inv) * 6 + t_up) * 16) >> 8;
+        I64 e = 240 - ((y_inv * 260) / vh) + n1 + n2 + n3;
+        if (e > 170) frag_col = 0xFFFFF090;
+        else if (e > 105) frag_col = 0xFF000000 | (250 << 16) | ((100 + ((e - 105) * 140) / 65) << 8) | 30;
+        else if (e > 35) frag_col = 0xFF000000 | ((60 + ((e - 35) * 190) / 70) << 16) | (20 << 8) | 25;
+        else if (e > 8) frag_col = 0xFF351830;
+        else frag_col = 0xFF0F0E17;
+    } else if (mode == 4) {
+        I64 cy = sy - (vh / 2); I64 cx = sx - (vw / 2);
+        if (cy > 0) {
+            I64 z = (vh * 48) / cy; I64 gx = ((cx * z) >> 6); I64 gz = z + phase * 4;
+            I64 mx = gx; if (mx < 0) mx = -mx;
+            if ((mx % 24) < 2 || (gz % 32) < 2) {
+                I64 fade = 255 - (z * 2); if (fade < 30) fade = 30;
+                frag_col = 0xFF000000 | (((fade * 243) >> 8) << 16) | (((fade * 139) >> 8) << 8) | ((fade * 255) >> 8);
+            } else frag_col = 0xFF141224;
+        } else {
+            I64 dist_h = -cy;
+            if (dist_h < 18 && (cx * cx + dist_h * dist_h * 4) < 400) frag_col = ((dist_h % 4) == 0 && dist_h > 4) ? 0xFF181825 : 0xFFF9E2AF;
+            else { I64 sky = 80 - dist_h * 2; if (sky < 12) sky = 12; frag_col = 0xFF000000 | ((sky + 10) << 16) | (10 << 8) | ((sky * 2) & 0xFF); }
+        }
+    } else if (mode == 5) {
+        I64 mx0 = sx - (vw / 2); I64 my0 = sy - (vh / 2);
+        I64 ox1 = (DocFastCos(phase) * (vw / 5)) >> 8; I64 oy1 = (DocFastSin(phase) * (vh / 4)) >> 8;
+        I64 ox2 = (DocFastCos(phase + 21) * (vw / 4)) >> 8; I64 oy2 = (DocFastSin(phase + 21) * (vh / 5)) >> 8;
+        I64 ox3 = (DocFastCos(phase + 42) * (vw / 6)) >> 8; I64 oy3 = (DocFastSin(phase + 42) * (vh / 3)) >> 8;
+        I64 d1 = (mx0 - ox1) * (mx0 - ox1) + (my0 - oy1) * (my0 - oy1) + 20;
+        I64 d2 = (mx0 - ox2) * (mx0 - ox2) + (my0 - oy2) * (my0 - oy2) + 20;
+        I64 d3 = (mx0 - ox3) * (mx0 - ox3) + (my0 - oy3) * (my0 - oy3) + 20;
+        I64 pot = 16000 / d1 + 16000 / d2 + 16000 / d3;
+        if (pot > 180) frag_col = 0xFFCBA6F7;
+        else if (pot > 70) { I64 bcol = (pot * 200) / 110; if (bcol > 255) bcol = 255; frag_col = 0xFF000000 | (137 << 16) | (180 << 8) | bcol; }
+        else if (pot > 25) frag_col = 0xFF1E1E2E;
+        else frag_col = 0xFF11111B;
+    } else if (mode == 6) {
+        I64 csx = sx - (vw / 2); I64 csy = sy - (vh / 2);
+        I64 rad2 = csx * csx + csy * csy;
+        I64 ang_s = (csx * 128) / (csy == 0 ? 1 : csy);
+        I64 star_hash = ((ang_s * 17) ^ (rad2 >> 4) ^ phase) & 127;
+        if (star_hash == 0 && rad2 > 36) { I64 br = (rad2 * 255) / ((vw * vw) / 4); if (br > 255) br = 255; if (br < 80) br = 80; frag_col = 0xFF000000 | (br << 16) | (br << 8) | 255; }
+        else { I64 neb = (DocFastSin((csx * 6) / 20 + phase) * DocFastCos((csy * 6) / 20 - phase)) >> 10; if (neb < 0) neb = 0; frag_col = 0xFF000000 | ((neb * 80) << 16) | ((neb * 40) << 8) | (neb * 140); }
+    } else {
+        I64 fzx = ((sx - (vw / 2)) * zoom) / 24; I64 fzy = ((sy - (vh / 2)) * zoom) / 24;
+        I64 min_d = 9999;
+        for (I64 iter = 0; iter < 4; iter++) {
+            I64 nzx = (fzx * fzx - fzy * fzy) >> 8; I64 nzy = (fzx * fzy) >> 7;
+            fzx = nzx + ((DocFastCos(phase) * 60) >> 8); fzy = nzy + ((DocFastSin(phase) * 60) >> 8);
+            I64 adx = fzx < 0 ? -fzx : fzx; I64 ady = fzy < 0 ? -fzy : fzy;
+            I64 trap = adx < ady ? adx : ady;
+            if (trap < min_d) min_d = trap;
+        }
+        I64 finten = 255 - min_d * 3; if (finten < 16) finten = 16; if (finten > 255) finten = 255;
+        frag_col = 0xFF000000 | (((finten * 203) >> 8) << 16) | (((finten * 166) >> 8) << 8) | finten;
+    }
+    return frag_col;
+}
+
+// Full legacy viewport: 2x2 fragment loop + border + title, verbatim.
+// phase/zoom come from the same DolDoc globals the retired block read.
+U0 ShaderLegacyRenderNode(I64 vx, I64 vy, I64 vw, I64 vh, U8 *sh_type) {
+    I64 t_ms = timer_get_uptime_ms();
+    I64 phase = ((t_ms * g_shader_speed) / 400) + g_doc_anim_tick * 3;
+    I64 zoom = g_shader_zoom;
+    if (zoom < 8) zoom = 8;
+    I64 mode = ShaderLegacyTypeId(sh_type);
+
+    for (I64 sy = 2; sy < vh - 2; sy += 2) {
+        for (I64 sx = 2; sx < vw - 2; sx += 2) {
+            U32 frag_col = ShaderLegacyColor(mode, sx, sy, vw, vh, phase, zoom, g_shader_morph);
+            gfx_draw_rect(vx + sx, vy + sy, 2, 2, frag_col);
+        }
+    }
+    gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SV_SEM_BLUE));
+    gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SV_SEM_BLUE));
+    gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SV_SEM_BLUE));
+    gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SV_SEM_BLUE));
+    gfx_blend_rect(vx + 4, vy + 4, vw - 8, 16, 0xA011111B);
+    gfx_draw_string(vx + 8, vy + 4, "SHADERTOY:", DolDocResolveColor(SV_SEM_YELLOW), 0);
+    gfx_draw_string(vx + 92, vy + 4, sh_type, DolDocResolveColor(SV_SEM_SKY), 0);
+}
+
+// ==============================================================================
 // Self-test support (called from SelfTest.HC -> SHADERVM: PASS).
 // The retired VM is exercised indirectly: each direct kernel is evaluated on
 // pixels with known expected values (precomputed from the exact kernel math),
