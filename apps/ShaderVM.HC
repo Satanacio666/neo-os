@@ -673,11 +673,10 @@ U0 ShaderVMSelfTest() {
     doldoc_mark_all_dirty();
 }
 
-// Held visual: render the raymarched SDF showcase for ~8 s for a host screendump.
-I64 g_shadervm_demo_keep = 0;
-
+// Held visual: render each shader viewport (vm/sdf/noise/mandel/bulb) for a few
+// seconds each so a host screendump can capture every kernel's frame. The demo
+// command `shadervm` now exercises the direct HolyC kernels AND the raymarcher.
 U0 ShaderVMDemo() {
-    g_shadervm_demo_keep = 1;
     I64 w = gfx_get_canvas_width();
     I64 h = gfx_get_canvas_height();
     I64 vw = 448;
@@ -686,19 +685,26 @@ U0 ShaderVMDemo() {
     if (vh > h - 80) vh = h - 80;
     I64 vx = (w - vw) / 2;
     I64 vy = (h - vh) / 2;
-    gfx_clear(0xFF101018);
-    GfxPresent(0, 0, w, h, 1);
-    // Render the raymarched SDF scene, presenting each band as it completes so
-    // the frame appears progressively (the field eval is 4-lane NEON but the
-    // per-lane ray march is the bottleneck).
-    ShaderVMRenderNode(vx, vy, vw, vh, "bulb");
-    GfxPresent(0, 0, w, h, 1);
-    U64 t0 = __mrs_cntvct();
-    U64 fr = __mrs_cntfrq();
+    I64 fr = __mrs_cntfrq();
     if (fr == 0) fr = 62500000;
-    U64 dur = fr * 8;
-    while (__mrs_cntvct() - t0 < dur) { }
-    g_shadervm_demo_keep = 0;
+    U8 *types[6];
+    types[0] = "vm";
+    types[1] = "sdf";
+    types[2] = "noise";
+    types[3] = "mandel";
+    types[4] = "bulb";
+    types[5] = 0;
+    I64 ti = 0;
+    while (types[ti] != 0) {
+        gfx_clear(0xFF101018);
+        GfxPresent(0, 0, w, h, 1);
+        ShaderVMRenderNode(vx, vy, vw, vh, types[ti]);
+        GfxPresent(0, 0, w, h, 1);
+        U64 t0 = __mrs_cntvct();
+        U64 dur = fr * 3;
+        while (__mrs_cntvct() - t0 < dur) { }
+        ti = ti + 1;
+    }
     gfx_clear(0xFF000000);
     GfxPresent(0, 0, w, h, 1);
 }
