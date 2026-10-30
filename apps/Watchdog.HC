@@ -17,6 +17,11 @@
 
 I64 g_watchdog_runs = 0;
 I64 g_watchdog_faults = 0;
+// Métricas de custo (Camada 1, critério <1%): ciclos gastos nas PASSADAS do
+// vigia (scan + budget + canário) vs ciclos totais decorridos, acumulados.
+// Lidas via sonda no REPL (doldoc_printf ≤7 args). O custo-alvo é <1%.
+U64 g_watchdog_cost_cycles = 0;
+U64 g_watchdog_wall_cycles = 0;
 
 // Espelho das constantes de teto (as #define de Compiler.HC/KHeap.HC são
 // por-unidade e NÃO persistem entre arquivos — mesmo padrão do [BUDGET]).
@@ -29,6 +34,7 @@ I64 g_watchdog_faults = 0;
 
 U0 WatchdogTick(U64 arg) {
   while (1) {
+    U64 wd_t0 = __mrs_cntvct();
     // 1. Scan soberano de símbolos não-resolvidos (P0.3). Variante SILENCIOSA
     //    (SymScanUnresolvedQuiet) — o vigia imprime só em FALHA, para não
     //    inundar o serial a cada 250 ms e corromper o parsing do gate.
@@ -61,7 +67,10 @@ U0 WatchdogTick(U64 arg) {
                     (U64)g_heap_head, g_heap_head->canary_head);
     }
 
+    // Custo da passada (ciclos) e do intervalo total (250 ms), acumulados.
+    g_watchdog_cost_cycles += __mrs_cntvct() - wd_t0;
     g_watchdog_runs++;
+    g_watchdog_wall_cycles += TimerQueryHwFreq() / 4; // 250 ms em ciclos
     TimerSleepMs(250);
   }
 }
