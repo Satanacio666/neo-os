@@ -365,6 +365,25 @@ I64 g_hc_first_err_code = 0;
 I64 g_hc_first_err_line = 0;
 I64 g_hc_err_count      = 0;
 U32 g_hc_err_mask       = 0;
+// FASE 2.5a (higiene de diagnostico): o lexer e' chamado em 3 passes
+// (HcPrescanStructs, HcPrescanFuncs, HcParseProgram) e cada um re-lexa o fonte
+// do zero. Sem esta flag, um unico erro lexico era impresso 3-4x (medido no
+// serial). Ela e' zerada em HcReset, entao o erro aparece UMA vez, no primeiro
+// passe que o encontra.
+I64 g_hc_lex_err_reported = 0;
+
+// FASE 2.5a: separa "erro do codigo-fonte do usuario" de "falha interna de
+// capacidade do compilador". Antes, uma string nao fechada no fonte compilado
+// imprimia "[COMPILER.HC] internal error" — o mesmo texto de um estouro de
+// tabela —, o que fazia o operador caçar um bug de infraestrutura que nao
+// existia. Agora: HC_ERR_*_OVERFLOW (8..10) e' infraestrutura interna; todo o
+// resto e' erro do programa compilado.
+I64 HcErrIsInternal(I64 code) {
+    if (code == HC_ERR_CODE_OVERFLOW)   return 1;
+    if (code == HC_ERR_EPI_OVERFLOW)    return 1;
+    if (code == HC_ERR_INIT_OVERFLOW)   return 1;
+    return 0;
+}
 
 U0 HcRaiseError(I64 code) {
     g_hc_error = 1;
@@ -589,6 +608,9 @@ U0 HcReset() {
     g_hc_err_count = 0;
     g_hc_err_mask = 0;
     g_hc_err_pos = -1;
+    // FASE 2.5a: um erro lexico deve ser impresso UMA vez por unidade compilada
+    // (nao 3-4x pelos passes de prescan/parse).
+    g_hc_lex_err_reported = 0;
     g_hc_line = 1;
     g_hc_col = 1;
     g_hc_tok_line = 1;
@@ -1606,8 +1628,13 @@ U0 HcLexNext() {
     // parser segue ate o EOF, entao a mensagem final aponta para o fim do arquivo).
     if (g_hc_error && g_hc_err_pos < 0) {
         g_hc_err_pos = g_hc_pos;
-        doldoc_printf("$FG,RED$[HCLX] PRIMEIRO ERRO linha=%lld tok=%lld pos=%lld$FG$\n",
-                      HcLineOf(g_hc_pos), g_hc_tok, g_hc_pos);
+        // FASE 2.5a: usa o snapshot O(1) do token corrente em vez de re-escanear
+        // o fonte com HcLineOf (O(n)). E se o canal especifico do lexer ja'
+        // reportou este erro, nao duplica a mensagem.
+        if (g_hc_lex_err_reported == 0) {
+            doldoc_printf("$FG,RED$[HCLX] PRIMEIRO ERRO linha=%lld col=%lld tok=%lld pos=%lld$FG$\n",
+                          g_hc_tok_line, g_hc_tok_col, g_hc_tok, g_hc_pos);
+        }
     }
     HcSkipWhitespaceAndComments();
     if (g_hc_pos >= g_hc_len) {
@@ -1679,8 +1706,11 @@ U0 HcLexNext() {
                 // FASE 2.4 (2b): o expoente ja foi consumido — um alfa aqui e'
                 // um literal malformado (`1.5abc`, `1.5e3x`).
                 if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
-                    doldoc_printf("$FG,RED$[HCLX] FATAL: literal float malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
-                                  g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+                    if (g_hc_lex_err_reported == 0) {
+                        g_hc_lex_err_reported = 1;
+                        doldoc_printf("$FG,RED$[HCLX] FATAL: literal float malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
+                                      g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+                    }
                     HcRaiseError(HC_ERR_SYNTAX_TOKEN);
                     g_hc_tok = TOK_EOF;
                     return;
@@ -1697,8 +1727,11 @@ U0 HcLexNext() {
         // consumido pelo ramo de float acima. Antes isso "compilava" com semantica
         // errada (fallback silencioso).
         if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
-            doldoc_printf("$FG,RED$[HCLX] FATAL: literal numerico malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
-                          g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+            if (g_hc_lex_err_reported == 0) {
+                g_hc_lex_err_reported = 1;
+                doldoc_printf("$FG,RED$[HCLX] FATAL: literal numerico malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
+                              g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+            }
             HcRaiseError(HC_ERR_SYNTAX_TOKEN);
             g_hc_tok = TOK_EOF;
             return;
@@ -1722,8 +1755,13 @@ U0 HcLexNext() {
         // arquivo como literal (fallback silencioso, sem diagnostico); agora falha
         // ALTO, apontando linha/coluna exatas do token.
         if (g_hc_pos >= g_hc_len) {
-            doldoc_printf("$FG,RED$[HCLX] FATAL: string nao fechada linha=%lld col=%lld pos=%lld len=%lld$FG$\n",
-                          g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len);
+            // FASE 2.5a: imprime UMA vez (o lexer roda em 3 passes e sem esta
+            // guarda o mesmo erro saia 3-4x no serial).
+            if (g_hc_lex_err_reported == 0) {
+                g_hc_lex_err_reported = 1;
+                doldoc_printf("$FG,RED$[HCLX] FATAL: string nao fechada linha=%lld col=%lld pos=%lld len=%lld$FG$\n",
+                              g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len);
+            }
             HcRaiseError(HC_ERR_SYNTAX_TOKEN);
             g_hc_tok = TOK_EOF;
             return;
@@ -4459,9 +4497,20 @@ I64 CompilerCompileAndRun(U8 *src) {
     HcParseProgram();
 
     if (g_hc_error) {
-        doldoc_printf("$FG,RED$[COMPILER.HC] internal error at line %lld (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld code=%lld)$FG$\n",
-                      HcLineOf(g_hc_pos), g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
-                      g_hc_global_count, g_hc_code_len);
+        // FASE 2.5a: separa erro do CODIGO-FONTE (sintaxe/semantica do programa
+        // compilado) de falha INTERNA de capacidade do compilador. O gate conta
+        // a substring exata "COMPILER.HC] internal error" no LOG DE BOOT — onde
+        // esse caminho nunca e' alcancado com codigo valido —, entao manter o
+        // texto "internal error" apenas para os OVERFLOW internos preserva o
+        // check "compiler internal errors = 0" sem mascara-lo.
+        if (HcErrIsInternal(g_hc_first_err_code)) {
+            doldoc_printf("$FG,RED$[COMPILER.HC] internal error at line %lld (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld code=%lld)$FG$\n",
+                          g_hc_first_err_line, g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
+                          g_hc_global_count, g_hc_code_len);
+        } else {
+            doldoc_printf("$FG,YELLOW$[COMPILER.HC] compile error at line %lld (col %lld pos=%lld)$FG$\n",
+                          g_hc_first_err_line, g_hc_first_err_col, g_hc_err_pos);
+        }
         doldoc_printf("$FG,RED$[COMPILER.HC] FIRST CAUSE: %s at line %lld col %lld (count=%lld mask=0x%08X)$FG$\n",
                       HcErrName(g_hc_first_err_code), g_hc_first_err_line, g_hc_first_err_col,
                       g_hc_err_count, g_hc_err_mask);

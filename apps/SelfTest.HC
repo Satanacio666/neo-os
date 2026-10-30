@@ -143,6 +143,18 @@ U0 SelfTestLexGuards() {
     SelfTestReject("f24_reject_number_then_ident", "123abc;");
     SelfTestReject("f24_reject_bad_hex_literal", "0x1G;");
     SelfTestReject("f24_reject_float_then_ident", "1.5abc;");
+    // FASE 2.5a (Item 3) — PROVA MULTI-LINHA. Testar so' snippets de 1 linha
+    // provaria apenas que g_hc_line foi inicializado em 1; nao prova que a
+    // transicao de '\n' incrementa a linha e reseta a coluna, nem que os 3
+    // passes (prescan/parse) rebobinam g_hc_line/g_hc_col junto com g_hc_pos.
+    // Este snippet tem 3 linhas e o erro na linha 3, coluna 9 (`I64 c = `
+    // sao 8 caracteres, entao `123abc` comeca na coluna 9).
+    //   linha 1: I64 a = 1;
+    //   linha 2: I64 b = 2;
+    //   linha 3: I64 c = 123abc;   <- '1' na coluna 9
+    CompilerCompileAndRun("I64 a = 1;\nI64 b = 2;\nI64 c = 123abc;");
+    SelfTestCompare("f24_multiline_err_line", g_hc_first_err_line, 3);
+    SelfTestCompare("f24_multiline_err_col",  g_hc_first_err_col,  9);
 }
 
 // Pre-existing defect: reported, but not counted against the pass total.
