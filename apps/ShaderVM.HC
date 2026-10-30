@@ -657,6 +657,10 @@ U0 ShaderVMSelfTest() {
     F64 fv = ShaderFbm3(0.5, 0.5, 0.5, 4);
     total = total + 1;
     if (fv >= -2.0 && fv <= 2.0) pass = pass + 1;
+    // 10b. SDF primitive library (Math3D.HC) — a unit sphere at the origin is -1.
+    F64 sv = SdfSphere(0.0, 0.0, 0.0, 1.0);
+    total = total + 1;
+    if (sv > -1.01 && sv < -0.99) pass = pass + 1;
 
     // 11. 4-lane NEON field: at (3.6,1.5,0) the nearest surface is the torus at
     //     sqrt((3.6-1.35)^2+1.5^2)-0.45 ~= 2.25.
