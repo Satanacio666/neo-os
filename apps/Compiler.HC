@@ -331,6 +331,17 @@ I64   g_hc_expr_float;   // 1 if the current expression result is in D0 (F64)
 I64   g_hc_error;        // set on any compiler internal error (stack overflow, cap, etc.)
 I64   g_hc_err_pos = -1; // G3-DIAG: posicao do PRIMEIRO erro (para diagnostico)
 
+// FASE 2.4 — posicao O(1) linha/coluna. g_hc_line/g_hc_col sao a posicao CORRENTE
+// do lexer (mantida por HcAdvPos a cada avanco de g_hc_pos); g_hc_tok_line/
+// g_hc_tok_col sao o snapshot do INICIO do token corrente e alimentam o FIRST
+// CAUSE. Antes o diagnostico varria a fonte inteira (HcLineOf, O(n)) e so dava
+// linha — nunca a coluna.
+I64   g_hc_line = 1;
+I64   g_hc_col = 1;
+I64   g_hc_tok_line = 1;
+I64   g_hc_tok_col = 1;
+I64   g_hc_first_err_col = 0;
+
 // P0.5 — canal de erro enumerado. g_hc_error continua sendo o booleano que os
 // 4 leitores checam (paridade intacta); HcRaiseError() REGISTRA a causa.
 #define HC_ERR_NONE            0
@@ -362,7 +373,16 @@ U0 HcRaiseError(I64 code) {
     if (g_hc_first_err_code == 0) {
         g_hc_first_err_code = code;
         if (g_hc_err_pos < 0) g_hc_err_pos = g_hc_pos;
-        g_hc_first_err_line = HcLineOf(g_hc_err_pos);
+        // FASE 2.4: o snapshot do token corrente e' exato e O(1). HcLineOf fica
+        // como fallback para erros levantados FORA do lexer (tok_line == 0), caso
+        // em que nao ha coluna conhecida.
+        if (g_hc_tok_line > 0) {
+            g_hc_first_err_line = g_hc_tok_line;
+            g_hc_first_err_col  = g_hc_tok_col;
+        } else {
+            g_hc_first_err_line = HcLineOf(g_hc_err_pos);
+            g_hc_first_err_col  = 0;
+        }
     }
 }
 
@@ -569,6 +589,11 @@ U0 HcReset() {
     g_hc_err_count = 0;
     g_hc_err_mask = 0;
     g_hc_err_pos = -1;
+    g_hc_line = 1;
+    g_hc_col = 1;
+    g_hc_tok_line = 1;
+    g_hc_tok_col = 1;
+    g_hc_first_err_col = 0;
     // Reset per-module tables so counts don't accumulate across compilations.
     // NOTE: the struct table is intentionally NOT reset — struct definitions must
     // persist across modules (matching the C JIT) so cross-module struct types
@@ -1429,38 +1454,54 @@ U0 HcPatchContinues(I64 lvl, I64 target_idx) {
 // hex/decimal literals. ROOT FIX: the previous version handled only `* + -` and
 // was flat, so `#define X (A / B)` silently evaluated to A (the `/` was ignored)
 // and `a + b * c` mis-grouped — both diverge from the seed.
+// FASE 2.4 — UNICO ponto autorizado a avancar g_hc_pos para a frente.
+// Mantem linha/coluna em O(1): coluna comeca em 1 e reinicia em 1 depois de '\n'.
+U0 HcAdvPos() {
+    U8 hp_prev = (g_hc_pos < g_hc_len) ? g_hc_src[g_hc_pos] : 0;
+    g_hc_pos++;
+    if (hp_prev == 10) { g_hc_line++; g_hc_col = 1; }
+    else g_hc_col++;
+}
+
+// Le o caractere corrente e avanca (substitui `g_hc_src[g_hc_pos++]`).
+U8 HcTakeChar() {
+    U8 hp_c = (g_hc_pos < g_hc_len) ? g_hc_src[g_hc_pos] : 0;
+    HcAdvPos();
+    return hp_c;
+}
+
 I64 HcParseMacroP(I64 min_prec) {
-    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+    while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) HcAdvPos();
     I64 v = 0;
     if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '(') {
-        g_hc_pos++;
+        HcAdvPos();
         v = HcParseMacroP(0);
-        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
-        if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') g_hc_pos++;
+        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) HcAdvPos();
+        if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == ')') HcAdvPos();
     } else if (g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos] == '0' &&
                (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
-        g_hc_pos += 2;
+        HcAdvPos(); HcAdvPos();
         while (g_hc_pos < g_hc_len) {
             U8 hc = g_hc_src[g_hc_pos];
-            if (hc >= '0' && hc <= '9') { v = (v << 4) | (hc - '0'); g_hc_pos++; }
-            else if (hc >= 'a' && hc <= 'f') { v = (v << 4) | (hc - 'a' + 10); g_hc_pos++; }
-            else if (hc >= 'A' && hc <= 'F') { v = (v << 4) | (hc - 'A' + 10); g_hc_pos++; }
+            if (hc >= '0' && hc <= '9') { v = (v << 4) | (hc - '0'); HcAdvPos(); }
+            else if (hc >= 'a' && hc <= 'f') { v = (v << 4) | (hc - 'a' + 10); HcAdvPos(); }
+            else if (hc >= 'A' && hc <= 'F') { v = (v << 4) | (hc - 'A' + 10); HcAdvPos(); }
             else break;
         }
     } else if (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
         while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
             v = v * 10 + (g_hc_src[g_hc_pos] - '0');
-            g_hc_pos++;
+            HcAdvPos();
         }
     } else if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
         U8 ref_n[64];
         I64 rn_i = 0;
-        while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && rn_i < 63) ref_n[rn_i++] = g_hc_src[g_hc_pos++];
+        while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && rn_i < 63) ref_n[rn_i++] = HcTakeChar();
         ref_n[rn_i] = 0;
         HcFindDefine(ref_n, &v);
     }
     while (1) {
-        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) g_hc_pos++;
+        while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) HcAdvPos();
         U8 dop = g_hc_src[g_hc_pos];
         // A `/` that starts a comment is not an operator.
         if (dop == '/' && g_hc_pos + 1 < g_hc_len &&
@@ -1469,7 +1510,7 @@ I64 HcParseMacroP(I64 min_prec) {
         if (dop == '*' || dop == '/') prec = 2;
         else if (dop == '+' || dop == '-') prec = 1;
         if (prec == 0 || prec < min_prec) break;
-        g_hc_pos++;
+        HcAdvPos();
         I64 rhs = HcParseMacroP(prec + 1);
         if (dop == '*') v = v * rhs;
         else if (dop == '/') { if (rhs != 0) v = v / rhs; else v = 0; }
@@ -1488,60 +1529,60 @@ U0 HcSkipWhitespaceAndComments() {
     while (g_hc_pos < g_hc_len) {
         U8 c = g_hc_src[g_hc_pos];
         if (HcIsSpace(c)) {
-            g_hc_pos++;
+            HcAdvPos();
             continue;
         }
         // Single-line comment //
         if (c == '/' && g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos + 1] == '/') {
-            g_hc_pos += 2;
+            HcAdvPos(); HcAdvPos();
             while (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] != '\n') {
-                g_hc_pos++;
+                HcAdvPos();
             }
             continue;
         }
         // Multi-line block comment
         if (c == '/' && g_hc_pos + 1 < g_hc_len && g_hc_src[g_hc_pos + 1] == '*') {
-            g_hc_pos += 2;
+            HcAdvPos(); HcAdvPos();
             while (g_hc_pos + 1 < g_hc_len) {
                 if (g_hc_src[g_hc_pos] == '*' && g_hc_src[g_hc_pos + 1] == '/') {
-                    g_hc_pos += 2;
+                    HcAdvPos(); HcAdvPos();
                     break;
                 }
-                g_hc_pos++;
+                HcAdvPos();
             }
             continue;
         }
         // Preprocessor #define directive
         if (c == '#') {
-            g_hc_pos++;
+            HcAdvPos();
             while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) {
-                g_hc_pos++;
+                HcAdvPos();
             }
             U8 dir_w[32];
             I64 dw_i = 0;
             while (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos]) && dw_i < 31) {
-                dir_w[dw_i++] = g_hc_src[g_hc_pos++];
+                dir_w[dw_i++] = HcTakeChar();
             }
             dir_w[dw_i] = 0;
             if (strcmp(dir_w, "define") == 0) {
                 while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) {
-                    g_hc_pos++;
+                    HcAdvPos();
                 }
                 U8 def_n[64];
                 I64 dn_i = 0;
                 while (g_hc_pos < g_hc_len && HcIsAlNum(g_hc_src[g_hc_pos]) && dn_i < 63) {
-                    def_n[dn_i++] = g_hc_src[g_hc_pos++];
+                    def_n[dn_i++] = HcTakeChar();
                 }
                 def_n[dn_i] = 0;
                 while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) {
-                    g_hc_pos++;
+                    HcAdvPos();
                 }
                 I64 d_neg = 0;
                 if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '-') {
                     d_neg = 1;
-                    g_hc_pos++;
+                    HcAdvPos();
                     while (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == ' ' || g_hc_src[g_hc_pos] == '\t')) {
-                        g_hc_pos++;
+                        HcAdvPos();
                     }
                 }
                 // P7.3 (D37): a full constant expression, incl. a leading `(`.
@@ -1552,7 +1593,7 @@ U0 HcSkipWhitespaceAndComments() {
                 }
             }
             while (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] != '\n') {
-                g_hc_pos++;
+                HcAdvPos();
             }
             continue;
         }
@@ -1574,6 +1615,9 @@ U0 HcLexNext() {
         return;
     }
     g_hc_tok_pos = g_hc_pos;   // remember where this token begins (for re-lexing)
+    // FASE 2.4: snapshot O(1) da posicao LEGIVEL do token (linha/coluna).
+    g_hc_tok_line = g_hc_line;
+    g_hc_tok_col  = g_hc_col;
 
     U8 c = g_hc_src[g_hc_pos];
 
@@ -1581,18 +1625,18 @@ U0 HcLexNext() {
     if (HcIsDigit(c)) {
         I64 val = 0;
         if (c == '0' && g_hc_pos + 1 < g_hc_len && (g_hc_src[g_hc_pos + 1] == 'x' || g_hc_src[g_hc_pos + 1] == 'X')) {
-            g_hc_pos += 2;
+            HcAdvPos(); HcAdvPos();
             while (g_hc_pos < g_hc_len) {
                 U8 h = g_hc_src[g_hc_pos];
                 if (h >= '0' && h <= '9') {
                     val = (val << 4) | (h - '0');
-                    g_hc_pos++;
+                    HcAdvPos();
                 } else if (h >= 'a' && h <= 'f') {
                     val = (val << 4) | (h - 'a' + 10);
-                    g_hc_pos++;
+                    HcAdvPos();
                 } else if (h >= 'A' && h <= 'F') {
                     val = (val << 4) | (h - 'A' + 10);
-                    g_hc_pos++;
+                    HcAdvPos();
                 } else {
                     break;
                 }
@@ -1602,7 +1646,7 @@ U0 HcLexNext() {
                 I64 d = g_hc_src[g_hc_pos] & 0xFF;
                 if (d >= '0' && d <= '9') {
                     val = val * 10 + (d - '0');
-                    g_hc_pos++;
+                    HcAdvPos();
                 } else {
                     break;
                 }
@@ -1612,30 +1656,52 @@ U0 HcLexNext() {
                 (g_hc_src[g_hc_pos] == '.' || g_hc_src[g_hc_pos] == 'e' || g_hc_src[g_hc_pos] == 'E')) {
                 F64 fv = (F64)val;
                 if (g_hc_src[g_hc_pos] == '.') {
-                    g_hc_pos++;
+                    HcAdvPos();
                     F64 scale = 10.0;
                     while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
                         fv = fv + (F64)(g_hc_src[g_hc_pos] - '0') / scale;
                         scale = scale * 10.0;
-                        g_hc_pos++;
+                        HcAdvPos();
                     }
                 }
                 if (g_hc_pos < g_hc_len && (g_hc_src[g_hc_pos] == 'e' || g_hc_src[g_hc_pos] == 'E')) {
-                    g_hc_pos++;
+                    HcAdvPos();
                     I64 esign = 1;
-                    if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '+') g_hc_pos++;
-                    else if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '-') { esign = -1; g_hc_pos++; }
+                    if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '+') HcAdvPos();
+                    else if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '-') { esign = -1; HcAdvPos(); }
                     I64 exp = 0;
                     while (g_hc_pos < g_hc_len && HcIsDigit(g_hc_src[g_hc_pos])) {
                         exp = exp * 10 + (g_hc_src[g_hc_pos] - '0');
-                        g_hc_pos++;
+                        HcAdvPos();
                     }
                     for (I64 ei = 0; ei < exp; ei++) { if (esign > 0) fv = fv * 10.0; else fv = fv / 10.0; }
+                }
+                // FASE 2.4 (2b): o expoente ja foi consumido — um alfa aqui e'
+                // um literal malformado (`1.5abc`, `1.5e3x`).
+                if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
+                    doldoc_printf("$FG,RED$[HCLX] FATAL: literal float malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
+                                  g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+                    HcRaiseError(HC_ERR_SYNTAX_TOKEN);
+                    g_hc_tok = TOK_EOF;
+                    return;
                 }
                 g_hc_tok_val = *(I64*)&fv;   // IEEE-754 bits
                 g_hc_tok = TOK_FLOAT;
                 return;
             }
+        }
+        // FASE 2.4 (2b): NUMERO MALFORMADO. Um literal numerico seguido de um
+        // caractere de identificador (`123abc`, `0x1G`) nao e' dois tokens: e' um
+        // erro. No ramo hex os digitos a-f/A-F ja foram consumidos, entao o que
+        // chega aqui e' g-z/G-Z/_; no ramo decimal `e`/`E` (expoente) tambem ja foi
+        // consumido pelo ramo de float acima. Antes isso "compilava" com semantica
+        // errada (fallback silencioso).
+        if (g_hc_pos < g_hc_len && HcIsAlpha(g_hc_src[g_hc_pos])) {
+            doldoc_printf("$FG,RED$[HCLX] FATAL: literal numerico malformado linha=%lld col=%lld pos=%lld len=%lld proximo='%c'$FG$\n",
+                          g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len, g_hc_src[g_hc_pos]);
+            HcRaiseError(HC_ERR_SYNTAX_TOKEN);
+            g_hc_tok = TOK_EOF;
+            return;
         }
         g_hc_tok_val = val;
         g_hc_tok = TOK_NUMBER;
@@ -1644,13 +1710,23 @@ U0 HcLexNext() {
 
     // String Literals: "..."
     if (c == '\"') {
-        g_hc_pos++;
+        HcAdvPos();
         I64 start = g_hc_pos;
         while (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] != '\"') {
             if (g_hc_src[g_hc_pos] == '\\' && g_hc_pos + 1 < g_hc_len) {
-                g_hc_pos++;
+                HcAdvPos();
             }
-            g_hc_pos++;
+            HcAdvPos();
+        }
+        // FASE 2.4 (2a): string NAO FECHADA. Antes o lexer devolvia o resto do
+        // arquivo como literal (fallback silencioso, sem diagnostico); agora falha
+        // ALTO, apontando linha/coluna exatas do token.
+        if (g_hc_pos >= g_hc_len) {
+            doldoc_printf("$FG,RED$[HCLX] FATAL: string nao fechada linha=%lld col=%lld pos=%lld len=%lld$FG$\n",
+                          g_hc_tok_line, g_hc_tok_col, g_hc_pos, g_hc_len);
+            HcRaiseError(HC_ERR_SYNTAX_TOKEN);
+            g_hc_tok = TOK_EOF;
+            return;
         }
         I64 slen = g_hc_pos - start;
         // P0.7: strings come from the dedicated arena, not the general heap. This
@@ -1684,7 +1760,7 @@ U0 HcLexNext() {
         }
         buf[dst_i] = 0;
         if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '\"') {
-            g_hc_pos++;
+            HcAdvPos();
         }
         g_hc_tok_val = buf;
         g_hc_tok = TOK_STRING;
@@ -1693,10 +1769,10 @@ U0 HcLexNext() {
 
     // Character Literals: '...'
     if (c == '\'') {
-        g_hc_pos++;
-        U8 ch = g_hc_src[g_hc_pos++];
+        HcAdvPos();
+        U8 ch = HcTakeChar();
         if (ch == '\\' && g_hc_pos < g_hc_len) {
-            U8 esc = g_hc_src[g_hc_pos++];
+            U8 esc = HcTakeChar();
             if (esc == 'n') ch = 10;
             else if (esc == 'r') ch = 13;
             else if (esc == 't') ch = 9;
@@ -1704,7 +1780,7 @@ U0 HcLexNext() {
             else ch = esc;
         }
         if (g_hc_pos < g_hc_len && g_hc_src[g_hc_pos] == '\'') {
-            g_hc_pos++;
+            HcAdvPos();
         }
         g_hc_tok_val = ch;
         g_hc_tok = TOK_NUMBER;
@@ -1719,12 +1795,28 @@ U0 HcLexNext() {
             if ((id_ch >= 'a' && id_ch <= 'z') || (id_ch >= 'A' && id_ch <= 'Z') ||
                 (id_ch >= '0' && id_ch <= '9') || id_ch == '_') {
                 g_hc_tok_str[idx++] = id_ch;
-                g_hc_pos++;
+                HcAdvPos();
             } else {
                 break;
             }
         }
         g_hc_tok_str[idx] = 0;
+
+        // FASE 2.4 (2d): filtro por comprimento. NENHUMA keyword desta linguagem
+        // tem menos de 2 ou mais de 8 caracteres (a mais longa e' `continue`, 8),
+        // entao um identificador fora de [2,8] pula a cadeia inteira de strcmp. O
+        // MAPEAMENTO e' identico — so o caminho ate' ele e' mais curto. Identificadores
+        // de 1 caractere sao os mais comuns e antes pagavam ~30 strcmp cada.
+        if (idx < 2 || idx > 8) {
+            I64 kw_def_val = 0;
+            if (HcFindDefine(g_hc_tok_str, &kw_def_val)) {
+                g_hc_tok_val = kw_def_val;
+                g_hc_tok = TOK_NUMBER;
+            } else {
+                g_hc_tok = TOK_IDENT;
+            }
+            return;
+        }
 
         if (strcmp(g_hc_tok_str, "if") == 0) g_hc_tok = TOK_IF;
         else if (strcmp(g_hc_tok_str, "else") == 0) g_hc_tok = TOK_ELSE;
@@ -1772,36 +1864,36 @@ U0 HcLexNext() {
     if (g_hc_pos + 2 < g_hc_len) {
         U8 n1 = g_hc_src[g_hc_pos + 1];
         U8 n2 = g_hc_src[g_hc_pos + 2];
-        if (c == '<' && n1 == '<' && n2 == '=') { g_hc_pos += 3; g_hc_tok = TOK_SHLEQ; return; }
-        if (c == '>' && n1 == '>' && n2 == '=') { g_hc_pos += 3; g_hc_tok = TOK_SHREQ; return; }
+        if (c == '<' && n1 == '<' && n2 == '=') { HcAdvPos(); HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_SHLEQ; return; }
+        if (c == '>' && n1 == '>' && n2 == '=') { HcAdvPos(); HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_SHREQ; return; }
     }
 
     // Two-character operators
     if (g_hc_pos + 1 < g_hc_len) {
         U8 next = g_hc_src[g_hc_pos + 1];
-        if (c == '=' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_EQEQ; return; }
-        if (c == '!' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_NEQ; return; }
-        if (c == '<' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_LTE; return; }
-        if (c == '>' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_GTE; return; }
-        if (c == '+' && next == '+') { g_hc_pos += 2; g_hc_tok = TOK_PLUSPLUS; return; }
-        if (c == '-' && next == '-') { g_hc_pos += 2; g_hc_tok = TOK_MINUSMINUS; return; }
-        if (c == '+' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_PLUSEQ; return; }
-        if (c == '-' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_MINUSEQ; return; }
-        if (c == '*' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_STAREQ; return; }
-        if (c == '/' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_SLASHEQ; return; }
-        if (c == '%' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_PERCENTEQ; return; }
-        if (c == '&' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_ANDEQ; return; }
-        if (c == '|' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_PIPEEQ; return; }
-        if (c == '^' && next == '=') { g_hc_pos += 2; g_hc_tok = TOK_CARETEQ; return; }
-        if (c == '&' && next == '&') { g_hc_pos += 2; g_hc_tok = TOK_ANDAND; return; }
-        if (c == '|' && next == '|') { g_hc_pos += 2; g_hc_tok = TOK_PIPEPIPE; return; }
-        if (c == '<' && next == '<') { g_hc_pos += 2; g_hc_tok = TOK_SHL; return; }
-        if (c == '>' && next == '>') { g_hc_pos += 2; g_hc_tok = TOK_SHR; return; }
-        if (c == '-' && next == '>') { g_hc_pos += 2; g_hc_tok = TOK_ARROW; return; }
+        if (c == '=' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_EQEQ; return; }
+        if (c == '!' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_NEQ; return; }
+        if (c == '<' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_LTE; return; }
+        if (c == '>' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_GTE; return; }
+        if (c == '+' && next == '+') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_PLUSPLUS; return; }
+        if (c == '-' && next == '-') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_MINUSMINUS; return; }
+        if (c == '+' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_PLUSEQ; return; }
+        if (c == '-' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_MINUSEQ; return; }
+        if (c == '*' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_STAREQ; return; }
+        if (c == '/' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_SLASHEQ; return; }
+        if (c == '%' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_PERCENTEQ; return; }
+        if (c == '&' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_ANDEQ; return; }
+        if (c == '|' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_PIPEEQ; return; }
+        if (c == '^' && next == '=') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_CARETEQ; return; }
+        if (c == '&' && next == '&') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_ANDAND; return; }
+        if (c == '|' && next == '|') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_PIPEPIPE; return; }
+        if (c == '<' && next == '<') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_SHL; return; }
+        if (c == '>' && next == '>') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_SHR; return; }
+        if (c == '-' && next == '>') { HcAdvPos(); HcAdvPos(); g_hc_tok = TOK_ARROW; return; }
     }
 
     // Single-character tokens
-    g_hc_pos++;
+    HcAdvPos();
     if (c == '+') g_hc_tok = TOK_PLUS;
     else if (c == '-') g_hc_tok = TOK_MINUS;
     else if (c == '*') g_hc_tok = TOK_STAR;
@@ -2508,6 +2600,8 @@ U0 HcParseUnary() {
         // Check for *(U8*) / *(U16*) / *(U32*) / *(I64*) / *(F64*) cast
         if (g_hc_tok == TOK_LPAREN) {
             I64 sv_p = g_hc_pos;
+            I64 sv_ln = g_hc_line;
+            I64 sv_cl = g_hc_col;
             I64 sv_t = g_hc_tok;
             I64 sv_v = g_hc_tok_val;
             U8  sv_s[256];
@@ -2528,6 +2622,8 @@ U0 HcParseUnary() {
             }
             if (deref_sz < 0) {
                 g_hc_pos = sv_p;
+                g_hc_line = sv_ln;
+                g_hc_col = sv_cl;
                 g_hc_tok = sv_t;
                 g_hc_tok_val = sv_v;
                 HcSafeCopy(g_hc_tok_str, sv_s, 256);
@@ -3607,6 +3703,8 @@ U0 HcParseStatement() {
         I64 st_flt = 0; // D34: pointee is F64 -> store D0, not X0
         if (g_hc_tok == TOK_LPAREN) {
             I64 sp_p = g_hc_pos;
+            I64 sp_ln = g_hc_line;
+            I64 sp_cl = g_hc_col;
             I64 sp_t = g_hc_tok;
             I64 sp_v = g_hc_tok_val;
             U8  sp_s[256];
@@ -3627,6 +3725,8 @@ U0 HcParseStatement() {
             }
             if (st_sz < 0) {
                 g_hc_pos = sp_p;
+                g_hc_line = sp_ln;
+                g_hc_col = sp_cl;
                 g_hc_tok = sp_t;
                 g_hc_tok_val = sp_v;
                 HcSafeCopy(g_hc_tok_str, sp_s, 256);
@@ -3660,6 +3760,8 @@ U0 HcParseStatement() {
     // Identifier statements: assignments, compound ops, increments, or calls
     if (g_hc_tok == TOK_IDENT) {
         I64 save_p = g_hc_pos;
+        I64 save_ln = g_hc_line;
+        I64 save_cl = g_hc_col;
         I64 save_t = g_hc_tok;
         I64 save_v = g_hc_tok_val;
         I64 save_code = g_hc_code_len;
@@ -3684,6 +3786,8 @@ U0 HcParseStatement() {
 
         // Restore state and parse as general expression statement
         g_hc_pos = save_p;
+        g_hc_line = save_ln;
+        g_hc_col = save_cl;
         g_hc_tok = save_t;
         g_hc_tok_val = save_v;
         g_hc_code_len = save_code;
@@ -3789,6 +3893,8 @@ U0 HcParseFunction(U8 *func_name) {
 U0 HcEmitDeferredInits() {
     if (g_hc_init_count <= 0) return;
     I64 sp = g_hc_pos;
+    I64 sp_ln = g_hc_line;
+    I64 sp_cl = g_hc_col;
     I64 st = g_hc_tok;
     I64 sv = g_hc_tok_val;
     I64 stp = g_hc_tok_pos;
@@ -3797,7 +3903,12 @@ U0 HcEmitDeferredInits() {
 
     I64 di = 0;
     for (di = 0; di < g_hc_init_count; di++) {
+        // g_hc_init_pos e' uma POSICAO DE TOKEN (nao a posicao corrente do lexer),
+        // entao linha/coluna tem de ser recomputadas ao re-lexar — caso contrario o
+        // snapshot do token seguinte ficaria com o valor de antes do salto.
         g_hc_pos = g_hc_init_pos[di];
+        g_hc_line = HcLineOf(g_hc_init_pos[di]);
+        g_hc_col  = HcColOf(g_hc_init_pos[di]);
         HcLexNext();          // re-prime the lexer at the initializer expression
         HcParseExpr();        // result in x0 (or d0 if float)
         HcEmitImm64(16, g_hc_init_slot[di]);
@@ -3806,6 +3917,8 @@ U0 HcEmitDeferredInits() {
     }
 
     g_hc_pos = sp;
+    g_hc_line = sp_ln;
+    g_hc_col = sp_cl;
     g_hc_tok = st;
     g_hc_tok_val = sv;
     g_hc_tok_pos = stp;
@@ -3819,6 +3932,8 @@ I64 HcAtFunctionDef() {
     if (g_hc_tok == TOK_CLASS || g_hc_tok == TOK_STRUCT) return 1;
     if (!HcIsTypeToken(g_hc_tok) && !(g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0)) return 0;
     I64 sp = g_hc_pos;
+    I64 sp_ln = g_hc_line;
+    I64 sp_cl = g_hc_col;
     I64 st = g_hc_tok;
     I64 sv = g_hc_tok_val;
     I64 stp = g_hc_tok_pos;
@@ -3831,7 +3946,8 @@ I64 HcAtFunctionDef() {
         HcLexNext();
         is_fn = (g_hc_tok == TOK_LPAREN);
     }
-    g_hc_pos = sp; g_hc_tok = st; g_hc_tok_val = sv; g_hc_tok_pos = stp;
+    g_hc_pos = sp; g_hc_line = sp_ln; g_hc_col = sp_cl;
+    g_hc_tok = st; g_hc_tok_val = sv; g_hc_tok_pos = stp;
     HcSafeCopy(g_hc_tok_str, ss, 256);
     return is_fn;
 }
@@ -3844,6 +3960,8 @@ U0 HcParseProgram() {
         }
         if (HcIsTypeToken(g_hc_tok) || (g_hc_tok == TOK_IDENT && HcFindStruct(g_hc_tok_str) >= 0)) {
             I64 save_p = g_hc_pos;
+            I64 save_ln = g_hc_line;
+            I64 save_cl = g_hc_col;
             I64 save_t = g_hc_tok;
             I64 save_v = g_hc_tok_val;
             U8  save_s[256];
@@ -4067,6 +4185,8 @@ U0 HcParseProgram() {
 
             // Restore state and parse as top-level statement block
             g_hc_pos = save_p;
+            g_hc_line = save_ln;
+            g_hc_col = save_cl;
             g_hc_tok = save_t;
             g_hc_tok_val = save_v;
             HcSafeCopy(g_hc_tok_str, save_s, 256);
@@ -4128,6 +4248,8 @@ U0 HcParseProgram() {
 // ------------------------------------------------------------------------------
 U0 HcPrescanStructs() {
     I64 sp = g_hc_pos;
+    I64 sp_ln = g_hc_line;
+    I64 sp_cl = g_hc_col;
     I64 st = g_hc_tok;
     I64 sv = g_hc_tok_val;
     I64 stp = g_hc_tok_pos;
@@ -4135,6 +4257,8 @@ U0 HcPrescanStructs() {
     HcSafeCopy(ss, g_hc_tok_str, 256);
 
     g_hc_pos = 0;
+    g_hc_line = 1;
+    g_hc_col = 1;
     HcLexNext();
     while (g_hc_tok != TOK_EOF) {
         if (g_hc_tok == TOK_STRUCT || g_hc_tok == TOK_CLASS) {
@@ -4145,6 +4269,8 @@ U0 HcPrescanStructs() {
     }
 
     g_hc_pos = sp;
+    g_hc_line = sp_ln;
+    g_hc_col = sp_cl;
     g_hc_tok = st;
     g_hc_tok_val = sv;
     g_hc_tok_pos = stp;
@@ -4158,6 +4284,8 @@ U0 HcPrescanStructs() {
 // ignored. Lexer state is saved/restored, mirroring HcPrescanStructs.
 U0 HcPrescanFuncs() {
     I64 sp = g_hc_pos;
+    I64 sp_ln = g_hc_line;
+    I64 sp_cl = g_hc_col;
     I64 st = g_hc_tok;
     I64 sv = g_hc_tok_val;
     I64 stp = g_hc_tok_pos;
@@ -4165,6 +4293,8 @@ U0 HcPrescanFuncs() {
     HcSafeCopy(ss, g_hc_tok_str, 256);
 
     g_hc_pos = 0;
+    g_hc_line = 1;
+    g_hc_col = 1;
     HcLexNext();
     I64 depth = 0;
     while (g_hc_tok != TOK_EOF) {
@@ -4186,6 +4316,8 @@ U0 HcPrescanFuncs() {
     }
 
     g_hc_pos = sp;
+    g_hc_line = sp_ln;
+    g_hc_col = sp_cl;
     g_hc_tok = st;
     g_hc_tok_val = sv;
     g_hc_tok_pos = stp;
@@ -4269,6 +4401,19 @@ I64 HcLineOf(I64 pos) {
     return ln;
 }
 
+// FASE 2.4: 1-based column of a source position (fallback O(n) do diagnostico;
+// o caminho normal e' o snapshot O(1) g_hc_tok_col).
+I64 HcColOf(I64 pos) {
+    I64 col = 1;
+    I64 i = 0;
+    while (i < pos && i < g_hc_len) {
+        if (g_hc_src[i] == 10) col = 1;
+        else col++;
+        i++;
+    }
+    return col;
+}
+
 // ------------------------------------------------------------------------------
 // Compiler Compile & Run Driver (Persistent Monotonic Code Pool)
 // ------------------------------------------------------------------------------
@@ -4280,6 +4425,13 @@ I64 CompilerCompileAndRun(U8 *src) {
     g_hc_compiling = 1; // guardrail 1: defer preemption during compilation
 
     I64 start_idx = g_hc_pool_offset;
+    // FASE 2.4 (ITEM 1): marca d'agua transacional. Uma unidade que FALHA nao pode
+    // deixar globais nem tipos-de-retorno-F64 registrados: o registro vazava e as
+    // tabelas enchiam com o tempo (o teto HC_MAX_GLOBALS chegava de fora, nao de uso
+    // real). g_hc_struct_count e g_hc_def_count NAO entram: a persistencia deles e'
+    // intencional (tipos e macros sobrevivem a unidades, como no C seed).
+    I64 wm_globals = g_hc_global_count;
+    I64 wm_fnf = g_hc_fnf_count;
     U64 start_addr = g_hc_code + start_idx * 4;
 
     U8 *use_src = src;
@@ -4294,6 +4446,10 @@ I64 CompilerCompileAndRun(U8 *src) {
 
     g_hc_src = use_src;
     g_hc_pos = 0;
+    g_hc_line = 1;
+    g_hc_col = 1;
+    g_hc_tok_line = 1;
+    g_hc_tok_col = 1;
     g_hc_len = strlen(use_src);
     HcLexNext(); // Prime lexer
 
@@ -4306,9 +4462,12 @@ I64 CompilerCompileAndRun(U8 *src) {
         doldoc_printf("$FG,RED$[COMPILER.HC] internal error at line %lld (pos=%lld locals=%lld funcs=%lld structs=%lld globals=%lld code=%lld)$FG$\n",
                       HcLineOf(g_hc_pos), g_hc_pos, g_hc_local_count, g_hc_func_count, g_hc_struct_count,
                       g_hc_global_count, g_hc_code_len);
-        doldoc_printf("$FG,RED$[COMPILER.HC] FIRST CAUSE: %s at line %lld (count=%lld mask=0x%08X)$FG$\n",
-                      HcErrName(g_hc_first_err_code), g_hc_first_err_line, g_hc_err_count, g_hc_err_mask);
+        doldoc_printf("$FG,RED$[COMPILER.HC] FIRST CAUSE: %s at line %lld col %lld (count=%lld mask=0x%08X)$FG$\n",
+                      HcErrName(g_hc_first_err_code), g_hc_first_err_line, g_hc_first_err_col,
+                      g_hc_err_count, g_hc_err_mask);
         g_hc_pool_offset = start_idx;
+        g_hc_global_count = wm_globals;
+        g_hc_fnf_count = wm_fnf;
         g_hc_compiling = 0;
         if (exp_buf) kfree(exp_buf);
         return -1;

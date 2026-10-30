@@ -123,6 +123,28 @@ U0 SelfTestReject(U8 *name, U8 *src) {
     }
 }
 
+// FASE 2.4 (ITEM 1) — rollback transacional: uma unidade que FALHA nao pode deixar
+// globais registrados. Mede g_hc_global_count antes/depois de uma unidade que
+// DECLARA um global novo e depois erra de sintaxe: tem de voltar ao valor inicial,
+// e o retorno tem de ser -1. (Usa SelfTestCompare — HC puro — para nao alimentar a
+// paridade C.)
+U0 SelfTestRollback() {
+    I64 rb_before = g_hc_global_count;
+    I64 rb_rc = CompilerCompileAndRun("I64 g_f24_rb_probe;\n1 + ;");
+    I64 rb_after = g_hc_global_count;
+    SelfTestCompare("f24_rollback_globals", rb_after - rb_before, 0);
+    SelfTestCompare("f24_rollback_rc", rb_rc, -1);
+}
+
+// FASE 2.4 (ITEM 2) — lexer blindado. Os 4 casos abaixo eram ACEITOS em silencio
+// (string nao fechada virava o resto do arquivo; `123abc` virava dois tokens).
+U0 SelfTestLexGuards() {
+    SelfTestReject("f24_reject_unterminated_string", "I64 s24 = \"abc;");
+    SelfTestReject("f24_reject_number_then_ident", "123abc;");
+    SelfTestReject("f24_reject_bad_hex_literal", "0x1G;");
+    SelfTestReject("f24_reject_float_then_ident", "1.5abc;");
+}
+
 // Pre-existing defect: reported, but not counted against the pass total.
 U0 SelfTestKnown(U8 *name, U8 *src, I64 expect) {
     I64 got = SelfTestEval(src, 0, 0);
@@ -1708,6 +1730,8 @@ U0 SelfTestRun() {
     DolDocSlateSelfTest();
     ShellSelfTest();
     SelfTestInputDuct();
+    SelfTestRollback();
+    SelfTestLexGuards();
     SelfTestOverflowInjection();
     SelfTestHeapIntegrity();
 

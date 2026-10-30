@@ -240,6 +240,12 @@ U8  g_doc_text[DOC_MAX_TEXT];
 U64 g_doc_attr[DOC_MAX_TEXT];       // low 32 = fg token, high 32 = bg token
 U8  g_doc_args[DOC_MAX_ARGS];
 I64 g_doc_node_count = 0;
+// FASE 2.4 (ITEM 3b): contador OBSERVAVEL de chamadas a DolDocDrawChildren com
+// `parent` fora da faixa de nos. O acesso a g_doc_nodes[parent] era cego: um indice
+// corrompido escrevia/lia fora do array de nos em silencio. NAO usa HealthLogRecord
+// de proposito: Watchdog.HC carrega DEPOIS de DolDoc.HC e isso criaria uma
+// dependencia nova so' para um contador.
+I64 g_doc_draw_children_bad = 0;
 I64 g_doc_text_used  = 0;
 I64 g_doc_args_used  = 0;
 I64 g_doc_root       = 0;
@@ -2837,6 +2843,16 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
 // Tree rendering
 // ============================================================================
 U0 DolDocDrawChildren(I64 parent, I64 scroll) {
+    // FASE 2.4 (ITEM 3b): guarda que FALHA ALTO. Zero fallback silencioso: um indice
+    // fora da faixa e' corrupcao de arvore, nao um caso a ser tolerado — registra no
+    // contador observavel e imprime UMA vez (nao spamma o serial por frame).
+    if (parent < 0 || parent >= g_doc_node_count) {
+        g_doc_draw_children_bad++;
+        if (g_doc_draw_children_bad == 1)
+            doldoc_printf("$FG,RED$[DOLDOC] FATAL: DolDocDrawChildren parent=%lld fora da faixa [0,%lld) — corrupcao de arvore$FG$\n",
+                          parent, g_doc_node_count);
+        return;
+    }
     I64 n = g_doc_nodes[parent].first;
     while (n >= 0) {
         DolDocDrawNode(n, scroll);
