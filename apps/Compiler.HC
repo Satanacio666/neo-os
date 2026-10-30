@@ -184,6 +184,15 @@ I64   g_hc_epi_count;
 U8    g_hc_local_names[16384];       // HC_MAX_LOCALS * 32
 I64   g_hc_local_offsets[512];
 I64   g_hc_local_scales[512];        // 1, 2, 4, 8, or struct size
+// FASE 2.5b (Rota B): largura SEMANTICA real (1/2/4/8). O tamanho do SLOT
+// permanece 8 (o D14 documenta que dois nomes de tipos diferentes
+// compartilham uma celula de 8 bytes); este array existe apenas para saber
+// quando truncar o VALOR de um operando estreito.
+U8    g_hc_local_elem_sz[512];
+// Largura do ULTIMO operando primario (0 = largo). Consumida por HcParseShift.
+I64   g_hc_last_prim_u32 = 0;
+// Largura semantica a registrar no proximo HcAddLocalTyped (0 = larga).
+U8    g_hc_pending_elem_sz = 0;
 I64   g_hc_local_is_ptr[512];        // 0=scalar, 1=ptr, 2=stack array, 3=stack struct
 I64   g_hc_local_is_float[512];      // 1 if this local is an F64
 I64   g_hc_local_elem_float[512];    // 1 if this local's ELEMENT/POINTEE is F64 (arrays, F64*)
@@ -611,6 +620,8 @@ U0 HcReset() {
     // FASE 2.5a: um erro lexico deve ser impresso UMA vez por unidade compilada
     // (nao 3-4x pelos passes de prescan/parse).
     g_hc_lex_err_reported = 0;
+    g_hc_last_prim_u32 = 0; // FASE 2.5b
+    g_hc_pending_elem_sz = 0;
     g_hc_line = 1;
     g_hc_col = 1;
     g_hc_tok_line = 1;
@@ -805,6 +816,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         // (Data Abort, ESR 0x96000005). Sharing the slot is correct: the branches are
         // mutually exclusive at run time, so one 8-byte cell serves both.
         g_hc_local_scales[ex]     = scale;
+        if (g_hc_pending_elem_sz > 0) g_hc_local_elem_sz[ex] = g_hc_pending_elem_sz;
         g_hc_local_is_ptr[ex]     = is_ptr;
         g_hc_local_is_float[ex]   = g_hc_decl_float;
         g_hc_local_elem_float[ex] = g_hc_decl_elem_float;
@@ -829,6 +841,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
         HcSafeCopy(&g_hc_local_names[g_hc_local_count * 32], name, 32);
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
+        g_hc_local_elem_sz[g_hc_local_count] = g_hc_pending_elem_sz;
         g_hc_local_is_ptr[g_hc_local_count] = is_ptr;
         g_hc_local_is_float[g_hc_local_count] = g_hc_decl_float;
         g_hc_local_elem_float[g_hc_local_count] = g_hc_decl_elem_float;
@@ -2379,6 +2392,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
 // ------------------------------------------------------------------------------
 U0 HcParsePrimary() {
     g_hc_expr_float = 0;
+    g_hc_last_prim_u32 = 0; // FASE 2.5b: so' o ramo IDENT estreito marca
     if (g_hc_tok == TOK_FLOAT) {
         I64 bits = g_hc_tok_val;
         HcLexNext();
@@ -2428,6 +2442,19 @@ U0 HcParsePrimary() {
         U8 ident_name[64];
         HcSafeCopy(ident_name, g_hc_tok_str, 64);
         HcLexNext();
+        // FASE 2.5b: marca a largura SEMANTICA quando este primario e' uma
+        // variavel ESCALAR estreita (is_ptr == 0). Ponteiros/structs/literais
+        // NAO marcam — truncar um ponteiro foi o que derrubou as 2 tentativas.
+        g_hc_last_prim_u32 = 0;
+        I64 _li = HcFindLocalIdx(ident_name);
+        if (_li >= 0 && g_hc_local_is_ptr[_li] == 0) {
+            I64 _es = g_hc_local_elem_sz[_li];
+            if (_es == 1 || _es == 2 || _es == 4) g_hc_last_prim_u32 = _es;
+        } else if (_li < 0 && !HcGlobalIsPtr(ident_name)) {
+            I64 _gs = HcGlobalScale(ident_name);
+            if (HcGlobalIsArray(ident_name)) _gs = 0;
+            if (_gs == 1 || _gs == 2 || _gs == 4) g_hc_last_prim_u32 = _gs;
+        }
 
         // Direct Function Call: ident(arg1, arg2, ...). If ident names a VARIABLE
         // (e.g. a global function pointer `I64 fp = &inc;`), fall through to the
@@ -2787,7 +2814,12 @@ U0 HcParseAdditive() {
 U0 HcParseShift() {
     HcParseAdditive();
     while (g_hc_tok == TOK_SHL || g_hc_tok == TOK_SHR) {
-        HcOpPush(g_hc_tok);
+        I64 op = g_hc_tok;
+        // FASE 2.5b: captura a largura do operando ESQUERDO numa variavel
+        // LOCAL antes de parsear o direito — a avaliacao do RHS altera
+        // g_hc_last_prim_u32 (ex.: o literal `13` nao e' U32).
+        I64 lhs_narrow = g_hc_last_prim_u32;
+        HcOpPush(op);
         HcLexNext();
         HcEmitPush(0);
         HcParseAdditive();
@@ -2795,7 +2827,12 @@ U0 HcParseShift() {
         HcEmitPop(0);
 
         I64 cur_shift_op = HcOpPop();
-        if (cur_shift_op == TOK_SHL) {
+        // 32 bits quando o operando esquerdo e' um U8/U16/U32 escalar:
+        // LSLV/LSRV W zeram os bits 32-63 por hardware (regra da ISA).
+        if (lhs_narrow == 4 || lhs_narrow == 2 || lhs_narrow == 1) {
+            if (cur_shift_op == TOK_SHL) HcEmit(0x1AC12000); // lsl w0, w0, w1
+            else                         HcEmit(0x1AC12400); // lsr w0, w0, w1
+        } else if (cur_shift_op == TOK_SHL) {
             HcEmit(0x9AC12000); // lsl x0, x0, x1
         } else {
             HcEmit(0x9AC12800); // asr x0, x0, x1
@@ -3432,7 +3469,11 @@ U0 HcParseStatement() {
                     I64 decl_is_f = (is_p == 0 && base_is_float);
                     g_hc_decl_float = decl_is_f;
                     g_hc_decl_elem_float = base_is_float;   // F64* local: pointee is F64
+                    // FASE 2.5b: registra a largura SEMANTICA real sem mudar
+                    // o tamanho do slot (var_scale continua 8 para escalares).
+                    g_hc_pending_elem_sz = (is_p > 0) ? 0 : (U8)base_scale;
                     I64 decl_off = HcAddLocalTyped(vname, var_scale, ptr_mode, st_idx, 1);
+                    g_hc_pending_elem_sz = 0;
                     g_hc_decl_float = 0;
                     g_hc_decl_elem_float = 0;
                     if (g_hc_tok == TOK_EQUAL) {

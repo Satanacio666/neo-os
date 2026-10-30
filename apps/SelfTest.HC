@@ -157,6 +157,27 @@ U0 SelfTestLexGuards() {
     SelfTestCompare("f24_multiline_err_col",  g_hc_first_err_col,  9);
 }
 
+// FASE 2.5b — RNG: golden do 1o valor (prova o Xorshift32 exato) + 1000 amostras
+// em [0,1). SelfTestCompare (HC puro): SelfTestCheck alimenta a paridade C e o
+// seed C nao conhece MathRngF64. Este e' o DETECTOR da mina de tipos estreitos.
+// Golden verificado a mao (python): seed 0x9E3779B9 <<13 -> >>17 -> <<5 = 0x510C4619.
+U0 SelfTestRng() {
+    MathRngSeed(0x9E3779B9);
+    I64 rng_first = (I64)MathRngU32();
+    SelfTestCompare("f25b_rng_xorshift32_golden", rng_first, 1359758873);
+    I64 rng_bad = 0;
+    F64 rng_sum = 0.0;
+    I64 rng_i = 0;
+    while (rng_i < 1000) {
+        F64 rv = MathRngF64();
+        if (rv < 0.0 || rv >= 1.0) { rng_bad++; }
+        rng_sum = rng_sum + rv;
+        rng_i++;
+    }
+    SelfTestCompare("f25b_rng_range_1000", rng_bad, 0);
+    SelfTestCompare("f25b_rng_sum_in_range", ((rng_sum > 400.0) && (rng_sum < 600.0)) ? 1 : 0, 1);
+}
+
 // Pre-existing defect: reported, but not counted against the pass total.
 U0 SelfTestKnown(U8 *name, U8 *src, I64 expect) {
     I64 got = SelfTestEval(src, 0, 0);
@@ -1744,6 +1765,7 @@ U0 SelfTestRun() {
     SelfTestInputDuct();
     SelfTestRollback();
     SelfTestLexGuards();
+    SelfTestRng();
     SelfTestOverflowInjection();
     SelfTestHeapIntegrity();
 

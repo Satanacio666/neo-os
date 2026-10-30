@@ -7,6 +7,25 @@ F64 HALF_PI = 1.57079632679489661923;
 F64 DEG2RAD = 0.01745329251994329577;
 F64 RAD2DEG = 57.2957795130823208768;
 
+// FASE 2.5b (ITEM 4) — RNG rapido (Xorshift32), estado explicito e SEMEAVEL.
+// MathRngF64 devolve [0,1) com 24 bits de mantissa: (u32 >> 8) * 2^-24. A
+// constante e' DECIMAL (o lexer nao aceita hex-float como 0x1.0p-24).
+// Este codigo e' o DETECTOR da mina de tipos estreitos: so' passa quando o
+// compilador emite o shift em 32 bits para operandos U8/U16/U32 (FASE 2.5b).
+U32 g_math_rng_state = 0x9E3779B9;
+U0 MathRngSeed(U32 s) { g_math_rng_state = s; }
+U32 MathRngU32() {
+    U32 x = g_math_rng_state;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 17);
+    x = x ^ (x << 5);
+    g_math_rng_state = x;
+    return x;
+}
+F64 MathRngF64() {
+    return (F64)(MathRngU32() >> 8) * 0.000000059604644775390625;
+}
+
 class CVec3 {
   F64 x;
   F64 y;
