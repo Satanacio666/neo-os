@@ -107,7 +107,9 @@ extern uint64_t gicv3_bpr1_get(void);
 extern int      neo_pl011_available(void);
 extern void enable_interrupts(void);
 extern void disable_interrupts(void);
-extern void cpu_switch_context(void *prev, void *next);
+// cpu_switch_context REMOVIDO (31/10, dissolucao total): era o scheduler antigo em
+// assembly, superado pelo trap-frame do SchedOnTick (Gic.HC:366 -> Sched.HC ->
+// vectors.S:248 RESTORE_ALL). 0 chamadores em runtime. Nao registrar.
 extern int64_t psci_call_hvc(uint64_t func, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 extern int64_t psci_call_smc(uint64_t func, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 extern uint64_t smp_get_mpidr(void);
@@ -605,7 +607,7 @@ int main(int argc, char **argv)
     symbols_register("smp_spin_lock", (void*)smp_spin_lock, SYM_FUNC);
     symbols_register("smp_spin_unlock", (void*)smp_spin_unlock, SYM_FUNC);
     symbols_register("smp_entry", (void*)smp_entry, SYM_FUNC);
-    symbols_register("cpu_switch_context", (void*)cpu_switch_context, SYM_FUNC);
+    // cpu_switch_context NAO registrado (dissolucao) — scheduler por trap frame.
     symbols_register("install_vector_table", (void*)install_vector_table, SYM_FUNC);
 
     // P5.2 — GICv3: interface de system registers (ICC_*_EL1). O HolyC nao tem

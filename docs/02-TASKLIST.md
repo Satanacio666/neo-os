@@ -436,8 +436,9 @@ recovery). Memory is *discovered* (already read from the UEFI memory map) and ev
    `Symbols.HC` and the JIT emitter must guard all mutations with an explicit **IRQ-mask / spinlock** primitive
    (`DAIFSet`/`DAIFClr` for the local core; `LDXR`/`STXR` for SMP), **or** preemption must be deferred while a
    task holds the compiler/heap lock. No mutation path may run unguarded with IRQs unmasked.
-2. **Full trap-frame context switching on preemption (P3.4/P3.5).** `cpu_switch_context`'s callee-saved save
-   (`X19–X30`, `SP`, `D8–D15`) is correct for *voluntary* `TaskYield()` (the compiler knows `X0–X18` are dead).
+2. **Full trap-frame context switching on preemption (P3.4/P3.5).** [DISSOLVIDO 31/10] O antigo
+   `cpu_switch_context` (callee-saved `X19–X30`, `SP`, `D8–D15`) foi removido — a preempção é
+   **100% trap frame** (`SchedOnTick`), e o `TaskYield()` voluntário também usa o mesmo frame.
    For *asynchronous timer preemption*, the IRQ vector already pushes the full volatile frame (`X0–X30`,
    `ELR_EL1`, `SPSR_EL1`, and `Q0–Q31`); the preemptive switch must transition **through that IRQ frame** or
    switch `SP_EL1` in the IRQ epilogue so `X0–X18`/`D0–D7` are never clobbered mid-expression.
@@ -456,8 +457,8 @@ recovery). Memory is *discovered* (already read from the UEFI memory map) and ev
 **Current state (verified).** Timer is a pure software tick (`TimerTick()` just increments `g_timer.system_ticks`,
 `Timer.HC:81`); `TimerInit` never writes `CNTP/CNTV_TVAL_EL0` or `CNTP_CTL_EL0`. `GicInit` programs the distributor
 but **no handler is registered at boot** and interrupts are masked (`disable_interrupts()` in `ExceptionsInit`,
-`Exceptions.HC:225`). `Sched.HC` `TaskYield` only relabels task states — it **never calls `cpu_switch_context`**
-(which is assembled + registered at `main.c:298` but has **zero callers**). `SmpDispatch` has a **silent local
+`Exceptions.HC:225`). [DISSOLVIDO 31/10] `cpu_switch_context` foi removido (assembly morto)
+— a preempção é por trap frame no `SchedOnTick`. `SmpDispatch` has a **silent local
 execution fallback** (`Smp.HC:256-271`) and `SmpWorkerLoop1/2/3` are copy-paste (`Smp.HC:56/87/118`).
 `vectors.S` hardcodes `x3=1` for every sync fault (`vectors.S:179,206`) so **kernel faults are treated as
 recoverable JIT faults** and never reach the BSOD; the re-entrancy guard `while(1)__wfe()` (`Exceptions.HC:155`)
@@ -498,7 +499,9 @@ both `HalPlatform.HC:37` and `Timer.HC:13`.
 - [ ] Verify `g_timer.system_ticks` increments from the **hardware IRQ** (gate `TICK: PASS`).
 
 ### P3.5 — Preemptive scheduler — ✅ DONE
-- [ ] **Wire `cpu_switch_context`** (`kernel/sched/switch.S`; currently zero callers): per-task context
+- [x] **`cpu_switch_context` DISSOLVIDO** (31/10/2026): o `switch.S` foi removido da build
+  e do `symbols_register`. A preempção hoje é por **trap frame** (`SchedOnTick`:
+  `Gic.HC → Sched.HC → vectors.S RESTORE_ALL`). O assembly antigo era 0 chamadores.
       (callee-saved x19-x30 + SP + D8-D15) saved/restored on every switch.
 - [ ] Real run queue; on each tick decrement `quantum_remaining`; at 0 pick the next ready task and switch.
       **Decision:** round-robin within priority bands (matches the existing `priority` field); quantum ≈10–50 ms

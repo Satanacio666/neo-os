@@ -71,8 +71,7 @@ SRCS_C = boot/main.c \
          boot/runtime/jitcache.c \
          kernel/arch/aarch64/gicv3.c
 
-SRCS_S = kernel/sched/switch.S \
-         kernel/arch/aarch64/vectors.S \
+SRCS_S = kernel/arch/aarch64/vectors.S \
          kernel/arch/aarch64/el2_drop.S \
          kernel/arch/aarch64/smp_entry.S \
          kernel/arch/aarch64/ffi_arm64.S
