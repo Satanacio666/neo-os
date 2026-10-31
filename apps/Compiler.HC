@@ -1420,11 +1420,6 @@ U0 HcBackpatchCbz(I64 patch_idx, I64 target_idx) {
     g_hc_code[patch_idx] = 0xB4000000 | ((diff & 0x7FFFF) << 5);
 }
 
-U0 HcBackpatchCbnz(I64 patch_idx, I64 target_idx) {
-    if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; }
-    I64 rel = target_idx - patch_idx;
-    g_hc_code[patch_idx] = 0xB5000000 | ((rel & 0x7FFFF) << 5) | 0;
-}
 
 U0 HcBackpatchB(I64 patch_idx, I64 target_idx) {
     if (patch_idx < 0 || patch_idx >= HC_CODE_CAPACITY) { HcRaiseError(HC_ERR_CODE_OVERFLOW); return; }
@@ -1992,9 +1987,6 @@ U0 HcLexNext() {
     else g_hc_tok = TOK_EOF;
 }
 
-U0 HcNextToken() {
-    HcLexNext();
-}
 
 // ------------------------------------------------------------------------------
 // Unified LValue Address Resolver (Locals, Globals, Arrays, Struct . and ->)

@@ -56,7 +56,6 @@ static int   s_preload_count = 0;
 static int   s_preload_ready = 0;
 static uint8_t *s_preload_dirbuf = NULL;
 
-int seed_preload_count_get(void) { return s_preload_count; }
 
 static int seed_name_eq(const char *a, const char *b) {
     int i = 0;

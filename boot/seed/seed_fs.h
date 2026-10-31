@@ -27,7 +27,6 @@ int64_t seed_write_file_at(const char *path, const void *buf, size_t bytes);
  * Retorna o numero de arquivos carregados, ou -1.
  */
 int     seed_preload_all(void);
-int     seed_preload_count_get(void);
 
 /*
  * P2.3 — Escrita no ESP pelo driver FAT do firmware.

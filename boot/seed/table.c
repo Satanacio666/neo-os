@@ -67,15 +67,3 @@ int table_has(table_t *tbl, const char *key) {
     return 0;
 }
 
-void table_free(table_t *tbl) {
-    if (!tbl) return;
-    for (int i = 0; i < TABLE_BUCKETS; i++) {
-        table_entry_t *curr = tbl->buckets[i];
-        while (curr) {
-            table_entry_t *next = curr->next;
-            kfree(curr);
-            curr = next;
-        }
-    }
-    kfree(tbl);
-}

@@ -71,9 +71,6 @@ static inline int is_in_jit_pool(const void *ptr) {
     return 0;
 }
 
-int jit_is_in_code_pool(const void *ptr) {
-    return is_in_jit_pool(ptr);
-}
 
 static int s_jit_scratch_in_use = 0;
 
@@ -323,9 +320,6 @@ static void emit_lsl(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x9AC02000 | (rm << 16) | (rn << 5) | rd);
 }
 
-static void emit_lsr(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
-    emit_u32(cb, 0x9AC02400 | (rm << 16) | (rn << 5) | rd);
-}
 
 static void emit_asr(code_buffer_t *cb, uint32_t rd, uint32_t rn, uint32_t rm) {
     emit_u32(cb, 0x9AC02800 | (rm << 16) | (rn << 5) | rd);
@@ -477,17 +471,8 @@ static void emit_b_cond(code_buffer_t *cb, uint32_t cond, size_t target_idx) {
 }
 
 __attribute__((unused))
-static size_t emit_b_cond_placeholder(code_buffer_t *cb, uint32_t cond) {
-    size_t idx = cb->count;
-    emit_u32(cb, 0x54000000 | (cond & 0xF));
-    return idx;
-}
 
 __attribute__((unused))
-static void patch_b_cond(code_buffer_t *cb, size_t branch_idx, size_t target_idx) {
-    int32_t offset = (int32_t)(target_idx - branch_idx);
-    cb->code[branch_idx] |= ((offset & 0x7FFFF) << 5);
-}
 
 static void emit_cbnz(code_buffer_t *cb, uint32_t rt, size_t target_idx) {
     int32_t offset = (int32_t)(target_idx - cb->count);
@@ -3719,9 +3704,6 @@ int64_t jit_eval(const char *expr_source) {
     return result;
 }
 
-int64_t jit_execute_statement(const char *code) {
-    return jit_compile_and_run(code);
-}
 
 // Type pre-pass: parse every struct/class definition first so that forward
 // references (pointers to types defined later in the same unit, member access)
@@ -3853,216 +3835,6 @@ int64_t jit_compile_and_run(const char *source) {
 
     cb_release(&cb);
     return result;
-}
-
-int jit_run_self_tests(void) {
-    int passed = 0;
-    int total = 12;
-
-    doldoc_print("$FG,CYAN$=======================================================$FG$\n");
-    doldoc_print("$FG,WHITE$ NeoOS HolyC 2.0 JIT Advanced Feature Self-Tests$FG$\n");
-    doldoc_print("$FG,CYAN$=======================================================$FG$\n");
-
-    // 1. Ternary Operator
-    int64_t t1 = jit_eval("(10 > 5) ? 42 : 99");
-    int64_t t2 = jit_eval("(3 > 8) ? 42 : 99");
-    if (t1 == 42 && t2 == 99) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 1. Ternary (? :): (10>5)?42:99=%lld, (3>8)?42:99=%lld\n", (long long)t1, (long long)t2);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 1. Ternary: got t1=%lld, t2=%lld\n", (long long)t1, (long long)t2);
-    }
-
-    // 2. Do-While Loop
-    jit_compile_and_run("I64 d_test = 0; do { d_test = d_test + 1; } while (d_test < 5);");
-    symbol_t *s_d = symbols_lookup_entry("d_test");
-    int64_t v_d = s_d ? *(int64_t*)s_d->address : 0;
-    if (v_d == 5) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 2. Do-While Loop: counter reached %lld\n", (long long)v_d);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 2. Do-While Loop: expected 5, got %lld\n", (long long)v_d);
-    }
-
-    // 3. While Loop with Break & Continue
-    jit_compile_and_run(
-        "I64 w_ctr = 0;\n"
-        "I64 w_sum = 0;\n"
-        "while (w_ctr < 10) {\n"
-        "    w_ctr = w_ctr + 1;\n"
-        "    if (w_ctr == 3) continue;\n"
-        "    if (w_ctr == 7) break;\n"
-        "    w_sum = w_sum + w_ctr;\n"
-        "}\n"
-    );
-    symbol_t *s_wsum = symbols_lookup_entry("w_sum");
-    int64_t v_wsum = s_wsum ? *(int64_t*)s_wsum->address : 0;
-    symbol_t *s_wctr = symbols_lookup_entry("w_ctr");
-    int64_t v_wctr = s_wctr ? *(int64_t*)s_wctr->address : 0;
-    if (v_wsum == 18 && v_wctr == 7) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 3. While (Break & Continue): sum=%lld, ctr=%lld\n", (long long)v_wsum, (long long)v_wctr);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 3. While Loop: expected sum=18 ctr=7, got sum=%lld ctr=%lld\n", (long long)v_wsum, (long long)v_wctr);
-    }
-
-    // 4. For Loop with Break & Continue
-    jit_compile_and_run(
-        "I64 f_sum = 0;\n"
-        "for (I64 fi = 0; fi < 10; fi++) {\n"
-        "    if (fi == 2) continue;\n"
-        "    if (fi == 6) break;\n"
-        "    f_sum = f_sum + fi;\n"
-        "}\n"
-    );
-    symbol_t *s_fsum = symbols_lookup_entry("f_sum");
-    int64_t v_fsum = s_fsum ? *(int64_t*)s_fsum->address : 0;
-    if (v_fsum == 13) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 4. For (Break & Continue): f_sum=%lld\n", (long long)v_fsum);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 4. For Loop: expected f_sum=13, got %lld\n", (long long)v_fsum);
-    }
-
-    // 5. Switch-Case with Break
-    jit_compile_and_run(
-        "I64 sw_in = 2;\n"
-        "I64 sw_out = 0;\n"
-        "switch (sw_in) {\n"
-        "    case 1: sw_out = 100; break;\n"
-        "    case 2: sw_out = 200; break;\n"
-        "    case 3: sw_out = 300; break;\n"
-        "    default: sw_out = 999; break;\n"
-        "}\n"
-    );
-    symbol_t *s_swout = symbols_lookup_entry("sw_out");
-    int64_t v_swout = s_swout ? *(int64_t*)s_swout->address : 0;
-    if (v_swout == 200) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 5. Switch-Case Dispatch with Break: matched case 2 -> %lld\n", (long long)v_swout);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 5. Switch-Case: expected 200, got %lld\n", (long long)v_swout);
-    }
-
-    // 6. Switch-Case Fallthrough
-    jit_compile_and_run(
-        "I64 ft_in = 1;\n"
-        "I64 ft_out = 10;\n"
-        "switch (ft_in) {\n"
-        "    case 1: ft_out += 20;\n"
-        "    case 2: ft_out += 30; break;\n"
-        "    default: ft_out = 999; break;\n"
-        "}\n"
-    );
-    symbol_t *s_ftout = symbols_lookup_entry("ft_out");
-    int64_t v_ftout = s_ftout ? *(int64_t*)s_ftout->address : 0;
-    if (v_ftout == 60) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 6. Switch-Case Fallthrough: 10 + 20 + 30 = %lld\n", (long long)v_ftout);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 6. Switch Fallthrough: expected 60, got %lld\n", (long long)v_ftout);
-    }
-
-    // 7. Switch Default Handler
-    jit_compile_and_run(
-        "I64 def_in = 77;\n"
-        "I64 def_out = 0;\n"
-        "switch (def_in) {\n"
-        "    case 1: def_out = 10; break;\n"
-        "    case 2: def_out = 20; break;\n"
-        "    default: def_out = 888; break;\n"
-        "}\n"
-    );
-    symbol_t *s_defout = symbols_lookup_entry("def_out");
-    int64_t v_defout = s_defout ? *(int64_t*)s_defout->address : 0;
-    if (v_defout == 888) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 7. Switch Default Handler: input 77 matched default -> %lld\n", (long long)v_defout);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 7. Switch Default: expected 888, got %lld\n", (long long)v_defout);
-    }
-
-    // 8. Class / Struct Declaration & Member Access
-    jit_compile_and_run(
-        "class Vec2D { I64 x; I64 y; };\n"
-        "Vec2D v;\n"
-        "v.x = 25;\n"
-        "v.y = 75;\n"
-        "I64 v_sum = v.x + v.y;\n"
-    );
-    symbol_t *s_vsum = symbols_lookup_entry("v_sum");
-    int64_t v_val = s_vsum ? *(int64_t*)s_vsum->address : 0;
-    if (v_val == 100) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 8. Class / Struct Member Access: v.x(25) + v.y(75) = %lld\n", (long long)v_val);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 8. Class / Struct: expected 100, got %lld\n", (long long)v_val);
-    }
-
-    // 9. Pointer Dereference & Write
-    jit_compile_and_run(
-        "I64 target_val = 42;\n"
-        "I64 *p_val = &target_val;\n"
-        "*p_val = 999;\n"
-    );
-    symbol_t *s_tval = symbols_lookup_entry("target_val");
-    int64_t v_tval = s_tval ? *(int64_t*)s_tval->address : 0;
-    if (v_tval == 999) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 9. Pointer Dereference & Indirection: *p_val = %lld\n", (long long)v_tval);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 9. Pointer Dereference: expected 999, got %lld\n", (long long)v_tval);
-    }
-
-    // 10. Floating-Point Expressions & Casts (J10)
-    int64_t fp_res = jit_eval("(I64)(10.5 * 2.0 + 3.0)");
-    if (fp_res == 24) {
-        doldoc_printf(" $FG,GREEN$[PASS]$FG$ 10. Floating-Point Expressions (F64 & Casts): (10.5 * 2.0 + 3.0) = %lld\n", (long long)fp_res);
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 10. Floating-Point: expected 24, got %lld\n", (long long)fp_res);
-    }
-
-    // 11. Static Type-Checking: Compile-Time Struct Member Verification
-    int64_t err_res = jit_compile_and_run(
-        "class TypeTestClass { I64 valid_field; };\n"
-        "TypeTestClass tt;\n"
-        "tt.invalid_field = 123;\n"
-    );
-    if (err_res == -1) {
-        doldoc_print(" $FG,GREEN$[PASS]$FG$ 11. Type-Checking (Member Verification): invalid struct access halted compile-time\n");
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 11. Type-Checking: expected compile abort (-1), got %lld\n", (long long)err_res);
-    }
-
-    // 12. Static Pointer Scaling & Element Access (U8* vs U32* vs I64*)
-    jit_compile_and_run(
-        "U8 *raw_buf = kmalloc(32);\n"
-        "raw_buf[0] = 11;\n"
-        "raw_buf[1] = 22;\n"
-        "raw_buf[2] = 33;\n"
-        "raw_buf[3] = 44;\n"
-        "U32 *p32 = raw_buf;\n"
-        "U32 val32 = p32[0];\n"
-        "I64 scale_ok = (raw_buf[0] == 11 && raw_buf[1] == 22 && val32 != 0);\n"
-        "kfree(raw_buf);\n"
-    );
-    symbol_t *s_scale = symbols_lookup_entry("scale_ok");
-    int64_t v_scale = s_scale ? *(int64_t*)s_scale->address : 0;
-    if (v_scale == 1) {
-        doldoc_print(" $FG,GREEN$[PASS]$FG$ 12. Pointer Scaling & Multi-Type Indirection: U8/U32 verified byte-precise\n");
-        passed++;
-    } else {
-        doldoc_printf(" $FG,RED$[FAIL]$FG$ 12. Pointer Scaling: expected 1, got %lld\n", (long long)v_scale);
-    }
-
-    if (passed == total) {
-        doldoc_printf("$FG,CYAN$=======================================================$FG$\n");
-        doldoc_printf("$FG,GREEN$ ALL %d JIT ADVANCED CONSTRUCTS VERIFIED 100%% OPERATIONAL!$FG$\n", total);
-        doldoc_printf("$FG,CYAN$=======================================================$FG$\n");
-    }
-    return (passed == total);
 }
 
 

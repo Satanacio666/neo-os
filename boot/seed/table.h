@@ -20,6 +20,5 @@ table_t* table_create(void);
 void     table_set(table_t *tbl, const char *key, int64_t val);
 int64_t  table_get(table_t *tbl, const char *key);
 int      table_has(table_t *tbl, const char *key);
-void     table_free(table_t *tbl);
 
 #endif // NEO_TABLE_H
