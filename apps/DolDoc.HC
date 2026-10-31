@@ -5158,6 +5158,11 @@ U0 doldoc_register_holyc(U8 *ops) { if (ops) symbols_register("g_doldoc_ops", op
 // ============================================================================
 I64 DolDocSelfTest() {
     I64 ok = 1;
+    // E1/1.2 (ONDA 4): mascara de bits. Cada sitio que falha acende um bit distinto,
+    // para identificar EXATAMENTE qual condicao quebra quando o 1.2 (parametros
+    // estreitos) esta ativo. Impressa com UM unico argumento %llX (nunca estoura
+    // os 7 args do doldoc_printf).
+    I64 fail_mask = 0;
     DolDocInitTrig();
     g_doc_quiet = 1;
     // Snapshot the live document so the test is non-destructive.
@@ -5168,7 +5173,7 @@ I64 DolDocSelfTest() {
     U64 s_mask = g_doc_dirty_mask; I64 s_dirty = g_doc_dirty;
 
     // 1. tree: the root entry is a DOC_ROOT
-    if (g_doc_root < 0 || g_doc_nodes[g_doc_root].kind != DOC_ROOT) ok = 0;
+    if (g_doc_root < 0 || g_doc_nodes[g_doc_root].kind != DOC_ROOT) { fail_mask = fail_mask | 1; ok = 0; }
 
     // 2. text runs + per-character attribute words
     DolDocPrint("$FG,GREEN$qq$FG,RED$ww$");
@@ -5182,41 +5187,41 @@ I64 DolDocSelfTest() {
             }
         }
     }
-    if (!seen_q || !seen_w) ok = 0;
+    if (!seen_q || !seen_w) { fail_mask = fail_mask | 2; ok = 0; }
 
     // 3. widget tag set: BT LK SL CB ID PB DA HR
     I64 before = g_widget_count;
     DolDocPrint("$BT,\"Go\",LM=\"help\"$$LK,\"Lnk\",A=\"ls\"$$SL,\"S\",val=50,min=0,max=100,w=100$$CB,\"Chk\",1$$ID,\"Tree\",level=1$$PB,VAL=30,MAX=100$$DA,\"D\",val=5,min=0,max=9$$HR$");
-    if (g_widget_count < before + 8) ok = 0;
+    if (g_widget_count < before + 8) { fail_mask = fail_mask | 4; ok = 0; }
 
     // 4. $AN anchors + $MA macros
     DolDocPrint("$AN,mark1$");
-    if (DolDocFindAnchor("mark1") < 0) ok = 0;
+    if (DolDocFindAnchor("mark1") < 0) { fail_mask = fail_mask | 8; ok = 0; }
     DolDocPrint("$MA,hi,text=\"hello\"$");
-    if (!DolDocFindMacro("hi")) ok = 0;
+    if (!DolDocFindMacro("hi")) { fail_mask = fail_mask | 16; ok = 0; }
 
     // 5. reactive cell: bind a node value to a live memory word and patch it
     I64 cell = 7;
     I64 nid = DolDocWidget(DOC_SLIDER, 0, 0, 100, 18, "SL");
-    if (nid < 0) ok = 0;
+    if (nid < 0) { fail_mask = fail_mask | 32; ok = 0; }
     else {
         g_doc_nodes[nid].target = &cell;
         g_doc_nodes[nid].min = 0; g_doc_nodes[nid].max = 100;
         DolDocCellWrite(nid, 42);
-        if (cell != 42) ok = 0;
+        if (cell != 42) { fail_mask = fail_mask | 64; ok = 0; }
     }
 
     // 6. windows are documents ($WIN$ node)
     I64 wn = DolDocNewNode(DOC_WINDOW, -1);
-    if (wn < 0 || g_doc_nodes[wn].kind != DOC_WINDOW) ok = 0;
+    if (wn < 0 || g_doc_nodes[wn].kind != DOC_WINDOW) { fail_mask = fail_mask | 128; ok = 0; }
 
     // 7. dirty-mask shift fix (row 40 must set bit 40)
     g_doc_dirty_mask = 0;
     DolDocMarkRowDirty(40);
-    if ((g_doc_dirty_mask & (((U64)1) << 40)) == 0) ok = 0;
+    if ((g_doc_dirty_mask & (((U64)1) << 40)) == 0) { fail_mask = fail_mask | 256; ok = 0; }
 
     // 8. OmniTape compiled a command record per node
-    if (g_omnitape_cmd_count <= 0) ok = 0;
+    if (g_omnitape_cmd_count <= 0) { fail_mask = fail_mask | 512; ok = 0; }
 
     // Restore the live document.
     g_doc_node_count = s_nodes; g_doc_text_used = s_text; g_doc_args_used = s_args;
@@ -5227,7 +5232,7 @@ I64 DolDocSelfTest() {
     g_doc_quiet = 0;
 
     if (ok) { doldoc_print("$FG,GREEN$DOLDOC: PASS$FG$ (CDoc/CTree, per-char attrs, tag set, cells, windows)\n"); return 1; }
-    doldoc_print("$FG,RED$DOLDOC: FAIL$FG$\n");
+    doldoc_printf("$FG,RED$DOLDOC: FAIL$FG$ (fail_mask=0x%llX)\n", fail_mask);
     return 0;
 }
 
