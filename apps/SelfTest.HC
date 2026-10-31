@@ -1656,6 +1656,13 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("b2b_aff_open_core2", SchedAffinityAllowsMask(0, 2), 1);
     SelfTestCompare("b2b_aff_both", SchedAffinityAllowsMask(0x09, 3), 1);
     SelfTestCompare("b2b_aff_both2", SchedAffinityAllowsMask(0x09, 1), 0);
+    // K1.1 (ONDA 4): operador binario limpa a largura semantica. Sem isto, uma
+    // subexpressao com operando U32 marcava a flag e o `>>` seguinte era compilado
+    // em 32 bits, TRUNCANDO um valor de 64 bits. Caso concreto: (x + b) >> 8 com b
+    // U32 e x = 0x100000000 deve dar 0x1000000; sem o fix dava 0 (LSRV W).
+    SelfTestCompare("k11_add_then_shift_u64", ((I64)0x100000000 + (U32)7) >> 8, 0x1000000);
+    SelfTestCompare("k11_mul_then_shift", (((I64)0x100000000 * (U32)2) >> 8), 0x2000000);
+    SelfTestCompare("k11_and_then_shift", (((I64)0x100000000 | (U32)0xF) >> 8), 0x1000000);
 }
 
 U0 SelfTestRun() {

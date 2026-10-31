@@ -2812,6 +2812,7 @@ U0 HcParseMultiplicative() {
             }
         }
         lf = isf;
+        g_hc_last_prim_u32 = 0; // K1.1
     }
     g_hc_expr_float = lf;
 }
@@ -2843,6 +2844,7 @@ U0 HcParseAdditive() {
             }
         }
         lf = isf;
+        g_hc_last_prim_u32 = 0; // K1.1
     }
     g_hc_expr_float = lf;
 }
@@ -2901,6 +2903,7 @@ U0 HcParseRelational() {
         else if (cur_rel_op == TOK_GT) HcEmit(0x9A9FD7E0);  // cset x0, gt
         else if (cur_rel_op == TOK_GTE) HcEmit(0x9A9FB7E0); // cset x0, ge
         lf = 0;
+        g_hc_last_prim_u32 = 0; // K1.1
     }
     g_hc_expr_float = lf;
 }
@@ -2941,6 +2944,7 @@ U0 HcParseBitAnd() {
         HcEmit(0xAA0003E1); // mov x1, x0
         HcEmitPop(0);
         HcEmit(0x8A010000); // and x0, x0, x1
+        g_hc_last_prim_u32 = 0; // K1.1
     }
 }
 
@@ -2953,6 +2957,7 @@ U0 HcParseBitXor() {
         HcEmit(0xAA0003E1); // mov x1, x0
         HcEmitPop(0);
         HcEmit(0xCA010000); // eor x0, x0, x1
+        g_hc_last_prim_u32 = 0; // K1.1
     }
 }
 
@@ -2965,6 +2970,7 @@ U0 HcParseBitOr() {
         HcEmit(0xAA0003E1); // mov x1, x0
         HcEmitPop(0);
         HcEmit(0xAA010000); // orr x0, x0, x1
+        g_hc_last_prim_u32 = 0; // K1.1
     }
 }
 
@@ -2984,6 +2990,7 @@ U0 HcParseLogAnd() {
         HcBackpatchCbz(p_cbz, g_hc_code_len);
         HcEmit(0xD2800000); // movz x0, #0
         HcBackpatchB(p_b, g_hc_code_len);
+        g_hc_last_prim_u32 = 0; // K1.1
     }
 }
 
@@ -3005,6 +3012,7 @@ U0 HcParseLogOr() {
         g_hc_code[patch_idx] = 0xB5000000 | (rel << 5) | 0; // Preserve CBNZ!
         HcEmit(0xD2800020); // movz x0, #1
         HcBackpatchB(p_b, g_hc_code_len);
+        g_hc_last_prim_u32 = 0; // K1.1
     }
 }
 

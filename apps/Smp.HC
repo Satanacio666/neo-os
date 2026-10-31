@@ -54,8 +54,10 @@ U0 SmpSecondaryIrqEnable(U32 core_id) {
   g_smp_irq_enabled_cores = g_smp_irq_enabled_cores | (1 << core_id);
   __dmb_ish();
   __irq_enable();                            // MSR DAIFClr, #2 (builtin do JIT)
-  // B2a.4: observabilidade — registra que este core abriu IRQ (imprime 1x por core).
-  doldoc_printf("$FG,CYAN$[SMP] core %lld: IRQ local habilitada (g_smp_irq_enable=1)$FG$\n", core_id);
+  // NAO imprimir aqui: o uart_putc nao tem lock e 3 cores escrevendo ao mesmo tempo
+  // INTERLEAVAM o log (medido: "[SMP][SM core 1: IRQ local P] core 2: IRQ loca[SM...").
+  // O fato ja' esta' registrado em g_smp_irq_enabled_cores — o BSP o reporta no
+  // SelfTestSmp (SMPIRQ: ...). Silencio aqui e' correcao, nao omissao.
 }
 
 // B2a.3: DECISAO PURA — testavel sem hardware (licao do B11). Devolve 1 se este

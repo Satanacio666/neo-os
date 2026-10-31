@@ -207,6 +207,11 @@ U0 VirtioMmioWrite32(U64 base, U64 offset, U32 val) {
 }
 
 I64 g_vinput_test_mode = 0;
+// MOUSE-DIAG: observabilidade dos eventos que CHEGAM ao driver (via virtqueue).
+I64 g_vinput_ev_count = 0;    // total de eventos recebidos
+I64 g_vinput_abs_count = 0;   // EV_ABS (tablet: coordenadas absolutas)
+I64 g_vinput_key_count = 0;   // EV_KEY (teclas/botoes)
+I64 g_vinput_rel_count = 0;   // EV_REL (mouse relativo)
 
 // BLOCO 2: modificadores do duto unificado.
 I64 VirtioInputMods() {
@@ -227,6 +232,13 @@ U0 VirtioInputEmitMouse() {
 
 U0 VirtioInputProcessEvent(CVirtioInputEvent *p_ev) {
   if (!p_ev) return;
+  // MOUSE-DIAG: conta TODO evento recebido do virtio-input, por tipo. Se este
+  // contador ficar em 0 ao mover o mouse no host, os eventos NAO chegam ao driver
+  // (o problema e' a montagem da virtqueue, nao a traducao abaixo).
+  g_vinput_ev_count++;
+  if (p_ev->type == EV_ABS) g_vinput_abs_count++;
+  else if (p_ev->type == EV_KEY) g_vinput_key_count++;
+  else if (p_ev->type == EV_REL) g_vinput_rel_count++;
 
   if (!g_vinput_test_mode) {
     I64 dyn_w = gfx_get_canvas_width();
