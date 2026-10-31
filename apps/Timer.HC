@@ -21,6 +21,11 @@ U64 g_timer_drift_base_cntvct = 0;
 U64 g_timer_drift_base_ticks = 0;
 I64 g_timer_drift_ticks = 0;
 I64 g_timer_drift_checks = 0;
+// B11/1.3: deadline ABSOLUTO do proximo tick (em CNTVCT_EL0). 0 = nao armado.
+// Sem isto, o re-arme com TVAL relativo soma `interval` ao instante em que o
+// handler RODOU — e todo atraso de entrega se acumula para sempre. Medido em
+// 31/10: 27,3% dos ticks perdidos (284 s => 206.511 ticks em vez de 284.000).
+U64 g_timer_next_deadline = 0;
 
 U64 TimerQueryHwFreq() {
   U64 frq = __mrs_cntfrq();
@@ -71,6 +76,7 @@ U0 TimerInit(U32 p_freq_hz) {
   // ate' um TimerArm real re-armar a medicao.
   g_timer_drift_base_cntvct = 0;
   g_timer_drift_base_ticks = 0;
+  g_timer_next_deadline = 0;   // B11/1.3: rearme absoluto sera' refeito pelo TimerArm
 }
 
 U64 TimerGetTicks() {
@@ -106,8 +112,10 @@ U0 TimerArm(I64 hz) {
   if (g_timer.interval_ticks == 0) g_timer.interval_ticks = 1;
   __msr_cntv_tval(g_timer.interval_ticks);
   __msr_cntv_ctl(1); // ENABLE=1, IMASK=0
-  // B11: base do drift — so' o caminho REAL (boot) arma a medicao com CNTVCT atual.
-  g_timer_drift_base_cntvct = __mrs_cntvct();
+  // B11/1.3: deadline ABSOLUTO inicial e base do drift.
+  U64 now = __mrs_cntvct();
+  g_timer_next_deadline = now + g_timer.interval_ticks;
+  g_timer_drift_base_cntvct = now;
   g_timer_drift_base_ticks = g_timer.system_ticks;
   g_timer_drift_ticks = 0;
 }
@@ -172,10 +180,44 @@ I64 TimerTestDrift() {
   return ok;
 }
 
-// Fired from the GIC PPI (level-sensitive) -> increment the tick and re-arm.
+// Fired from the GIC PPI (level-sensitive) -> advance the tick(s) and re-arm.
+//
+// B11/1.3 (31/10): antes, isto fazia apenas system_ticks++ e re-armava TVAL
+// relativo AO INSTANTE DO HANDLER. Todo atraso de entrega se acumulava: medido
+// 27,3% de ticks perdidos (284 s => 206.511 ticks em vez de 284.000). Agora:
+//   1. o deadline e' ABSOLUTO (g_timer_next_deadline, em CNTVCT);
+//   2. avancamos system_ticks pelo DELTA REAL (quantos periodos ja' venceram),
+//      entao uma IRQ atrasada por 2 ms conta 2 e nao 1;
+//   3. re-armamos TVAL = deadline - agora (o residuo), nao `interval` fixo.
+// Assim o erro nao se acumula: a cadencia MEDIA fica exata.
 U0 TimerTick() {
-  g_timer.system_ticks = g_timer.system_ticks + 1;
-  __msr_cntv_tval(g_timer.interval_ticks);
+  U64 now = __mrs_cntvct();
+  U64 interval = g_timer.interval_ticks;
+  if (interval == 0) interval = 1;
+  if (g_timer_next_deadline == 0) {
+    // Deadline nao armado (ex.: teste) — mantem o comportamento antigo e arma.
+    g_timer.system_ticks = g_timer.system_ticks + 1;
+    g_timer_next_deadline = now + interval;
+    __msr_cntv_tval(interval);
+    return;
+  }
+  // Quantos periodos venceram desde o deadline? >= 1 sempre (a IRQ veio).
+  U64 missed = 1;
+  if (now > g_timer_next_deadline) {
+    missed = ((now - g_timer_next_deadline) / interval) + 1;
+  }
+  g_timer.system_ticks = g_timer.system_ticks + missed;
+  g_timer_next_deadline = g_timer_next_deadline + missed * interval;
+  // Residuo ate' o proximo deadline (nunca 0: TVAL=0 desarmaria o timer).
+  U64 cval = g_timer_next_deadline;
+  U64 remain;
+  if (cval > now) remain = cval - now;
+  else {
+    // Ja' passou do deadline (handler muito atrasado): re-sincroniza.
+    remain = interval;
+    g_timer_next_deadline = now + interval;
+  }
+  __msr_cntv_tval(remain);
 }
 
 U0 TimerSleepMs(I64 p_ms) {
