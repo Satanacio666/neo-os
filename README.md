@@ -25,7 +25,7 @@ NeoOS follows the **TempleOS Ring 0 SASOS philosophy**:
 ## 📚 Documentation
 
 The documentation was consolidated to **exactly five canonical files** (the older 44 planning docs were merged
-losslessly into them and archived under `docs/_superseded-old-docs/`):
+losslessly into them; the originals removed on 31/10/2026 and preserved in `shared/neos/docs-legados-20261031/`):
 
 - [**docs/00 — Master Plan**](docs/00-MASTER-PLAN.md): vision, invariants, and the full **P0 → P10 priority ladder**.
 - [**docs/01 — Reality Audit**](docs/01-REALITY-AUDIT.md): verified claim-by-claim reality of the code, plus the upstream salvage audit (§L).
@@ -468,7 +468,7 @@ neo-os/
 │   ├── arch/aarch64/       # vectors.S, smp_entry.S, ffi_arm64.S
 │   └── sched/switch.S      # context switch
 ├── gui/                    # font8x16.h (bitmap font)
-├── docs/                   # canonical docs 00–04 (+ research/, images/, _superseded-old-docs/)
+├── docs/                   # canonical docs 00–04 (+ research/, images/)
 ├── harness/                # browser console (Next.js): framebuffer stream, VNC input, UART, VM control
 ├── scripts/                # build + verification harness (golden-boot.sh, run-viewer-vm.sh, neo_uart.py, …)
 ├── tests/                  # census-baseline.txt + jit_golden/cases.json

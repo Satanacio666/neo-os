@@ -98,7 +98,7 @@ Reviewed every decision in `docs/04` Parts C/E/F against the code. **Root-fixed 
 
 **`ls docs/*.md` = exactly `00`–`04` — PASS** (`00-MASTER-PLAN.md`, `01-REALITY-AUDIT.md`, `02-TASKLIST.md`, `03-IDEAS-AND-RESEARCH.md`, `04-CONTRADICTIONS-DECISIONS-OPEN-QUESTIONS.md`). No extra top-level `.md`.
 
-Caveat: `docs/_superseded-old-docs/` still holds **40 `.md`** files (`master/`, `root/`) that D27 was meant to retire; they are not matched by the `docs/*.md` glob but are still tracked. `docs/research/*.md` (2 files) is allowed by D5. — **[LOW/MED]** — Root-fix: delete `docs/_superseded-old-docs/` (or `git rm`) since the consolidation is claimed lossless.
+Caveat: `docs/_superseded-old-docs/` was **REMOVED on 31/10/2026** (44 `.md`, `master/` + `root/`) — the D27 retirement was applied via `git rm`, with the files **preserved in `shared/neos/docs-legados-20261031/`**. `docs/research/*.md` is allowed by D5. — **[RESOLVED]** — the stale-doc consolidation is now enforced.
 
 **Internal contradictions (doc claims vs code / vs each other):**
 
@@ -153,5 +153,5 @@ Caveat: `docs/_superseded-old-docs/` still holds **40 `.md`** files (`master/`, 
 8. **[MED]** `docs/04:699-706` (D26) — rewrite to describe the actual NOP-based post-pass with the target bitmap (there is no `g_hc_last_target_idx`); add defensive barriers for `BR`/`TBZ`/`TBNZ` and pair load/store in `Compiler.HC:847-853,866-888`.
 9. **[MED]** `apps/Compiler.HC:2203` — fix `*p` on `F64 *` to load/flag floatness correctly (with regression).
 10. **[MED]** `scripts/interactive_uart_harness.py:269-273` — replace `run WM.HC` with the dissolved `wm`/`compositor` path.
-11. **[LOW]** Delete tracked `docs/_superseded-old-docs/**` (40 stale `.md`) and fix dangling `docs/05/06/07` references (`docs/00:287,292,307,434,457,815`; `docs/02:1071,1079`; `docs/03:594`).
+11. **[DONE 31/10]** Deleted tracked `docs/_superseded-old-docs/**` (44 stale `.md`; preserved in `shared/neos/docs-legados-20261031/`). Dangling `docs/05/06/07` references are historical notes in the canonicals (`docs/00`, `docs/02`, `docs/03`).
 12. **[LOW]** Refresh stale comments in `apps/Theme.HC:4-7`, `apps/DolDoc.HC:13,249-250`, `apps/KernelInit.HC:102-104`; rename/retire `wm_*` metric fields in `PerfOverlay.HC`/`Profiler.HC` during the P7.6 `Telemetry.HC` merge.

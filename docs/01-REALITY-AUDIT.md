@@ -497,9 +497,11 @@ found: a **function call used directly as an F64 argument** is mis-placed (hoist
   catalog & sovereign roadmap") is **also the root commit of the current repo** (`git log --oneline --reverse`
   → `36ca4b0`, `a031e76`, `0d77b7f`, …). `/tmp/neo-upstream` is therefore the **pre-HolyC-migration original**
   of this same project; the current repo is its HolyC migration.
-- **Docs are preserved, byte-for-byte.** All **25** upstream `docs/*.md` are byte-identical to
-  `docs/_superseded-old-docs/root/*.md` (`diff -q` over every file: 0 differences; both directories contain
-  25 `.md`). *(A prior note said 24; the verified count is 25.)* The migration dropped none of them.
+- **Docs are preserved, byte-for-byte.** All **25** upstream `docs/*.md` were byte-identical to
+  `docs/_superseded-old-docs/root/*.md` (`diff -q` over every file: 0 differences; both directories contained
+  25 `.md`). *(A prior note said 24; the verified count is 25.)* On **31/10/2026** the archived copies were
+  **removed from the repo** (after lossless merge into the canonicals) and **preserved** in
+  `shared/neos/docs-legados-20261031/`. The migration dropped none of them.
 - **Files DELETED during the migration (the salvage surface):**
   - the entire `compiler/` C tree (`jit_arm64.c/.h`, `lexer.c/.h`, `table.c/.h`);
   - `drivers/{block,gpu,input}/*` (`virtio_blk`, `gfx_backend`, `virtio_gpu`, `keyboard`, `mouse`,
