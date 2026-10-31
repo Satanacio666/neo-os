@@ -60,6 +60,13 @@ U0 KeyboardInit() {
         // Control Register: UARTEN=1, TXE=1, RXE=1 -> 0x301
         __mmio_w32(uart_base + 0x30, 0x301);
     }
+    // SELF-HOST (fronteira limpa): o HolyC ASSUME o dono do uart_putc em runtime.
+    // Sem isto, quem chamava por symbol pegava o C (main.c), quem chamava direto
+    // pegava o HolyC — dois donos vivos, dependencia ambigua. Mesmo padrao do
+    // Sovereign Handover (KHeap assume kmalloc). O C segue registrando para o BOOT
+    // (antes do Keyboard existir); aqui o HolyC sobrescreve para o RUNTIME.
+    symbols_register("uart_putc", &uart_putc, SYM_FUNC);
+    symbols_register("uart_puts", &uart_puts, SYM_FUNC);
     doldoc_print("[KEYBOARD.HC] Sovereign Ring 0 Keyboard Driver Initialized\n");
 }
 

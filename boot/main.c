@@ -123,7 +123,9 @@ extern void smp_spin_unlock(volatile uint32_t *lock);
 extern void smp_entry(void);
 extern uint64_t g_arch_vectors[8];
 extern uint64_t g_mmu_config[5];
-extern void doldoc_register_holyc(void *ops);
+// doldoc_register_holyc REMOVIDO do C (31/10): o HolyC (DolDoc.HC:5154) e' o dono
+// legitimo; 0 callers no C. Remover o registro evita duplicacao de fronteira
+// (o C nao define a funcao, so registra um extern ambiguo).
 
 // Defined further down (boot_probe_memory / the pool allocations in main); the
 // tier-0 panic reporter above uses them for its heap-relative fault offset.
@@ -575,7 +577,7 @@ int main(int argc, char **argv)
     symbols_register("jit_compile_and_run", (void*)jit_compile_and_run, SYM_FUNC);
     symbols_register("doldoc_print", (void*)boot_uart_doldoc_print, SYM_FUNC);
     symbols_register("doldoc_printf", (void*)doldoc_printf, SYM_FUNC);
-    symbols_register("doldoc_register_holyc", (void*)doldoc_register_holyc, SYM_FUNC);
+    // doldoc_register_holyc REMOVIDO (duplicacao: HolyC e' o dono, 0 callers no C).
     // hal_flush_cache is owned by apps/HalPlatform.HC (P2.1); no C implementation.
     symbols_register("uart_putc", (void*)uart_putc, SYM_FUNC);
     symbols_register("uart_puts", (void*)uart_puts, SYM_FUNC);

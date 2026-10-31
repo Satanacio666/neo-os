@@ -597,8 +597,15 @@ U0 SelfTestSovereign() {
     U64 kf = symbols_lookup("kfree");
     U64 sl = symbols_lookup("symbols_lookup");
     U64 sr = symbols_lookup("symbols_register");
+    // SELF-HOST (fronteira): o HolyC tambem assume uart_putc/uart_puts (Keyboard.HC
+    // re-registra, fechando a duplicacao com o C bootstrap). O C segue registrando
+    // para o BOOT; o HolyC sobrescreve no runtime. O registro foi feito com
+    // &uart_putc/&uart_puts (os wrappers), que delegam a UartPutChar/UartPutString.
+    U64 up = symbols_lookup("uart_putc");
+    U64 ups = symbols_lookup("uart_puts");
     if (km == (U64)&KMalloc && kf == (U64)&KFree &&
-        sl == (U64)&SymLookup && sr == (U64)&SymRegister) {
+        sl == (U64)&SymLookup && sr == (U64)&SymRegister &&
+        up == (U64)&uart_putc && ups == (U64)&uart_puts) {
         doldoc_print("SOVEREIGN: PASS\n");
     } else {
         doldoc_printf("SOVEREIGN: FAIL (km=0x%llX kf=0x%llX sl=0x%llX sr=0x%llX)\n",
