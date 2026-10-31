@@ -1604,6 +1604,11 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("b3_healthlog_drop_counted", WatchdogTestHealthLogDrop(), 1);
     SelfTestCompare("b4_raster_tile_overflow_flagged", RasterTestTileOverflow(), 1);
     SelfTestReject("b7_unknown_member_rejected", "struct B7S { I64 a; }; B7S b7v; b7v.b7nomember;");
+    // B9 (ONDA 2): sonda que forca o vigia PARADO (ultima passada 4 s atras,
+    // fora da compilacao) e exige deteccao — e que com g_hc_compiling forca o
+    // SKIP (prova que a guarda evita o falso positivo do boot). Sem o check o
+    // retorno seria 0 e o teste falharia.
+    SelfTestCompare("b9_watchdog_stall_detected", WatchdogTestStall(), 1);
 }
 
 U0 SelfTestRun() {

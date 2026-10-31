@@ -85,6 +85,11 @@
 
 I64 g_watchdog_runs = 0;
 I64 g_watchdog_faults = 0;
+// B9 (ONDA 2) — vigia do vigia. g_watchdog_runs conta PASSADAS, mas ninguem
+// checava se elas AVANCAM. g_watchdog_last_tick = __mrs_cntvct() da ultima
+// passada concluida; WatchdogStallCheck() compara com agora.
+U64 g_watchdog_last_tick = 0;
+I64 g_watchdog_stalled = 0;
 // Metricas de custo (Camada 1, criterio <1%): ciclos gastos nas PASSADAS do
 // vigia (scan + budget + canario) vs ciclos totais decorridos, acumulados.
 // Lidas via sonda no REPL (doldoc_printf <=7 args). O custo-alvo e <1%.
@@ -367,12 +372,81 @@ U0 ShellCmd_health(U8 *a, U8 *r) {
         while (*a >= '0' && *a <= '9') { h_acc = h_acc * 10 + (*a - '0'); a++; }
         if (h_acc > 0) h_n = h_acc;
     }
+    WatchdogStallCheck(); // B9: observador (b) — o shell continua vivo mesmo
+                          // se o vigia morreu; aqui ele denuncia o vigia morto.
     HealthLogDump(h_n);
+}
+
+// B9 (ONDA 2) — deteccao de vigia PARADO. DECISAO DE DESENHO (documentada):
+//
+//  * O vigia NAO pode detectar a propria MORTE TOTAL de dentro (se a task morre,
+//    este codigo nunca roda). Por isso o check e' uma FUNCAO PUBLICA que qualquer
+//    observador externo chama — e os dois pontos de entrada existentes chamam:
+//      (a) o inicio de WatchdogTick: detecta STARVATION (a task vive, mas o
+//          escalonador nao a agenda por > 2 s);
+//      (b) ShellCmd_health ('health' no shell): observador EXTERNO de verdade —
+//          se o vigia estiver morto, o shell continua vivo e denuncia.
+//
+//  * FALSE POSITIVE EVITADO (medido): durante a compilacao o escalonador esta
+//    CEGO (`g_hc_compiling`, Sched.HC:279) e o vigia legitimamente nao roda —
+//    no boot ele nem EXISTE (KernelInit.HC:184 vem depois dos compiles :79-140).
+//    Logo: g_watchdog_last_tick == 0 (ainda nao passou) e g_hc_compiling != 0
+//    (compilando) fazem o check retornar 0 SEM contar. Nada de alarme no boot.
+//
+//  * So' conta/printa no estado REAL de defeito: fora da compilacao, com o
+//    vigia ja' tendo passado ao menos 1x, e > 2 s sem passada.
+I64 WatchdogStallCheck() {
+    if (g_watchdog_last_tick == 0) return 0;   // vigia ainda nao deu a 1a passada
+    if (g_hc_compiling != 0) return 0;         // cegueira LEGITIMA durante compilacao
+    U64 wd_now = __mrs_cntvct();
+    if (wd_now <= g_watchdog_last_tick) return 0; // wrap/relogio reiniciado
+    U64 wd_freq = TimerQueryHwFreq();
+    U64 wd_limit = wd_freq * 2;                // 2 s sem passada = parado
+    if ((wd_now - g_watchdog_last_tick) <= wd_limit) return 0;
+    g_watchdog_stalled++;
+    if (g_watchdog_stalled == 1) {
+        doldoc_printf("$FG,RED$[WATCHDOG] STALLED: %lld ciclos sem passada (limite %lld) — o vigia NAO esta rodando$FG$\n",
+                      wd_now - g_watchdog_last_tick, wd_limit);
+    }
+    return 1;
+}
+
+// B9 (ONDA 2) — prova FUNCIONAL do caminho de falha (mesmo padrao do B3).
+// Forca o estado exato do defeito (ultima passada 4 s atras, fora da compilacao)
+// e exige deteccao; em seguida forca `g_hc_compiling` e exige o SKIP (sem
+// contagem) — ou seja, prova que a guarda evita o falso positivo do boot.
+// Sem o fix (sem check) o retorno seria 0 e o teste falharia.
+I64 WatchdogTestStall() {
+    U64 saved_last = g_watchdog_last_tick;
+    I64 saved_n = g_watchdog_stalled;
+    I64 saved_comp = g_hc_compiling;
+    I64 saved_pre = g_sched_preempt_off;
+    // Determinismo: a task REAL do vigia (WatchdogTick, a cada 250 ms) grava
+    // g_watchdog_last_tick = agora. Se ela for escalonada entre o set abaixo e a
+    // checagem, o heartbeat e' resetado -> wd_hit=0 e o teste fica FLAKY (falhou
+    // no gate, passou na rodada seguinte). Desabilita a preempcao durante a medicao
+    // (mesma tecnica do B5): com g_sched_preempt_off>0 o SchedOnTick nao troca de
+    // task (Sched.HC:320), entao o vigia nao roda no meio.
+    g_sched_preempt_off = 1;
+    g_watchdog_stalled = 0;
+    g_hc_compiling = 0;
+    g_watchdog_last_tick = __mrs_cntvct() - (TimerQueryHwFreq() * 4);
+    I64 wd_hit = WatchdogStallCheck();            // tem de detectar
+    g_hc_compiling = 1;
+    I64 wd_skip = WatchdogStallCheck();           // tem de pular (compilando)
+    I64 wd_ok = 0;
+    if (wd_hit == 1 && wd_skip == 0 && g_watchdog_stalled == 1) wd_ok = 1;
+    g_hc_compiling = saved_comp;
+    g_watchdog_last_tick = saved_last;
+    g_watchdog_stalled = saved_n;
+    g_sched_preempt_off = saved_pre;
+    return wd_ok;
 }
 
 U0 WatchdogTick(U64 arg) {
     while (1) {
         U64 wd_t0 = __mrs_cntvct();
+        WatchdogStallCheck(); // B9: observador (a) — starvation entre passadas
         // Registra o comando 'health' de forma IDEMPOTENTE: o ShellInit()
         // (rodado em DolDocShellEventLoop, DEPOIS do WatchdogStart) zera
         // g_shell_cmd_count e reconstroi a tabela — registrar uma vez so
@@ -484,6 +558,7 @@ U0 WatchdogTick(U64 arg) {
         // Custo da passada (ciclos) e do intervalo total (250 ms), acumulados.
         g_watchdog_cost_cycles += __mrs_cntvct() - wd_t0;
         g_watchdog_runs++;
+        g_watchdog_last_tick = __mrs_cntvct(); // B9: heartbeat desta passada
         g_watchdog_wall_cycles += TimerQueryHwFreq() / 4; // 250 ms em ciclos
         TimerSleepMs(250);
     }
