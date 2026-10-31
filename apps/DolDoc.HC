@@ -5178,50 +5178,52 @@ I64 DolDocSelfTest() {
     // 2. text runs + per-character attribute words
     DolDocPrint("$FG,GREEN$qq$FG,RED$ww$");
     I64 seen_q = 0; I64 seen_w = 0;
+    U64 dbg_q_attr = 0; U64 dbg_w_attr = 0; I64 dbg_wb = 0;
     for (I64 n = 0; n < g_doc_node_count; n++) {
         if (g_doc_nodes[n].kind == DOC_TEXT) {
             for (I64 i = 0; i + 1 < g_doc_nodes[n].text_len; i++) {
                 I64 ci = g_doc_nodes[n].text_off + i;
-                if (g_doc_text[ci] == 'q' && g_doc_text[ci + 1] == 'q' && (U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_GREEN) seen_q = 1;
-                if (g_doc_text[ci] == 'w' && g_doc_text[ci + 1] == 'w' && (U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_RED) seen_w = 1;
+                if (g_doc_text[ci] == 'q' && g_doc_text[ci + 1] == 'q') { dbg_q_attr = g_doc_attr[ci]; if ((U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_GREEN) seen_q = 1; }
+                if (g_doc_text[ci] == 'w' && g_doc_text[ci + 1] == 'w') { dbg_w_attr = g_doc_attr[ci]; dbg_wb = 1; if ((U32)(g_doc_attr[ci] & 0xFFFFFFFF) == SEM_COLOR_RED) seen_w = 1; }
             }
         }
     }
-    if (!seen_q || !seen_w) { fail_mask = fail_mask | 2; ok = 0; }
+    if (!seen_q) { fail_mask = fail_mask | 2; ok = 0; }
+    if (!seen_w) { fail_mask = fail_mask | 4; ok = 0; }
 
     // 3. widget tag set: BT LK SL CB ID PB DA HR
     I64 before = g_widget_count;
     DolDocPrint("$BT,\"Go\",LM=\"help\"$$LK,\"Lnk\",A=\"ls\"$$SL,\"S\",val=50,min=0,max=100,w=100$$CB,\"Chk\",1$$ID,\"Tree\",level=1$$PB,VAL=30,MAX=100$$DA,\"D\",val=5,min=0,max=9$$HR$");
-    if (g_widget_count < before + 8) { fail_mask = fail_mask | 4; ok = 0; }
+    if (g_widget_count < before + 8) { fail_mask = fail_mask | 8; ok = 0; }
 
     // 4. $AN anchors + $MA macros
     DolDocPrint("$AN,mark1$");
-    if (DolDocFindAnchor("mark1") < 0) { fail_mask = fail_mask | 8; ok = 0; }
+    if (DolDocFindAnchor("mark1") < 0) { fail_mask = fail_mask | 16; ok = 0; }
     DolDocPrint("$MA,hi,text=\"hello\"$");
-    if (!DolDocFindMacro("hi")) { fail_mask = fail_mask | 16; ok = 0; }
+    if (!DolDocFindMacro("hi")) { fail_mask = fail_mask | 32; ok = 0; }
 
     // 5. reactive cell: bind a node value to a live memory word and patch it
     I64 cell = 7;
     I64 nid = DolDocWidget(DOC_SLIDER, 0, 0, 100, 18, "SL");
-    if (nid < 0) { fail_mask = fail_mask | 32; ok = 0; }
+    if (nid < 0) { fail_mask = fail_mask | 64; ok = 0; }
     else {
         g_doc_nodes[nid].target = &cell;
         g_doc_nodes[nid].min = 0; g_doc_nodes[nid].max = 100;
         DolDocCellWrite(nid, 42);
-        if (cell != 42) { fail_mask = fail_mask | 64; ok = 0; }
+        if (cell != 42) { fail_mask = fail_mask | 128; ok = 0; }
     }
 
     // 6. windows are documents ($WIN$ node)
     I64 wn = DolDocNewNode(DOC_WINDOW, -1);
-    if (wn < 0 || g_doc_nodes[wn].kind != DOC_WINDOW) { fail_mask = fail_mask | 128; ok = 0; }
+    if (wn < 0 || g_doc_nodes[wn].kind != DOC_WINDOW) { fail_mask = fail_mask | 256; ok = 0; }
 
     // 7. dirty-mask shift fix (row 40 must set bit 40)
     g_doc_dirty_mask = 0;
     DolDocMarkRowDirty(40);
-    if ((g_doc_dirty_mask & (((U64)1) << 40)) == 0) { fail_mask = fail_mask | 256; ok = 0; }
+    if ((g_doc_dirty_mask & (((U64)1) << 40)) == 0) { fail_mask = fail_mask | 512; ok = 0; }
 
     // 8. OmniTape compiled a command record per node
-    if (g_omnitape_cmd_count <= 0) { fail_mask = fail_mask | 512; ok = 0; }
+    if (g_omnitape_cmd_count <= 0) { fail_mask = fail_mask | 1024; ok = 0; }
 
     // Restore the live document.
     g_doc_node_count = s_nodes; g_doc_text_used = s_text; g_doc_args_used = s_args;

@@ -2444,6 +2444,21 @@ U0 HcParsePrimary() {
             while (g_hc_tok == TOK_STAR) { cast_is_ptr = 1; HcLexNext(); }
             if (g_hc_tok == TOK_RPAREN) HcLexNext();
             HcParseUnary(); // cast binds tighter than binary ops: (F64)k * 6.0 == ((F64)k) * 6.0
+            // FASE 2.5c (fecha o 1.2): o resultado de um CAST tem a largura DO CAST,
+            // nao a do operando. Antes, HcParseUnary deixava g_hc_last_prim_u32 com a
+            // largura do OPERANDO — e um `<<`/`>>` sobre a expressao do cast era
+            // compilado na largura errada. Prova medida (DolDoc): com fg U32,
+            // `((U64)bg << 32)` virava `lsl w0,w0,w1` => 32 mod 32 = shift 0 => bg
+            // NAO deslocava e vazava no low 32 (RED|MANTLE=0x01000014 em vez de
+            // 0x01000010). Regra: U8/U16/U32 => marca a largura; U64/I64/F64 => zera.
+            if (!cast_is_ptr) {
+                if (cast_tok == TOK_TYPE_U8)       g_hc_last_prim_u32 = 1;
+                else if (cast_tok == TOK_TYPE_U16) g_hc_last_prim_u32 = 2;
+                else if (cast_tok == TOK_TYPE_U32) g_hc_last_prim_u32 = 4;
+                else                               g_hc_last_prim_u32 = 0;
+            } else {
+                g_hc_last_prim_u32 = 0;   // cast de PONTEIRO: 64 bits
+            }
             // Numeric conversions (skip pointer casts).
             if (!cast_is_ptr) {
                 if (cast_tok == TOK_TYPE_F64) {
@@ -3964,7 +3979,13 @@ U0 HcParseFunction(U8 *func_name) {
                 I64 v_scale = p_is_ptr ? p_scale : 8;
                 g_hc_decl_float = (p_is_float && !p_is_ptr) ? 1 : 0;
                 g_hc_decl_elem_float = p_is_float;   // F64* param: pointee is F64
+                // FASE 2.5b (fecha lacuna): um parametro ESCALAR estreito (U8/U16/U32
+                // sem `*`) tambem precisa da largura semantica registrada — sem isto,
+                // `U32 RenderBlendColor(U32 dst, U32 src_rgba)` compilaria o `>>` do
+                // parametro em 64 bits e reintroduziria a mina dentro da funcao.
+                g_hc_pending_elem_sz = (p_is_ptr || p_is_float) ? 0 : (U8)p_scale;
                 I64 fn_arg_off = HcAddLocalTyped(pname, v_scale, p_is_ptr, p_st_idx, 1);
+                g_hc_pending_elem_sz = 0;
                 g_hc_decl_float = 0;
                 g_hc_decl_elem_float = 0;
                 if (p_is_float && !p_is_ptr) {
