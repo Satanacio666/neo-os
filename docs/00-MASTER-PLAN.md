@@ -730,7 +730,7 @@ a claim — it is a tested, profiled, benchmarked fact with a GL 1.3 conformance
   - `apps/SelfTest.HC` is the only test runner; it absorbs the new P7 gates (`GLSURFACE`, `CLIP`, `NEONMEM`,
     `TILE`, `GPUCFG`, `TELEMETRY`, `BENCH`, `GLCONFORMANCE`) and prints the single `SELFTEST: a/b` summary.
   - `tests/jit_golden/cases.json` is **frozen historical** (no edits; no new cases). `scripts/run-jit-golden.py`
-    is a thin `selftest` wrapper (or retired to `scripts/_superseded/`).
+    is a thin `selftest` wrapper (or retired — originals in `shared/neos/scripts-legados-20261031/`).
   - `scripts/bench-verify.sh` (new): boots headless, runs `bench`, and asserts the four export files exist and
     are internally consistent (matrix sums = 40, winner ∈ phases, per-phase metric ranges sane).
   - `scripts/p7-verify.sh` (new): the single P7 exit gate (below), wired into `scripts/golden-boot.sh`.

@@ -64,7 +64,7 @@ shell builtin `selftest`, printing `SELFTEST: 80/80 PASS` (74 ported + 6 new), `
 `golden-boot.sh` boots once and runs the battery with **one** command, then checks twin-liveness, the symbol
 audit, the `.HC`→C census, and self-host. `scripts/census-c-runtime.sh` + `tests/census-baseline.txt` guard
 against any new `.HC`→C runtime call. `make check/selftest/census/parity` wrap the gate. The 40 legacy
-`test_*.py` were moved to `scripts/_superseded/`.
+`test_*.py` were moved out of the harness (retired on 31/10/2026; the originals preserved in `shared/neos/scripts-legados-20261031/`).
 **Known limitation:** the corpus assumes fresh compiler state — a second `selftest` in one boot is guarded
 (warns, does not run) because recompiling the battery trips a pre-existing `Compiler.HC` re-entrancy bug.
 
@@ -126,7 +126,7 @@ list (twin-liveness, census, allocator/symbol/FS stress, determinism), which is 
 - [x] **P0.5.8 — Rewrite `golden-boot.sh`** ✅ to one `selftest` command + boot-log invariants + a host
       hang-timeout; fold `self-host-test.sh` and `run-jit-golden.py` in (self-host stays a second command).
 - [x] **P0.5.9 — Makefile:** `make check` (gate), `make selftest`, `make census`, `make parity`. ✅
-- [x] **P0.5.10 — Retire legacy:** moved 40 `scripts/test_*.py` to `scripts/_superseded/` (git mv, never
+- [x] **P0.5.10 — Retire legacy:** moved 40 `scripts/test_*.py` out of the harness (git mv, never
       deleted) and noted them in doc 01. ✅
 
 **Coverage expansion (the "200%").** First batch landed (6 cases: `neg_bad_expr`, `lex_block_comment`,
