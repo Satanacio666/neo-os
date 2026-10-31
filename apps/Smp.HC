@@ -33,7 +33,7 @@ U32       g_smp_test_exec_core;
 // IRQ — habilitando o tick simetrico. O interlock B2a.1 (Gic.HC) continua
 // garantindo que SO' o core 0 entrega o frame ao escalonador, entao ligar este
 // switch NAO corrompe o Sched: apenas faz os secundarios tomarem o tick.
-I64       g_smp_irq_enable = 0;
+I64       g_smp_irq_enable = 1; // EXPERIMENTO B2a.3: medir se ligar sem B2a.2 quebra
 U64       g_smp_irq_enabled_cores = 0;   // bitmask: quais cores abriram IRQ
 
 // B2a.3: o secundario habilita a interface do PROPRIO core. Como o GICC e'
@@ -47,6 +47,8 @@ U0 SmpSecondaryIrqEnable(U32 core_id) {
   g_smp_irq_enabled_cores = g_smp_irq_enabled_cores | (1 << core_id);
   __dmb_ish();
   __irq_enable();                            // MSR DAIFClr, #2 (builtin do JIT)
+  // B2a.4: observabilidade — registra que este core abriu IRQ (imprime 1x por core).
+  doldoc_printf("$FG,CYAN$[SMP] core %lld: IRQ local habilitada (g_smp_irq_enable=1)$FG$\n", core_id);
 }
 
 // B2a.3: DECISAO PURA — testavel sem hardware (licao do B11). Devolve 1 se este

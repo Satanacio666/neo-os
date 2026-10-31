@@ -582,6 +582,12 @@ U0 SelfTestSmp() {
     } else {
         doldoc_printf("SMP: FAIL (r=%lld acc=0x%llX)\n", r, g_smp_probe_acc);
     }
+    // B2a.4 (ONDA 3): medicao do SMP SIMETRICO. Distingue "IRQ habilitada" (o que
+    // o kill-switch faz) de "IRQ REALMENTE CHEGA" (depende do B2a.2: GICC banked +
+    // CNTV por core). g_gic_offcore_tick_blocks > 0 prova que um secundario tomou
+    // o tick e foi barrado pelo interlock — i.e. o SMP simetrico funciona.
+    doldoc_printf("SMPIRQ: switch=%lld enabled_cores=0x%llX offcore_ticks_blocked=%lld\n",
+                  g_smp_irq_enable, g_smp_irq_enabled_cores, g_gic_offcore_tick_blocks);
 }
 
 // P3.8: verify the sovereign handover took effect - the live kmalloc / symbols_*
@@ -1623,7 +1629,20 @@ U0 SelfTestFallbacks() {
     // muda. A sonda prova a decisao pura: off = ninguem abre IRQ; on = secundario
     // aceito e BSP segue barrado.
     SelfTestCompare("b2a3_irq_enable_gate", SmpTestIrqEnableGate(), 1);
-    SelfTestCompare("b2a3_switch_off_default", g_smp_irq_enable, 0);
+    // B2a.3 (ONDA 3): o gate e' consistente com o valor ATUAL do switch (nao fixa
+    // o default — ele e' configuravel). Se off, nenhum secundario abriu IRQ; se on,
+    // o contador reflete os cores. Testa a COERENCIA, nao a constante.
+    if (g_smp_irq_enable == 0) {
+        SelfTestCompare("b2a3_off_means_no_cores", g_smp_irq_enabled_cores, 0);
+    } else {
+        SelfTestCompare("b2a3_on_means_cores_open", (g_smp_irq_enabled_cores != 0) ? 1 : 0, 1);
+    }
+    // B2a.4 (ONDA 3) — ACHADO MEDIDO: mesmo com o switch LIGADO (enabled_cores=0xE),
+    // offcore_ticks_blocked=0 — o tick NAO CHEGA aos secundarios. Falta o B2a.2
+    // (GICC banked + CNTV por core + ISENABLER0 do PPI 27 no redistribuidor do
+    // secundario). Este caso trava a verdade medida: sem B2a.2, nenhum secundario
+    // toma tick. Quando o B2a.2 for implementado, este teste DEVE ser atualizado.
+    SelfTestCompare("b2a4_tick_not_yet_reaching_secondaries", g_gic_offcore_tick_blocks, 0);
 }
 
 U0 SelfTestRun() {
