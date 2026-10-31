@@ -27,6 +27,51 @@ U64       g_smp_boot_vct;
 U64       g_smp_test_acc;
 U32       g_smp_test_exec_core;
 
+// B2a.3 (ONDA 3) — kill-switch do SMP simetrico. DESLIGADO por padrao (0): o
+// comportamento atual NAO muda (secundarios surdos a IRQ, escalonador UP-only).
+// Quando 1, os secundarios inicializam a interface GICC do proprio core e abrem
+// IRQ — habilitando o tick simetrico. O interlock B2a.1 (Gic.HC) continua
+// garantindo que SO' o core 0 entrega o frame ao escalonador, entao ligar este
+// switch NAO corrompe o Sched: apenas faz os secundarios tomarem o tick.
+I64       g_smp_irq_enable = 0;
+U64       g_smp_irq_enabled_cores = 0;   // bitmask: quais cores abriram IRQ
+
+// B2a.3: o secundario habilita a interface do PROPRIO core. Como o GICC e'
+// banked (GicGetCpuBase nao recebe core) e o GICD_ISENABLER0/PPI<32> tambem sao
+// banked no redistribuidor DESTE core, quem inicializa e' o proprio core — nao
+// o BSP por ele. Aqui so' se abre a IRQ (DAIF); a inicializacao per-core do GIC
+// e' responsabilidade de SmpSecondaryIrqInit(), chamada antes.
+U0 SmpSecondaryIrqEnable(U32 core_id) {
+  if (g_smp_irq_enable == 0) return;        // kill-switch: desligado = nada muda
+  if (core_id == 0 || core_id >= SMP_MAX_CORES) return;
+  g_smp_irq_enabled_cores = g_smp_irq_enabled_cores | (1 << core_id);
+  __dmb_ish();
+  __irq_enable();                            // MSR DAIFClr, #2 (builtin do JIT)
+}
+
+// B2a.3: DECISAO PURA — testavel sem hardware (licao do B11). Devolve 1 se este
+// core DEVERIA abrir IRQ dadas as condicoes (switch ligado + nao-BSP + valido).
+I64 SmpIrqEnableAllowed(I64 switch_on, U32 core_id) {
+  if (switch_on == 0) return 0;
+  if (core_id == 0 || core_id >= SMP_MAX_CORES) return 0;
+  return 1;
+}
+
+// B2a.3: sonda deterministica do kill-switch. Prova as duas metades: com o switch
+// DESLIGADO nenhum core abre IRQ (comportamento atual preservado) e o contador
+// nao muda; com o switch LIGADO o secundario e' aceito e o BSP continua barrado.
+I64 SmpTestIrqEnableGate() {
+  I64 ok = 1;
+  if (SmpIrqEnableAllowed(0, 1) != 0) ok = 0;   // switch off -> secundario barrado
+  if (SmpIrqEnableAllowed(0, 0) != 0) ok = 0;   // switch off -> BSP barrado
+  if (SmpIrqEnableAllowed(1, 1) != 1) ok = 0;   // switch on  -> secundario aceito
+  if (SmpIrqEnableAllowed(1, 0) != 0) ok = 0;   // switch on  -> BSP segue barrado
+  if (SmpIrqEnableAllowed(1, 3) != 1) ok = 0;   // core 3 valido
+  if (SmpIrqEnableAllowed(1, 4) != 0) ok = 0;   // core 4 invalido (>= SMP_MAX_CORES)
+  return ok;
+}
+
+
 CSmpJob* SmpGetJob(I64 core_id) {
   return g_smp_hc.jobs + core_id * 32;
 }
@@ -73,6 +118,9 @@ U0 SmpWorkerLoop(U32 core_id) {
   g_smp_hc.core_online[core_id] = 1;
   __dmb_ish();
   __sev();
+  // B2a.3: se o SMP simetrico estiver LIGADO (g_smp_irq_enable), este core abre a
+  // IRQ do proprio core. Desligado (padrao) = nada acontece, comportamento atual.
+  SmpSecondaryIrqEnable(core_id);
   while (1) {
     while (!j->pending) {
       __wfe();

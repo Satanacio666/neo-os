@@ -1619,6 +1619,11 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("b2a1_core0_schedules", GicShouldScheduleCore(0), 1);
     SelfTestCompare("b2a1_core1_blocked", GicShouldScheduleCore(1), 0);
     SelfTestCompare("b2a1_core3_blocked", GicShouldScheduleCore(3), 0);
+    // B2a.3 (ONDA 3): kill-switch do SMP simetrico. Desligado por padrao -> nada
+    // muda. A sonda prova a decisao pura: off = ninguem abre IRQ; on = secundario
+    // aceito e BSP segue barrado.
+    SelfTestCompare("b2a3_irq_enable_gate", SmpTestIrqEnableGate(), 1);
+    SelfTestCompare("b2a3_switch_off_default", g_smp_irq_enable, 0);
 }
 
 U0 SelfTestRun() {
