@@ -482,6 +482,25 @@ U0 SelfTestSched() {
     }
 }
 
+// B5 (ONDA 2) — canario de pilha. Prova que TaskCreate GRAVA o canario no fundo
+// da pilha e que a verificacao o DETECTA quando corrompido (ciclo completo:
+// gravado -> violacao detectada -> restaurado). A task criada sai sozinha
+// (TaskExit) quando o escalonador a roda; nada de pilha vazando.
+I64 g_selftest_canary_probe = 0;
+U0 SelfTestCanaryWorker(U64 arg) {
+    g_selftest_canary_probe = g_selftest_canary_probe + 1;
+    TaskExit();
+}
+U0 SelfTestStackCanary() {
+    g_selftest_canary_probe = 0;
+    g_sched_preempt_off = 1;   // a task nao pode rodar no meio da medicao
+    U64 t = TaskCreate("CanaryProbe", (U64)&SelfTestCanaryWorker, 0, 8192);
+    I64 cycle = 0;
+    if (t != 0) cycle = SchedTestCanaryCycle(t);
+    g_sched_preempt_off = 0;
+    SelfTestCompare("b5_stack_canary_cycle", cycle, 1);
+}
+
 // P3.6: verify the fault classification boundary (guardrail 4) non-destructively.
 // A kernel fault (no user_ok) must PANIC (return 0); a user fault (user_ok) must
 // RECOVER (return 1). g_exc_selftest_active suppresses actual BSOD rendering.
@@ -1787,6 +1806,7 @@ U0 SelfTestRun() {
     SelfTestOverflowInjection();
     SelfTestHeapIntegrity();
     SelfTestFallbacks();
+    SelfTestStackCanary();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

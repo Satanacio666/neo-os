@@ -51,6 +51,13 @@ I64    g_sched_ready = 0;       // set by SchedInit; gates SchedOnTick from the 
 //   [272..783] Q0..Q31
 #define SCHED_FRAME_SIZE 784
 
+// B5 (ONDA 2) — canario de pilha. Valor LITERAL PURO ("STKCANAR" em ASCII):
+// o Compiler.HC documenta que "a PRODUCT of two macros is the one form it does
+// not fold reliably", entao nada de produto de macros aqui.
+#define STACK_CANARY 0x53544B43414E4152
+// Contador observavel: cada violacao vista no ponto de troca.
+U64 g_stack_canary_violations = 0;
+
 // Pick the highest-priority READY task other than `cur` (round-robin within a
 // band). Walks from g_sched_head so a removed (dead) `cur` cannot loop forever.
 CTask* SchedPickNext(CTask *cur) {
@@ -90,6 +97,35 @@ I64 SchedStrCmp(U8 *s1, U8 *s2) {
     scmp_pos++;
   }
   return s1[scmp_pos] - s2[scmp_pos];
+}
+
+// B5 (ONDA 2): verificacao do canario de UMA task. Recebe o endereco cru (o
+// SelfTest.HC e' compilado ANTES de Sched.HC e nao enxerga CTask). Devolve:
+//   1 = intacto OU fora do escopo (stack_base == 0: a task KernelMain do boot)
+//   0 = CORROMPIDO (grita)
+// Nao incrementa contador algum: quem decide "nunca trocar" e' SchedOnTick.
+I64 SchedCanaryOk(U64 task_addr) {
+  if (task_addr == 0) return 1;
+  CTask *t = (CTask *)task_addr;
+  if (t->stack_base == 0) return 1;   // KernelMain: sem pilha propria (boot)
+  if (*(U64 *)t->stack_base == (U64)STACK_CANARY) return 1;
+  return 0;
+}
+
+// B5 (ONDA 2): sonda do CAMINHO DE FALHA. Prova o ciclo completo numa task real
+// (canario GRAVADO -> corrupcao DETECTADA -> restaurado). Devolve 1 so' se as 3
+// etapas baterem; sem o fix (canario nunca gravado) a etapa 1 falha e devolve 0.
+I64 SchedTestCanaryCycle(U64 task_addr) {
+  if (task_addr == 0) return 0;
+  CTask *t = (CTask *)task_addr;
+  if (t->stack_base == 0) return 0;             // sem pilha: fora do escopo
+  if (SchedCanaryOk(task_addr) != 1) return 0;  // 1. o canario FOI gravado
+  *(U64 *)t->stack_base = 0xDEADDEADDEADDEAD;   // 2. forca a violacao
+  I64 detected = 0;
+  if (SchedCanaryOk(task_addr) == 0) detected = 1;
+  *(U64 *)t->stack_base = (U64)STACK_CANARY;    // 3. restaura
+  if (SchedCanaryOk(task_addr) != 1) return 0;  //    e confirma o retorno
+  return detected;
 }
 
 U0 SchedReapZombie() {
@@ -181,6 +217,11 @@ CTask* TaskCreate(U8 *p_name, U64 p_entry, U64 p_arg, I64 p_stack_sz) {
   t->arg = p_arg;
   t->stack_base = stk;
   t->stack_size = p_stack_sz;
+
+  // B5 (ONDA 2): grava o canario no FUNDO da pilha (base). A pilha cresce para
+  // baixo e o trap frame vai em top-784 (SCHED_FRAME_SIZE), bem longe do base —
+  // logo o canario so' e' tocado se a task ESTOURAR a pilha (o caso que importa).
+  *(U64 *)stk = (U64)STACK_CANARY;
 
   // P3.5: build a full initial trap frame so the first preemptive switch can
   // RESTORE_ALL + eret straight into entry_fn(arg).
@@ -278,6 +319,22 @@ U64 SchedOnTick(U64 sp) {
   // lock / scheduler self-test).
   if (g_hc_compiling || g_sched_preempt_off) {
     cur->quantum_remaining = 1;
+    return sp;
+  }
+
+  // B5 (ONDA 2) — guarda de pilha no ponto de troca. O canario vive no FUNDO
+  // da pilha da task que esta' SAINDO (cur). Se ele sumiu, a task estourou a
+  // pilha para baixo: o frame dela ja' e' suspeito. DECISAO (documentada):
+  // NAO trocar — continuar em cur com quantum reiniciado. Trocar salvaria o
+  // frame sobre uma pilha ja' corrompida (agravaria) e esconderia a evidencia.
+  // KernelMain tem stack_base == 0 e e' PULADA (sem pilha propria no boot).
+  if (cur->stack_base != 0 && *(U64 *)cur->stack_base != (U64)STACK_CANARY) {
+    g_stack_canary_violations++;
+    if (g_stack_canary_violations == 1) {
+      doldoc_printf("$FG,RED$[SCHED] STACK CANARY VIOLATION: task '%s' (id=%lld base=0x%016llX) — canario corrompido; troca BLOQUEADA$FG$\n",
+                    cur->name, cur->id, (U64)cur->stack_base);
+    }
+    cur->quantum_remaining = cur->quantum_ticks;
     return sp;
   }
 
