@@ -4,7 +4,7 @@
 // Replaces: drivers/input/keyboard.c (138 LOC)
 // ==============================================================================
 
-#define KEY_BUF_SIZE   256
+// (KEY_BUF_SIZE definido abaixo, em 4096 — ver o bloco do g_key_buf)
 
 #define KEY_UP         257
 #define KEY_DOWN       258
@@ -21,15 +21,29 @@
 #define PL011_FR_RXFE  16 // (1 << 4) Receive FIFO Empty
 #define PL011_FR_TXFF  32 // (1 << 5) Transmit FIFO Full
 
-I64 g_key_buf[256];
+// CORRIGIDO (31/10): o buffer era de 256 e o laco circular DESCARTAVA em silencio
+// quando cheio (`if (next != g_key_buf_tail)`). Comandos longos (struct de 70
+// membros ~= 700 chars) enchiam o buffer e PERDIAM caracteres — era essa a causa
+// da corrupcao "I64 m12" -> "I2" nos casos do JIT-golden. 4096 cobre com folga.
+#define KEY_BUF_SIZE   4096
+I64 g_key_buf[4096];
 I64 g_key_buf_head = 0;
 I64 g_key_buf_tail = 0;
+
+// Contador de descartes: se o buffer encher de novo, o sintoma fica VISIVEL
+// (diretriz: zero fallback silencioso).
+I64 g_key_buf_dropped = 0;
 
 U0 KeyboardQueueChar(I64 k) {
     I64 next = (g_key_buf_head + 1) & (KEY_BUF_SIZE - 1);
     if (next != g_key_buf_tail) {
         g_key_buf[g_key_buf_head] = k;
         g_key_buf_head = next;
+    } else {
+        g_key_buf_dropped = g_key_buf_dropped + 1;
+        if (g_key_buf_dropped == 1) {
+            doldoc_printf("$FG,RED$[KEYBOARD] BUFFER CHEIO: caractere descartado (cap=%lld)$FG$\n", (I64)KEY_BUF_SIZE);
+        }
     }
 }
 
@@ -120,11 +134,13 @@ U0 uart_puts(U8 *s) {
 I64 UartHasRx() {
     I64 uart_base = hal_get_uart_base();
     if (!uart_base) return 0;
-    U32 cr = __mmio_r32(uart_base + 0x30);
-    if ((cr & (1 << 9)) == 0) {
-        __mmio_w32(uart_base + 0x2C, 0x70);
-        __mmio_w32(uart_base + 0x30, 0x301);
-    }
+    // CORRIGIDO (31/10): NAO reconfigurar o UART dentro do poll. A versao anterior
+    // reescrevia LCR_H (0x2C) e CR (0x30) SEMPRE que UARTEN parecia desligado — e
+    // no PL011 desligar/religar o UART **reseta o FIFO de RX**, PERDENDO caracteres.
+    // Sintoma medido: comandos longos chegavam corrompidos ("I64 m12" -> "I2",
+    // "m25" -> "m5"), fazendo structs de 48/70 membros e muitas-locals falharem no
+    // Compiler.HC (3 dos 9 casos do JIT-golden).
+    // A configuracao do UART pertence a KeyboardInit (uma vez). Aqui so' se' LE.
     return (__mmio_r32(uart_base + 0x18) & PL011_FR_RXFE) == 0;
 }
 

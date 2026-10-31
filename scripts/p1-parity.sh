@@ -46,8 +46,24 @@
 # ==============================================================================
 set -u
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# BLINDAGEM (31/10): BASH_SOURCE e' bash-especifico. Se o script for invocado com
+# `sh` (como o harness-full faz), ele fica VAZIO -> ROOT="/" -> KI="/apps/KernelInit.HC"
+# -> `cp "/apps/..."` falha com "can't stat ''". Fallback: $0 (funciona em sh) e,
+# por ultimo, o caminho conhecido do repo.
+_p1_self="${BASH_SOURCE[0]:-$0}"
+ROOT="$(cd "$(dirname "$_p1_self")/.." 2>/dev/null && pwd)"
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/apps/KernelInit.HC" ]; then
+    if [ -f "/var/minis/workspace/merge/work/apps/KernelInit.HC" ]; then
+        ROOT="/var/minis/workspace/merge/work"
+    else
+        echo "p1-parity: nao consegui localizar o repo (ROOT='$ROOT') — ABORTANDO" >&2
+        exit 6
+    fi
+    echo "[p1-parity] ROOT resolvido por fallback: $ROOT"
+fi
 KI="$ROOT/apps/KernelInit.HC"
+
+# (blindagem: o trap restore ja existe abaixo, logo apos o backup — ver BACKUP)
 SERLOG=/tmp/neo-os-serial.log
 LOCK=/tmp/neo-os-vm.lock
 HANG_SECONDS="${HANG_SECONDS:-45}"
@@ -138,8 +154,18 @@ if [ -n "$(git -C "$ROOT" diff --name-only -- apps/KernelInit.HC 2>/dev/null)" ]
     echo "p1-parity: apps/KernelInit.HC has uncommitted changes (FORCE=1 to override)" >&2
     exit 4
 fi
-BACKUP="$(mktemp /tmp/neo-os-kinit.XXXXXX.HC)"
-cp "$KI" "$BACKUP"
+# BLINDAGEM (31/10): o `mktemp` pode falhar (sem /tmp gravavel, busybox sem sufixo,
+# disco cheio) e devolver "" -> `cp "$KI" ""` dava "can't stat ''" e o script
+# seguia com BACKUP vazio, deixando o KernelInit.HC sujo. Fallback explicito:
+BACKUP="$(mktemp /tmp/neo-os-kinit.XXXXXX.HC 2>/dev/null || true)"
+if [ -z "$BACKUP" ] || [ ! -f "$BACKUP" ]; then
+    BACKUP="$ROOT/.p1_parity_kinit.bak"
+    : > "$BACKUP" || { echo "p1-parity: nao consegui criar backup — ABORTANDO (nao tocar em KernelInit.HC)" >&2; exit 5; }
+fi
+cp "$KI" "$BACKUP" || { echo "p1-parity: falha ao copiar KernelInit.HC para $BACKUP — ABORTANDO" >&2; exit 5; }
+if [ ! -s "$BACKUP" ]; then
+    echo "p1-parity: backup vazio ($BACKUP) — ABORTANDO para nao corromper o KernelInit.HC" >&2; exit 5
+fi
 RESTORED=0
 restore() {
     [ "$RESTORED" = "1" ] && return
