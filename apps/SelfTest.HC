@@ -1530,6 +1530,24 @@ I64 SelfTestInputDuct() {
   return 0;
 }
 
+// ==============================================================================
+// ONDA 1 — fallbacks silenciosos viram falha ALTA (B3, B4, B7, B8).
+// Usa SelfTestCompare / SelfTestReject (HC puro): SelfTestCheck alimenta a
+// paridade C e nao deve ser tocado aqui.
+//   B3: forca o buffer do HealthLog ausente -> o contador TEM de subir (1).
+//       Sem o fix (return mudo) o delta era 0.
+//   B4: enche um bin de tile alem do teto -> o flag TEM de subir (1).
+//       Sem o fix (if sem else) o retorno era 0.
+//   B7: membro desconhecido TEM de ser REJEITADO (-1).
+//       Sem o fix ele compilava como offset 0 e lia o campo errado.
+//   B8: NAO e' testavel sem quebrar o kmalloc do pool (ver relatorio).
+// ==============================================================================
+U0 SelfTestFallbacks() {
+    SelfTestCompare("b3_healthlog_drop_counted", WatchdogTestHealthLogDrop(), 1);
+    SelfTestCompare("b4_raster_tile_overflow_flagged", RasterTestTileOverflow(), 1);
+    SelfTestReject("b7_unknown_member_rejected", "struct B7S { I64 a; }; B7S b7v; b7v.b7nomember;");
+}
+
 U0 SelfTestRun() {
     // The corpus assumes a fresh compiler state: compiling the whole battery a
     // second time in the same boot trips a pre-existing Compiler.HC re-entrancy
@@ -1768,6 +1786,7 @@ U0 SelfTestRun() {
     SelfTestRng();
     SelfTestOverflowInjection();
     SelfTestHeapIntegrity();
+    SelfTestFallbacks();
 
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,

@@ -92,6 +92,11 @@ CRasterBin  g_rs_bins[RASTER_MAX_PRODUCERS][RASTER_MAX_TILES];
 I64 g_rs_prod_count[RASTER_MAX_PRODUCERS];   // accepted records per producer
 I64 g_rs_producer_overflowed = 0;
 I64 g_rs_tris_overflowed = 0;
+// B4 (ONDA 1): o bin por tile era o UNICO overflow sem contador — `if (count <
+// MAX)` sem `else`, entao um bin cheio descartava o triangulo EM SILENCIO
+// (tile com furo e sem uma linha de log). Mesmo estilo dos dois contadores
+// acima: sticky, primeira ocorrencia grita.
+I64 g_rs_tile_overflowed = 0;
 I64 g_rs_cols = 0;
 I64 g_rs_rows = 0;
 I64 g_rs_tile_size = 64;
@@ -1112,6 +1117,13 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
         b->idx[b->count] = (U16)ti;
         b->count = b->count + 1;
       }
+      else {
+        if (!g_rs_tile_overflowed) {
+          g_rs_tile_overflowed = 1;
+          doldoc_printf("$FG,RED$[RASTER] FATAL: RASTER_MAX_TRIS_PER_TILE overflow (prod=%lld tile=%lld count=%lld max=%lld)$FG$\n",
+                        producer, ty * g_rs_cols + tx, b->count, (I64)RASTER_MAX_TRIS_PER_TILE);
+        }
+      }
       tx = tx + 1;
     }
     ty = ty + 1;
@@ -1766,6 +1778,25 @@ U0 RasterSelfTestTile() {
 
   if (ok != 0) doldoc_print("TILE: PASS\n");
   else doldoc_print("TILE: FAIL\n");
+}
+
+// B4 (ONDA 1): prova FUNCIONAL do caminho de falha. Enche o bin do tile (0,0)
+// alem do teto e submete um triangulo que cai nesse tile; devolve o flag
+// observavel. Sem o fix (descarte mudo) o retorno seria 0.
+I64 RasterTestTileOverflow() {
+  I64 saved = g_rs_tile_overflowed;
+  g_rs_tile_overflowed = 0;
+  RasterSceneBegin(0, 0, 128, 128, 0xFF000000);
+  g_rs_bins[0][0].count = RASTER_MAX_TRIS_PER_TILE + 8;
+  CRasterVertex ov[3];
+  ov[0].x = 1.0;  ov[0].y = 1.0;  ov[0].z = 1;
+  ov[1].x = 20.0; ov[1].y = 1.0;  ov[1].z = 1;
+  ov[2].x = 1.0;  ov[2].y = 20.0; ov[2].z = 1;
+  RasterSceneAddTriangle(ov, 0xFFFFFFFF);
+  I64 hit = g_rs_tile_overflowed;
+  RasterSceneBegin(0, 0, 128, 128, 0xFF000000);  // restaura os bins (count=0)
+  g_rs_tile_overflowed = saved;
+  return hit;
 }
 
 U0 RasterBootCheck() {

@@ -586,6 +586,19 @@ I64 HcStrChunks() { return g_hc_str_nchunks; }
 U0 HcInit() {
     if (!g_hc_code) {
         g_hc_code = kmalloc(HC_CODE_CAPACITY * 4);
+        if (!g_hc_code) {
+            // B8 (ONDA 1): o pool de codigo era o unico kmalloc sem checagem.
+            // Com 0, TODO HcEmit escreveria no endereco 0 — falha obscura,
+            // longe da causa. Aqui falha ALTO: log + erro interno de capacidade
+            // (HC_ERR_CODE_OVERFLOW e' a classe mais proxima: o pool e' o
+            // recurso que faltou, e HcErrIsInternal trata 8..10 como falha
+            // INTERNA). doldoc_printf ja' esta' registrado neste ponto (o
+            // vizinho HcStrAlloc usa o mesmo padrao).
+            doldoc_printf("$FG,RED$[COMPILER] FATAL: HcInit: kmalloc(%lld) do pool de codigo FALHOU — nenhum modulo podera ser compilado$FG$\n",
+                          (I64)(HC_CODE_CAPACITY * 4));
+            HcRaiseError(HC_ERR_CODE_OVERFLOW);
+            return;
+        }
         g_hc_pool_offset = 0;
         g_hc_func_count = 0;
         g_hc_struct_count = 0;
@@ -2295,6 +2308,7 @@ U0 HcResolveLValue(U8 *ident_name, I64 *out_scale, I64 *out_addr_only, I64 *out_
                     // self-hosted compiler lost it, forcing a typed-local workaround.
                     if ((m_ptr || m_arr) && g_hc_tok == TOK_LBRACKET) cur_scale = m_elem;
                 }
+                else HcRaiseError(HC_ERR_UNRESOLVED_TYPE);  // B7: membro desconhecido NAO compila como offset 0 (sem chaves: Regra 14)
             }
         } else if (g_hc_tok == TOK_LBRACKET) {
             if (cur_mode == 1) {

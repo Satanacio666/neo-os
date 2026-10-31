@@ -104,6 +104,11 @@ U64 g_watchdog_wall_cycles = 0;
 U8  *g_healthlog_buf = 0;
 I64  g_healthlog_head = 0;  // indice onde a PROXIMA entrada sera gravada
 I64  g_healthlog_count = 0; // entradas vivas (0..HEALTHLOG_MAX)
+// B3 (ONDA 1): o livro-razao voltava em SILENCIO quando o buffer nao existia
+// (`if (!g_healthlog_buf) return;`) — o evento simplesmente sumia. Este
+// contador observavel (auto-publicado: o gate/sonda pode le-lo) transforma a
+// perda muda em falha audivel: incrementa SEMPRE e grita na 1a ocorrencia.
+I64  g_healthlog_dropped = 0;
 
 // Tipos de evento de saude (espelham os pontos de falha do vigia).
 #define HEALTH_SYM      1   // simbolo(s) unresolved na tabela soberana
@@ -201,7 +206,15 @@ I64 HealthLogBackoff(I64 h_type, I64 h_key) {
 
 // Registra um evento de saude. O(1) por evento, wrap-around circular.
 U0 HealthLogRecord(I64 h_type, I64 h_payload, I64 h_u2) {
-    if (!g_healthlog_buf) return;
+    if (!g_healthlog_buf) {
+        // B3 (ONDA 1): NAO ha mais `return` mudo. O evento perdido e' contado e
+        // a primeira perda GRITA (doldoc_printf <=7 args). O contador so sobe
+        // aqui; o estado normal nao o toca.
+        g_healthlog_dropped++;
+        if (g_healthlog_dropped == 1)
+            doldoc_printf("$FG,RED$[HEALTHLOG] DROP: buffer ausente — evento perdido (type=%lld)$FG$\n", h_type);
+        return;
+    }
     if (g_healthlog_head < 0 || g_healthlog_head >= HEALTHLOG_MAX) g_healthlog_head = 0;
     I64 wet = g_healthlog_head; // slot; o writer e unico (task do vigia)
     CHlEntry *e = (CHlEntry *)(g_healthlog_buf + wet * HEALTHLOG_ENTRY);
@@ -216,6 +229,21 @@ U0 HealthLogRecord(I64 h_type, I64 h_payload, I64 h_u2) {
     __dmb_ish(); // publica a entrada antes de mover a cabeca
     g_healthlog_head = (wet + 1) % HEALTHLOG_MAX;
     if (g_healthlog_count < HEALTHLOG_MAX) g_healthlog_count++;
+}
+
+// B3 (ONDA 1): prova FUNCIONAL do caminho de falha. Forca o estado exato do
+// defeito (buffer ausente) e devolve o delta do contador — o SelfTest exige 1.
+// Sem o fix (return mudo) o delta seria 0 e o teste falharia.
+I64 WatchdogTestHealthLogDrop() {
+    U8 *saved_buf = g_healthlog_buf;
+    I64 saved_n = g_healthlog_dropped;
+    g_healthlog_dropped = 0;
+    g_healthlog_buf = 0;
+    HealthLogRecord(HEALTH_CANARY, 1, 0);
+    I64 hit = g_healthlog_dropped;
+    g_healthlog_buf = saved_buf;
+    g_healthlog_dropped = saved_n;
+    return hit;
 }
 
 // Imprime as ultimas N entradas (padrao: 10). Consulta em runtime.
