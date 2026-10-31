@@ -49,6 +49,7 @@ U64 g_gicr_base;
 // depende de hardware com observador concorrente e' flaky por construcao).
 // So' o core 0 entrega o frame ao escalonador enquanto nao houver run-queues.
 I64 g_gic_offcore_tick_blocks = 0;   // ticks de secundarios que NAO foram ao Sched
+U64 g_gic_secondary_ppi_ready = 0;   // B2a.2: bitmask dos cores com PPI 27 armado
 I64 GicShouldScheduleCore(U32 core_id) {
   if (core_id == 0) return 1;
   return 0;
@@ -387,6 +388,55 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
     g_gic_offcore_tick_blocks = g_gic_offcore_tick_blocks + 1;
   }
   return trap_frame;
+}
+
+// B2a.2 (ONDA 3) — inicializacao da interface GIC DO PROPRIO CORE.
+//
+// MEDIDO: o QEMU roda com `-M virt,gic-version=2` (run-viewer-vm.sh:24) — logo
+// g_gic_version == 2, e o ramo GICv3 que eu tinha escrito NUNCA executava. No
+// GICv2 o modelo e' outro:
+//   - o GICC (0x08010000) e' BANKED POR HARDWARE: um MMIO write acerta o banco do
+//     core que escreve, sem indice de core. Cada core precisa configurar o SEU
+//     (CTLR/PRIORITY MASK/BPR) — o GicInit do BSP configurou so' o dele;
+//   - os PPIs (irq<32, onde vive o timer 27) sao habilitados no GICD global
+//     (GICD_ISENABLER0) + resolvidos por GICD_ITARGETSR (que core os recebe).
+//     O ITARGETSR e' por-IRQ, entao o BSP pode (e deve) endereçar o PPI 27 para
+//     todos os cores que devem receber o tick.
+//   - o timer virtual (CNTV) e' POR CORE: cada core arma o seu (TimerArmThisCore).
+U0 GicInitCpuInterface(U32 core_id) {
+  if (g_gic_version == 3) {
+    U64 gicr = GicGetRedistBase() + ((U64)core_id * GICR_STRIDE);
+    U64 sgi = gicr + GICR_SGI_OFFSET;
+    U32 w = __mmio_r32(gicr + GICR_WAKER);
+    __mmio_w32(gicr + GICR_WAKER, w & ~2);
+    I64 spins = 0;
+    while ((__mmio_r32(gicr + GICR_WAKER) & 4) != 0 && spins < 100000) spins = spins + 1;
+    __mmio_w32(sgi + GICR_IGROUPR0, 0xFFFFFFFF);
+    __mmio_w32(sgi + GICR_IGRPMODR0, 0x00000000);
+    __mmio_w32(sgi + GICR_IPRIORITYR + (27 / 4) * 4, 0xA0A0A0A0);
+    __mmio_w32(sgi + GICR_ISENABLER0, 1 << 27);
+    g_gic_secondary_ppi_ready = g_gic_secondary_ppi_ready | (1 << core_id);
+    __dmb_ish();
+    return 1;
+  }
+  // ---- GICv2 (o caso REAL no QEMU virt) ----
+  U64 gicc = GicGetCpuBase();
+  // O GICC e' banked: estas escritas acertam o banco DESTE core.
+  __mmio_w32(gicc + GICC_CTLR, 1);        // EnableGrp1 do MEU core
+  __mmio_w32(gicc + GICC_PMR, 0xFF);      // aceita todas as prioridades
+  __mmio_w32(gicc + GICC_BPR, 0);         // sem subprioridade
+  // PPI 27 no GICD: habilitado, prioridade 0xA0, roteado para ESTE core.
+  U64 gicd = GicGetDistBase();
+  U32 bit = 1 << (27 % 32);
+  __mmio_w32(gicd + GICD_IPRIORITYR + 27, 0xA0A0A0A0);
+  // ITARGETSR (byte por IRQ, 4 IRQs por palavra): aponta o PPI para este core.
+  U32 tgt = core_id & 0xFF;
+  U32 word = tgt | (tgt << 8) | (tgt << 16) | (tgt << 24);
+  __mmio_w32(gicd + GICD_ITARGETSR + (27 & ~3), word);
+  __mmio_w32(gicd + GICD_ISENABLER + (27 / 32) * 4, bit);
+  __dmb_ish();
+  g_gic_secondary_ppi_ready = g_gic_secondary_ppi_ready | (1 << core_id);
+  return 1;
 }
 
 U0 gic_dispatch() {

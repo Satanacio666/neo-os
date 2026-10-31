@@ -1637,12 +1637,14 @@ U0 SelfTestFallbacks() {
     } else {
         SelfTestCompare("b2a3_on_means_cores_open", (g_smp_irq_enabled_cores != 0) ? 1 : 0, 1);
     }
-    // B2a.4 (ONDA 3) — ACHADO MEDIDO: mesmo com o switch LIGADO (enabled_cores=0xE),
-    // offcore_ticks_blocked=0 — o tick NAO CHEGA aos secundarios. Falta o B2a.2
-    // (GICC banked + CNTV por core + ISENABLER0 do PPI 27 no redistribuidor do
-    // secundario). Este caso trava a verdade medida: sem B2a.2, nenhum secundario
-    // toma tick. Quando o B2a.2 for implementado, este teste DEVE ser atualizado.
-    SelfTestCompare("b2a4_tick_not_yet_reaching_secondaries", g_gic_offcore_tick_blocks, 0);
+    // B2a.4/B2a.2 (ONDA 3) — o tick CHEGA aos secundarios. Medido: com o switch
+    // ligado e a interface GICv2 por core inicializada (GICC banked + PPI 27 no
+    // GICD roteado para cada core + CNTV por core), offcore_ticks_blocked > 0 —
+    // os secundarios tomam o tick e o interlock os barra do Sched (correto).
+    // Antes desta correcao o contador era 0 (a IRQ abria mas o tick nao chegava).
+    if (g_smp_irq_enable != 0) {
+        SelfTestCompare("b2a2_tick_reaches_secondaries", (g_gic_offcore_tick_blocks > 0) ? 1 : 0, 1);
+    }
 }
 
 U0 SelfTestRun() {

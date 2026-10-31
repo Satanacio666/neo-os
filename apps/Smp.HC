@@ -44,6 +44,13 @@ U64       g_smp_irq_enabled_cores = 0;   // bitmask: quais cores abriram IRQ
 U0 SmpSecondaryIrqEnable(U32 core_id) {
   if (g_smp_irq_enable == 0) return;        // kill-switch: desligado = nada muda
   if (core_id == 0 || core_id >= SMP_MAX_CORES) return;
+  // B2a.2: antes de abrir a IRQ, arma a interface GIC DESTE core (redistribuidor
+  // proprio + PPI 27 no banco dele). Sem isto a IRQ fica aberta e o tick nao chega
+  // (medido: offcore_ticks_blocked=0 com enabled_cores=0xE).
+  GicInitCpuInterface(core_id);
+  // B2a.2: o timer virtual e' PER-CORE — arma o CNTV DESTE core (sem tocar os
+  // globais do BSP). Sem isto, o PPI 27 do secundario nunca dispara.
+  TimerArmThisCore(1000);
   g_smp_irq_enabled_cores = g_smp_irq_enabled_cores | (1 << core_id);
   __dmb_ish();
   __irq_enable();                            // MSR DAIFClr, #2 (builtin do JIT)

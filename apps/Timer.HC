@@ -101,8 +101,22 @@ U64 TimerGetUptimeSec() {
 
 // P3.4: arm the EL1 virtual timer. QEMU virt routes it to PPI 27
 // (HalGetTimerIrq). CNTV_TVAL_EL0 auto-loads CNTV_CVAL_EL0 = CNTVCT + TVAL.
-U0 TimerArm(I64 hz) {
+// B2a.2 (ONDA 3) — arma o CNTV DESTE core sem tocar os globais do timer.
+// O timer virtual (CNTV_*) e' PER-CORE: cada core tem o seu TVAL/CVAL/TICK. O BSP
+// arma o dele em KernelInit.HC:188 (TimerArm). Os secundarios so' tomam o tick se
+// armarem o PROPRIO — e isso NAO pode passar por TimerArm(), que escreveria nos
+// globais compartilhados (interval_ticks, next_deadline) e corromperia o BSP.
+U0 TimerArmThisCore(I64 hz) {
   U64 frq = TimerQueryHwFreq();
+  U64 interval = (hz > 0) ? (frq / hz) : 0;
+  if (interval == 0) interval = g_timer.interval_ticks;   // usa o do BSP (ja' armado)
+  if (interval == 0) interval = frq / 1000;
+  if (interval == 0) interval = 1;
+  __msr_cntv_tval(interval);
+  __msr_cntv_ctl(1);   // ENABLE=1, IMASK=0 — habilita o tick deste core
+}
+
+U0 TimerArm(I64 hz) {  U64 frq = TimerQueryHwFreq();
   if (hz > 0) {
     U64 interval = frq / hz;
     if (interval == 0) interval = 1;
