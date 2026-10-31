@@ -44,6 +44,16 @@
 U64 g_gic_version;
 U64 g_gicr_base;
 
+// B2a.1 (ONDA 3) — interlock de core no funil de IRQ. DECISAO PURA, separada do
+// hardware para ser testavel sem timer/mpidr (mesma licao do B11: sonda que
+// depende de hardware com observador concorrente e' flaky por construcao).
+// So' o core 0 entrega o frame ao escalonador enquanto nao houver run-queues.
+I64 g_gic_offcore_tick_blocks = 0;   // ticks de secundarios que NAO foram ao Sched
+I64 GicShouldScheduleCore(U32 core_id) {
+  if (core_id == 0) return 1;
+  return 0;
+}
+
 class CIrqEntry {
   U64 handler_fn;
   U64 data;
@@ -363,7 +373,19 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
   // P3.5: only hand the frame to the scheduler once it exists (g_sched_ready is
   // set by SchedInit). A firmware-armed timer IRQ during boot must not call the
   // not-yet-defined SchedOnTick.
-  if (g_sched_ready) return SchedOnTick(trap_frame);
+  //
+  // B2a.1 (ONDA 3) — INTERLOCK DE CORE: o escalonador (Sched.HC) NAO tem spinlock
+  // nenhum (0 smp_spin_lock contra 3 no KHeap) e escreve g_sched_current / cur->sp
+  // / a lista circular sem exclusao. Se DOIS cores chegarem aqui, escolhem o mesmo
+  // "best" e a mesma task roda em dois cores -> corrupcao. Enquanto nao houver
+  // run-queues por core, SOMENTE o core 0 (BSP) pode entregar o frame ao
+  // escalonador. Secundarios devolvem o frame intocado (a IRQ foi reconhecida e
+  // o EOI ja' foi dado acima — nada vaza). Le-se o MPIDR direto: Smp.HC compila
+  // DEPOIS de Gic.HC (KernelInit.HC), entao SmpGetCoreId() nao existe aqui.
+  if (g_sched_ready) {
+    if (GicShouldScheduleCore(__mrs_mpidr() & 3)) return SchedOnTick(trap_frame);
+    g_gic_offcore_tick_blocks = g_gic_offcore_tick_blocks + 1;
+  }
   return trap_frame;
 }
 

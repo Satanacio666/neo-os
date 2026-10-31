@@ -1613,6 +1613,12 @@ U0 SelfTestFallbacks() {
     // software -> exige deteccao; e prova que o estado coerente NAO da falso positivo.
     // Tambem confirma que a sonda nao deixa g_timer.system_ticks alterado.
     SelfTestCompare("b11_timer_drift_detected", TimerTestDrift(), 1);
+    // B2a.1 (ONDA 3): interlock de core. Testa a DECISAO PURA — so' o core 0
+    // entrega o frame ao escalonador; secundarios (1,2,3) NAO. Enquanto o
+    // Sched.HC nao tiver lock/run-queues, deixar 2 cores no SchedOnTick corrompe.
+    SelfTestCompare("b2a1_core0_schedules", GicShouldScheduleCore(0), 1);
+    SelfTestCompare("b2a1_core1_blocked", GicShouldScheduleCore(1), 0);
+    SelfTestCompare("b2a1_core3_blocked", GicShouldScheduleCore(3), 0);
 }
 
 U0 SelfTestRun() {
