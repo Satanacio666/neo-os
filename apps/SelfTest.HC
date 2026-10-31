@@ -1645,6 +1645,17 @@ U0 SelfTestFallbacks() {
     if (g_smp_irq_enable != 0) {
         SelfTestCompare("b2a2_tick_reaches_secondaries", (g_gic_offcore_tick_blocks > 0) ? 1 : 0, 1);
     }
+    // B2b (ONDA 3): afinidade suave. Testa a DECISAO PURA (SchedAffinityAllowsMask)
+    // — recebe a mask crua porque SelfTest compila antes de Sched (nao ve' CTask).
+    // Sem hardware, sem escalonador: puramente a regra do bit.
+    SelfTestCompare("b2b_aff_denies_core0", SchedAffinityAllowsMask(0x02, 0), 0);
+    SelfTestCompare("b2b_aff_allows_core1", SchedAffinityAllowsMask(0x02, 1), 1);
+    SelfTestCompare("b2b_aff_denies_core3", SchedAffinityAllowsMask(0x02, 3), 0);
+    SelfTestCompare("b2b_aff_core3_ok", SchedAffinityAllowsMask(0x08, 3), 1);
+    SelfTestCompare("b2b_aff_open_core0", SchedAffinityAllowsMask(0, 0), 1);
+    SelfTestCompare("b2b_aff_open_core2", SchedAffinityAllowsMask(0, 2), 1);
+    SelfTestCompare("b2b_aff_both", SchedAffinityAllowsMask(0x09, 3), 1);
+    SelfTestCompare("b2b_aff_both2", SchedAffinityAllowsMask(0x09, 1), 0);
 }
 
 U0 SelfTestRun() {

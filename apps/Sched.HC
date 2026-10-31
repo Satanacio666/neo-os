@@ -60,11 +60,52 @@ U64 g_stack_canary_violations = 0;
 
 // Pick the highest-priority READY task other than `cur` (round-robin within a
 // band). Walks from g_sched_head so a removed (dead) `cur` cannot loop forever.
+// B2b (ONDA 3) — afinidade SUAVE. DECISAO PURA (testavel sem hardware, licao do
+// B11): uma task e' ELEGIVEL no core atual se o bit do core esta' no seu
+// affinity_mask. mask==0 significa "sem restricao" (qualquer core).
+// Recebe a MASK (nao o CTask*) porque SelfTest.HC compila ANTES de Sched.HC e
+// nao enxerga o tipo CTask (mesma razao do B5 usar endereco cru).
+I64 SchedAffinityAllowsMask(U32 mask, U32 core_id) {
+  if (mask == 0) return 1;
+  return ((mask >> core_id) & 1) != 0;
+}
+I64 SchedAffinityAllows(CTask *t, U32 core_id) {
+  if (!t) return 0;
+  return SchedAffinityAllowsMask(t->affinity_mask, core_id);
+}
+
+// B2b: escolhe a proxima task. Em DUAS passadas:
+//   1. passada ESTRITA: so' tasks cujo affinity_mask contem o core atual;
+//   2. passada de RELAXAMENTO: se a estrita nao achou nada, aceita qualquer
+//      READY (senao uma task presa a um core que ela nao roda ficaria STARVADA —
+//      ex.: o Watchdog tem mask=0x02, e se o core 1 nao escalar ninguem, ele
+//      sumiria em silencio). Cada relaxamento e' CONTADO em
+//      g_sched_affinity_relaxed, para o sintoma ser visivel.
+I64 g_sched_affinity_relaxed = 0;
+// B2b: troca forcada porque a task ATUAL nao pertencia a este core (afinidade).
+I64 g_sched_affinity_moves = 0;
 CTask* SchedPickNext(CTask *cur) {
+  U32 me = (U32)(__mrs_mpidr() & 3);
+  // Passada 1: estrita (respeita afinidade).
   CTask *best = 0;
   I64 best_prio = -1;
   CTask *c = g_sched_head;
   I64 guard = 0;
+  while (c && guard < 4096) {
+    if (c != cur && c->state == TASK_READY && SchedAffinityAllows(c, me)) {
+      if (!best || c->priority > best_prio) {
+        best = c;
+        best_prio = c->priority;
+      }
+    }
+    c = c->next;
+    guard++;
+    if (c == g_sched_head) break;
+  }
+  if (best) return best;
+  // Passada 2: relaxamento (contado) — nenhuma task afinizada neste core.
+  c = g_sched_head;
+  guard = 0;
   while (c && guard < 4096) {
     if (c != cur && c->state == TASK_READY) {
       if (!best || c->priority > best_prio) {
@@ -76,6 +117,7 @@ CTask* SchedPickNext(CTask *cur) {
     guard++;
     if (c == g_sched_head) break;
   }
+  if (best) g_sched_affinity_relaxed = g_sched_affinity_relaxed + 1;
   return best;
 }
 
@@ -336,6 +378,17 @@ U64 SchedOnTick(U64 sp) {
     }
     cur->quantum_remaining = cur->quantum_ticks;
     return sp;
+  }
+
+  // B2b (ONDA 3) — afinidade: se a task ATUAL nao pode rodar neste core (o
+  // affinity_mask dela nao inclui este core), ela nao deve continuar aqui. Marca
+  // READY e deixa o SchedPickNext escolher outra (a passada estrita vai preferir
+  // uma task feita para este core). Sem isto, uma task rodaria no core errado.
+  U32 me_now = (U32)(__mrs_mpidr() & 3);
+  if (!SchedAffinityAllows(cur, me_now)) {
+    cur->state = TASK_READY;
+    cur->quantum_remaining = 0;
+    g_sched_affinity_moves = g_sched_affinity_moves + 1;
   }
 
   CTask *best = SchedPickNext(cur);
