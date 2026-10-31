@@ -447,6 +447,7 @@ U0 WatchdogTick(U64 arg) {
     while (1) {
         U64 wd_t0 = __mrs_cntvct();
         WatchdogStallCheck(); // B9: observador (a) — starvation entre passadas
+        TimerDriftCheck();    // B11: observador periodico do drift timer sw vs hw
         // Registra o comando 'health' de forma IDEMPOTENTE: o ShellInit()
         // (rodado em DolDocShellEventLoop, DEPOIS do WatchdogStart) zera
         // g_shell_cmd_count e reconstroi a tabela — registrar uma vez so

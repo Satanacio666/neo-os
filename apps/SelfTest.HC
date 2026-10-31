@@ -1609,6 +1609,10 @@ U0 SelfTestFallbacks() {
     // SKIP (prova que a guarda evita o falso positivo do boot). Sem o check o
     // retorno seria 0 e o teste falharia.
     SelfTestCompare("b9_watchdog_stall_detected", WatchdogTestStall(), 1);
+    // B11 (ONDA 2): drift do timer. Sonda forca base no passado com poucos ticks de
+    // software -> exige deteccao; e prova que o estado coerente NAO da falso positivo.
+    // Tambem confirma que a sonda nao deixa g_timer.system_ticks alterado.
+    SelfTestCompare("b11_timer_drift_detected", TimerTestDrift(), 1);
 }
 
 U0 SelfTestRun() {

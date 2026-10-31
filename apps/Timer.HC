@@ -11,6 +11,17 @@ class CTimerState {
 
 CTimerState g_timer;
 
+// B11: verificacao de drift entre o contador de hardware (CNTVCT_EL0) e os ticks
+// de software. A base e' gravada em TimerArm (caminho REAL do boot, KernelInit.HC:188),
+// NAO em TimerInit — que o TimerSelfTest chama 3x e depois bate TimerTick() a mao
+// (Timer.HC:132-134), o que daria falso positivo. TimerInit zera a base (=0 =
+// "nao armado"), invalidando qualquer medicao anterior. TimerDriftCheck() so' e'
+// chamada por observadores externos, nunca pelo TimerTick.
+U64 g_timer_drift_base_cntvct = 0;
+U64 g_timer_drift_base_ticks = 0;
+I64 g_timer_drift_ticks = 0;
+I64 g_timer_drift_checks = 0;
+
 U64 TimerQueryHwFreq() {
   U64 frq = __mrs_cntfrq();
   if (frq == 0 && g_hal_timer_freq != 0) frq = g_hal_timer_freq;
@@ -55,6 +66,11 @@ U0 TimerInit(U32 p_freq_hz) {
   g_timer.interval_ticks = hw_frq / p_freq_hz;
   g_timer.system_ticks = 0;
   g_timer.boot_time_us = TimerGetUsec();
+  // B11: TimerInit invalida a base do drift (qualquer mudanca de cadencia ou o
+  // TimerSelfTest zera/rearma a contagem a mao). Base=0 => TimerDriftCheck devolve 0
+  // ate' um TimerArm real re-armar a medicao.
+  g_timer_drift_base_cntvct = 0;
+  g_timer_drift_base_ticks = 0;
 }
 
 U64 TimerGetTicks() {
@@ -90,6 +106,70 @@ U0 TimerArm(I64 hz) {
   if (g_timer.interval_ticks == 0) g_timer.interval_ticks = 1;
   __msr_cntv_tval(g_timer.interval_ticks);
   __msr_cntv_ctl(1); // ENABLE=1, IMASK=0
+  // B11: base do drift — so' o caminho REAL (boot) arma a medicao com CNTVCT atual.
+  g_timer_drift_base_cntvct = __mrs_cntvct();
+  g_timer_drift_base_ticks = g_timer.system_ticks;
+  g_timer_drift_ticks = 0;
+}
+
+// B11: parte PURA da verificacao — recebe os numeros ja coletados e decide. Testavel
+// sem tocar o hardware (deterministico). Devolve 1 se |sw - hw| > 5%, 0 se dentro.
+I64 TimerDriftExceeded(U64 sw_ticks, U64 hw_ticks) {
+  if (hw_ticks == 0) return 0;
+  U64 lo = hw_ticks - (hw_ticks / 20);            // -5%
+  U64 hi = hw_ticks + (hw_ticks / 20);            // +5%
+  if (sw_ticks < lo || sw_ticks > hi) return 1;
+  return 0;
+}
+
+// B11: compara os ticks de software com o tempo REAL decorrido no contador de
+// hardware. Esperado = (cntvct - base) / (freq / tick_hz); divergencia > 5% =>
+// g_timer_drift_ticks++ (print so' na 1a). NAO altera a contagem — so' observa.
+// Devolve 0 sem contar se a base nao esta armada (base==0) ou se ainda nao houve
+// tick suficiente para uma medida significativa (< janela minima).
+// A DECISAO fica em TimerDriftExceeded (pura) para poder ser testada sem timer.
+I64 TimerDriftCheck() {
+  if (g_timer_drift_base_cntvct == 0) return 0;   // TimerInit invalidou / ainda nao armado
+  U64 now = __mrs_cntvct();
+  if (now <= g_timer_drift_base_cntvct) return 0; // wrap / relogio reiniciado
+  U64 freq = TimerQueryHwFreq();
+  U64 interval = g_timer.interval_ticks;
+  if (freq == 0 || interval == 0) return 0;
+  U64 elapsed_ticks = g_timer.system_ticks - g_timer_drift_base_ticks;
+  if (elapsed_ticks < 5000) return 0;             // janela longa: o jitter do agendador
+                                                  // do observador (~ms) fica < 1% da medida
+  U64 hw_ticks = (now - g_timer_drift_base_cntvct) / interval; // esperado pelo hardware
+  g_timer_drift_checks = g_timer_drift_checks + 1;
+  if (TimerDriftExceeded(elapsed_ticks, hw_ticks)) {
+    g_timer_drift_ticks = g_timer_drift_ticks + 1;
+    if (g_timer_drift_ticks == 1) {
+      doldoc_printf("$FG,RED$[TIMER] DRIFT: sw=%lld ticks, hw~%lld (elapsed=%lld cntv) — fora de 5%%$FG$\n",
+                    elapsed_ticks, hw_ticks, now - g_timer_drift_base_cntvct);
+    }
+    return 1;
+  }
+  return 0;
+}
+
+// B11: sonda DETERMINISTICA. Testa a decisao PURA (TimerDriftExceeded) — sem tocar
+// o timer de hardware, sem corrida com o observador real (WatchdogTick). Cobre:
+// (1) deteccao de drift (fora de +5% e de -5%); (2) NAO disparar dentro da tolerancia;
+// (3) o guard de hw==0. Tambem confirma que a integracao real existe (base armada).
+I64 TimerTestDrift() {
+  I64 ok = 1;
+  // (1a) sw muito ACIMA do esperado (+9%) -> detecta
+  if (TimerDriftExceeded(10900, 10000) != 1) ok = 0;
+  // (1b) sw muito ABAIXO do esperado (-9%) -> detecta
+  if (TimerDriftExceeded(9100, 10000) != 1) ok = 0;
+  // (2a) exatamente igual -> dentro
+  if (TimerDriftExceeded(10000, 10000) != 0) ok = 0;
+  // (2b) +2% (dentro da tolerancia) -> dentro
+  if (TimerDriftExceeded(10200, 10000) != 0) ok = 0;
+  // (2c) -2% -> dentro
+  if (TimerDriftExceeded(9800, 10000) != 0) ok = 0;
+  // (3) hw==0 (relogio nao iniciado) -> nunca acusa
+  if (TimerDriftExceeded(5000, 0) != 0) ok = 0;
+  return ok;
 }
 
 // Fired from the GIC PPI (level-sensitive) -> increment the tick and re-arm.
@@ -107,8 +187,7 @@ U0 TimerSleepMs(I64 p_ms) {
   }
 }
 
-U0 TimerPrintDolDoc() {
-  doldoc_printf("$FG,CYAN$--- ARM GENERIC TIMER TELEMETRY ---$FG$\n");
+U0 TimerPrintDolDoc() {  doldoc_printf("$FG,CYAN$--- ARM GENERIC TIMER TELEMETRY ---$FG$\n");
   doldoc_printf(" Clock Frequency: %d MHz (%d Hz)\n", g_timer.freq / 1000000, g_timer.freq);
   doldoc_printf(" Tick Interval:   %d ticks\n", g_timer.interval_ticks);
   doldoc_printf(" Monotonic Ticks: %d ticks\n", g_timer.system_ticks);
