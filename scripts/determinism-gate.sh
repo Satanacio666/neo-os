@@ -20,7 +20,12 @@ hash_for_smp() {
         sleep 1
     done
     python3 "$ROOT/scripts/neo_uart.py" --sentinel "$SENTINEL" --timeout 120 'selftest' >/dev/null 2>&1 || true
-    grep -a 'RENDER: ' "$LOG" 2>/dev/null | tail -1 | sed -E 's/.*golden=(0x[0-9A-Fa-f]+).*/\1/'
+    # SO a ultima linha RENDER: PASS conta. Uma linha FAIL imprime a CONSTANTE golden
+    # (SelfTest.HC:940 — "golden=0x%llX" com g_render_golden), nao o hash real; extrai-la
+    # faria os dois boots "concordarem" na constante e o gate daria PASS mesmo com o
+    # render quebrado nos dois. Se nenhum boot renderizar PASS, sai vazio -> FAIL.
+    grep -a 'RENDER: ' "$LOG" 2>/dev/null | grep -a 'PASS' | tail -1 \
+        | sed -E 's/.*golden=(0x[0-9A-Fa-f]+).*/\1/'
 }
 
 echo "== determinism: 1 core vs ${SMP_N} cores =="
