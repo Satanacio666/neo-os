@@ -1663,6 +1663,21 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("k11_add_then_shift_u64", ((I64)0x100000000 + (U32)7) >> 8, 0x1000000);
     SelfTestCompare("k11_mul_then_shift", (((I64)0x100000000 * (U32)2) >> 8), 0x2000000);
     SelfTestCompare("k11_and_then_shift", (((I64)0x100000000 | (U32)0xF) >> 8), 0x1000000);
+    // D2 (K1.1 completo, HcParseUnary): `-` e `!` PROMOVEM o operando estreito para
+    // I64 (podem usar o bit 63) -> limpam a flag. Sem isto, `-u32_var >> 3` viraria
+    // LSRV W e descartaria o sinal em X0.
+    // D2 (K1.1 completo, HcParseUnary): `-` e `!` PROMOVEM o operando estreito para
+    // I64 (podem usar o bit 63) -> limpam a flag. Sem isto, `-u32_var >> 3` viraria
+    // LSRV W e descartaria o sinal em X0. Valores esperados computados em 64 bits:
+    //   !!(U32)1 = 1  ->  0 - 1 = -1  ->  -1 >> 1 = aritmetico = -1
+    SelfTestCompare("d2_neg_then_shift", (((I64)0 - (U32)8) >> 1), -4);
+    SelfTestCompare("d2_not_then_shift", (((I64)0 - ((I64)!!(U32)1)) >> 1), -1);
+    // `~` NAO limpa (por desenho): `(~u32_v) >> 4` mantem a semantica de ~u32 em 32b.
+    // ~0xFF = 0xFFFFFF00 (32 bits); >>4 = 0x0FFFFFF0.
+    {
+        U32 u = 0x000000FF;
+        SelfTestCompare("d2_tilde_then_shift", ((~u) >> 4), 0x0FFFFFF0);
+    }
 }
 
 U0 SelfTestRun() {

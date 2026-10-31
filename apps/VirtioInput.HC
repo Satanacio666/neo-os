@@ -212,6 +212,7 @@ I64 g_vinput_ev_count = 0;    // total de eventos recebidos
 I64 g_vinput_abs_count = 0;   // EV_ABS (tablet: coordenadas absolutas)
 I64 g_vinput_key_count = 0;   // EV_KEY (teclas/botoes)
 I64 g_vinput_rel_count = 0;   // EV_REL (mouse relativo)
+I64 g_vinput_dev_used_idx[4] = {0,0,0,0};  // MOUSE-DIAG: used->idx publicado pelo QEMU
 
 // BLOCO 2: modificadores do duto unificado.
 I64 VirtioInputMods() {
@@ -418,8 +419,15 @@ I64 VirtioInputScanAndInit(I64 screen_w, I64 screen_h) {
 
           hal_flush_cache(aligned, 16384);
 
+          // D1 (MOUSE) — ORDEM E BARREIRA. O device IGNORA um QUEUE_NOTIFY que
+          // chegue antes de ele ver DRIVER_OK. Sem um __dsb_sy() entre os dois, o
+          // write MMIO do NOTIFY pode alcancar o device primeiro e a fila fica sem
+          // buffers consumiveis para sempre -> g_vinput_ev_count = 0.
+          // (Mesmo defeito que foi encontrado e corrigido no VirtioBlk.)
           VirtioMmioWrite32(base, VIRTIO_MMIO_STATUS, VirtioMmioRead32(base, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
+          __dsb_sy();                                   // DRIVER_OK visivel ANTES do notify
           VirtioMmioWrite32(base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+          __dsb_sy();                                   // notify entregue antes de seguir
           dev->active = 1;
           g_num_input_devs++;
           doldoc_printf("[VIRTIO-INPUT] Discovered & Activated Device on MMIO Slot #%d (Base 0x%08X)\n", vi_slot, base);
@@ -457,6 +465,11 @@ U0 VirtioInputPoll() {
     CVirtioInputDev *dev = &g_virtio_input_devs[vi_d];
     if (dev->active && dev->vq_used != 0) {
       CVringUsed *vused = dev->vq_used;
+      // MOUSE-DIAG (observabilidade): espelha o idx que o QEMU publicou na used
+      // ring. Se ficar em 0 depois de mover o mouse, o DEVICE nao esta' consumindo
+      // a nossa avail ring (problema de setup/barreira). Se subir mas o
+      // ev_count continuar 0, o problema e' no CONSUMO/parse.
+      g_vinput_dev_used_idx[vi_d] = vused->idx;
       CVringAvail *vavail = dev->vq_avail;
       CVirtioInputEvent *ev_buf = dev->event_buf;
       hal_flush_cache(vused, 64);

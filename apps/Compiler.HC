@@ -2630,6 +2630,10 @@ U0 HcParseUnary() {
         HcParseUnary();
         if (g_hc_expr_float) HcEmit(0x1E614000); // fneg d0, d0
         else HcEmit(0xCB0003E0);                 // neg x0, x0
+        // D2 (K1.1 completo): a negacao PROMOVE um operando estreito para I64
+        // (o resultado pode ter o bit 63 em uso). Se a flag ficasse marcada, um
+        // `-u32_var >> 3` viraria LSRV W e DESCARTARIA o sinal em X0. Zerar.
+        g_hc_last_prim_u32 = 0;
         return;
     }
     if (g_hc_tok == TOK_EXCLAM) {
@@ -2642,12 +2646,18 @@ U0 HcParseUnary() {
             HcEmit(0xF100001F); // cmp x0, #0
         }
         HcEmit(0x9A9F17E0); // cset x0, eq
+        // D2: `!x` produz booleano 0/1 (I64), nao a primaria. Zerar a flag.
+        g_hc_last_prim_u32 = 0;
         return;
     }
     if (g_hc_tok == TOK_TILDE) {
         HcLexNext();
         HcParseUnary();
         HcEmit(0xAA2003E0); // mvn x0, x0
+        // D2 (K1.1): ~ NAO zera a flag, DE PROPOSITO. `mvn x0,x0` inverte os 64 bits
+        // (bits 32..63 viram 1111...1); um `LSR W0` depois ignora esses bits altos e
+        // zera o destino — o que reproduz EXATAMENTE a semantica de ~u32 em 32 bits.
+        // Zerar aqui forcaria um LSR X e mudaria o resultado. MANTIDO.
         return;
     }
     if (g_hc_tok == TOK_AMPERSAND) {

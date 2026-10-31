@@ -63,15 +63,35 @@ U0 KeyboardInit() {
     doldoc_print("[KEYBOARD.HC] Sovereign Ring 0 Keyboard Driver Initialized\n");
 }
 
+// D3 (ONDA 4) — UART SERIALIZADA PELO LOCK QUE JA' EXISTE.
+//
+// PROBLEMA MEDIDO (31/10): os 3 cores secundarios chamavam doldoc_printf e o
+// UART NAO tinha lock -> o log saia interleavado:
+//   "[SMP][SM core 1: IRQ local P] core 2: IRQ loca[SM[KERNEL-INIT] Smp.HC..."
+// O sintoma foi removido parando de imprimir de secundario, mas a RAIZ continuava.
+//
+// POR QUE AQUI (e nao no boot/main.c): em RUNTIME quem imprime e' o HolyC. O
+// boot/main.c so' imprime na fase de BOOT (compilacao dos modulos), quando ha' UM
+// core e nenhuma concorrencia. Colocar lock la' foi erro meu — quebrou o boot com
+// um TIER-0 fault. O lock pertence ao caminho de RUNTIME, aqui.
+//
+// SEM armadilha de self-deadlock: `smp_spin_lock` e' o mesmo primitivo do KHeap
+// (ldaxr/stlxr + dmb + wfe). Se um handler de IRQ imprimisse com o lock preso,
+// haveria deadlock — mas nenhum handler imprime (verificado), e o panic do kernel
+// e' um caminho separado.
+U32 g_uart_lock = 0;
+
 U0 UartPutChar(U8 c) {
     I64 uart_base = hal_get_uart_base();
     if (!uart_base) return;
 
+    smp_spin_lock(&g_uart_lock);
     I64 kb_to = 10000;
     while ((__mmio_r32(uart_base + 0x18) & PL011_FR_TXFF) && kb_to > 0) {
         kb_to--;
     }
     __mmio_w32(uart_base + 0x00, c);
+    smp_spin_unlock(&g_uart_lock);
 }
 
 U0 UartPutString(U8 *s) {

@@ -38,7 +38,12 @@ QEMU_ARGS=(
   -m "${NEO_GUEST_MB:-256}"
   -bios "$QEMU_BIOS"
   -device ramfb
-  -device virtio-gpu-device,xres=1024,yres=768
+  # VirtIO-GPU REMOVIDO (31/10): sem acesso a virtio neste ambiente de teste,
+  # o caminho oficial de apresentacao e' o ramfb (escrita direta na VRAM), que
+  # ja' era o UNICO que funcionava de fato (nao havia [VIRTIO-GPU] no log).
+  # apps/GfxDevice.HC segue no codigo como implementacao DORMENTE (documentada),
+  # a ser reativada quando houver ambiente com virtio. Reativar = descomentar.
+  #-device virtio-gpu-device,xres=1024,yres=768
   -device virtio-keyboard-device
   -device virtio-tablet-device
   -device usb-ehci

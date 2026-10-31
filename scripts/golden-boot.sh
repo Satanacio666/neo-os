@@ -34,6 +34,8 @@ check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
 check "C JIT errors"        0 "$(count '\[JIT\] Error')"
 check "unresolved forward refs" 0 "$(count 'unresolved reference')"
+
+# ---------------------------------------------------------------------------
 # P7.0: the peephole optimizer must have run on every module Compiler.HC compiles.
 pline="$(grep -a '\[PEEPHOLE\] runs=' "$LOG" 2>/dev/null | tail -1)"
 pruns="$(printf '%s' "$pline" | sed -n 's/.*runs=\([0-9]*\).*/\1/p')"
@@ -345,6 +347,46 @@ else
         echo "  [FAIL] heap integrity: ${hpline:-<none>} (want HEAPINT: PASS)"
         fail=1
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# D5 (ONDA 4) — INVARIANTES DO SISTEMA IMUNOLOGICO (VERIFICADAS APOS o selftest).
+# Antes desta adicao, uma regressao que acendesse o vigia (SYMBOL FAULT) ou
+# corrompesse uma pilha (CANARY VIOLATION) PASSAVA em silencio: o gate nao olhava
+# essas linhas. O selftest precisa ter RODADO antes, porque OVERFLOW/ERRCHAN/
+# HEAPINT sao impressos por ele (colocar isto antes do selftest dava falso FAIL).
+#
+# CUIDADO MEDIDO: alguns destes sintomas sao PRODUZIDOS DE PROPOSITO pelos testes
+# sinteticos (b3_healthlog_drop_counted, b9_watchdog_stall_detected). Contar a
+# ocorrencia crua daria FALSO FAIL. A regra correta: contamos o EXCESSO sobre o
+# Esperado pelo teste sintetico.
+# ---------------------------------------------------------------------------
+check "OVERFLOW invariant present"  1 "$(count 'OVERFLOW: PASS')"
+check "ERRCHAN invariant present"   1 "$(count 'ERRCHAN: PASS')"
+check "HEAPINT invariant present"   1 "$(count 'HEAPINT: PASS')"
+
+# SYMBOL FAULT nao tem teste sintetico que o produza -> qualquer ocorrencia e'
+# anomala (foi assim que o REPL do usuario acendeu 17 x num boot).
+check "no SYMBOL FAULT"          0 "$(count '\[WATCHDOG\] SYMBOL FAULT')"
+# CANARY VIOLATION idem (o B5 testa o CICLO, nao imprime a violacao no boot normal).
+check "no CANARY VIOLATION"      0 "$(count 'CANARY VIOLATION')"
+# TIMER DRIFT: o B11 testa a funcao PURA e nao imprime o alerta -> 0 esperado.
+check "no TIMER DRIFT"           0 "$(count '\[TIMER\] DRIFT')"
+
+# Sintomas com teste sintetico: o numero observado nao pode EXCEDER o esperado.
+hlog="$(count '\[HEALTHLOG\] DROP')"
+b3="$(count 'b3_healthlog_drop_counted')"
+if [ "${hlog:-0}" -le "${b3:-0}" ]; then
+    echo "  [PASS] HEALTHLOG DROP dentro do esperado ($hlog <= $b3, teste B3)"
+else
+    echo "  [FAIL] HEALTHLOG DROP anormal: $hlog ocorrencias, so' $b3 do teste B3"; fail=1
+fi
+wstall="$(count '\[WATCHDOG\] STALLED')"
+b9="$(count 'b9_watchdog_stall_detected')"
+if [ "${wstall:-0}" -le "${b9:-0}" ]; then
+    echo "  [PASS] WATCHDOG STALLED dentro do esperado ($wstall <= $b9, teste B9)"
+else
+    echo "  [FAIL] WATCHDOG STALLED anormal: $wstall ocorrencias, so' $b9 do teste B9"; fail=1
 fi
 
 echo "== .HC -> C runtime census =="
