@@ -50,6 +50,9 @@ I64 g_selftest_known_total = 0;
 U8  g_halcache_buf[256];   // P2.1.5: static buffer for the HAL cache-coherency check
 I64 g_fs_rt_size = 0;      // P2.5: out-size for the filesystem round-trip check
 I64 g_selftest_done = 0;   // guard: the corpus is a once-per-boot regression check
+// B6 (ONDA 2): fontes sinteticas do teste de profundidade do parser.
+U8  g_b6_deep_src[512];
+U8  g_b6_shallow_src[512];
 I64 g_shade_demo_keep = 0; // P4.5: leave the shading demo frame on screen (visual check)
 I64 g_parity_ok = 0;
 I64 g_parity_total = 0;
@@ -155,6 +158,42 @@ U0 SelfTestLexGuards() {
     CompilerCompileAndRun("I64 a = 1;\nI64 b = 2;\nI64 c = 123abc;");
     SelfTestCompare("f24_multiline_err_line", g_hc_first_err_line, 3);
     SelfTestCompare("f24_multiline_err_col",  g_hc_first_err_col,  9);
+
+    // B6 (ONDA 2) — limite de recursao do parser. Testa os DOIS lados do
+    // limiar (HC_PARSE_DEPTH_MAX = 200): 250 parenteses aninhados TEM de ser
+    // rejeitados (-1); 100 parenteses (abaixo do teto) TEM de compilar e dar 7.
+    // Sem o contador, o caso de 250 recursava ~250 niveis e o parser SO' parava
+    // por morte da pilha (medido: sem o fix, este caso derrubava o boot inteiro
+    // — ver controle negativo no relatorio). Sonda o caminho de SUCESSO tambem
+    // para provar que a guarda nao regrediu expressoes legitimas.
+    I64 b6_i = 0;
+    while (b6_i < 250) {
+        g_b6_deep_src[b6_i] = '(';
+        b6_i = b6_i + 1;
+    }
+    g_b6_deep_src[250] = '1';
+    b6_i = 0;
+    while (b6_i < 250) {
+        g_b6_deep_src[251 + b6_i] = ')';
+        b6_i = b6_i + 1;
+    }
+    g_b6_deep_src[501] = ';';
+    g_b6_deep_src[502] = 0;
+    b6_i = 0;
+    while (b6_i < 150) {
+        g_b6_shallow_src[b6_i] = '(';
+        b6_i = b6_i + 1;
+    }
+    g_b6_shallow_src[150] = '7';
+    b6_i = 0;
+    while (b6_i < 150) {
+        g_b6_shallow_src[151 + b6_i] = ')';
+        b6_i = b6_i + 1;
+    }
+    g_b6_shallow_src[301] = ';';
+    g_b6_shallow_src[302] = 0;
+    SelfTestCompare("b6_parse_depth_reject_250", CompilerCompileAndRun(g_b6_deep_src), -1);
+    SelfTestCompare("b6_parse_depth_ok_150", CompilerCompileAndRun(g_b6_shallow_src), 7);
 }
 
 // FASE 2.5b — RNG: golden do 1o valor (prova o Xorshift32 exato) + 1000 amostras

@@ -333,6 +333,12 @@ U64   g_fn_parse_expr;
 U64   g_fn_parse_stmt;
 U64   g_hc_call_targets[32];
 I64   g_hc_call_depth;
+// B6 (ONDA 2): profundidade de recursao do parser de EXPRESSOES. O parser
+// nao tinha contador (g_hc_call_depth acima e' morto: 0 em HcReset) — um
+// aninhamento patologico (\( x N) consumia pilha ate' o Data Abort. Zerada
+// em HcReset (por unidade). Limite literal puro (Regra 2).
+#define HC_PARSE_DEPTH_MAX 200
+I64   g_hc_parse_depth;
 #define HC_OP_STACK 4096
 I64   g_hc_op_stack[HC_OP_STACK];
 I64   g_hc_op_sp;
@@ -620,6 +626,7 @@ U0 HcReset() {
     g_hc_local_count = 0;
     g_hc_frame_offset = 16;
     g_hc_call_depth = 0;
+    g_hc_parse_depth = 0; // B6: profundidade de recursao do parser
     g_hc_op_sp = 0;
     g_hc_loop_depth = 0;
     g_hc_epi_count = 0;
@@ -3040,6 +3047,19 @@ U0 HcEmitIntrinsic(U8 *name) {
 }
 
 U0 HcParseExpr() {
+    // B6 (ONDA 2): limite de recursao. HcParsePrimary(TOK_LPAREN) -> HcParseExpr
+    // e' o ciclo de aninhamento; sem esta guarda, `((( ...` consome a pilha de
+    // 4 MB ate' o Data Abort (falha obscura, longe da causa). Falha ALTO:
+    // HcRaiseError + contador observavel + print na 1a ocorrencia.
+    g_hc_parse_depth = g_hc_parse_depth + 1;
+    if (g_hc_parse_depth > HC_PARSE_DEPTH_MAX) {
+        g_hc_parse_depth = g_hc_parse_depth - 1;
+        HcRaiseError(HC_ERR_SYNTAX_EXPR);
+        if (g_hc_err_count == 1)
+            doldoc_printf("$FG,RED$[COMPILER] PARSE DEPTH LIMIT: %lld niveis (max %lld) — expressao aninhada demais; unidade rejeitada$FG$\n",
+                          g_hc_parse_depth + 1, (I64)HC_PARSE_DEPTH_MAX);
+        return;
+    }
     HcParseLogOr();
     if (g_hc_tok == TOK_QUESTION) {
         HcLexNext(); // eat '?'
@@ -3055,6 +3075,7 @@ U0 HcParseExpr() {
         HcCallParseExpr();  // false_branch in x0
         HcBackpatchB(p_end, g_hc_code_len);
     }
+    g_hc_parse_depth = g_hc_parse_depth - 1;
 }
 
 // ------------------------------------------------------------------------------
