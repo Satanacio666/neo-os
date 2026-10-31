@@ -1,5 +1,21 @@
 // NeoOS Sovereign Pure HolyC AArch64 Exception Vector & BSOD Engine
 // Ring 0 Synchronous Trap Decoding, JIT Task Unwinding, and Royal Blue Panic Screen (0xFF002080)
+//
+// [B10-SPEL0] POR QUE O UNWIND C NAO RESTAURA sp_el0 EXPLICITAMENTE (nao era bug).
+// O campo f->sp_el0 (offset 264 do CTrapFrame) e' parte do ABI do trap frame, NAO
+// um valor que o handler C deva regravar. Quem o devolve ao hardware e' o
+// RESTORE_ALL em kernel/arch/aarch64/vectors.S: o SAVE_ALL le' o registrador com
+// `mrs x23, sp_el0` (vectors.S:27) e grava o par em `stp x22, x23, [sp, #16 * 16]`
+// (vectors.S:29) => offset 256 guarda SPSR_EL1 e offset 264 guarda SP_EL0. Na saida,
+// RESTORE_ALL recarrega o par em `ldp x22, x23, [sp, #16 * 16]` (vectors.S:71) e
+// faz `msr sp_el0, x23` (vectors.S:74). Ou seja: sp_el0 JA e' restaurado em toda
+// saida da excecao, antes do `add sp, sp, #784` / `eret`.
+// ExceptionsHandleSync() reescreve apenas f->elr_el1 e f->lr (redireciona o PC para
+// ShellRecover e o LR para DolDocShellEventLoop) — que e' exatamente o contrato de
+// um unwind: alterar o ponto de retorno, nao o estado da pilha de usuario. Como
+// sp_el0 e' integralmente de responsabilidade do RESTORE_ALL, toca'-lo aqui seria
+// redundante e arriscado (quebraria a simetria SAVE_ALL/RESTORE_ALL). Por isso NAO
+// se adiciona `f->sp_el0 = ...` neste arquivo.
 
 #define EC_UNDEF_INSN 0x00
 #define EC_SVC_TRAP   0x15
