@@ -1247,6 +1247,9 @@ U0 DolDocShellEventLoop() {
     doldoc_redraw();
     doldoc_swap_term();
     uart_puts("[SHELL.HC] DolDocShell active\n");
+    // P0.2: o boot TERMINOU. O watchdog de estagio sai de cena e o shell passa a
+    // ser o canal de vida (o vigia do core 1 continua a vigiar o runtime).
+    BootStageDone();
 
     g_shell_running = 1;
     I64 prev_mb = 0;

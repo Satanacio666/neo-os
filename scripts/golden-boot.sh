@@ -31,7 +31,9 @@ for i in $(seq 1 120); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && bre
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"
-check "all 34 subsystems"   1 "$(count 'ALL 34 HOLYC SUBSYSTEMS')"
+# P0.2: a frase tambem aparece como NOME DE FASE na timeline do BOOTSTAGE (uma
+# vez a mais). Conta-se a LINHA do boot ([KERNEL-INIT] prefixo), nao a repeticao.
+check "all 34 subsystems"   1 "$(count '\[KERNEL-INIT\] ✦ ALL 34 HOLYC SUBSYSTEMS')"
 check "exceptions"          0 "$(count 'Synchronous Exception')"
 check "undefined identifiers" 0 "$(count 'undefined identifier')"
 check "compiler internal errors" 0 "$(count 'COMPILER.HC\] internal error')"
@@ -374,6 +376,10 @@ check "PARITY 92/92 agree"         1 "$(count 'PARITY: 92/92')"
 # CAMADA 3 (IDEA-4): o funil unico Present() foi escolhido e anunciado. Sem esta
 # linha, um backend quebrado/nao-inicializado passava em silencio.
 check "PRESENT backend chosen"    1 "$(count '\[PRESENT\] backend=')"
+# P0.2 (low-level): o watchdog de estagio publicou a timeline do boot e nao
+# detectou travamento. Se o boot travar, a mensagem [BOOTSTAGE] BOOT LENTO diz
+# exatamente ONDE — e o gate falha por ela (nao por silencio).
+check "BOOTSTAGE timeline published" 1 "$(count '\[BOOTSTAGE\] timeline:')"
 check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
 # Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
 check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"

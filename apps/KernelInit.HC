@@ -22,8 +22,140 @@ I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 #define HC_MAX_DEFERRED  64
 #define HC_MAX_EPILOGUES 512
 
+// ============================================================================
+// BOOT STAGE WATCHDOG (P0.2) — "tela preta vira diagnostico"
+// ============================================================================
+// PROBLEMA: quando o boot trava (U-Boot/EL2, POCO sem serial, hang num modulo) o
+// unico sintoma e' SILENCIO. Sem isto, "nao bootou" nao diz ONDE.
+//
+// Duas granularidades, porque cada uma responde uma pergunta diferente:
+//   * FASE  (7 estagios)  -> "em que parte do boot parou?"  (timeline p/ perfil)
+//   * MODULO (38)         -> "QUAL .HC travou?"             (diagnostico fino)
+//
+// RESTRICAO DE ORDEM: KernelInit.HC e' o PRIMEIRO modulo compilado. NAO pode
+// referenciar simbolos tarde-bound (modulos que ainda nao existem) — resolveria
+// para o trap. Este bloco usa APENAS builtins intrinsecas (__mrs_cntvct/__mrs_cntfrq).
+//
+// DETERMINISMO: nao altera o caminho de desenho. Contadores e prints. O gate
+// continua exigindo 0xD28836F.
+
+#define BOOT_PHASE_MAX   10
+#define BOOT_NAME_MAX    28
+
+// ---- FASES (timeline) ----
+I64 g_boot_phase = 0;                  // fase atual (1..N)
+I64 g_boot_phase_total = 0;
+U64 g_boot_phase_vct[BOOT_PHASE_MAX];  // CNTVCT de entrada de cada fase
+U8  g_boot_phase_names[BOOT_PHASE_MAX * BOOT_NAME_MAX];   // buffer PLANO (sem 2D)
+
+// ---- MODULO CORRENTE (diagnostico fino) ----
+U8  g_boot_module_name[BOOT_NAME_MAX];  // ultimo modulo em compilacao
+U64 g_boot_module_vct = 0;              // quando ele comecou
+I64 g_boot_modules_done = 0;            // quantos ja' terminaram
+U64 g_boot_module_us_total = 0;         // soma dos tempos (perfil)
+
+// ---- ESTADO ----
+U64 g_boot_heartbeat_vct = 0;
+I64 g_boot_shell_ready = 0;        // 1 quando o shell ativa (boot terminou)
+I64 g_boot_watchdog_warned = 0;    // avisa UMA vez por modulo
+I64 g_boot_slow_stages = 0;        // quantos estouraram o limite
+
+U64 BootStageFreq() {
+    U64 f = __mrs_cntfrq();
+    return f == 0 ? 62500000 : f;
+}
+
+// Copia ate' BOOT_NAME_MAX-1 bytes (sem strlen de modulo).
+U0 BootStageCopy(U8 *dst, U8 *src) {
+    I64 k = 0;
+    while (src[k] != 0 && k < (BOOT_NAME_MAX - 1)) { dst[k] = src[k]; k = k + 1; }
+    dst[k] = 0;
+}
+
+// Publica uma FASE (chamado por KInitLog). Tambem mantem a timeline.
+U0 BootStageEnterPhase(U8 *name) {
+    if (g_boot_phase_total >= BOOT_PHASE_MAX) return;
+    I64 i = g_boot_phase_total;
+    g_boot_phase = i + 1;
+    g_boot_phase_vct[i] = __mrs_cntvct();
+    BootStageCopy(&g_boot_phase_names[i * BOOT_NAME_MAX], name);
+    g_boot_phase_total = i + 1;
+    g_boot_heartbeat_vct = g_boot_phase_vct[i];
+    g_boot_watchdog_warned = 0;
+}
+
+// Publica o MODULO corrente (chamado por KInitLoad, antes de compilar).
+U0 BootStageEnterModule(U8 *fname) {
+    BootStageCopy(g_boot_module_name, fname);
+    g_boot_module_vct = __mrs_cntvct();
+    g_boot_heartbeat_vct = g_boot_module_vct;
+    g_boot_watchdog_warned = 0;
+}
+
+// Fecha o modulo (depois de compilar) e acumula o tempo.
+U0 BootStageExitModule() {
+    U64 now = __mrs_cntvct();
+    if (g_boot_module_vct != 0 && now > g_boot_module_vct) {
+        g_boot_module_us_total = g_boot_module_us_total + (((now - g_boot_module_vct) * 1000000) / BootStageFreq());
+    }
+    g_boot_modules_done = g_boot_modules_done + 1;
+    g_boot_heartbeat_vct = now;
+}
+
+// O shell ativou: o boot terminou, o watchdog sai de cena.
+U0 BootStageDone() {
+    g_boot_shell_ready = 1;
+    g_boot_heartbeat_vct = __mrs_cntvct();
+}
+
+// Diagnostico: ONDE o boot esta' e ha' quanto tempo sem sinal.
+U0 BootStageReport() {
+    U64 dt_m = (( __mrs_cntvct() - g_boot_module_vct) * 10) / BootStageFreq();
+    I64 ph = g_boot_phase - 1;
+    U8 *phname = (ph >= 0 && ph < BOOT_PHASE_MAX) ? &g_boot_phase_names[ph * BOOT_NAME_MAX] : 0;
+    if (phname == 0) phname = "?";
+    doldoc_printf("[BOOTSTAGE] fase %lld/%lld '%s' | modulo '%s' ha %lld.%llds | mods=%lld\n",
+                  g_boot_phase, g_boot_phase_total, phname,
+                  g_boot_module_name, dt_m / 10, dt_m % 10, g_boot_modules_done);
+}
+
+// Periodico (chamado pelo Watchdog do core 1). Se o shell nao ativou e o MODULO
+// corrente estourou o limite, AVISA UMA vez — isto e' o que transforma "tela
+// preta" em "parou no estagio N".
+U0 BootStageWatchdogTick(I64 limit_seconds) {
+    if (g_boot_shell_ready != 0) return;
+    if (g_boot_watchdog_warned != 0) return;
+    if (g_boot_module_vct == 0) return;
+    if ((__mrs_cntvct() - g_boot_module_vct) > (BootStageFreq() * (U64)limit_seconds)) {
+        g_boot_watchdog_warned = 1;
+        g_boot_slow_stages = g_boot_slow_stages + 1;
+        doldoc_printf("$FG,RED$[BOOTSTAGE] BOOT LENTO: parado ha' > %llds no modulo '%s'$FG$\n",
+                      limit_seconds, g_boot_module_name);
+        BootStageReport();
+    }
+}
+
+// Estatisticas (SelfTest / gate / perfil).
+I64 BootStagePhaseCount()  { return g_boot_phase_total; }
+I64 BootStageCurrent()     { return g_boot_phase; }
+I64 BootStageShellReady()  { return g_boot_shell_ready; }
+I64 BootStageSlow()        { return g_boot_slow_stages; }
+I64 BootStageModulesDone() { return g_boot_modules_done; }
+U64 BootStageModuleUs()    { return g_boot_module_us_total; }
+U8 *BootStageModuleName()  { return g_boot_module_name; }
+U8 *BootStagePhaseName(I64 i) {
+    if (i < 0 || i >= BOOT_PHASE_MAX) return 0;
+    return &g_boot_phase_names[i * BOOT_NAME_MAX];
+}
+U64 BootStagePhaseUs(I64 i) {
+    if (i < 0 || i >= g_boot_phase_total) return 0;
+    U64 end = (i + 1 < g_boot_phase_total) ? g_boot_phase_vct[i + 1] : __mrs_cntvct();
+    return ((end - g_boot_phase_vct[i]) * 1000000) / BootStageFreq();
+}
+
 U0 KInitLog(U8 *msg) {
     doldoc_printf("[KERNEL-INIT] %s\n", msg);
+    BootStageEnterPhase(msg);
 }
 
 // P0.7: module load buffer. This used to be 128 KB, which SILENTLY TRUNCATED any
@@ -39,6 +171,7 @@ U0 KInitLoad(U8 *fname) {
     // aqui, o crash dump no disco traz o nome do arquivo — sem isso, "tela preta"
     // na POCO nao diz nada. Sem alocacao: so copia ate 31 bytes para uma global.
     neo_crash_set_module(0, fname);
+    BootStageEnterModule(fname);   // P0.2: o modulo E' o estagio fino
 
     U8 *kinit_load_buf = kmalloc(HC_MODULE_MAX);
     if (!kinit_load_buf) {
@@ -62,6 +195,7 @@ U0 KInitLoad(U8 *fname) {
         doldoc_printf("[KERNEL-INIT WARN] Could not read %s from the ESP!\n", fname);
     }
     kfree(kinit_load_buf);
+    BootStageExitModule();         // P0.2: fecha o modulo + acumula o tempo
 }
 
 U0 KernelInitMain() {
@@ -188,6 +322,20 @@ U0 KernelInitMain() {
     TimerArm(1000);
     enable_interrupts();
     KInitLog("Timer IRQ armed @ 1000 Hz; interrupts enabled.");
+
+    // P0.2 (CAMADA LOW-LEVEL): publica a TIMELINE completa do boot. Prova para o
+    // gate (a mensagem [BOOTSTAGE] existe) e perfil (quanto cada fase custou).
+    // Sem isto, o gate so' veria [BOOTSTAGE] em caso de travamento.
+    // ACHATADO (sem bloco {}): o seed C-JIT rejeita declaracao dentro de bloco
+    // aninhado — regra 14 do projeto. As variaveis vivem no escopo da funcao.
+    doldoc_printf("[BOOTSTAGE] timeline: %lld fases, %lld modulos, compilacao=%lld us\n",
+                  BootStagePhaseCount(), BootStageModulesDone(), BootStageModuleUs());
+    I64 bs_i = 0;
+    while (bs_i < BootStagePhaseCount()) {
+        doldoc_printf("[BOOTSTAGE]   fase %lld: %s = %lld us\n",
+                      bs_i + 1, BootStagePhaseName(bs_i), BootStagePhaseUs(bs_i));
+        bs_i = bs_i + 1;
+    }
 
     KInitLog("Entering Sovereign HolyC DolDocShellEventLoop()...");
     jit_compile_and_run("DolDocShellEventLoop();");

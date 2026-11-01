@@ -1700,6 +1700,12 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("c2_native_cores_registered", (SchedNativeCores() & 0xE) == 0xE ? 1 : 0, 1);
     // CAMADA 3 (IDEA-4): o funil de apresentacao. O backend e' escolhido UMA vez
     // (PresentInit) e e' um dos 3 validos.
+    // P0.2 (CAMADA LOW-LEVEL): o watchdog de estagio de boot. Prova que o boot
+    // publicou estagios, que TODOS os modulos terminaram e que o shell marcou o
+    // fim. Sem isto, um boot sem timeline passava em silencio.
+    SelfTestCompare("c_low_bootstage_phases", (BootStagePhaseCount() >= 6) ? 1 : 0, 1);
+    SelfTestCompare("c_low_bootstage_modules", (BootStageModulesDone() >= 30) ? 1 : 0, 1);
+    SelfTestCompare("c_low_bootstage_not_slow", (BootStageSlow() == 0) ? 1 : 0, 1);
     SelfTestCompare("c3_present_backend_valid",
                     (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
     // O contador de frames so' avanca quando algo apresenta. O corpus desenha

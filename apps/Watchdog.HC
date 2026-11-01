@@ -375,6 +375,29 @@ I64 CanaryRepairHead() {
 }
 
 // Comando de shell: 'health'  |  'health <N>'  (N = quantas entradas; padrao 10)
+// P0.2 (CAMADA LOW-LEVEL): imprime a timeline do boot (fases + tempos) e o
+// modulo corrente. E' o "bootprofile" acessivel do proprio shell.
+U0 ShellCmd_bootstage(U8 *a, U8 *r) {
+    doldoc_printf("$FG,CYAN$=== BOOT STAGE TIMELINE ===$FG$\n");
+    I64 i = 0;
+    while (i < BootStagePhaseCount()) {
+        U64 us = BootStagePhaseUs(i);
+        U8 *nm = BootStagePhaseName(i);
+        if (nm) {
+            doldoc_printf("  [%lld] %-34s %lld us\n", i + 1, nm, us);
+        }
+        i = i + 1;
+    }
+    doldoc_printf("  modulos compilados: %lld | tempo de compilacao: %lld us\n",
+                  BootStageModulesDone(), BootStageModuleUs());
+    doldoc_printf("  shell_ready=%lld | estagios lentos=%lld | modulo corrente='%s'\n",
+                  BootStageShellReady(), BootStageSlow(), BootStageModuleName());
+}
+
+U0 ShellCmdBootStage() {
+    shell_register_cmd("bootstage", ShellCmd_bootstage, "boot stage timeline");
+}
+
 U0 ShellCmd_health(U8 *a, U8 *r) {
     I64 h_n = 10;
     while (*a == ' ' || *a == '\t') a++;
@@ -476,12 +499,20 @@ U0 WatchdogTick(U64 arg) {
         U64 wd_t0 = __mrs_cntvct();
         WatchdogStallCheck(); // B9: observador (a) — starvation entre passadas
         TimerDriftCheck();    // B11: observador periodico do drift timer sw vs hw
+        // P0.2 (CAMADA LOW-LEVEL): o vigia de estagio de boot. Se o shell nao
+        // ativou e o modulo corrente estourou o limite, imprime ONDE parou.
+        // Antes do shell ativar isto e' o unico canal de diagnostico do boot.
+        BootStageWatchdogTick(30);
         // Registra o comando 'health' de forma IDEMPOTENTE: o ShellInit()
         // (rodado em DolDocShellEventLoop, DEPOIS do WatchdogStart) zera
         // g_shell_cmd_count e reconstroi a tabela — registrar uma vez so
         // seria apagado. Re-registrar sempre que faltar e auto-curativo:
         // depois do ShellInit, o proximo tick (250 ms) o restaura e ele
         // permanece (shell_register_cmd e O(1) e atualiza in-place).
+        // P0.2: comando para consultar a timeline do boot a qualquer momento.
+        if (ShellFindCmd("bootstage") < 0) {
+            ShellCmdBootStage();
+        }
         if (ShellFindCmd("health") < 0) {
             shell_register_cmd("health", ShellCmd_health, "health ledger dump");
         }

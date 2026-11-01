@@ -96,6 +96,10 @@ if [ "$RUN_ALL" = "1" ]; then
         bad "jit-golden"; tail -5 /tmp/hf-jit.log
     fi
 
+    # CAMADA LOW-LEVEL (P0.2): o passo 6a acabou de usar a UART em rajada. Sem uma
+    # pausa, o primeiro comando do 6b chega enquanto o guest ainda drena o FIFO do
+    # PL011 -> falso got=None (medido: 110/111 com o boot impecavel). 3 s basta.
+    sleep 3
     step 6b/7 "paridade dos motores (p1-parity, varios boots)"
     if bash scripts/p1-parity.sh >/tmp/hf-parity.log 2>&1; then
         ok "$(tail -1 /tmp/hf-parity.log)"
