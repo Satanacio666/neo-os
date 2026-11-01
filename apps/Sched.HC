@@ -27,6 +27,15 @@ class CTask {
   U32    affinity_mask;
   CTask *next;
   CTask *prev;
+  // CAMADA 2 (IDEA-1): dono e ultimo core. running_on_core impede que DOIS cores
+  // peguem a MESMA task (-1 = livre, c = rodando no core c); last_ran_core
+  // registra onde ela rodou por ultimo (prova do Watchdog no core 1).
+  I64    running_on_core;
+  I64    last_ran_core;
+  // CAMADA 2: run-queue DONA da task (-1 = orfa, qualquer core pode pegar).
+  // Derivada da afinidade quando o mask e' de um unico core (ex.: Watchdog 0x02 ->
+  // owner 1); senao o core criador. E' o que impede o core 0 de roubar o Watchdog.
+  I64    owner_rq;
 };
 
 CTask *g_sched_current;
@@ -41,6 +50,27 @@ I64    g_sched_need_resched = 0;
 I64    g_sched_ticks_seen = 0;
 I64    g_sched_preempt_off = 0; // >0 defers preemption (kernel critical section)
 I64    g_sched_ready = 0;       // set by SchedInit; gates SchedOnTick from the IRQ
+
+// ============================================================================
+// CAMADA 2 (IDEA-1) — RUN-QUEUES POR CORE (MQMS). 64 bytes EXATOS por core (uma
+// linha L1D), arena alinhada por &~63 em SchedInit — mesmo idioma do CProdCount
+// (Camada 0.2) e do CGicCoreStats (Camada 1.1). Zero kmalloc, zero CENSUS.
+// ============================================================================
+#define SCHED_MAX_CORES 4
+class CSmpRunQueue {
+  U32    lock;            // reservado: a secao critica usa g_sched_lock (a lista
+  U32    pad_u32;         // de tasks e' GLOBAL); mantido por layout/explicitude.
+  CTask *curr_task;       // task atual deste core (0 = thread nativa do core)
+  U64    idle_frame_sp;   // CTrapFrame* da thread nativa (SmpWorkerLoop nos cores 1..3)
+  I64    sched_ticks;     // ticks que ESTE core passou pelo escalonador
+  I64    context_switches;// trocas de contexto REAIS neste core
+  CTask *last_task;       // ultima task executada neste core
+  I64    need_resched;    // CAMADA 2: yield pedido POR ESTE core (era pad0)
+  I64    pad1;
+};   // 4+4+8*7 = 64 bytes EXATOS = 1 linha L1D
+U8            g_sched_rq_arena[SCHED_MAX_CORES * 64 + 64];
+CSmpRunQueue *g_sched_rq;
+U32           g_sched_lock = 0;          // protege a lista de tasks + os slots de rq
 
 // P3.5 guardrail 2: trap-frame layout written by vectors.S SAVE_ALL (784 bytes):
 //   [0..223]   x0..x29 (8 bytes each)
@@ -92,7 +122,8 @@ CTask* SchedPickNext(CTask *cur) {
   CTask *c = g_sched_head;
   I64 guard = 0;
   while (c && guard < 4096) {
-    if (c != cur && c->state == TASK_READY && SchedAffinityAllows(c, me)) {
+    if (c != cur && c->state == TASK_READY && SchedAffinityAllows(c, me)
+        && (c->running_on_core == -1 || c->running_on_core == (I64)me)) {
       if (!best || c->priority > best_prio) {
         best = c;
         best_prio = c->priority;
@@ -107,7 +138,8 @@ CTask* SchedPickNext(CTask *cur) {
   c = g_sched_head;
   guard = 0;
   while (c && guard < 4096) {
-    if (c != cur && c->state == TASK_READY) {
+    if (c != cur && c->state == TASK_READY
+        && (c->running_on_core == -1 || c->running_on_core == (I64)me)) {
       if (!best || c->priority > best_prio) {
         best = c;
         best_prio = c->priority;
@@ -231,9 +263,29 @@ U0 SchedInit() {
   main_task->affinity_mask = 0x0F;
   main_task->next = main_task;
   main_task->prev = main_task;
+  main_task->running_on_core = 0;   // KernelMain roda no BSP
+  main_task->last_ran_core = 0;
+  main_task->owner_rq = 0;          // CAMADA 2: pertence a run-queue do core 0
 
   g_sched_current = main_task;
   g_sched_head = main_task;
+
+  // CAMADA 2: arena alinhada das run-queues + asserts de layout (falha ALTA).
+  g_sched_rq = (CSmpRunQueue*)(((U64)g_sched_rq_arena + 63) & (~63));
+  if (sizeof(CSmpRunQueue) != 64 || ((U64)g_sched_rq & 63) != 0) {
+    doldoc_printf("[SCHED] FATAL: CSmpRunQueue layout != 64B (sizeof=%lld align=%lld)\n",
+                  (I64)sizeof(CSmpRunQueue), (U64)g_sched_rq & 63);
+  }
+  I64 rqi = 0;
+  while (rqi < SCHED_MAX_CORES) {
+    g_sched_rq[rqi].lock = 0;
+    g_sched_rq[rqi].curr_task = (rqi == 0) ? main_task : 0;  // core 0 = KernelMain;
+    g_sched_rq[rqi].idle_frame_sp = 0;                       // cores 1..3 = nativa
+    g_sched_rq[rqi].sched_ticks = 0;
+    g_sched_rq[rqi].context_switches = 0;
+    g_sched_rq[rqi].last_task = 0;
+    rqi = rqi + 1;
+  }
   g_sched_ready = 1; // scheduler is now live; IRQ may hand frames to SchedOnTick
 }
 
@@ -271,6 +323,17 @@ CTask* TaskCreate(U8 *p_name, U64 p_entry, U64 p_arg, I64 p_stack_sz) {
   t->quantum_ticks = 5;
   t->quantum_remaining = 5;
   t->affinity_mask = 0x0F;
+  t->running_on_core = -1;   // CAMADA 2: livre (nenhum core a executa ainda)
+  t->last_ran_core = -1;
+  // owner_rq: se a afinidade aponta UM core, a task pertence a ele; senao ao
+  // criador. (O Watchdog ajusta depois de setar affinity 0x02 — ver TaskSetOwner.)
+  U32 cm = t->affinity_mask;
+  if (cm != 0 && (cm & (cm - 1)) == 0) {
+    I64 oc = 0; while (((cm >> oc) & 1) == 0) oc = oc + 1;
+    t->owner_rq = oc;
+  } else {
+    t->owner_rq = (I64)(__mrs_mpidr() & 3);
+  }
 
   // Insert into circular doubly linked list (IRQs masked: SchedOnTick walks it).
   __irq_disable();
@@ -290,15 +353,29 @@ CTask* TaskCreate(U8 *p_name, U64 p_entry, U64 p_arg, I64 p_stack_sz) {
 // context (SchedOnTick) so there is exactly ONE switch mechanism (the trap
 // frame) — correct for both voluntary and asynchronous switches (guardrail 2).
 U0 TaskYield() {
+  // CAMADA 2: pedido de yield POR CORE (cada core le' o proprio no seu tick);
+  // o global segue setado para o caminho do core 0.
+  I64 mycore = (I64)(__mrs_mpidr() & 3);
+  if (g_sched_rq && mycore >= 0 && mycore < SCHED_MAX_CORES) {
+    g_sched_rq[mycore].need_resched = 1;
+  }
   g_sched_need_resched = 1;
   __sev();
 }
 
 U0 TaskExit() {
-  if (!g_sched_current) return;
-  if (g_sched_zombie) SchedReapZombie();
-
-  CTask *dying = g_sched_current;
+  // CAMADA 2: a task que morre e' a do CORE ATUAL, nao o global g_sched_current.
+  // (Bug medido: um worker no core 1 marcava a KernelMain do core 0 como DEAD e a
+  // desligava da lista -> double fault.)
+  I64 mycore = (I64)(__mrs_mpidr() & 3);
+  CTask *dying;
+  if (mycore == 0) {
+    dying = g_sched_current;
+  } else {
+    dying = (g_sched_rq ? g_sched_rq[mycore].curr_task : 0);
+  }
+  if (!dying) return;
+  if (g_sched_zombie && g_sched_zombie != dying) SchedReapZombie();
   dying->state = TASK_DEAD;
 
   // Unlink from the circular list. g_sched_current stays = dying so SchedOnTick
@@ -339,9 +416,10 @@ U0 SchedBuildFrame(CTask *t) {
   t->sp = frame;
 }
 
-// Called from the timer IRQ with `sp` = the interrupted task's saved trap frame.
-// Returns the SP to resume (same frame, or the next task's frame).
-U64 SchedOnTick(U64 sp) {
+// CORPO COMPROVADO (inalterado): o nucleo do escalonamento. Roda com g_sched_lock
+// preso (ver o wrapper SchedOnTick abaixo). Nao mexer na logica — o gate de
+// determinismo depende dela.
+U64 SchedOnTickLocked(U64 sp) {
   // Never free a zombie whose stack we are currently executing on: a dying task
   // that is preempted has its frame on its own stack. Reap only a *previous*
   // zombie (different stack) — the current one is freed on the next tick.
@@ -400,6 +478,171 @@ U64 SchedOnTick(U64 sp) {
   g_sched_current = best;
   g_sched_switch_count = g_sched_switch_count + 1;
   return best->sp;
+}
+
+// CAMADA 2 (IDEA-1) — wrappers de core. O caminho do Core 0 e' o de sempre, agora
+// sob g_sched_lock (a lista de tasks passa a ser compartilhada entre cores).
+U64 SchedOnTick(U64 sp) {
+  U64 sched_daif = SmpLockIrqSave(&g_sched_lock);
+  U64 r = SchedOnTickLocked(sp);
+  SmpUnlockIrqRestore(&g_sched_lock, sched_daif);
+  return r;
+}
+
+// CAMADA 2 — escalonamento do core `core`. Core 0 delega ao caminho comprovado.
+// Cores 1..3: cada um mantem a PROPRIA thread nativa (SmpWorkerLoop, representada
+// por rq->curr_task == 0) e alterna com as tasks cujo affinity_mask contem o bit
+// do core — protegia por g_sched_lock e por running_on_core (impede que dois cores
+// peguem a mesma task). Preserva a pilha nativa em rq->idle_frame_sp.
+U64 SchedOnTickCore(I64 core, U64 frame_sp) {
+  if (core < 0 || core >= SCHED_MAX_CORES || !g_sched_rq) return frame_sp;
+  CSmpRunQueue *rq = &g_sched_rq[core];
+  rq->sched_ticks = rq->sched_ticks + 1;
+  if (g_sched_dbg != 0 && rq->sched_ticks <= 3) SchedDbgEvent(core, 1, (I64)frame_sp);
+  if (core == 0) return SchedOnTick(frame_sp);   // caminho comprovado (com lock)
+  if (g_sched_preempt_off) return frame_sp;      // secao critica: nao preemptar
+
+  U64 sched_daif = SmpLockIrqSave(&g_sched_lock);
+  // Reaping do zumbi: NUNCA o que esta' na pilha que estamos executando agora.
+  if (g_sched_zombie && g_sched_zombie != g_sched_rq[core].curr_task) SchedReapZombie();
+  CTask *cur = rq->curr_task;                    // 0 = thread nativa (SmpWorkerLoop)
+  if (cur) { cur->sp = frame_sp; cur->last_ran_core = core; }
+  else { rq->idle_frame_sp = frame_sp; }
+
+  I64 need = rq->need_resched;                   // CAMADA 2: por core
+  rq->need_resched = 0;
+  if (cur) {
+    if (cur->quantum_remaining > 0) cur->quantum_remaining = cur->quantum_remaining - 1;
+    if (cur->quantum_remaining > 0 && !need) {
+      SmpUnlockIrqRestore(&g_sched_lock, sched_daif);
+      return frame_sp;                           // quantum do core ainda nao expirou
+    }
+  }
+  // Canario de pilha da task que esta' SAINDO (mesma regra do B5).
+  if (cur && cur->stack_base != 0 && *(U64 *)cur->stack_base != (U64)STACK_CANARY) {
+    g_stack_canary_violations = g_stack_canary_violations + 1;
+    cur->quantum_remaining = cur->quantum_ticks;
+    SmpUnlockIrqRestore(&g_sched_lock, sched_daif);
+    return frame_sp;
+  }
+  // Escolhe a proxima task ELEGIVEL neste core (afinidade + running_on_core).
+  CTask *best = 0;
+  I64 best_prio = -1;
+  CTask *c = g_sched_head;
+  I64 guard = 0;
+  while (c && guard < 4096) {
+    // CAMADA 2: pertence a ESTE core (owner_rq) e nao esta' presa em outro.
+    if (c != cur && c->state == TASK_READY
+        && (c->owner_rq == -1 || c->owner_rq == core)
+        && (c->running_on_core == -1 || c->running_on_core == core)) {
+      if (!best || c->priority > best_prio) { best = c; best_prio = c->priority; }
+    }
+    c = c->next; guard++;
+    if (c == g_sched_head) break;
+  }
+  U64 ret = frame_sp;
+  if (best) {
+    if (cur && cur->state == TASK_RUNNING) cur->state = TASK_READY;
+    if (cur && cur->running_on_core == core) cur->running_on_core = -1;
+    best->state = TASK_RUNNING;
+    best->running_on_core = core;
+    best->last_ran_core = core;
+    best->quantum_remaining = best->quantum_ticks;
+    rq->last_task = cur;
+    rq->curr_task = best;
+    rq->context_switches = rq->context_switches + 1;
+    ret = best->sp;
+  } else if (cur) {
+    // Nenhuma task elegivel: devolve o core a' sua thread nativa (SmpWorkerLoop),
+    // que continua atendendo Math3DPar/RasterTile. Se a nativa nunca rodou
+    // (idle_frame_sp == 0: impossivel em operacao — ela roda antes das tasks), o
+    // frame atual e' devolvido e nada quebra.
+    cur->running_on_core = -1;
+    if (cur->state == TASK_RUNNING) cur->state = TASK_READY;
+    rq->curr_task = 0;
+    if (rq->idle_frame_sp != 0) {
+      rq->context_switches = rq->context_switches + 1;
+      ret = rq->idle_frame_sp;
+    }
+  }
+  SmpUnlockIrqRestore(&g_sched_lock, sched_daif);
+  return ret;
+}
+
+// CAMADA 2 (IDEA-1) — registra a thread NATIVA de um core secundario (o
+// SmpWorkerLoop). Ela e' representada por rq->curr_task == 0 ("sem CTask"): o
+// escalonador preserva sua pilha em idle_frame_sp e devolve o core a ela quando
+// nao ha task elegivel. Chamada por Smp.HC (Stage 3, compilado DEPOIS de Sched.HC).
+U64 g_sched_native_cores = 0;
+U0 SmpRegisterNativeThread(U32 core, U64 entry) {
+  if (core == 0 || core >= SCHED_MAX_CORES || !g_sched_rq) return;
+  g_sched_rq[core].curr_task = 0;
+  g_sched_rq[core].idle_frame_sp = 0;   // capturado no 1o tick deste core
+  g_sched_native_cores = g_sched_native_cores | (1 << core);
+  __dmb_ish();
+}
+
+// CAMADA 2 (IDEA-1) — provas puras das run-queues (SelfTest.HC e' Stage 1 e NAO
+// enxerga CSmpRunQueue; estas funcoes em Sched.HC devolvem numeros crus).
+// CAMADA 2 — DEBUG gated (desligado por padrao; o gate nao polui). Ligue com o
+// comando 'scheddbg 1' (ou setando g_sched_dbg). Rastreia as trocas por core.
+I64 g_sched_dbg = 0;
+I64 g_sched_dbg_events[8];
+
+U0 SchedDbgEvent(I64 core, I64 tag, I64 val) {
+  if (g_sched_dbg == 0 || !g_sched_dbg_events) return;
+  if (core < 0 || core >= SCHED_MAX_CORES) return;
+  if (g_sched_dbg_events[core] >= 12) return;   // limita o ruido
+  g_sched_dbg_events[core] = g_sched_dbg_events[core] + 1;
+  doldoc_printf("[SCHEDDBG] core=%lld ev=%lld tag=%lld val=%lld cur=%lld rqticks=%lld\n",
+                core, g_sched_dbg_events[core], tag, val,
+                g_sched_rq[core].curr_task ? g_sched_rq[core].curr_task->id : -1,
+                g_sched_rq[core].sched_ticks);
+}
+
+// Alias: hash simples para confirmar que nada foi esquecido (debug).
+U64 SchedRqHash() {
+  if (!g_sched_rq) return 0;
+  U64 h = 0x811C9DC5;
+  I64 i = 0;
+  while (i < SCHED_MAX_CORES) {
+    h = (h ^ (U64)g_sched_rq[i].sched_ticks) * 16777619;
+    h = (h ^ (U64)g_sched_rq[i].context_switches) * 16777619;
+    i = i + 1;
+  }
+  return h;
+}
+
+I64 SchedRqSizesOk() {
+  if (sizeof(CSmpRunQueue) != 64) return 0;
+  if (!g_sched_rq) return 0;
+  if (((U64)g_sched_rq & 63) != 0) return 0;
+  return 1;
+}
+// Soma de sched_ticks nos cores 1..3 (prova de que o escalonador rodou neles).
+I64 SchedRqSecondaryTicks() {
+  if (!g_sched_rq) return 0;
+  I64 t = 0, i = 1;
+  while (i < SCHED_MAX_CORES) { t = t + g_sched_rq[i].sched_ticks; i = i + 1; }
+  return t;
+}
+// Trocas de contexto reais no core 1 (prova fisica de scheduling no secundario).
+I64 SchedRqCore1Switches() {
+  if (!g_sched_rq) return 0;
+  return g_sched_rq[1].context_switches;
+}
+// Cores que registraram sua thread nativa (SmpWorkerLoop) — bitmask.
+U64 SchedNativeCores() { return g_sched_native_cores; }
+
+// CAMADA 2: recomputa owner_rq a partir da afinidade (idempotente). Chamar depois
+// de setar affinity_mask a mao (ex.: WatchdogStart).
+U0 TaskSetOwner(CTask *t) {
+  if (!t) return;
+  U32 cm = t->affinity_mask;
+  if (cm != 0 && (cm & (cm - 1)) == 0) {
+    I64 oc = 0; while (((cm >> oc) & 1) == 0) oc = oc + 1;
+    t->owner_rq = oc;
+  }
 }
 
 I64 TaskSetAffinity(U64 p_task_id, U32 p_mask) {

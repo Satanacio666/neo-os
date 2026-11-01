@@ -85,6 +85,9 @@
 
 I64 g_watchdog_runs = 0;
 I64 g_watchdog_faults = 0;
+// CAMADA 2 (IDEA-1): PROVA fisica de que o vigia saiu do BSP e rodou no core 1.
+I64 g_watchdog_last_core = -1;     // ultimo core que executou WatchdogTick
+I64 g_watchdog_offcore_runs = 0;   // passadas executadas em core > 0
 // B9 (ONDA 2) — vigia do vigia. g_watchdog_runs conta PASSADAS, mas ninguem
 // checava se elas AVANCAM. g_watchdog_last_tick = __mrs_cntvct() da ultima
 // passada concluida; WatchdogStallCheck() compara com agora.
@@ -445,6 +448,11 @@ I64 WatchdogTestStall() {
 
 U0 WatchdogTick(U64 arg) {
     while (1) {
+        // CAMADA 2 (IDEA-1): registra ONDE este vigia esta' rodando de fato. Se
+        // o escalonamento por run-queue funcionar, core > 0 (o BSP nao escala o
+        // Watchdog — affinity 0x02). Prova fisica do SMP simetrico.
+        g_watchdog_last_core = (I64)(__mrs_mpidr() & 3);
+        if (g_watchdog_last_core > 0) g_watchdog_offcore_runs = g_watchdog_offcore_runs + 1;
         U64 wd_t0 = __mrs_cntvct();
         WatchdogStallCheck(); // B9: observador (a) — starvation entre passadas
         TimerDriftCheck();    // B11: observador periodico do drift timer sw vs hw
@@ -594,6 +602,8 @@ U0 WatchdogStart() {
     CTask *wd = (CTask *)t;
     wd->affinity_mask = 0x02;
     wd->priority = PRIO_BACKGROUND;
+    // CAMADA 2: o dono da run-queue DEVE ser o core 1 (senao o core 0 o rouba).
+    TaskSetOwner(wd);
     doldoc_printf("[WATCHDOG] vigia ativo no core 1 (affinity_mask=0x%02X prio=%lld)\n",
                   wd->affinity_mask, wd->priority);
 }

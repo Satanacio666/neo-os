@@ -1654,13 +1654,15 @@ U0 SelfTestFallbacks() {
     } else {
         SelfTestCompare("b2a3_on_means_cores_open", (g_smp_irq_enabled_cores != 0) ? 1 : 0, 1);
     }
-    // B2a.4/B2a.2 (ONDA 3) — o tick CHEGA aos secundarios. Medido: com o switch
-    // ligado e a interface GICv2 por core inicializada (GICC banked + PPI 27 no
-    // GICD roteado para cada core + CNTV por core), offcore_ticks_blocked > 0 —
-    // os secundarios tomam o tick e o interlock os barra do Sched (correto).
-    // Antes desta correcao o contador era 0 (a IRQ abria mas o tick nao chegava).
+    // B2a.4/B2a.2 (ONDA 3) — o tick CHEGA aos secundarios. MEDIDO: com o switch
+    // ligado e a interface GICv2 por core inicializada, os secundarios tomam o
+    // tick. ATUALIZADO NA CAMADA 2: antes o tick era BLOQUEADO no interlock
+    // UP-only (g_gic_offcore_tick_blocks); agora ele e' ENTREGUE ao escalonador
+    // do core (g_sched_offcore_routed) — prova mais forte (chega E agenda). Aceita
+    // qualquer um dos dois: o antigo so' seria > 0 com o kill-switch OFF.
     if (g_smp_irq_enable != 0) {
-        SelfTestCompare("b2a2_tick_reaches_secondaries", (g_gic_offcore_tick_blocks > 0) ? 1 : 0, 1);
+        I64 reached = (g_gic_offcore_tick_blocks > 0 || g_sched_offcore_routed > 0) ? 1 : 0;
+        SelfTestCompare("b2a2_tick_reaches_secondaries", reached, 1);
     }
     // B2b (ONDA 3): afinidade suave. Testa a DECISAO PURA (SchedAffinityAllowsMask)
     // — recebe a mask crua porque SelfTest compila antes de Sched (nao ve' CTask).
@@ -1683,6 +1685,12 @@ U0 SelfTestFallbacks() {
         while (sci < GIC_MAX_CORES) { if (g_gic_core_stats[sci].dispatched > 0) sec = 1; sci = sci + 1; }
         SelfTestCompare("c1_gic_percore_secondaries", sec, 1);
     }
+    // CAMADA 2 (IDEA-1) — run-queues por core (SMP simetrico REAL).
+    SelfTestCompare("c2_rq_size64", SchedRqSizesOk(), 1);
+    SelfTestCompare("c2_rq_secondary_ticks", (SchedRqSecondaryTicks() > 0) ? 1 : 0, 1);
+    SelfTestCompare("c2_rq_core1_switches", (SchedRqCore1Switches() > 0) ? 1 : 0, 1);
+    SelfTestCompare("c2_watchdog_ran_on_core1", (g_watchdog_offcore_runs > 0) ? 1 : 0, 1);
+    SelfTestCompare("c2_native_cores_registered", (SchedNativeCores() & 0xE) == 0xE ? 1 : 0, 1);
     SelfTestCompare("b2b_aff_core3_ok", SchedAffinityAllowsMask(0x08, 3), 1);
     SelfTestCompare("b2b_aff_open_core0", SchedAffinityAllowsMask(0, 0), 1);
     SelfTestCompare("b2b_aff_open_core2", SchedAffinityAllowsMask(0, 2), 1);

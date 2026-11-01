@@ -132,6 +132,11 @@ U0 SmpWorkerLoop(U32 core_id) {
   // B2a.3: se o SMP simetrico estiver LIGADO (g_smp_irq_enable), este core abre a
   // IRQ do proprio core. Desligado (padrao) = nada acontece, comportamento atual.
   SmpSecondaryIrqEnable(core_id);
+  // CAMADA 2 (IDEA-1): registra esta thread nativa na run-queue do core. Ela e' a
+  // "idle task" do core: quando nao ha task elegivel, o escalonador devolve o
+  // frame salvo AQUI (rq->idle_frame_sp) e este loop retoma — atendendo Math3DPar
+  // e RasterTile sem jitter.
+  SmpRegisterNativeThread(core_id, (U64)&SmpWorkerLoop);
   while (1) {
     while (!j->pending) {
       __wfe();

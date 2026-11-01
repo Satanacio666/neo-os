@@ -50,6 +50,13 @@ U64 g_gicr_base;
 // So' o core 0 entrega o frame ao escalonador enquanto nao houver run-queues.
 I64 g_gic_offcore_tick_blocks = 0;   // ticks de secundarios que NAO foram ao Sched
 U64 g_gic_secondary_ppi_ready = 0;   // B2a.2: bitmask dos cores com PPI 27 armado
+// CAMADA 2 (IDEA-1) — kill-switch do escalonamento SIMETRICO por run-queues.
+// Vive aqui (Stage 1) porque Gic.HC precisa dele no funil de IRQ e Sched.HC
+// compila DEPOIS (ve direto). LIGADO: os cores 1..3 entregam o tick ao
+// SchedOnTickCore (agendam de verdade). Padrao 1 = ligado (o interlock UP-only
+// foi removido — ver o handler).
+I64 g_sched_smp_rq_enabled = 1;
+I64 g_sched_offcore_routed = 0;   // ticks de secundarios ENTREGUES ao escalonador
 I64 GicShouldScheduleCore(U32 core_id) {
   if (core_id == 0) return 1;
   return 0;
@@ -440,6 +447,18 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
   // o EOI ja' foi dado acima — nada vaza). Le-se o MPIDR direto: Smp.HC compila
   // DEPOIS de Gic.HC (KernelInit.HC), entao SmpGetCoreId() nao existe aqui.
   if (g_sched_ready) {
+    // CAMADA 2 (IDEA-1): run-queues por core. Sched.HC compila DEPOIS de Gic.HC,
+    // e o Gic.HC JA' chama SchedOnTick direto por nome (late-binding via SIC,
+    // resolvido no boot) — o mesmo mecanismo vale para SchedOnTickCore. NAO usar
+    // symbols_lookup aqui: ele e' CONTADO pelo CENSUS (guard .HC->C) e subiria o
+    // baseline. O interlock UP-only (so' core 0 agendava) foi REMOVIDO: cada core
+    // entrega o frame ao SEU slot de run-queue, com g_sched_lock e running_on_core
+    // impedindo que dois cores peguem a mesma task.
+    if (g_sched_smp_rq_enabled != 0) {
+      g_sched_offcore_routed = g_sched_offcore_routed + 1;
+      return SchedOnTickCore((I64)(__mrs_mpidr() & 3), trap_frame);
+    }
+    // Fallback (kill-switch OFF): SO o core 0 agendava (comportamento anterior).
     if (GicShouldScheduleCore(__mrs_mpidr() & 3)) return SchedOnTick(trap_frame);
     g_gic_offcore_tick_blocks = g_gic_offcore_tick_blocks + 1;
   }
