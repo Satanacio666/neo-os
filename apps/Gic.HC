@@ -480,6 +480,18 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
 //   - o timer virtual (CNTV) e' POR CORE: cada core arma o seu (TimerArmThisCore).
 U0 GicInitCpuInterface(U32 core_id) {
   if (g_gic_version == 3) {
+    // ========================================================================
+    // GICv3 (CAMADA 2-fix): no v3 os registradores ICC_*_EL1 sao SYSTEM REGISTERS
+    // POR CORE — cada core precisa configura-los. Antes so' o BSP (GicInitV3)
+    // os setava; os secundarios acordavam o GICR (MMIO) mas nunca habilitavam
+    // SRE/PMR/IGRPEN1 no PROPRIO banco -> a IRQ do timer nao chegava neles
+    // (medido sob gic-version=3: c1_gic_percore_secondarys=0 e 3 falhas c2_*).
+    // A ordem importa: SRE antes de qualquer ICC_*, IGROUPR antes de IGRPEN1.
+    // ========================================================================
+    gicv3_sre_enable();                       // ICC_SRE_EL1.SRE = 1
+    gicv3_pmr_set(0xFF);                      // aceita todas as prioridades
+    gicv3_ctlr_set(gicv3_ctlr_get() & ~2);    // EOImode = 0
+    gicv3_bpr1_set(0);
     U64 gicr = GicGetRedistBase() + ((U64)core_id * GICR_STRIDE);
     U64 sgi = gicr + GICR_SGI_OFFSET;
     U32 w = __mmio_r32(gicr + GICR_WAKER);
@@ -490,8 +502,9 @@ U0 GicInitCpuInterface(U32 core_id) {
     __mmio_w32(sgi + GICR_IGRPMODR0, 0x00000000);
     __mmio_w32(sgi + GICR_IPRIORITYR + (27 / 4) * 4, 0xA0A0A0A0);
     __mmio_w32(sgi + GICR_ISENABLER0, 1 << 27);
-    g_gic_secondary_ppi_ready = g_gic_secondary_ppi_ready | (1 << core_id);
+    gicv3_igrpen1_set(1);                     // habilita Group 1 NESTE core
     __dmb_ish();
+    g_gic_secondary_ppi_ready = g_gic_secondary_ppi_ready | (1 << core_id);
     return 1;
   }
   // ---- GICv2 (o caso REAL no QEMU virt) ----

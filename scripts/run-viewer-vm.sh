@@ -24,7 +24,7 @@ ACCEL_THREAD=single
 if [ "${NEO_MTTCG:-0}" = "1" ]; then ACCEL_THREAD=multi; fi
 
 QEMU_ARGS=(
-  -M virt,gic-version=2
+  -M virt,gic-version=${NEO_GIC_VERSION:-2}
   -accel "tcg,${NEO_QEMU_ACCEL:-thread=${ACCEL_THREAD},tb-size=512}"
   -cpu "${NEO_QEMU_CPU:-cortex-a72}"
   -smp "${NEO_SMP:-4}"
