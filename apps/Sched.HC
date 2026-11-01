@@ -202,10 +202,38 @@ I64 SchedTestCanaryCycle(U64 task_addr) {
   return detected;
 }
 
+// CAMADA 3 (caca ao crash pos-shell): o guarda do reap tem de ser CROSS-CORE.
+// O zumbi e' GLOBAL, mas cada core so' sabia se ELE MESMO estava naquela pilha.
+// Com o escalonador simetrico (commit ef491a6) isso e' furado: o core 1 executa
+// SchedOnTickCore -> zumbi do core 0 != rq[1].curr_task -> kfree da pilha do core
+// 0 ENQUANTO o core 0 ainda roda dentro dela. O core 0 segue escrevendo o trap
+// frame em memoria ja' devolvida ao heap; o heap recicla aquela linha e o proximo
+// RET/eret le' lixo -> ELR_EL1/SPSR_EL1 = 0, exatamente o sindrome medido (EC 0x20
+// Instruction Abort lower EL, ELR=0, X30(LR)=0x405814FC).
+// Correcao: nunca liberar a pilha de um zumbi que QUALQUER run-queue ainda
+// referencia, nem a do zumbi que o BSP usa como task corrente.
+I64 SchedZombieOnAnyStack(CTask *z) {
+  if (!z) return 0;
+  if (z == g_sched_current) return 1;      // core 0 ainda dentro da pilha do morto
+  I64 rc = 0;
+  while (rc < SCHED_MAX_CORES) {
+    if (g_sched_rq && g_sched_rq[rc].curr_task == z) return 1;
+    rc = rc + 1;
+  }
+  return 0;
+}
+
 U0 SchedReapZombie() {
   if (!g_sched_zombie) return;
   CTask *z = g_sched_zombie;
   g_sched_zombie = 0;
+  // Adia o reap enquanto a pilha estiver viva: poe o zumbi de volta e o proximo
+  // tick (em qualquer core) tenta de novo. Nada vaza — o bloqueador e' uma
+  // referencia ativa que sera' limpa quando aquele core trocar de task.
+  if (SchedZombieOnAnyStack(z)) {
+    g_sched_zombie = z;
+    return;
+  }
   if (z->stack_base) {
     kfree(z->stack_base);
     z->stack_base = 0;
@@ -375,12 +403,29 @@ U0 TaskExit() {
     dying = (g_sched_rq ? g_sched_rq[mycore].curr_task : 0);
   }
   if (!dying) return;
+  // CAMADA 3 (caca ao crash pos-shell): TODA escrita no estado COMPARTILHADO do
+  // escalonador (lista circular, zumbi, g_sched_current) tem de ser serializada
+  // por g_sched_lock — o mesmo lock que TODOS os caminhos de tick ja' tomam
+  // (SchedOnTick/SchedOnTickCore via SmpLockIrqSave). A versao anterior so'
+  // mascarava IRQ LOCAIS (__irq_disable): com o escalonador SIMETRICO (core 1
+  // ativo, commit ef491a6) o core 1 podia estar dentro de SchedOnTickCore com o
+  // lock preso ENQUANTO este core desligava `dying` da lista e publicava o
+  // zumbi. Duas consequencias sao fatais:
+  //   (a) SchedPickNext do core 1 escolhe uma task RECEM-REAPED — o
+  //       SchedReapZombie/kfree do head libera a pilha e o `ret = best->sp`
+  //       aponta para memoria ja' devolvida ao heap (use-after-free);
+  //   (b) o `ldp x1,x2 / stp x1,x2` de desligamento do no' pode ser reentrelacado
+  //       com a travessia de SchedPickNext, produzindo `c->next` invalido.
+  // Nos dois casos o RESTORE_ALL do vetor IRQ consome um trap frame corrompido
+  // ou de pilha liberada e o `eret` volta para ELR_EL1/SPSR_EL1 = 0 -> o sintoma
+  // medido (EC 0x20 Instruction Abort, lower EL, ELR_EL1=0, SPSR_EL1=0) com
+  // X30(LR)=0x405814FC. Fecha a janela sem alterar a decisao de escalonamento.
+  U64 tx_daif = SmpLockIrqSave(&g_sched_lock);
   if (g_sched_zombie && g_sched_zombie != dying) SchedReapZombie();
   dying->state = TASK_DEAD;
 
   // Unlink from the circular list. g_sched_current stays = dying so SchedOnTick
   // saves its (discarded) frame; SchedPickNext skips it (removed from list).
-  __irq_disable();
   if (dying->next != dying) {
     CTask *d_prev = dying->prev;
     CTask *d_next = dying->next;
@@ -390,7 +435,7 @@ U0 TaskExit() {
   }
   g_sched_zombie = dying;
   g_sched_need_resched = 1;
-  __irq_enable();
+  SmpUnlockIrqRestore(&g_sched_lock, tx_daif);
   __sev();
 
   // Never return to the dying stack; the next tick switches away, then the
@@ -474,6 +519,17 @@ U64 SchedOnTickLocked(U64 sp) {
 
   if (cur->state == TASK_RUNNING) cur->state = TASK_READY;
   best->state = TASK_RUNNING;
+  // CAMADA 3: o caminho comprovado do core 0 nunca mantinha `running_on_core`.
+  // Esse campo e' o UNICO guarda que impede o core 1 de pegar uma task que o
+  // core 0 esta' executando AGORA (SchedOnTickCore o testa). Sem carimba'-lo
+  // aqui, uma task de afinidade 0x0F ficava com running_on_core == -1 e o core 1
+  // a escolhia enquanto o core 0 a executava: a MESMA CTask->sp passa a ser
+  // gravada por dois trap frames concorrentes e o core 1 ereta um frame que o
+  // core 0 acabou de sobrescrever. Carimbar aqui restaura a invariante e NAO
+  // muda a decisao de escalonamento (me=0 confere com o filtro do core 0).
+  best->running_on_core = (I64)me_now;
+  best->last_ran_core = (I64)me_now;
+  if (cur->running_on_core == (I64)me_now) cur->running_on_core = -1;
   best->quantum_remaining = best->quantum_ticks;
   g_sched_current = best;
   g_sched_switch_count = g_sched_switch_count + 1;
