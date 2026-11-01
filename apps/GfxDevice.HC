@@ -582,6 +582,8 @@ U0 GfxDeviceInit() {
   // set via the setter so g_gdev.name/g_gpu_cfg stay consistent; it touches only
   // GfxDevice state (the rasterizer reads the mode, never the reverse).
   GfxDeviceSetMode(GFX_MODE_SMP_TILED);
+  // CAMADA 3: decide o backend UMA vez, aqui.
+  PresentInit();
 }
 
 U0 GfxDeviceSetMode(I64 m) {
@@ -631,27 +633,72 @@ U0 GfxDeviceDamage(I64 x, I64 y, I64 w, I64 h) {
   gfx_dirty_expand(x, y, w, h);
 }
 
-// The one present: copy the dirty region to the front buffer (double-buffered),
-// or nothing in direct-VRAM mode; then DMA to the host if the GPU backend is on.
-U0 GfxPresent(I64 x, I64 y, I64 w, I64 h, I64 full) {
-  if (!GfxDeviceIsZeroRam()) {
-    if (full) {
-      gfx_swap_buffers();
-    } else {
-      gfx_swap_rect(x, y, w, h);
-    }
+// ============================================================================
+// CAMADA 3 (IDEA-4) — PRESENT() PLUGAVEL. Um unico funil de apresentacao; o
+// backend e' escolhido UMA VEZ na init (PresentInit), nunca no caminho quente.
+// O 3o backend e' o HEADLESS (P1.4): e' o MESMO mecanismo visto de outro angulo
+// — sem GOP, o framebuffer e' um shadow em RAM e apresentar = so' contabilizar.
+// ============================================================================
+#define PRESENT_BACKEND_HEADLESS 0
+#define PRESENT_BACKEND_RAMFB    1
+#define PRESENT_BACKEND_VIRTIO   2
+
+I64 g_present_backend = PRESENT_BACKEND_RAMFB;   // default ate' a init decidir
+U64 g_present_frames = 0;
+
+// Escolha UNICA. Chamada por GfxDeviceInit (depois de RenderInit, que liga o
+// zero_ram/buffering). Imprime o marcador deterministico que o gate verifica.
+U0 PresentInit() {
+  if (g_uefi_has_gop == 0) {
+    g_present_backend = PRESENT_BACKEND_HEADLESS;
+  } else if (g_gdev.mode == GFX_MODE_GPU_HW && VirtioGpuIsAvailable()) {
+    g_present_backend = PRESENT_BACKEND_VIRTIO;
   } else {
-    gfx_dirty_reset();
+    g_present_backend = PRESENT_BACKEND_RAMFB;
   }
-  if (g_gdev.mode == GFX_MODE_GPU_HW && VirtioGpuIsAvailable()) {
-    if (full) {
-      VirtioGpuFlushFull();
+  if (g_present_backend == PRESENT_BACKEND_HEADLESS) {
+    doldoc_printf("[PRESENT] backend=headless (sem GOP; shadow RAM)\n");
+  } else if (g_present_backend == PRESENT_BACKEND_VIRTIO) {
+    doldoc_printf("[PRESENT] backend=virtio-gpu\n");
+  } else {
+    doldoc_printf("[PRESENT] backend=ramfb\n");
+  }
+}
+
+I64 PresentBackendId() { return g_present_backend; }
+U64 PresentFrameCount() { return g_present_frames; }
+
+// O funil unico. Só despacha para o backend JA' escolhido. Zero `if (mode...)`
+// reavaliado por frame; `GfxDeviceIsZeroRam()` sai do caminho quente.
+U0 Present(I64 x, I64 y, I64 w, I64 h, I64 full) {
+  if (g_present_backend == PRESENT_BACKEND_HEADLESS) {
+    // Shadow RAM: o desenho JA' esta' no buffer apontado por g_uefi_fb. Nao ha'
+    // hardware para tocar; resta contabilizar. O hash do frame e' o mesmo.
+    gfx_dirty_reset();
+  } else if (g_present_backend == PRESENT_BACKEND_VIRTIO) {
+    if (full) VirtioGpuFlushFull(); else VirtioGpuFlushRect(x, y, w, h);
+  } else {
+    // RAMFB (default): blit do backbuffer para a VRAM mapeada.
+    if (!GfxDeviceIsZeroRam()) {
+      if (full) gfx_swap_buffers(); else gfx_swap_rect(x, y, w, h);
     } else {
-      VirtioGpuFlushRect(x, y, w, h);
+      gfx_dirty_reset();
     }
   }
+  // IDEA-5 (CAMADA 3): o funil de apresentacao e' o limite natural do frame de
+  // telemetria — aqui fecha o estagio "blit/dma". TelemetryMarkBlitEnd() e
+  // TelemetryRecordSmpWait() estavam na Layer B (0 chamadores). Cabea-los aqui
+  // da' ao profiler o custo REAL de apresentar por frame.
+  TelemetryMarkBlitEnd();
+  TelemetryRecordSmpWait(0);
+  g_present_frames = g_present_frames + 1;
   g_gdev.ops_counter = g_gdev.ops_counter + 1;
   g_gdev.dma_bytes = g_gdev.dma_bytes + (w * h * 4);
+}
+
+// Compatibilidade: os 15 sitios existentes continuam chamando GfxPresent().
+U0 GfxPresent(I64 x, I64 y, I64 w, I64 h, I64 full) {
+  Present(x, y, w, h, full);
 }
 
 U0 GfxDeviceFastClear(U32 *dst_pixels, I64 num_px, U32 clr_val) {

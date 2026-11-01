@@ -1698,6 +1698,20 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("c2_rq_core1_switches", (SchedRqCore1Switches() > 0) ? 1 : 0, 1);
     SelfTestCompare("c2_watchdog_ran_on_core1", (g_watchdog_offcore_runs > 0) ? 1 : 0, 1);
     SelfTestCompare("c2_native_cores_registered", (SchedNativeCores() & 0xE) == 0xE ? 1 : 0, 1);
+    // CAMADA 3 (IDEA-4): o funil de apresentacao. O backend e' escolhido UMA vez
+    // (PresentInit) e e' um dos 3 validos.
+    SelfTestCompare("c3_present_backend_valid",
+                    (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
+    // O contador de frames so' avanca quando algo apresenta. O corpus desenha
+    // (RENDER/FONTS/DOLDOC) DEPOIS deste ponto do SelfTest, entao medir ">0" aqui
+    // seria medir a ORDEM de execucao, nao o mecanismo. Provamos o mecanismo:
+    // apresentar incrementa, e o delta e' exatamente o que pedimos.
+    {
+        U64 c3_before = PresentFrameCount();
+        Present(0, 0, 4, 4, 1);
+        SelfTestCompare("c3_present_frames_increment",
+                        (PresentFrameCount() == c3_before + 1) ? 1 : 0, 1);
+    }
     SelfTestCompare("b2b_aff_core3_ok", SchedAffinityAllowsMask(0x08, 3), 1);
     SelfTestCompare("b2b_aff_open_core0", SchedAffinityAllowsMask(0, 0), 1);
     SelfTestCompare("b2b_aff_open_core2", SchedAffinityAllowsMask(0, 2), 1);

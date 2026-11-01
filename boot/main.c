@@ -347,6 +347,10 @@ int gfx_is_active(void) {
 
 // Global UEFI GOP Display parameters accessible to HolyC
 uint32_t *g_uefi_fb = NULL;
+// P1.4 (CAMADA 3): 1 = framebuffer real (GOP); 0 = shadow framebuffer em RAM
+// (servidor headless / U-Boot sem display). O Render.HC NAO precisa de nenhum
+// `if` no caminho de pixel — ele escreve no ponteiro, seja VRAM ou RAM.
+uint64_t  g_uefi_has_gop = 1;
 uint64_t  g_uefi_width = 0;
 uint64_t  g_uefi_height = 0;
 uint64_t  g_uefi_pitch = 0;
@@ -455,9 +459,47 @@ int main(int argc, char **argv)
     efi_gop_t *gop = NULL;
     efi_status_t status = BS->LocateProtocol(&gopGuid, NULL, (void**)&gop);
     if (EFI_ERROR(status) || !gop) {
-        printf("FATAL: UEFI GOP Protocol not available!\n");
-        return 1;
-    }
+        // ====================================================================
+        // P1.4 (CAMADA 3) — FALLBACK DE VIDEO SEM GOP (headless de verdade).
+        // Antes: abortava o boot (FATAL ... return 1). Um servidor sem placa de
+        // video (CloudLab X-Gene, U-Boot sem display, container 'nographic') nao
+        // conseguia nem chegar ao shell, embora NADA no kernel dependa de VRAM —
+        // so' do PONTEIRO do framebuffer.
+        //
+        // Solucao (Nil-Stub / backing-buffer): aloca um SHADOW FRAMEBUFFER em RAM
+        // normal e aponta fb_base para ele. Render/RasterTile/HolyGL/DolDoc
+        // desenham normalmente; o hash RENDER 0xD28836F e' calculado do mesmo
+        // buffer. O funil Present() escolhe o backend HEADLESS e so' contabiliza.
+        //
+        // E2E-1: se a alocacao falhar, alocamos MENOS paginas (ate' 1) para nao
+        // arriscar o boot; se nem isso, o pior caso e' um escalar (nao ha' video,
+        // mas o boot continua e o serial funciona).
+        // ====================================================================
+        uint64_t fw = 1024, fh = 768;
+        uint64_t bytes = fw * fh * 4;
+        uint64_t pages = bytes / 4096;
+        efi_physical_address_t fb_phys = 0;
+        efi_status_t fb_st = EFI_ABORTED;
+        while (fb_st != EFI_SUCCESS && pages > 0) {
+            fb_st = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &fb_phys);
+            if (fb_st != EFI_SUCCESS) pages = pages / 2;
+        }
+        if (fb_st == EFI_SUCCESS && fb_phys != 0) {
+            g_uefi_fb    = (uint32_t*)fb_phys;
+            g_uefi_width = fw;
+            g_uefi_height = fh;
+            g_uefi_pitch = fw;
+        } else {
+            static uint32_t s_headless_tiny[4];
+            g_uefi_fb = s_headless_tiny;
+            g_uefi_width = 1; g_uefi_height = 1; g_uefi_pitch = 1;
+        }
+        g_uefi_has_gop = 0;
+        s_gfx_active = 1;   // ha' um framebuffer VALIDO (em RAM)
+        printf("[BOOT] GOP ausente -> SHADOW framebuffer em RAM: 0x%016llX (%llux%llu, headless)\r\n",
+               (unsigned long long)g_uefi_fb, (unsigned long long)g_uefi_width,
+               (unsigned long long)g_uefi_height);
+    } else {
 
     uint32_t chosen_mode = 0;
     uint32_t max_modes = gop->Mode ? gop->Mode->MaxMode : 0;
@@ -487,6 +529,8 @@ int main(int argc, char **argv)
     printf("[BOOT] GOP FrameBufferBase: 0x%016llX (%llux%llu, pitch %llu)\r\n",
            (unsigned long long)g_uefi_fb, (unsigned long long)g_uefi_width,
            (unsigned long long)g_uefi_height, (unsigned long long)g_uefi_pitch);
+    g_uefi_has_gop = 1;
+    }
 
     // Size the heap / JIT pool from the real UEFI memory map.
     boot_probe_memory();
@@ -553,6 +597,7 @@ int main(int argc, char **argv)
 
     // Register Tier-0 Hardware Pointers & Vector Trampoline Table
     symbols_register("g_uefi_fb", (void*)&g_uefi_fb, SYM_VAR);
+    symbols_register("g_uefi_has_gop", (void*)&g_uefi_has_gop, SYM_VAR);
     symbols_register("g_uefi_width", (void*)&g_uefi_width, SYM_VAR);
     symbols_register("g_uefi_height", (void*)&g_uefi_height, SYM_VAR);
     symbols_register("g_uefi_pitch", (void*)&g_uefi_pitch, SYM_VAR);

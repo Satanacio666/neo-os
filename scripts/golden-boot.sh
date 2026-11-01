@@ -371,6 +371,9 @@ check "HEAPINT invariant present"   1 "$(count 'HEAPINT: PASS')"
 # boot e nunca verificados. PARITY cai de 92/92 sem ninguem notar (a paridade dos
 # motores C-JIT x Compiler.HC); PROFILER e' o teste que existia e nunca era chamado.
 check "PARITY 92/92 agree"         1 "$(count 'PARITY: 92/92')"
+# CAMADA 3 (IDEA-4): o funil unico Present() foi escolhido e anunciado. Sem esta
+# linha, um backend quebrado/nao-inicializado passava em silencio.
+check "PRESENT backend chosen"    1 "$(count '\[PRESENT\] backend=')"
 check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
 # Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
 check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"

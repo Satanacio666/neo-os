@@ -15,6 +15,9 @@ VNC_DISPLAY=${NEO_VNC_DISPLAY:-0}
 # CAMADA 1.3: permite bootar uma imagem de disco ALTERNATIVA (isolamento do
 # p1-parity: patch de KernelInit.HC numa COPIA, nunca no build/disk.img oficial).
 DISK_IMG=${NEO_DISK_IMG:-$BUILD/disk.img}
+# P1.4: NEO_NO_GOP=1 => sem -device ramfb (servidor headless). A flag e' passada
+# ao QEMU via expansao de shell (nao pode ficar no array com quotes simples).
+if [ "${NEO_NO_GOP:-0}" = "1" ]; then NO_GOP_DEVICE=""; else NO_GOP_DEVICE="-device ramfb"; fi
 QEMU_BIOS=${NEO_QEMU_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 
 # P7.4 F4: TCG threading. Default single (deterministic, one host thread); set
@@ -40,7 +43,7 @@ QEMU_ARGS=(
   # guest means a smaller host footprint. Override with NEO_GUEST_MB for benchmarks.
   -m "${NEO_GUEST_MB:-256}"
   -bios "$QEMU_BIOS"
-  -device ramfb
+  ${NO_GOP_DEVICE}
   # VirtIO-GPU REMOVIDO (31/10): sem acesso a virtio neste ambiente de teste,
   # o caminho oficial de apresentacao e' o ramfb (escrita direta na VRAM), que
   # ja' era o UNICO que funcionava de fato (nao havia [VIRTIO-GPU] no log).
