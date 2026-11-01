@@ -372,6 +372,12 @@ check "no SYMBOL FAULT"          0 "$(count '\[WATCHDOG\] SYMBOL FAULT')"
 check "no CANARY VIOLATION"      0 "$(count 'CANARY VIOLATION')"
 # TIMER DRIFT: o B11 testa a funcao PURA e nao imprime o alerta -> 0 esperado.
 check "no TIMER DRIFT"           0 "$(count '\[TIMER\] DRIFT')"
+# CAMADA 0.5 (IDEA-9): SOVEREIGN existe -> a fronteira C<->HolyC esta' provada
+# (o HolyC assumiu kmalloc/kfree/symbols_*/uart). Sem esta linha, uma regressao no
+# handover passava em silencio.
+check "SOVEREIGN handover proven" 1 "$(count 'SOVEREIGN: PASS')"
+# SMP real: os secundarios abrem IRQ e tomam tick (o contador e' impresso em SMPIRQ:).
+check "SMPIRQ present"            1 "$(count 'SMPIRQ:')"
 
 # Sintomas com teste sintetico: o numero observado nao pode EXCEDER o esperado.
 hlog="$(count '\[HEALTHLOG\] DROP')"

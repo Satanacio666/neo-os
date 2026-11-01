@@ -156,19 +156,35 @@ U64 HalGetHeapSize()  { return g_uefi_heap_size; }
 U64 hal_get_total_ram() { return g_total_ram_bytes; }
 U64 hal_get_free_ram()  { return g_free_ram_bytes; }
 
+// CAMADA 0.1 (D7): a linha de cache vem do HARDWARE (CTR_EL0 via disco_dcache_line),
+// nao do 64 hardcoded. Em QEMU/Cortex-A72 sao 64 B, mas o valor agora e' o FATO
+// fisico — se um dia rodar em silicio com 128 B, o flush continua correto.
+I64 g_hal_dcache_line = 0;   // 0 = ainda nao sondado; HalSetDcacheLine preenche
+
+U64 hal_dcache_line(void) {
+  if (g_hal_dcache_line < 16) g_hal_dcache_line = 64;   // piso de seguranca
+  return g_hal_dcache_line;
+}
+
+U0 HalSetDcacheLine(I64 bytes) {
+  if (bytes >= 16) g_hal_dcache_line = bytes;
+}
+
 U0 HalFlushCache(U64 addr, I64 size) {
   if (addr == 0 || size <= 0) return;
-  U64 dc_line = addr & ~63;
+  U64 line = hal_dcache_line();
+  U64 mask = ~(line - 1);
+  U64 dc_line = addr & mask;
   U64 end_addr = addr + size;
   while (dc_line < end_addr) {
     __dc_civac(dc_line);
-    dc_line = dc_line + 64;
+    dc_line = dc_line + line;
   }
   __dsb_sy();
-  U64 ic_line = addr & ~63;
+  U64 ic_line = addr & mask;
   while (ic_line < end_addr) {
     __ic_ivau(ic_line);
-    ic_line = ic_line + 64;
+    ic_line = ic_line + line;
   }
   __dsb_sy();
   __isb();
@@ -271,6 +287,13 @@ U0 HalPlatformOverlayDiscovery() {
 U0 HalPlatformInit() {
   U64 boot_frq = __mrs_cntfrq();
   if (boot_frq == 0) boot_frq = 62500000;
+
+  // CAMADA 0.1 (D7): linha de cache do HARDWARE (CTR_EL0 via ACPI/discovery), com
+  // piso de seguranca. O flush deixa de usar o 64 hardcoded.
+  {
+    I64 dl = disco_dcache_line();
+    HalSetDcacheLine(dl > 0 ? dl : 64);
+  }
 
   // 1. QEMU ARM64 Virt
   g_plat_qemu.id            = HAL_PLATFORM_QEMU_VIRT;

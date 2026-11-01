@@ -115,12 +115,36 @@ U0 UartPutChar(U8 c) {
     smp_spin_unlock(&g_uart_lock);
 }
 
+// CAMADA 0.4 (D3) — lock por STRING inteira, nao por caractere.
+// O padrao antigo (lock dentro do UartPutChar, por char) evitava corrupcao de
+// registrador MMIO, mas duas strings de cores diferentes ainda podiam sair
+// ENTRELAÇADAS ("[CO[WA..."): o lock era solto e retomado entre cada caractere.
+// Aqui, o emissor de string segura o lock UMA vez.
+//
+// E' o contrato de Nivel 1 (IRQ-safe): salva DAIF e mascara IRQs locais ANTES do
+// spin, restaurando depois — sem isso, uma IRQ de timer cujo handler imprimisse
+// daria self-deadlock (o core esperaria por si mesmo).
 U0 UartPutString(U8 *s) {
+    if (!s) return;
+    U64 daif = __mrs_daif();
+    __irq_disable();
+    smp_spin_lock(&g_uart_lock);
+    I64 us_base = hal_get_uart_base();
     while (*s) {
-        if (*s == '\n') UartPutChar('\r');
-        UartPutChar(*s);
+        if (us_base) {
+            if (*s == '\n') {
+                I64 w1 = 10000;
+                while ((__mmio_r32(us_base + 0x18) & PL011_FR_TXFF) && w1 > 0) w1--;
+                __mmio_w32(us_base + 0x00, '\r');
+            }
+            I64 w2 = 10000;
+            while ((__mmio_r32(us_base + 0x18) & PL011_FR_TXFF) && w2 > 0) w2--;
+            __mmio_w32(us_base + 0x00, *s);
+        }
         s++;
     }
+    smp_spin_unlock(&g_uart_lock);
+    if ((daif & 0x2) == 0) __irq_enable();   // restaura só se estava habilitada
 }
 
 U0 uart_putc(U8 c) {

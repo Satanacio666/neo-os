@@ -89,7 +89,17 @@ class CRasterBin { U16 idx[RASTER_MAX_TRIS_PER_TILE]; I64 count; };
 
 CTriRecord  g_rs_records[RASTER_MAX_SCENE_TRIS];
 CRasterBin  g_rs_bins[RASTER_MAX_PRODUCERS][RASTER_MAX_TILES];
-I64 g_rs_prod_count[RASTER_MAX_PRODUCERS];   // accepted records per producer
+// CAMADA 0.2 (D5) — FALSE SHARING ELIMINADO. Antes: `I64 g_rs_prod_count[4]` =
+// 32 bytes contiguos = UMA linha L1D para os 4 produtores. Com os 4 cores
+// empurrando triangulos em paralelo, cada escrita invalidava a linha inteira
+// (MESI) nos outros 3 cores. Agora: 64 bytes EXATOS por produtor (uma linha L1D
+// propria), numa arena alinhada — mesmo idioma do g_rctx (sem kmalloc).
+class CProdCount {
+  I64 count;
+  I64 pad0; I64 pad1; I64 pad2; I64 pad3; I64 pad4; I64 pad5; I64 pad6;
+};   // 8 * 8 = 64 bytes = 1 linha L1D
+U8  g_rs_prod_arena[RASTER_MAX_PRODUCERS * 64 + 64];
+CProdCount *g_rs_prod_slots;                 // alinhado a 64 em RsProdInit
 I64 g_rs_producer_overflowed = 0;
 I64 g_rs_tris_overflowed = 0;
 // B4 (ONDA 1): o bin por tile era o UNICO overflow sem contador — `if (count <
@@ -316,6 +326,14 @@ U0 RasterCtxInit() {
     g_frame_arenas[rc_i].tile = -1;
     g_frame_arenas[rc_i].rendered = 0;
     rc_i = rc_i + 1;
+  }
+  // CAMADA 0.2 (D5): arena alinhada dos contadores por produtor. Assert de layout:
+  // sizeof EXATO de 64 e base 64-alinhada — senao dois produtores compartilhariam
+  // uma linha L1D (false sharing voltaria em silencio).
+  g_rs_prod_slots = (CProdCount*)(((U64)g_rs_prod_arena + 63) & (~63));
+  if (sizeof(CProdCount) != 64 || ((U64)g_rs_prod_slots & 63) != 0) {
+    doldoc_printf("[RASTER] FATAL: CProdCount layout != 64B (sizeof=%lld align=%lld)\n",
+                  (I64)sizeof(CProdCount), (U64)g_rs_prod_slots & 63);
   }
   g_rctx_ready = 1;
 }
@@ -1030,7 +1048,7 @@ U0 RasterSceneBegin(I64 vx, I64 vy, I64 vw, I64 vh, U32 clear) {
   g_rs_clear = clear;
   g_rs_tile_size = TILE_W;
   I64 rp = 0;
-  while (rp < RASTER_MAX_PRODUCERS) { g_rs_prod_count[rp] = 0; rp = rp + 1; }
+  while (rp < RASTER_MAX_PRODUCERS) { g_rs_prod_slots[rp].count = 0; rp = rp + 1; }
   g_rs_cols = (vw + TILE_W - 1) / TILE_W;
   g_rs_rows = (vh + TILE_H - 1) / TILE_H;
   if (g_rs_cols < 1) g_rs_cols = 1;
@@ -1059,11 +1077,11 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
     }
     return;
   }
-  if (g_rs_prod_count[producer] >= RS_TRIS_PER_PRODUCER) {
+  if (g_rs_prod_slots[producer].count >= RS_TRIS_PER_PRODUCER) {
     if (!g_rs_tris_overflowed) {
       g_rs_tris_overflowed = 1;
       doldoc_printf("$FG,RED$[RASTER] FATAL: RS_TRIS_PER_PRODUCER overflow (prod=%lld count=%lld max=%lld)$FG$\n",
-                    producer, g_rs_prod_count[producer], (I64)RS_TRIS_PER_PRODUCER);
+                    producer, g_rs_prod_slots[producer].count, (I64)RS_TRIS_PER_PRODUCER);
     }
     return;
   }
@@ -1101,7 +1119,7 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
   I64 z0 = v[0].z; if (z0 < 0) z0 = 0; if (z0 > 65534) z0 = 65534;
   I64 z1 = v[1].z; if (z1 < 0) z1 = 0; if (z1 > 65534) z1 = 65534;
   I64 z2 = v[2].z; if (z2 < 0) z2 = 0; if (z2 > 65534) z2 = 65534;
-  I64 ti = producer * RS_TRIS_PER_PRODUCER + g_rs_prod_count[producer];
+  I64 ti = producer * RS_TRIS_PER_PRODUCER + g_rs_prod_slots[producer].count;
   CTriRecord *t = &g_rs_records[ti];
   t->x0 = ax; t->y0 = ay; t->z0 = z0;
   t->x1 = bx; t->y1 = by; t->z1 = z1;
@@ -1128,7 +1146,7 @@ U0 RasterSceneAddTriangleP(CRasterVertex *v, U32 color, I64 producer) {
     }
     ty = ty + 1;
   }
-  g_rs_prod_count[producer] = g_rs_prod_count[producer] + 1;
+  g_rs_prod_slots[producer].count = g_rs_prod_slots[producer].count + 1;
 }
 
 // Default producer 0 (the common single-submitter case).
@@ -1651,7 +1669,7 @@ U0 RasterSelfTestTile() {
   g_tile_tmpv[1].x = 200.9; g_tile_tmpv[1].y = 60.9;  g_tile_tmpv[1].z = 1;
   g_tile_tmpv[2].x = 90.9;  g_tile_tmpv[2].y = 180.9; g_tile_tmpv[2].z = 1;
   RasterSceneAddTriangle(g_tile_tmpv, COL);
-  if (g_rs_prod_count[0] != 1) { ok = 0; doldoc_printf("[TILE] F2 snapshot count=%lld\n", g_rs_prod_count[0]); }
+  if (g_rs_prod_slots[0].count != 1) { ok = 0; doldoc_printf("[TILE] F2 snapshot count=%lld\n", g_rs_prod_slots[0].count); }
   if (g_rs_records[0].x0 != 30 || g_rs_records[0].y0 != 30) { ok = 0; doldoc_print("[TILE] F2 snapshot truncation\n"); }
   if (g_rs_records[0].z0 != 1 || g_rs_records[0].color != COL) { ok = 0; doldoc_print("[TILE] F2 snapshot payload\n"); }
   RasterSceneBegin(0, 0, R, R, BG);

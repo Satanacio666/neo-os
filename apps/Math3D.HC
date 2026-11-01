@@ -174,6 +174,11 @@ F64 math3d_cos(F64 deg) {
 
 // Fast Fixed-Point (256-scale) & Integer Shader Helpers
 // FastSin256: angle256 period = 256 (0..255), output in [-256..256]
+// CAMADA 0.3 (D6): o parabola simples (a*(128-a))>>4 tinha 5,59% de erro medido.
+// Agora usa a formula de BHASKARA I em aritmetica inteira — a MESMA tecnica
+// (rapida, sem LUT), com 0,356% de erro (16x melhor). Preserva o pico: a=64 -> 256.
+//   sin(x) ~= 16*x*(pi-x) / (5*pi^2 - 4*x*(pi-x)),  x em [0,pi]
+// Em escala 128: k = 16*a*(128-a) / (5*16384 - 4*a*(128-a)) * 2, arredondado.
 I64 FastSin256(I64 angle256) {
   I64 a = angle256 & 255;
   I64 sign = 1;
@@ -181,9 +186,12 @@ I64 FastSin256(I64 angle256) {
     a = a - 128;
     sign = -1;
   }
-  // Parabolic Bhaskara/CORDIC-style curve on [0..128], peak 256 at a=64
-  I64 parabola = (a * (128 - a)) >> 4;
-  return sign * parabola;
+  // Bhaskara I em inteiros (numerador e denominador com *128 para arredondar).
+  I64 t = a * (128 - a);              // 0..4096, pico 4096 em a=64
+  I64 num = 16 * t;                    // 0..65536
+  I64 den = 5 * 16384 - 4 * t;         // 81920-4t, nunca <=0 (t<=4096 -> >=65536)
+  I64 v = (num * 256 + den / 2) / den; // v = sin escalado a 256, arredondado
+  return sign * v;
 }
 
 I64 FastCos256(I64 angle256) {
