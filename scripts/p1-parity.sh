@@ -33,6 +33,17 @@
 #   PARITY_OUT     output dir (default /tmp/p1-parity)
 #   FORCE          1 = allow running with a dirty apps/KernelInit.HC
 #
+# ISOLATION (CAMADA 1.3 / IDEA-8) — ZERO RISCO A ARVORE VIVA
+#   O disco que o guest le' (holyc/KernelInit.HC) e' uma COPIA em disco, nao o
+#   working tree. Este harness:
+#     1. copia build/disk.img -> $OUT/parity-disk.img (uma vez, apos o build);
+#     2. para cada variante, EXTRAI apps/KernelInit.HC do git/HEAD, aplica o flip
+#        com scripts/_p1_flip.py NUM ARQUIVO TEMPORARIO e o embute na COPIA com
+#        `mcopy -o -i $OUT/parity-disk.img <tmp> ::/holyc/KernelInit.HC`;
+#     3. boota com NEO_DISK_IMG=$OUT/parity-disk.img.
+#   apps/KernelInit.HC NUNCA e' tocado — nem por cp, nem por git checkout, nem por
+#   trap que possa falhar. `git status` fica limpo mesmo em SIGINT/SIGKILL.
+#
 # LOCKING
 #   No flock. The long-running QEMU inherits an open fd on /tmp/neo-os-vm.lock,
 #   so any `flock` here deadlocks. Only one agent runs at a time; serialise the
@@ -63,7 +74,6 @@ if [ -z "$ROOT" ] || [ ! -f "$ROOT/apps/KernelInit.HC" ]; then
 fi
 KI="$ROOT/apps/KernelInit.HC"
 
-# (blindagem: o trap restore ja existe abaixo, logo apos o backup — ver BACKUP)
 SERLOG=/tmp/neo-os-serial.log
 LOCK=/tmp/neo-os-vm.lock
 HANG_SECONDS="${HANG_SECONDS:-45}"
@@ -149,68 +159,41 @@ hc_compiled() {  # $1 = owner module  $2 = variant
     esac
 }
 
-# --- safety + backup ---------------------------------------------------------
+# --- safety (read-only) + COPIAS isoladas --------------------------------
+# Nao ha backup para restaurar: nunca tocamos o fonte. A unica exigencia e' que a
+# arvore esteja LIMPA para nao embutir um KernelInit.HC com mudancas nao commitadas.
 if [ -n "$(git -C "$ROOT" diff --name-only -- apps/KernelInit.HC 2>/dev/null)" ] && [ "${FORCE:-0}" != "1" ]; then
-    echo "p1-parity: apps/KernelInit.HC has uncommitted changes (FORCE=1 to override)" >&2
+    echo "p1-parity: apps/KernelInit.HC tem mudancas nao commitadas (FORCE=1 para ignorar)" >&2
     exit 4
 fi
-# BLINDAGEM (31/10): o `mktemp` pode falhar (sem /tmp gravavel, busybox sem sufixo,
-# disco cheio) e devolver "" -> `cp "$KI" ""` dava "can't stat ''" e o script
-# seguia com BACKUP vazio, deixando o KernelInit.HC sujo. Fallback explicito:
-BACKUP="$(mktemp /tmp/neo-os-kinit.XXXXXX.HC 2>/dev/null || true)"
-if [ -z "$BACKUP" ] || [ ! -f "$BACKUP" ]; then
-    BACKUP="$ROOT/.p1_parity_kinit.bak"
-    : > "$BACKUP" || { echo "p1-parity: nao consegui criar backup — ABORTANDO (nao tocar em KernelInit.HC)" >&2; exit 5; }
-fi
-cp "$KI" "$BACKUP" || { echo "p1-parity: falha ao copiar KernelInit.HC para $BACKUP — ABORTANDO" >&2; exit 5; }
-if [ ! -s "$BACKUP" ]; then
-    echo "p1-parity: backup vazio ($BACKUP) — ABORTANDO para nao corromper o KernelInit.HC" >&2; exit 5
-fi
-RESTORED=0
-restore() {
-    [ "$RESTORED" = "1" ] && return
-    RESTORED=1
-    cp "$BACKUP" "$KI" && rm -f "$BACKUP"
-    echo "[p1-parity] reverted apps/KernelInit.HC"
-}
-trap restore EXIT INT TERM
 
-# --- flip patcher ------------------------------------------------------------
+# Imagem de boot do guest (fonte, NUNCA tocada) e a COPIA de trabalho.
+mkdir -p "$OUT"
+BASE_DISK="$ROOT/build/disk.img"
+PARITY_DISK="$OUT/parity-disk.img"
+
+# Snapshots-base: KernelInit.HC (do git/HEAD) e uma copia da imagem.
+# Limpa os snapshots de uma execucao anterior que possa ter morrido.
+rm -f "$OUT/kinit-base.HC" "$PARITY_DISK"
+git -C "$ROOT" show HEAD:apps/KernelInit.HC > "$OUT/kinit-base.HC" 2>/dev/null || \
+    { echo "p1-parity: falha ao extrair apps/KernelInit.HC do git/HEAD" >&2; exit 5; }
+if [ ! -s "$OUT/kinit-base.HC" ]; then
+    echo "p1-parity: snapshot base do KernelInit.HC vazio — ABORTANDO" >&2; exit 5
+fi
+if [ ! -f "$BASE_DISK" ]; then
+    echo "p1-parity: $BASE_DISK ausente (rode 'make all' antes)" >&2; exit 5
+fi
+cp "$BASE_DISK" "$PARITY_DISK" || \
+    { echo "p1-parity: falha ao copiar a imagem para $PARITY_DISK" >&2; exit 5; }
+
+# apply_variant escreve SO nos temporarios: base -> tmp flip -> mcopy p/ a copia.
 apply_variant() {  # $1 = off | full | module:NAME
-    cp "$BACKUP" "$KI"
-    python3 - "$KI" "$1" <<'PY'
-import sys
-p, variant = sys.argv[1], sys.argv[2]
-src = open(p).read()
-
-# The self-hosting flip is COMMITTED (0b2db9d): the call site is already the
-# g_hc_ready conditional and KernelInitMain() sets `g_hc_ready = 1;` right after
-# Compiler.HC loads. So "full" is the committed tree; "off" neutralises that one
-# assignment; "module:NAME" turns it off globally and re-enables it only around
-# the target module.
-FLIP_ON = "    g_hc_ready = 1;"
-COND = "if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }"
-if COND not in src:
-    sys.exit("parity: flipped call site not found (tree not at 0b2db9d?)")
-if FLIP_ON not in src:
-    sys.exit("parity: flip anchor %r not found" % FLIP_ON)
-
-if variant == "full":
-    pass  # committed state == full flip ON
-elif variant == "off":
-    src = src.replace(FLIP_ON, "    g_hc_ready = 0;", 1)
-elif variant.startswith("module:"):
-    name = variant[len("module:"):]
-    src = src.replace(FLIP_ON, "    g_hc_ready = 0;", 1)
-    anchor = '    KInitLoad("%s");' % name
-    if anchor not in src:
-        sys.exit("parity: module anchor not found: %s" % name)
-    src = src.replace(anchor, "    g_hc_ready = 1;\n" + anchor + "\n    g_hc_ready = 0;", 1)
-else:
-    sys.exit("parity: unknown variant %s" % variant)
-
-open(p, "w").write(src)
-PY
+    local tmp="$OUT/kinit-$1.HC"
+    cp "$OUT/kinit-base.HC" "$tmp" || { echo "p1-parity: cp base->tmp falhou" >&2; return 1; }
+    python3 "$ROOT/scripts/_p1_flip.py" "$tmp" "$1" || return 1
+    mcopy -o -i "$PARITY_DISK" "$tmp" ::/holyc/KernelInit.HC || \
+        { echo "p1-parity: mcopy para a imagem falhou" >&2; return 1; }
+    return 0
 }
 
 # --- build + boot + monitor one variant, capture log -------------------------
@@ -221,9 +204,11 @@ boot_variant() {  # $1 = tag
         if ! ( cd "$ROOT" && make all >"$OUT/$tag.build.log" 2>&1 ); then
             echo "build-fail"; return
         fi
+        # o build regerou build/disk.img: re-sincroniza a COPIA de trabalho.
+        cp "$BASE_DISK" "$PARITY_DISK" || { echo "build-fail"; return; }
     fi
     : > "$SERLOG"
-    "$ROOT/scripts/run-viewer-vm.sh" restart >/dev/null 2>&1
+    NEO_DISK_IMG="$PARITY_DISK" "$ROOT/scripts/run-viewer-vm.sh" restart >/dev/null 2>&1
 
     local start last_change now cur cursor=0
     start=$(date +%s); last_change=$start
@@ -321,7 +306,6 @@ else
     run_one full full
     ON_TAG=full
 fi
-restore
 
 # --- diff + per-module PASS/FAIL table ---------------------------------------
 python3 - "$OUT" "$ON_TAG" "${MODULES[@]}" <<'PY'

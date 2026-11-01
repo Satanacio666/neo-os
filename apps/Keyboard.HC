@@ -102,17 +102,47 @@ U0 KeyboardInit() {
 // e' um caminho separado.
 U32 g_uart_lock = 0;
 
+// CAMADA 1.1 (IDEA-2) — PROVA do Nivel 1 (IRQ-safe) com ANINHAMENTO. Usa primitivas
+// ja' disponiveis no Stage 1 (HalPlatform.HC), entao Keyboard.HC (Stage 4) as ve'.
+// Devolve 1 se o contrato se mantem: com IRQs JA' mascaradas, o unlock NAO as
+// reabre; com IRQs habilitadas, o unlock as reabre (estado restaurado).
+I64 UartTestIrqNesting() {
+    I64 ok = 1;
+    U64 d1 = SmpIrqSave();
+    __irq_disable();
+    U32 lk_a = 0;
+    U64 saved_a = SmpLockIrqSave(&lk_a);
+    SmpUnlockIrqRestore(&lk_a, saved_a);
+    if (SmpIrqMasked() != 1) ok = 0;              // aninhado: continua mascarado
+    if (SmpUnlockShouldEnable(saved_a) != 0) ok = 0;
+    U32 lk_b = 0;
+    U64 saved_b = SmpLockIrqSave(&lk_b);
+    SmpUnlockIrqRestore(&lk_b, saved_b);
+    if (SmpIrqMasked() != 1) ok = 0;              // outer ainda mascarado! (era o bug)
+    if (SmpUnlockShouldEnable(saved_b) != 0) ok = 0;
+    SmpIrqRestore(d1);
+    __irq_enable();
+    U32 lk_c = 0;
+    U64 saved_c = SmpLockIrqSave(&lk_c);
+    SmpUnlockIrqRestore(&lk_c, saved_c);
+    if (SmpIrqMasked() != 0) ok = 0;              // habilitadas -> reabriu
+    if (SmpUnlockShouldEnable(saved_c) != 1) ok = 0;
+    return ok;
+}
+
 U0 UartPutChar(U8 c) {
     I64 uart_base = hal_get_uart_base();
     if (!uart_base) return;
 
-    smp_spin_lock(&g_uart_lock);
+    // CAMADA 1.1: Nivel 1 (IRQ-safe) via primitivas de HalPlatform.HC. Um handler
+    // de IRQ que imprimisse na MESMA core nao da self-deadlock (IRQs mascaradas).
+    U64 daif = SmpLockIrqSave(&g_uart_lock);
     I64 kb_to = 10000;
     while ((__mmio_r32(uart_base + 0x18) & PL011_FR_TXFF) && kb_to > 0) {
         kb_to--;
     }
     __mmio_w32(uart_base + 0x00, c);
-    smp_spin_unlock(&g_uart_lock);
+    SmpUnlockIrqRestore(&g_uart_lock, daif);
 }
 
 // CAMADA 0.4 (D3) — lock por STRING inteira, nao por caractere.
@@ -126,9 +156,7 @@ U0 UartPutChar(U8 c) {
 // daria self-deadlock (o core esperaria por si mesmo).
 U0 UartPutString(U8 *s) {
     if (!s) return;
-    U64 daif = __mrs_daif();
-    __irq_disable();
-    smp_spin_lock(&g_uart_lock);
+    U64 daif = SmpLockIrqSave(&g_uart_lock);
     I64 us_base = hal_get_uart_base();
     while (*s) {
         if (us_base) {
@@ -143,8 +171,7 @@ U0 UartPutString(U8 *s) {
         }
         s++;
     }
-    smp_spin_unlock(&g_uart_lock);
-    if ((daif & 0x2) == 0) __irq_enable();   // restaura só se estava habilitada
+    SmpUnlockIrqRestore(&g_uart_lock, daif);   // restaura SO se o bit I estava limpo
 }
 
 U0 uart_putc(U8 c) {

@@ -41,6 +41,39 @@ U64 g_hal_timer_freq;
 U64 g_hal_gicr_base;
 U64 g_hal_gic_version;
 
+// ============================================================================
+// CAMADA 1.1 (IDEA-2) — ATOMICIDADE: Nivel 1 (IRQ-safe) e Nivel 2 (cross-core).
+// ============================================================================
+// Definidas AQUI, no PRIMEIRO modulo do Stage 1, porque Gic.HC, KHeap.HC e
+// Sched.HC compilam DEPOIS e precisam delas — HolyC nao tem forward reference.
+// Um dono por simbolo: Smp.HC apenas as USA (nao as re-define).
+//
+// Nivel 1 (IRQ-safe) = mascara IRQs locais ANTES do spin. Sem isso, um handler de
+// IRQ que tomasse o mesmo lock na MESMA core daria self-deadlock (o core esperaria
+// por si mesmo). Nivel 2 (cross-core) = o proprio smp_spin_lock.
+U64 SmpIrqSave() { return __mrs_daif(); }
+U0  SmpIrqRestore(U64 daif) { __msr_daif(daif); }
+
+U64 SmpLockIrqSave(U32 *lock) {
+  U64 daif = __mrs_daif();
+  __irq_disable();
+  smp_spin_lock(lock);
+  return daif;
+}
+
+// Restaura o estado ANTERIOR: so' reabre IRQs se o bit I (DAIF bit 7 = 0x80)
+// estava LIMPO (IRQs habilitadas) no instante do save. Aninhamento perfeito: um
+// unlock interno nunca reabre IRQs que o contexto externo ja' tinha mascarado.
+U0 SmpUnlockIrqRestore(U32 *lock, U64 daif) {
+  smp_spin_unlock(lock);
+  if ((daif & 0x80) == 0) __irq_enable();
+}
+
+// Prova/teste: a decisao de reabrir IRQs, isolada (sem tocar no hardware).
+I64 SmpUnlockShouldEnable(U64 daif) { return (daif & 0x80) == 0 ? 1 : 0; }
+// Estado atual: 1 = IRQs mascaradas (bit I setado), 0 = habilitadas.
+I64 SmpIrqMasked() { return (__mrs_daif() & 0x80) != 0 ? 1 : 0; }
+
 U0 HalStrCpy(U8 *dst_buf, U8 *src_buf) {
   if (!dst_buf || !src_buf) return;
   I64 hsc_idx = 0;

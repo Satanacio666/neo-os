@@ -70,6 +70,61 @@ class CGicState {
 
 CGicState g_gic;
 
+// ============================================================================
+// CAMADA 1.1 (IDEA-2) — Nivel 3 (LOCK-FREE per-core, 64 bytes alinhados).
+// ============================================================================
+// Antes: `g_gic.dispatched_count++` era executado por TODOS os cores na MESMA
+// palavra -> a cada IRQ, os outros 3 cores tinham a linha L1D invalidada (MESI).
+// Agora: cada core escreve APENAS o seu slot (64 B = 1 linha L1D), ZERO contencao.
+// A soma e' feita na LEITURA (GicGetTotalDispatched), nunca no caminho quente.
+#define GIC_MAX_CORES 4
+class CGicCoreStats {
+  U64 dispatched;
+  U64 timer_irqs;
+  U64 pad0; U64 pad1; U64 pad2; U64 pad3; U64 pad4; U64 pad5;
+};   // 8 * 8 = 64 bytes EXATOS = 1 linha L1D por core
+U8 g_gic_stats_arena[GIC_MAX_CORES * 64 + 64];
+CGicCoreStats *g_gic_core_stats;
+I64 g_gic_percore_overflow = 0;
+
+U0 GicPerCoreInit() {
+  g_gic_core_stats = (CGicCoreStats*)(((U64)g_gic_stats_arena + 63) & (~63));
+  if (sizeof(CGicCoreStats) != 64 || ((U64)g_gic_core_stats & 63) != 0) {
+    doldoc_printf("[GIC] FATAL: CGicCoreStats layout != 64B (sizeof=%lld align=%lld)\n",
+                  (I64)sizeof(CGicCoreStats), (U64)g_gic_core_stats & 63);
+    g_gic_percore_overflow = 1;
+    return;
+  }
+  I64 pci = 0;
+  while (pci < GIC_MAX_CORES) {
+    g_gic_core_stats[pci].dispatched = 0;
+    g_gic_core_stats[pci].timer_irqs = 0;
+    pci = pci + 1;
+  }
+}
+
+// CAMINHO QUENTE: incrementa SO o slot do core (sem lock, sem palavra compartilhada).
+U0 GicCoreStatsBump(U32 core) {
+  if (g_gic_core_stats && core < GIC_MAX_CORES) {
+    g_gic_core_stats[core].dispatched = g_gic_core_stats[core].dispatched + 1;
+  }
+}
+
+// CAMINHO SIMULADO/teste: bumpa o slot E mantem o espelho g_gic.dispatched_count
+// para compatibilidade com quem le o campo direto (GicSelfTest Test 5).
+U0 GicCoreStatsBumpMirror(U32 core) {
+  GicCoreStatsBump(core);
+  g_gic.dispatched_count = g_gic.dispatched_count + 1;
+}
+
+// Leitura = soma dos 4 slots (comutativa -> determinismo preservado).
+U64 GicGetTotalDispatched() {
+  if (!g_gic_core_stats) return (U64)g_gic.dispatched_count;
+  U64 t = 0; I64 gti = 0;
+  while (gti < GIC_MAX_CORES) { t = t + g_gic_core_stats[gti].dispatched; gti = gti + 1; }
+  return t;
+}
+
 U64 GicGetDistBase() {
   if (g_hal_gicd_base != 0) return g_hal_gicd_base;
   return GICD_DEFAULT_BASE;
@@ -201,6 +256,7 @@ U0 GicInit() {
     g_gic.irq_table = kmalloc(MAX_GIC_INTERRUPTS * 32);
   }
   if (!g_gic.irq_table) return;
+  GicPerCoreInit();
   g_gic.dispatched_count = 0;
 
   U64 gicd_base = GicGetDistBase();
@@ -332,7 +388,7 @@ I64 GicDispatch(U32 sim_irq) {
   if (sim_irq >= MAX_GIC_INTERRUPTS) return -1;
   CIrqEntry *e = GicGetEntry(sim_irq);
   if (e->enabled && e->handler_fn != 0) {
-    g_gic.dispatched_count = g_gic.dispatched_count + 1;
+    GicCoreStatsBumpMirror(__mrs_mpidr());   // CAMADA 1.1: Nivel 3
     U64 fn = e->handler_fn;
     if (fn > 0x1000) {
       fn(e->data);
@@ -358,7 +414,7 @@ U64 GicHardwareIrqHandler(U64 trap_frame) {
   if (irq < MAX_GIC_INTERRUPTS) {
     CIrqEntry *e = GicGetEntry(irq);
     if (e->enabled && e->handler_fn != 0) {
-      g_gic.dispatched_count = g_gic.dispatched_count + 1;
+      GicCoreStatsBump(__mrs_mpidr());   // CAMADA 1.1 (Nivel 3): SO o slot do core
       U64 fn = e->handler_fn;
       fn(e->data);
       // Do NOT disable PPIs (irq < 32) here so periodic Timer IRQ 27 continues firing!
@@ -453,7 +509,7 @@ U0 GicBindVectors() {
 U0 GicPrintDolDoc() {
   doldoc_printf("$FG,CYAN$--- ARM GICv2 CONTROLLER TELEMETRY ---$FG$\n");
   doldoc_printf(" Total IRQ Lines: %d | GICD Base: 0x%08X\n", g_gic.total_irq_lines, GicGetDistBase());
-  doldoc_printf(" CPU Interface:   0x%08X | Dispatched: %d\n", GicGetCpuBase(), g_gic.dispatched_count);
+  doldoc_printf(" CPU Interface:   0x%08X | Dispatched: %lld\n", GicGetCpuBase(), GicGetTotalDispatched());
   I64 gpd_i = 0;
   while (gpd_i < 40) {
     CIrqEntry *e = GicGetEntry(gpd_i);

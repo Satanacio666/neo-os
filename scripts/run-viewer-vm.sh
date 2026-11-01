@@ -12,6 +12,9 @@ UARTSOCK=/tmp/neo-os-uart.sock
 UARTINSOCK=/tmp/neo-os-uart-in.sock
 SERLOG=/tmp/neo-os-serial.log
 VNC_DISPLAY=${NEO_VNC_DISPLAY:-0}
+# CAMADA 1.3: permite bootar uma imagem de disco ALTERNATIVA (isolamento do
+# p1-parity: patch de KernelInit.HC numa COPIA, nunca no build/disk.img oficial).
+DISK_IMG=${NEO_DISK_IMG:-$BUILD/disk.img}
 QEMU_BIOS=${NEO_QEMU_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 
 # P7.4 F4: TCG threading. Default single (deterministic, one host thread); set
@@ -50,7 +53,7 @@ QEMU_ARGS=(
   -device usb-kbd
   -device usb-tablet
   -net none
-  -drive file="$BUILD/disk.img",format=raw,id=disk,if=none
+  -drive file="$DISK_IMG",format=raw,id=disk,if=none
   -device virtio-blk-pci,drive=disk,bootindex=0
   -drive file="$BUILD/redsea.img",format=raw,id=redsea,if=none
   -device virtio-blk-device,drive=redsea
@@ -69,7 +72,7 @@ is_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 case "${1:-start}" in
   start)
     if is_running; then echo "already running (pid $(cat "$PIDFILE"))"; exit 0; fi
-    if [ ! -f "$BUILD/disk.img" ] || [ ! -f "$BUILD/redsea.img" ]; then
+    if [ ! -f "$DISK_IMG" ] || [ ! -f "$BUILD/redsea.img" ]; then
       echo "build images missing; run 'make all' in $ROOT" >&2; exit 1; fi
     rm -f "$MONSOCK" "$UARTSOCK" "$UARTINSOCK"
     : > "$SERLOG"

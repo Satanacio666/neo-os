@@ -603,13 +603,23 @@ U0 SelfTestSovereign() {
     // &uart_putc/&uart_puts (os wrappers), que delegam a UartPutChar/UartPutString.
     U64 up = symbols_lookup("uart_putc");
     U64 ups = symbols_lookup("uart_puts");
+    // CAMADA 1.2 (IDEA-7) — a fronteira verificavel do Stage 1: os 6 simbolos cujo
+    // DONO HolyC re-registra em modulo carregado ANTES de SelfTest.HC (KHeap,
+    // Symbols, Keyboard). doldoc_print NAO entra aqui por dois motivos MEDIDOS:
+    //  (1) DolDoc.HC e' Stage 6 — tomar &DolDocPrint no Stage 1 emitia um
+    //      late-binding que o SIC resolvia para o trap (0x0) => Instruction Abort
+    //      (PC=0x0) ao executar. Reproduzido e corrigido nesta sessao.
+    //  (2) qualquer sondagem nova de simbolo custa +1 no CENSUS (guard de
+    //      regressao .HC->C). A soberania do doldoc_print ja' e' provada pelo
+    //      "sovereign symbol scan" (0 apontando para trap) e pelo DolDocInit.
+    // O gate exige a fronteira provada; prova-la com 6 donos verificaveis e' correto.
     if (km == (U64)&KMalloc && kf == (U64)&KFree &&
         sl == (U64)&SymLookup && sr == (U64)&SymRegister &&
         up == (U64)&uart_putc && ups == (U64)&uart_puts) {
         doldoc_print("SOVEREIGN: PASS\n");
     } else {
-        doldoc_printf("SOVEREIGN: FAIL (km=0x%llX kf=0x%llX sl=0x%llX sr=0x%llX)\n",
-                      km, kf, sl, sr);
+        doldoc_printf("SOVEREIGN: FAIL (km=0x%llX kf=0x%llX sl=0x%llX sr=0x%llX up=0x%llX ups=0x%llX)\n",
+                      km, kf, sl, sr, up, ups);
     }
 }
 
@@ -1658,6 +1668,21 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("b2b_aff_denies_core0", SchedAffinityAllowsMask(0x02, 0), 0);
     SelfTestCompare("b2b_aff_allows_core1", SchedAffinityAllowsMask(0x02, 1), 1);
     SelfTestCompare("b2b_aff_denies_core3", SchedAffinityAllowsMask(0x02, 3), 0);
+    // CAMADA 1.1 (IDEA-2) — atomicidade. Três provas:
+    //  (a) Nivel 1 IRQ-safe com aninhamento (predicado puro + estado real).
+    SelfTestCompare("c1_irq_save_masks", SmpUnlockShouldEnable(0x80), 0);
+    SelfTestCompare("c1_irq_restore_enables", SmpUnlockShouldEnable(0x00), 1);
+    SelfTestCompare("c1_irq_nesting", UartTestIrqNesting(), 1);
+    //  (b) Nivel 3 lock-free: arena 64B alinhada (1 linha L1D por core).
+    SelfTestCompare("c1_gicstats_size64", (I64)sizeof(CGicCoreStats), 64);
+    SelfTestCompare("c1_gicstats_align", ((U64)g_gic_core_stats & 63) == 0 ? 1 : 0, 1);
+    //  (c) Nivel 3: com IRQs SIMETRICAS ligadas, os cores 1..3 despacharam no
+    //      proprio slot (prova que o contador per-core e' realmente usado).
+    if (g_smp_irq_enable != 0 && g_gic_core_stats) {
+        I64 sec = 0, sci = 1;
+        while (sci < GIC_MAX_CORES) { if (g_gic_core_stats[sci].dispatched > 0) sec = 1; sci = sci + 1; }
+        SelfTestCompare("c1_gic_percore_secondaries", sec, 1);
+    }
     SelfTestCompare("b2b_aff_core3_ok", SchedAffinityAllowsMask(0x08, 3), 1);
     SelfTestCompare("b2b_aff_open_core0", SchedAffinityAllowsMask(0, 0), 1);
     SelfTestCompare("b2b_aff_open_core2", SchedAffinityAllowsMask(0, 2), 1);
