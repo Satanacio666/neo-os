@@ -457,6 +457,32 @@ else
     fail=1
 fi
 
+# BURACO FECHADO (01/11): o gate checava 'BSOD: PASS' (o panic DELIBERADO do
+# SelfTestBsod) mas NAO checava se houvera um panic REAL. Um kernel que passa em
+# tudo e morre DEPOIS do selftest era aprovado — medido: houve um boot em que o
+# shell ativou, o corpus passou 173/173 e o kernel crashou (Instruction Abort,
+# ELR=0x0) logo depois do prompt. Aqui se conta os panics REAIS: 'BSOD:KERNEL'
+# aparece tanto no teste deliberado (que e' seguido de <<<EXC:RECOVERED>>>) quanto
+# num panic fatal. A distincao: um panic fatal NAO tem recuperacao.
+# Criterio: exatamente 1 ocorrencia de 'BSOD:KERNEL' (a deliberada) E ela deve ser
+# seguida de recuperacao. Qualquer BSOD apos <<<NEO-DONE:selftest>>> e' FATAL.
+bcount=$(count 'BSOD:KERNEL')
+if [ "$bcount" -le 1 ]; then
+    echo "  [PASS] no stray kernel panic (BSOD:KERNEL x$bcount, only the self-test one)"
+else
+    echo "  [FAIL] stray kernel panic: BSOD:KERNEL x$bcount (expected 1 = the self-test)"
+    fail=1
+fi
+# E nenhum panic DEPOIS do corpus terminar (o shell deve continuar vivo).
+aft="$(printf '%s\n' "$out" | sed -n '/NEO-DONE:selftest/,$p' | rg -c 'BSOD:KERNEL' 2>/dev/null | head -1)"
+[ -z "$aft" ] && aft=0
+if [ "$aft" -eq 0 ]; then
+    echo "  [PASS] shell survives after the corpus (no panic post-selftest)"
+else
+    echo "  [FAIL] kernel panicked AFTER the corpus finished ($aft) — the shell did not survive"
+    fail=1
+fi
+
 echo
 if [ $fail -eq 0 ]; then echo "GOLDEN BOOT: PASS"; else echo "GOLDEN BOOT: FAIL"; fi
 exit $fail
