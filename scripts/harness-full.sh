@@ -79,6 +79,17 @@ fi
 # ---------------------------------------------------------------- 6. opcionais
 if [ "$RUN_ALL" = "1" ]; then
     step 6a/7 "golden do C JIT (86 casos)"
+    # CAMADA 3 (01-11): o jit-golden tem de rodar num guest de BOOT LIMPO. O
+    # SelfTestRun documenta que "the corpus assumes a fresh compiler state: a
+    # second run in the same boot trips a pre-existing Compiler.HC re-entrancy
+    # bug". O passo 5 (golden-boot.sh) roda o corpus inteiro; sem rebobinar, o
+    # jit-golden roda sobre esse estado residual e 3 casos longos devolvem None
+    # (medido: 108/111 aqui vs 111/111 isolado). Rebobinar e' o procedimento
+    # correto — nao mascaramento: os casos sao os mesmos.
+    for d in /proc/[0-9]*; do a=$(tr '\0' '\n' < $d/cmdline 2>/dev/null|head -1); case "$a" in *qemu-system*) kill -9 ${d#/proc/} 2>/dev/null;; esac; done
+    sleep 2
+    "$ROOT/scripts/run-viewer-vm.sh" restart >/dev/null 2>&1
+    for i in $(seq 1 120); do grep -q 'DolDocShell active' /tmp/neo-os-serial.log 2>/dev/null && break; sleep 1; done
     if python3 scripts/run-jit-golden.py >/tmp/hf-jit.log 2>&1; then
         ok "$(tail -1 /tmp/hf-jit.log)"
     else

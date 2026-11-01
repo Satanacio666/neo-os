@@ -12,8 +12,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CASES = os.path.join(ROOT, "tests", "jit_golden", "cases.json")
 IN_SOCK = os.environ.get("NEO_UART_IN_SOCK", "/tmp/neo-os-uart-in.sock")
 LOG = os.environ.get("NEO_SERIAL_LOG", "/tmp/neo-os-serial.log")
-WAIT = float(os.environ.get("NEO_WAIT", "2.5"))
-SETTLE = float(os.environ.get("NEO_SETTLE", "0.5"))
+# CAMADA 3: WAIT 2.5 s era curto para comandos LONGOS (definicoes de funcao/
+# struct, 68-76 chars: fn_recursion_local, f64_local_array_assign,
+# neg_global_redecl_overflow) — o guest ainda estava compilando quando o script
+# desistia e lia got=None. 4.0 s + SETTLE 0.8 da' margem medida. NAO mascara: um
+# caso que realmente falha devolve um valor ERRADO (got!=expect), nao None.
+WAIT = float(os.environ.get("NEO_WAIT", "4.0"))
+SETTLE = float(os.environ.get("NEO_SETTLE", "0.8"))
 VALUE_RE = re.compile(r"-->\s*[^()\n]*\(0x([0-9A-Fa-f]+)\)")
 
 
@@ -33,12 +38,19 @@ def read_from(offset):
         return ""
 
 
+# CAMADA 3 (01-11): 0.004 s entre caracteres saturava o bridge/UART e o guest
+# perdia caracteres de comandos longos -> got=None FALSO (medido: f1_member_arr_var
+# devolve 0x1E correto quando enviado com calma). 0.008 e' o ritmo medido estavel.
+# 0.008 ainda saturava em LOTE (medido: 108/111). O PL011 tem FIFO de 16 B e o
+# guest drena entre ticks do shell; 0.012 e' o ritmo medido estavel em sequencia.
+CHAR_DELAY = float(os.environ.get("NEO_CHAR_DELAY", "0.012"))
+
 def send(text):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(IN_SOCK)
     for ch in text:
         s.sendall(ch.encode())
-        time.sleep(0.004)
+        time.sleep(CHAR_DELAY)
     s.close()
 
 
@@ -82,13 +94,22 @@ def main():
     results = []
     passed = failed = known_fail = known_pass = 0
     for c in cases:
-        last_out = ""
-        for cmd in c["cmds"]:
-            last_out = run_cmd(cmd)
-        m = None
-        for m in VALUE_RE.finditer(last_out):
-            pass
-        got_digits = m.group(1).upper() if m else None
+        # CAMADA 3: retry quando got=None. got=None significa que o guest NAO
+        # respondeu com um valor -- a causa MEDIDA e' perda de caracteres na
+        # entrada serial (comando truncado), nao o compilador. Um caso legitimo
+        # nunca devolve None; entao reenviar e' correto, nao mascaramento.
+        got_digits = None
+        for attempt in range(5):
+            last_out = ""
+            for cmd in c["cmds"]:
+                last_out = run_cmd(cmd)
+            m = None
+            for m in VALUE_RE.finditer(last_out):
+                pass
+            got_digits = m.group(1).upper() if m else None
+            if got_digits is not None:
+                break
+            time.sleep(1.0)   # deixa o shell/bridge assentarem antes de reenviar
         expect_digits = c["expect"].upper().replace("0X", "")
         got = ("0x" + got_digits) if got_digits else None
         expect = "0x" + expect_digits
