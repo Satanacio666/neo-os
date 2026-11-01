@@ -24,7 +24,10 @@ echo "== booting =="
 "$ROOT/scripts/run-viewer-vm.sh" restart >/dev/null 2>&1
 # P0.4/harness: boot medido em ~41s neste host (TCG aarch64). 40s era 1s curto
 # demais -> o gate falhava 'shell active' mesmo com o boot perfeito. 60s de margem.
-for i in $(seq 1 60); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && break; sleep 1; done
+# CAMADA 2/01-11: com o SMP simetrico (o vigia rodando de verdade no core 1 em
+# paralelo) o boot variou para ~60-70s em rodadas medidas -> margem subiu para
+# 120s. Nao mascara nada: se o boot nao chegar em 120s, a falha e' real.
+for i in $(seq 1 120); do grep -q 'DolDocShell active' "$LOG" 2>/dev/null && break; sleep 1; done
 
 count() { rg -c "$1" "$LOG" 2>/dev/null || echo 0; }
 check "shell active"        1 "$(count 'DolDocShell active')"
@@ -364,6 +367,15 @@ fi
 check "OVERFLOW invariant present"  1 "$(count 'OVERFLOW: PASS')"
 check "ERRCHAN invariant present"   1 "$(count 'ERRCHAN: PASS')"
 check "HEAPINT invariant present"   1 "$(count 'HEAPINT: PASS')"
+# BURACOS DO GATE (estudo-de-deadcode N-1..N-10 + D-5): rotulos PRODUZIDOS a cada
+# boot e nunca verificados. PARITY cai de 92/92 sem ninguem notar (a paridade dos
+# motores C-JIT x Compiler.HC); PROFILER e' o teste que existia e nunca era chamado.
+check "PARITY 92/92 agree"         1 "$(count 'PARITY: 92/92')"
+check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
+# Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
+check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"
+check "TRANS invariant present"    1 "$(count 'TRANS: PASS')"
+check "EFFECTS invariant present"  1 "$(count 'EFFECTS: PASS')"
 
 # SYMBOL FAULT nao tem teste sintetico que o produza -> qualquer ocorrencia e'
 # anomala (foi assim que o REPL do usuario acendeu 17 x num boot).

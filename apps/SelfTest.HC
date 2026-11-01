@@ -50,6 +50,13 @@ I64 g_selftest_known_total = 0;
 U8  g_halcache_buf[256];   // P2.1.5: static buffer for the HAL cache-coherency check
 I64 g_fs_rt_size = 0;      // P2.5: out-size for the filesystem round-trip check
 I64 g_selftest_done = 0;   // guard: the corpus is a once-per-boot regression check
+// CAMADA 2 (defeito F1): o vigia agora roda DE VERDADE no core 1, em paralelo ao
+// SelfTest no core 0. O SelfTest cria/destroi simbolos temporarios de payload
+// (_tp_*) e compila modulos; o scan do vigia pode ver um deles no meio da janela
+// e gritar SYMBOL FAULT por um estado TRANSITORIO (medido: 1 fault intermitente,
+// 0 nos gates anteriores). Sinal para o vigia suspender a varredura enquanto o
+// corpus roda — a deteccao volta ao normal no instante em que ele termina.
+I64 g_selftest_active = 0;
 // B6 (ONDA 2): fontes sinteticas do teste de profundidade do parser.
 U8  g_b6_deep_src[512];
 U8  g_b6_shallow_src[512];
@@ -1731,6 +1738,7 @@ U0 SelfTestRun() {
         return;
     }
     g_selftest_done = 1;
+    g_selftest_active = 1;   // F1: o vigia suspende a varredura durante o corpus
 
     g_selftest_pass = 0;
     g_selftest_total = 0;
@@ -1938,6 +1946,11 @@ U0 SelfTestRun() {
     SelfTestTile();
     SelfTestGpuConfig();
     TelemetrySelfTest();
+    // D-5 (estudo-de-deadcode): ProfilerSelfTest existia em Telemetry.HC:1010 e
+    // NUNCA era chamado — 5 assercoes completas (reset, on/off, marks, ring, FPS)
+    // produzidas e esquecidas. Ligado aqui: o rotulo 'PROFILER: n/n' passa a
+    // entrar no gate (antes, 'PROFILER' so' aparecia como nome de arquivo).
+    ProfilerSelfTest();
     EffectsSelfTest();
     EffectsSpringSelfTest();
     EffectsGlassSelfTest();
@@ -1968,5 +1981,6 @@ U0 SelfTestRun() {
                   g_parity_ok, g_parity_total, g_parity_fail, g_parity_skip);
     doldoc_printf("SELFTEST: %lld/%lld PASS\n", g_selftest_pass, g_selftest_total);
     doldoc_printf("PARITY: %lld/%lld\n", g_parity_ok, g_parity_total);
+    g_selftest_active = 0;   // F1: corpus terminou; o vigia volta a varrer
     doldoc_print("<<<NEO-DONE:selftest>>>\n");
 }

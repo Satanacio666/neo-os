@@ -92,6 +92,14 @@ I64 g_watchdog_offcore_runs = 0;   // passadas executadas em core > 0
 // checava se elas AVANCAM. g_watchdog_last_tick = __mrs_cntvct() da ultima
 // passada concluida; WatchdogStallCheck() compara com agora.
 U64 g_watchdog_last_tick = 0;
+// B9-fix (CAMADA 2): o teste do stall injeta g_watchdog_last_tick e o le' de volta.
+// Antes da Camada 2 isso era seguro: o vigia so' rodava se o escalonador o
+// escalasse, e g_sched_preempt_off bastava. Agora o vigia RODA DE VERDADE no
+// core 1 — ele sobrescreve o heartbeat em paralelo e o teste fica FLAKY (medido:
+// passou num gate e falhou no seguinte). g_watchdog_pause: >0 suspende a ESCRITA
+// do heartbeat, tornando o teste deterministico de novo (corrige na raiz, nao
+// mascara com retry).
+I64 g_watchdog_pause = 0;
 I64 g_watchdog_stalled = 0;
 // Metricas de custo (Camada 1, criterio <1%): ciclos gastos nas PASSADAS do
 // vigia (scan + budget + canario) vs ciclos totais decorridos, acumulados.
@@ -399,6 +407,16 @@ U0 ShellCmd_health(U8 *a, U8 *r) {
 //  * So' conta/printa no estado REAL de defeito: fora da compilacao, com o
 //    vigia ja' tendo passado ao menos 1x, e > 2 s sem passada.
 I64 WatchdogStallCheck() {
+    // CAMADA 2: durante a janela de teste (g_watchdog_pause) o check do LOOP de
+    // fundo fica suspenso — senao o proprio core 1 (que roda o vigia de verdade
+    // agora) leria o tick injetado pelo teste e contaria um 2o stall (corrida que
+    // a Camada 2 introduziu). O TESTE usa a sonda abaixo, que ignora a pausa.
+    if (g_watchdog_pause != 0) return 0;
+    return WatchdogStallProbe();
+}
+
+// Logica de deteccao pura (sem a guarda de pausa) — usada pelo teste e pelo check.
+I64 WatchdogStallProbe() {
     if (g_watchdog_last_tick == 0) return 0;   // vigia ainda nao deu a 1a passada
     if (g_hc_compiling != 0) return 0;         // cegueira LEGITIMA durante compilacao
     U64 wd_now = __mrs_cntvct();
@@ -431,17 +449,19 @@ I64 WatchdogTestStall() {
     // (mesma tecnica do B5): com g_sched_preempt_off>0 o SchedOnTick nao troca de
     // task (Sched.HC:320), entao o vigia nao roda no meio.
     g_sched_preempt_off = 1;
+    g_watchdog_pause = 1;    // CAMADA 2: congela o heartbeat do core 1 (ver acima)
     g_watchdog_stalled = 0;
     g_hc_compiling = 0;
     g_watchdog_last_tick = __mrs_cntvct() - (TimerQueryHwFreq() * 4);
-    I64 wd_hit = WatchdogStallCheck();            // tem de detectar
+    I64 wd_hit = WatchdogStallProbe();            // tem de detectar (ignora a pausa)
     g_hc_compiling = 1;
-    I64 wd_skip = WatchdogStallCheck();           // tem de pular (compilando)
+    I64 wd_skip = WatchdogStallProbe();           // tem de pular (compilando)
     I64 wd_ok = 0;
     if (wd_hit == 1 && wd_skip == 0 && g_watchdog_stalled == 1) wd_ok = 1;
     g_hc_compiling = saved_comp;
     g_watchdog_last_tick = saved_last;
     g_watchdog_stalled = saved_n;
+    g_watchdog_pause = 0;    // retoma o heartbeat
     g_sched_preempt_off = saved_pre;
     return wd_ok;
 }
@@ -470,7 +490,12 @@ U0 WatchdogTick(U64 arg) {
         //    para nao inundar o serial a cada 250 ms (gate). A Camada 3
         //    REPARA primeiro os payloads de teste (_tp_*); o count restante
         //    decide se ha falha real (unresolved fora do namespace).
-        I64 wd_u = SymScanUnresolvedQuiet();
+        // F1 (CAMADA 2): durante o corpus o SelfTest cria/destroi simbolos de
+        // payload e compila modulos — um deles pode ser visto no meio da janela.
+        // Suspende a varredura (a deteccao retoma quando g_selftest_active voltar
+        // a 0). NAO e' mascaramento: e' escopo — o corpus tem o seu proprio
+        // "symbol audit" (2334 symbols, 0 unresolved) ao final.
+        I64 wd_u = (g_selftest_active != 0) ? 0 : SymScanUnresolvedQuiet();
         I64 wd_rem = wd_u;
         I64 wd_fixed = 0;
         if (wd_u != 0) {
@@ -567,7 +592,7 @@ U0 WatchdogTick(U64 arg) {
         // Custo da passada (ciclos) e do intervalo total (250 ms), acumulados.
         g_watchdog_cost_cycles += __mrs_cntvct() - wd_t0;
         g_watchdog_runs++;
-        g_watchdog_last_tick = __mrs_cntvct(); // B9: heartbeat desta passada
+        if (g_watchdog_pause == 0) g_watchdog_last_tick = __mrs_cntvct(); // B9: heartbeat (pausavel)
         g_watchdog_wall_cycles += TimerQueryHwFreq() / 4; // 250 ms em ciclos
         TimerSleepMs(250);
     }
