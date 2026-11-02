@@ -3871,10 +3871,19 @@ void     jit_flush(void *addr, uint32_t bytes) {
  * caminho normal e regrava. O cache nunca e uma aposta. */
 int64_t jit_compile_and_run_cached(const char *name, const char *source) {
     if (name && source && jitcache_try(name, source)) {
-        jit_func_t fn = (jit_func_t)jit_scratch_ptr();
-        int64_t r = fn();
-        printf("[JIT-CACHE] %s entrypoint RESTAURADO retornou %lld\n", name, (long long)r);
-        return r;
+        /* P8: o HIT restaurou pool + simbolos + globais. O top-level do
+         * Compiler.HC e' "if (g_kernel_booting) { HcInit(); } else { SelfTest(); }".
+         * Chamamos HcInit() explicitamente (via simbolo restaurado) em vez de
+         * executar o scratch restaurado — que se provou re-executar o modulo
+         * chamador (KernelInit.HC) e disparar um boot recursivo. */
+        int64_t (*hci)(void) = (int64_t (*)(void))symbols_lookup("HcInit");
+        if (hci) {
+            int64_t r = hci();
+            printf("[JIT-CACHE] %s HIT: HcInit() executado (parse pulado)\n", name);
+            return r;
+        }
+        printf("[JIT-CACHE] %s HIT: parse pulado (HcInit nao encontrado)\n", name);
+        return 0;
     }
     if (name && source) jitcache_begin(name, source);
     int64_t r = jit_compile_and_run(source);

@@ -243,11 +243,13 @@ U0 KInitLoad(U8 *fname) {
         kinit_load_buf[fsize] = 0;
         doldoc_printf("[KERNEL-INIT] Compiling %s (%lld bytes)...\n", fname, fsize);
         I64 res;
-        // P8 (Nivel 1) esta implementado mas DESLIGADO: o entrypoint restaurado do
-        // cache nao retorna ao chamador, e o seed acaba recompilando tudo — o cache
-        // sai mais caro que a compilacao. Reativar quando o retorno for resolvido:
-        //   ... else { res = jit_compile_and_run_cached(fname, kinit_load_buf); }
-        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run_cached("Compiler", kinit_load_buf); }
+        // P8 (Nivel 1) DESLIGADO (medido): o HIT restaura pool+simbolos, mas o
+        // codigo restaurado referencia globais por endereco ABSOLUTO embutido
+        // (ex.: g_fn_parse_expr/g_fn_parse_stmt = &HcParseExpr). Reallocar as VARs
+        // invalida essas referencias -> blr para 0 (ELR_EL1=0x0). Enquanto o
+        // emissor nao usar SIC late-bound para TODA referencia de global, o HIT
+        // nao e' seguro. O MISS (compilacao completa) e' o caminho correto.
+        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }
         doldoc_printf("[KERNEL-INIT] %s compiled, res = %lld\n", fname, res);
     } else {
         doldoc_printf("[KERNEL-INIT WARN] Could not read %s from the ESP!\n", fname);
