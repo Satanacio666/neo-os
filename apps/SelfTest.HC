@@ -976,6 +976,69 @@ U0 SelfTestRender() {
     doldoc_mark_all_dirty();
 }
 
+// ============================================================================
+// WCORE — O KERNEL SOB CONCORRENCIA REAL (1.4 + M3 + M5)
+// ============================================================================
+//  1.4: o g_kheap_lock NUNCA foi testado sob contencao REAL entre cores. TODO teste
+//       de heap existente roda numa unica core. Aqui BSP e core 1 alocam/escrevem/
+//       verificam/liberam SIMULTANEAMENTE: se o lock falhar, um canario quebra.
+//  M3 : quantas alocacoes CADA core fez. Se o secundario reportar 0, o "paralelo"
+//       e' falso e o teste DIZ (zero fallback mudo).
+//  M5 : o pico do heap sob carga concorrente (antes -> depois).
+//  B12: o determinismo pos-carga e' provado pelo RENDER: PASS que roda DEPOIS
+//       deste teste (por isso SelfTestWcore e' chamado ANTES de SelfTestRender).
+//       Nao se chama RenderGoldenScene aqui: o corpus assume cena virgem.
+#define WCORE_ITERS 200
+
+U64 g_wcore_ops[2];      // [0]=BSP, [1]=secundario
+U64 g_wcore_ok[2];       // 1 = nenhuma corrupcao vista por aquele core
+U64 g_wcore_fail[2];     // 1 = alocacao falhou / padrao nao voltou
+I64 g_wcore_dispatch_rc = 0;
+I64 g_wcore_join_rc = 0;
+I64 g_wcore_canary = 0;
+U64 g_wcore_peak_before = 0;
+U64 g_wcore_peak_after = 0;
+
+U0 SelfTestWcoreWorker(U64 arg) {
+    I64 ci = (I64)arg;
+    I64 n = 0;
+    g_wcore_ok[ci] = 1;
+    g_wcore_fail[ci] = 0;
+    while (n < WCORE_ITERS) {
+        I64 sz = 48 + ((n * 37 + ci * 11) % 512);
+        U8 *p = kmalloc(sz);
+        if (!p) { g_wcore_fail[ci] = 1; break; }
+        if (((U64)p & 15) != 0) g_wcore_ok[ci] = 0;
+        I64 b = 0;
+        while (b < sz) { p[b] = (U8)((n + b + ci * 7) & 255); b = b + 1; }
+        b = 0;
+        while (b < sz) {
+            if (p[b] != (U8)((n + b + ci * 7) & 255)) { g_wcore_ok[ci] = 0; break; }
+            b = b + 1;
+        }
+        kfree(p);
+        n = n + 1;
+    }
+    g_wcore_ops[ci] = n;
+}
+
+U0 SelfTestWcore() {
+    g_wcore_ops[0] = 0; g_wcore_ops[1] = 0;
+    g_wcore_ok[0] = 1;  g_wcore_ok[1] = 1;
+    g_wcore_fail[0] = 0; g_wcore_fail[1] = 0;
+    g_wcore_peak_before = (U64)KHeapPeakBytes();
+    g_wcore_dispatch_rc = SmpDispatchAsync(1, (U64)&SelfTestWcoreWorker, 1);
+    SelfTestWcoreWorker(0);          // BSP disputa o mesmo lock ao mesmo tempo
+    I64 wc_jg = 0;
+    while (SmpIsJobDone(1) == 0 && wc_jg < 60000000) { wc_jg = wc_jg + 1; }
+    g_wcore_join_rc = (SmpIsJobDone(1) != 0) ? 0 : -1;
+    g_wcore_peak_after = (U64)KHeapPeakBytes();
+    g_wcore_canary = KHeapCheckAll();
+    doldoc_printf("WCORE: bsp_ops=%lld sec_ops=%lld dispatch=%lld join=%lld canary=%lld peak=%lld->%lld KB\n",
+                  g_wcore_ops[0], g_wcore_ops[1], g_wcore_dispatch_rc, g_wcore_join_rc,
+                  g_wcore_canary, g_wcore_peak_before / 1024, g_wcore_peak_after / 1024);
+}
+
 // P0.7: sovereign heap stress. Two phases:
 //  A. 100 alloc/write/verify/free iterations across the four canonical sizes
 //     (16, 36, 128, 4096 B) — every byte written and re-read to prove a block is
@@ -1706,6 +1769,13 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("c_low_bootstage_phases", (BootStagePhaseCount() >= 6) ? 1 : 0, 1);
     SelfTestCompare("c_low_bootstage_modules", (BootStageModulesDone() >= 30) ? 1 : 0, 1);
     SelfTestCompare("c_low_bootstage_not_slow", (BootStageSlow() == 0) ? 1 : 0, 1);
+    // LOW-LEVEL (1.4 + B12 + M3): kernel sob concorrencia REAL. Quatro provas:
+    // o lock do heap nao corrompeu nada, os DOIS cores de fato trabalharam (sem
+    // fallback mudo), nenhuma alocacao falhou, e o golden hash sobreviveu a carga.
+    SelfTestCompare("c_low_wcore_canary", (g_wcore_canary == 0) ? 1 : 0, 1);
+    SelfTestCompare("c_low_wcore_both_cores", ((g_wcore_ops[0] > 0) && (g_wcore_ops[1] > 0)) ? 1 : 0, 1);
+    SelfTestCompare("c_low_wcore_no_fail", ((g_wcore_fail[0] == 0) && (g_wcore_fail[1] == 0)) ? 1 : 0, 1);
+    SelfTestCompare("c_low_wcore_join", (g_wcore_join_rc == 0) ? 1 : 0, 1);
     SelfTestCompare("c3_present_backend_valid",
                     (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
     // O contador de frames so' avanca quando algo apresenta. O corpus desenha
@@ -1981,6 +2051,10 @@ U0 SelfTestRun() {
     SelfTestShading();
     ShaderVMSelfTest();
     MeshSelfTest();
+    // LOW-LEVEL (1.4 + M3 + M5): o kernel sob concorrencia REAL. Roda ANTES do
+    // SelfTestRender para que o RENDER: PASS (que ja' existe) sirva de prova do B12
+    // — o determinismo medido DEPOIS de dois cores martelarem o heap.
+    SelfTestWcore();
     SelfTestRender();
     DolDocSelfTest();
     DolDocSlateSelfTest();

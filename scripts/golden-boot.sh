@@ -380,6 +380,10 @@ check "PRESENT backend chosen"    1 "$(count '\[PRESENT\] backend=')"
 # detectou travamento. Se o boot travar, a mensagem [BOOTSTAGE] BOOT LENTO diz
 # exatamente ONDE — e o gate falha por ela (nao por silencio).
 check "BOOTSTAGE timeline published" 1 "$(count '\[BOOTSTAGE\] timeline:')"
+# LOW-LEVEL: o kernel sob concorrencia real (1.4/B12/M3). Exige o WCORE no log —
+# se o teste nao rodar, o gate falha (nunca passa em silencio).
+check "WCORE concurrent heap ran" 1 "$(count 'WCORE: bsp_ops=')"
+check "WCORE no heap corruption"  1 "$(count 'canary=0')"
 check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
 # Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
 check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"
