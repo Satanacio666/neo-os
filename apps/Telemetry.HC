@@ -121,6 +121,71 @@ class CTelemetry {
   I64 pmu_inst;
   I64 pmu_l1d;
   I64 pmu_br;
+
+  // ---------------------------------------------------------------------
+  // ESTADO DE UI (fundido do antigo CProfiler — UNIFICACAO 01/11)
+  // ---------------------------------------------------------------------
+  // Antes existiam DUAS estruturas com o mesmo papel: CTelemetry (dados ricos:
+  // histograma, percentis, spikes, diagnostico) e CProfiler (baldes do loop +
+  // estado do painel). Ambas mediam o MESMO frame por caminhos paralelos. Agora
+  // ha' UMA: o frame entra por ProfilerMarkXxx (baldes do loop do Shell) e por
+  // TelemetryBeginFrame/EndFrame (estagios logic/raster/blit/dma/wm). CTelemetry
+  // e' o modelo unico; nao existe mais g_prof.
+  I64 ui_on;                  // painel ligado?
+  I64 ui_trace;               // espelho [PROF] no serial
+  I64 ui_node_id;             // no DolDoc do painel (-1 = nenhum)
+  I64 ui_draws;               // quantas vezes o painel foi redesenhado
+  I64 ui_refreshes;           // quantos refreshes de estado
+  I64 ui_last_refresh_ms;
+  I64 ui_last_trace_ms;
+  I64 ui_refresh_period_ms;
+  I64 ui_trace_period_ms;
+
+  // Baldes do frame corrente — loop do Shell (input/shell/doldoc/render/idle).
+  I64 acc_input_us;
+  I64 acc_shell_us;
+  I64 acc_doldoc_us;
+  I64 acc_render_us;
+  I64 acc_idle_us;
+
+  // Ultimo frame (baldes do loop).
+  I64 last_input_us;
+  I64 last_shell_us;
+  I64 last_doldoc_us;
+  I64 last_render_us;
+  I64 last_idle_us;
+
+  // Somas da janela (baldes do loop).
+  I64 samples;
+  I64 sum_frame_us;
+  I64 sum_input_us;
+  I64 sum_shell_us;
+  I64 sum_doldoc_us;
+  I64 sum_render_us;
+  I64 sum_idle_us;
+  I64 sum_idle_ms;
+  I64 ui_ring[PROF_RING];     // frame times (us) para o FPS da janela
+  I64 ui_ring_head;
+  I64 ui_ring_count;
+  I64 ui_min_frame_us;
+  I64 ui_max_frame_us;
+  I64 ui_frames_total;
+
+  // Carga instantanea (ultimo refresh).
+  I64 ui_heap_used_kb;
+  I64 ui_heap_free_kb;
+  I64 ui_heap_total_kb;
+  I64 ui_heap_allocs;
+  I64 ui_exc_recovered;
+  I64 ui_exc_total;
+  I64 ui_exc_panic;
+  I64 ui_uptime_ms;
+  I64 ui_fps_x10;
+  I64 ui_frame_us;
+  I64 ui_last_sample_ms;
+  I64 ui_last_sample_frames;
+  // Geometria do no DolDoc (para apresentar so o retangulo do painel).
+  I64 ui_panel_x; I64 ui_panel_y; I64 ui_panel_w; I64 ui_panel_h;
 };
 
 CTelemetry g_tel;
@@ -394,6 +459,20 @@ U0 TelemetryMarkWmStart()     { g_tel.wm_start_vct     = (I64)__mrs_cntvct(); }
 U0 TelemetryMarkWmEnd()       { g_tel.wm_end_vct       = (I64)__mrs_cntvct(); }
 U0 TelemetryRecordSmpWait(I64 wait_us) { g_tel.cur_smp_wait_us = wait_us; }
 
+// Ponto de entrada UNICO do caminho de DESENHO (fora do loop do shell, ex.:
+// SelfTestRender). Antes, alimentar a telemetria exigia chamar cinco funcoes na
+// ordem certa e ninguem o fazia (eram orfas). Agora e' abrir e fechar.
+U0 TelemetryFrameBegin() {
+  TelemetryBeginFrame();
+  TelemetryMarkLogicStart();
+  TelemetryMarkRasterStart();
+}
+U0 TelemetryFrameEnd() {
+  TelemetryMarkRasterEnd();
+  TelemetryMarkLogicEnd();
+  TelemetryEndFrame();
+}
+
 U0 TelemetryEndFrame() {
   I64 total  = TelVctToUs((I64)__mrs_cntvct() - g_tel.frame_start_vct);
   I64 logic  = TelVctToUs(g_tel.logic_end_vct  - g_tel.logic_start_vct);
@@ -617,113 +696,51 @@ U0 TelemetrySelfTest() {
 #define PROF_RING 256
 #define PROF_LINES 12
 
-class CProfiler {
-  I64 on;                 // painel ligado?
-  I64 trace;              // espelho [PROF] no serial (1 Hz)
-  I64 node_id;            // no DolDoc do painel (-1 = nenhum)
-  I64 draws;              // quantas vezes o painel foi redesenhado
-  I64 refreshes;          // quantos refreshes de estado
-  I64 last_refresh_ms;
-  I64 last_trace_ms;
-  I64 refresh_period_ms;
-  I64 trace_period_ms;
-
-  // Baldes do frame corrente (us).
-  I64 acc_input_us;
-  I64 acc_shell_us;
-  I64 acc_doldoc_us;
-  I64 acc_render_us;
-  I64 acc_idle_us;
-
-  // Ultimo frame.
-  I64 last_frame_us;
-  I64 last_input_us;
-  I64 last_shell_us;
-  I64 last_doldoc_us;
-  I64 last_render_us;
-  I64 last_idle_us;
-
-  // Somas da janela.
-  I64 samples;
-  I64 sum_frame_us;
-  I64 sum_input_us;
-  I64 sum_shell_us;
-  I64 sum_doldoc_us;
-  I64 sum_render_us;
-  I64 sum_idle_us;
-  I64 sum_idle_ms;
-
-  I64 ring[PROF_RING];    // frame times (us) para o FPS da janela
-  I64 ring_head;
-  I64 ring_count;
-
-  I64 min_frame_us;
-  I64 max_frame_us;
-
-  I64 frames_total;
-
-  // Carga instantanea (ultimo refresh).
-  I64 heap_used_kb;
-  I64 heap_free_kb;
-  I64 heap_total_kb;
-  I64 heap_allocs;
-  I64 exc_recovered;
-  I64 exc_total;
-  I64 exc_panic;
-  I64 uptime_ms;
-  I64 fps_x10;
-  I64 frame_us;
-  I64 last_sample_ms;      // janela de 1 refresh para o FPS real
-  I64 last_sample_frames;
-  // Geometria do no DolDoc (para apresentar so o retangulo do painel).
-  I64 panel_x; I64 panel_y; I64 panel_w; I64 panel_h;
-};
-
-CProfiler g_prof;
+// (CProfiler removido — UNIFICACAO 01/11: o estado de UI vive em CTelemetry.)
 
 U0 ProfilerReset() {
-  g_prof.node_id = -1;
-  g_prof.draws = 0;
-  g_prof.refreshes = 0;
-  g_prof.last_refresh_ms = 0;
-  g_prof.last_trace_ms = 0;
-  if (g_prof.refresh_period_ms <= 0) g_prof.refresh_period_ms = 250;
-  if (g_prof.trace_period_ms <= 0) g_prof.trace_period_ms = 1000;
-  g_prof.acc_input_us = 0; g_prof.acc_shell_us = 0; g_prof.acc_doldoc_us = 0;
-  g_prof.acc_render_us = 0; g_prof.acc_idle_us = 0;
-  g_prof.last_frame_us = 0; g_prof.last_input_us = 0; g_prof.last_shell_us = 0;
-  g_prof.last_doldoc_us = 0; g_prof.last_render_us = 0; g_prof.last_idle_us = 0;
-  g_prof.samples = 0; g_prof.sum_frame_us = 0; g_prof.sum_input_us = 0;
-  g_prof.sum_shell_us = 0; g_prof.sum_doldoc_us = 0; g_prof.sum_render_us = 0;
-  g_prof.sum_idle_us = 0; g_prof.sum_idle_ms = 0;
-  g_prof.ring_head = 0; g_prof.ring_count = 0;
-  g_prof.min_frame_us = 0; g_prof.max_frame_us = 0;
-  g_prof.frames_total = 0;
-  g_prof.heap_used_kb = 0; g_prof.heap_free_kb = 0; g_prof.heap_total_kb = 0;
-  g_prof.heap_allocs = 0;
-  g_prof.exc_recovered = 0; g_prof.exc_total = 0; g_prof.exc_panic = 0;
-  g_prof.uptime_ms = 0; g_prof.fps_x10 = 0; g_prof.frame_us = 0;
-  g_prof.last_sample_ms = 0; g_prof.last_sample_frames = 0;
-  g_prof.panel_x = 0; g_prof.panel_y = 0; g_prof.panel_w = 0; g_prof.panel_h = 0;
+  g_tel.ui_node_id = -1;
+  g_tel.ui_draws = 0;
+  g_tel.ui_refreshes = 0;
+  g_tel.ui_last_refresh_ms = 0;
+  g_tel.ui_last_trace_ms = 0;
+  if (g_tel.ui_refresh_period_ms <= 0) g_tel.ui_refresh_period_ms = 250;
+  if (g_tel.ui_trace_period_ms <= 0) g_tel.ui_trace_period_ms = 1000;
+  g_tel.acc_input_us = 0; g_tel.acc_shell_us = 0; g_tel.acc_doldoc_us = 0;
+  g_tel.acc_render_us = 0; g_tel.acc_idle_us = 0;
+  g_tel.last_total_us = 0; g_tel.last_input_us = 0; g_tel.last_shell_us = 0;
+  g_tel.last_doldoc_us = 0; g_tel.last_render_us = 0; g_tel.last_idle_us = 0;
+  g_tel.samples = 0; g_tel.sum_total_us = 0; g_tel.sum_input_us = 0;
+  g_tel.sum_shell_us = 0; g_tel.sum_doldoc_us = 0; g_tel.sum_render_us = 0;
+  g_tel.sum_idle_us = 0; g_tel.sum_idle_ms = 0;
+  g_tel.ui_ring_head = 0; g_tel.ui_ring_count = 0;
+  g_tel.min_frame_us = 0; g_tel.max_frame_us = 0;
+  g_tel.total_frames = 0;
+  g_tel.ui_heap_used_kb = 0; g_tel.ui_heap_free_kb = 0; g_tel.ui_heap_total_kb = 0;
+  g_tel.ui_heap_allocs = 0;
+  g_tel.ui_exc_recovered = 0; g_tel.ui_exc_total = 0; g_tel.ui_exc_panic = 0;
+  g_tel.ui_uptime_ms = 0; g_tel.ui_fps_x10 = 0; g_tel.ui_frame_us = 0;
+  g_tel.ui_last_sample_ms = 0; g_tel.ui_last_sample_frames = 0;
+  g_tel.ui_panel_x = 0; g_tel.ui_panel_y = 0; g_tel.ui_panel_w = 0; g_tel.ui_panel_h = 0;
   I64 i = 0;
-  while (i < PROF_RING) { g_prof.ring[i] = 0; i = i + 1; }
+  while (i < PROF_RING) { g_tel.ui_ring[i] = 0; i = i + 1; }
 }
 
-U0 ProfilerSetOn(I64 v) { g_prof.on = v ? 1 : 0; }
-I64 ProfilerIsOn() { return g_prof.on; }
-U0 ProfilerSetTrace(I64 v) { g_prof.trace = v ? 1 : 0; }
-I64 ProfilerTraceOn() { return g_prof.trace; }
-U0 ProfilerSetNodeId(I64 nid) { g_prof.node_id = nid; }
+U0 ProfilerSetOn(I64 v) { g_tel.ui_on = v ? 1 : 0; }
+I64 ProfilerIsOn() { return g_tel.ui_on; }
+U0 ProfilerSetTrace(I64 v) { g_tel.ui_trace = v ? 1 : 0; }
+I64 ProfilerTraceOn() { return g_tel.ui_trace; }
+U0 ProfilerSetNodeId(I64 nid) { g_tel.ui_node_id = nid; }
 U0 ProfilerSetNodeRect(I64 x, I64 y, I64 w, I64 h) {
-  g_prof.panel_x = x; g_prof.panel_y = y; g_prof.panel_w = w; g_prof.panel_h = h;
+  g_tel.ui_panel_x = x; g_tel.ui_panel_y = y; g_tel.ui_panel_w = w; g_tel.ui_panel_h = h;
 }
-I64 ProfilerPanelX() { return g_prof.panel_x; }
-I64 ProfilerPanelY() { return g_prof.panel_y; }
-I64 ProfilerPanelW() { return g_prof.panel_w; }
-I64 ProfilerPanelH() { return g_prof.panel_h; }
-I64 ProfilerNodeId() { return g_prof.node_id; }
-I64 ProfilerRefreshes() { return g_prof.refreshes; }
-I64 ProfilerDraws() { return g_prof.draws; }
+I64 ProfilerPanelX() { return g_tel.ui_panel_x; }
+I64 ProfilerPanelY() { return g_tel.ui_panel_y; }
+I64 ProfilerPanelW() { return g_tel.ui_panel_w; }
+I64 ProfilerPanelH() { return g_tel.ui_panel_h; }
+I64 ProfilerNodeId() { return g_tel.ui_node_id; }
+I64 ProfilerRefreshes() { return g_tel.ui_refreshes; }
+I64 ProfilerDraws() { return g_tel.ui_draws; }
 
 // Tempo em us entre dois carimbos CNTVCT_EL0 (o Shell carimba o loop).
 I64 ProfilerUsSince(I64 t0) {
@@ -738,68 +755,87 @@ I64 ProfilerUsBetween(I64 t0, I64 t1) {
   return TelVctToUs(dv);
 }
 
-U0 ProfilerMarkInput(I64 us) { g_prof.acc_input_us = g_prof.acc_input_us + us; }
-U0 ProfilerMarkShell(I64 us) { g_prof.acc_shell_us = g_prof.acc_shell_us + us; }
-U0 ProfilerMarkDolDoc(I64 us) { g_prof.acc_doldoc_us = g_prof.acc_doldoc_us + us; }
-U0 ProfilerMarkRender(I64 us) { g_prof.acc_render_us = g_prof.acc_render_us + us; }
-U0 ProfilerMarkIdle(I64 us) { g_prof.acc_idle_us = g_prof.acc_idle_us + us; }
+U0 ProfilerMarkInput(I64 us) { g_tel.acc_input_us = g_tel.acc_input_us + us; }
+U0 ProfilerMarkShell(I64 us) { g_tel.acc_shell_us = g_tel.acc_shell_us + us; }
+U0 ProfilerMarkDolDoc(I64 us) { g_tel.acc_doldoc_us = g_tel.acc_doldoc_us + us; }
+U0 ProfilerMarkRender(I64 us) { g_tel.acc_render_us = g_tel.acc_render_us + us; }
+U0 ProfilerMarkIdle(I64 us) { g_tel.acc_idle_us = g_tel.acc_idle_us + us; }
 
 // Fecha o frame: consolida os baldes, atualiza a janela deslizante de FPS.
+// Fecha o frame: consolida os baldes do LOOP e os estagios do PRESENT num unico
+// modelo (UNIFICACAO 01/11). Antes havia dois ciclos paralelos: o loop alimentava
+// CProfiler e o Present alimentava CTelemetry (via TelemetryEndFrame), e os dois
+// calculavam FPS/frametime por conta propria. Agora o LOOP e' o unico fechador de
+// frame: ele soma os baldes e repassa os estagios de apresentacao (logic/raster/
+// blit, gravados pelos TelemetryMark*) para TelemetryRecordFrame, que mantem o
+// histograma, os percentis 1%/0.1% e a atribuicao de spikes. Um frame, um modelo.
 U0 ProfilerEndFrame(I64 frame_us) {
   if (frame_us <= 0) frame_us = 1;
-  g_prof.last_frame_us = frame_us;
-  g_prof.last_input_us = g_prof.acc_input_us;
-  g_prof.last_shell_us = g_prof.acc_shell_us;
-  g_prof.last_doldoc_us = g_prof.acc_doldoc_us;
-  g_prof.last_render_us = g_prof.acc_render_us;
-  g_prof.last_idle_us = g_prof.acc_idle_us;
+  g_tel.last_total_us = frame_us;
+  g_tel.last_input_us = g_tel.acc_input_us;
+  g_tel.last_shell_us = g_tel.acc_shell_us;
+  g_tel.last_doldoc_us = g_tel.acc_doldoc_us;
+  g_tel.last_render_us = g_tel.acc_render_us;
+  g_tel.last_idle_us = g_tel.acc_idle_us;
 
-  g_prof.samples = g_prof.samples + 1;
-  g_prof.frames_total = g_prof.frames_total + 1;
-  g_prof.sum_frame_us = g_prof.sum_frame_us + frame_us;
-  g_prof.sum_input_us = g_prof.sum_input_us + g_prof.acc_input_us;
-  g_prof.sum_shell_us = g_prof.sum_shell_us + g_prof.acc_shell_us;
-  g_prof.sum_doldoc_us = g_prof.sum_doldoc_us + g_prof.acc_doldoc_us;
-  g_prof.sum_render_us = g_prof.sum_render_us + g_prof.acc_render_us;
-  g_prof.sum_idle_us = g_prof.sum_idle_us + g_prof.acc_idle_us;
-  g_prof.sum_idle_ms = g_prof.sum_idle_ms + (g_prof.acc_idle_us / 1000);
-  if (g_prof.min_frame_us == 0 || frame_us < g_prof.min_frame_us) g_prof.min_frame_us = frame_us;
-  if (frame_us > g_prof.max_frame_us) g_prof.max_frame_us = frame_us;
+  g_tel.samples = g_tel.samples + 1;
+  // NAO incrementar total_frames/sum_total_us aqui: TelemetryRecordFrame (chamado
+  // abaixo) ja' os contabiliza. Contar nos dois lugares dobraria a amostra.
+  g_tel.sum_input_us = g_tel.sum_input_us + g_tel.acc_input_us;
+  g_tel.sum_shell_us = g_tel.sum_shell_us + g_tel.acc_shell_us;
+  g_tel.sum_doldoc_us = g_tel.sum_doldoc_us + g_tel.acc_doldoc_us;
+  g_tel.sum_render_us = g_tel.sum_render_us + g_tel.acc_render_us;
+  g_tel.sum_idle_us = g_tel.sum_idle_us + g_tel.acc_idle_us;
+  g_tel.sum_idle_ms = g_tel.sum_idle_ms + (g_tel.acc_idle_us / 1000);
+  if (g_tel.min_frame_us == 0 || frame_us < g_tel.min_frame_us) g_tel.min_frame_us = frame_us;
+  if (frame_us > g_tel.max_frame_us) g_tel.max_frame_us = frame_us;
 
-  g_prof.ring[g_prof.ring_head] = frame_us;
-  g_prof.ring_head = (g_prof.ring_head + 1) % PROF_RING;
-  if (g_prof.ring_count < PROF_RING) g_prof.ring_count = g_prof.ring_count + 1;
+  g_tel.ui_ring[g_tel.ui_ring_head] = frame_us;
+  g_tel.ui_ring_head = (g_tel.ui_ring_head + 1) % PROF_RING;
+  if (g_tel.ui_ring_count < PROF_RING) g_tel.ui_ring_count = g_tel.ui_ring_count + 1;
 
-  g_prof.acc_input_us = 0; g_prof.acc_shell_us = 0; g_prof.acc_doldoc_us = 0;
-  g_prof.acc_render_us = 0; g_prof.acc_idle_us = 0;
+  // UNIFICACAO: os estagios de apresentacao (gravados por TelemetryMarkLogic*/
+  // Raster*/Blit* no caminho de desenho) entram no MESMO registro de frame. O
+  // "logic" e' o trabalho que nao e' apresentacao (input+shell+doldoc), o "raster"
+  // e' o render e o "blit" vem do funil Present(). Assim o histograma, os percentis
+  // e o diagnostico de gargalo passam a medir o frame REAL do loop — antes mediam
+  // so' os frames em que HolyBenchmark chamava TelemetryRecordFrame.
+  I64 u_logic  = g_tel.acc_input_us + g_tel.acc_shell_us + g_tel.acc_doldoc_us;
+  I64 u_raster = g_tel.acc_render_us;
+  I64 u_blit   = TelVctToUs(g_tel.blit_end_vct - g_tel.blit_start_vct);
+  if (u_blit < 0) u_blit = 0;
+  TelemetryRecordFrame(frame_us, u_logic, u_raster, g_tel.cur_smp_wait_us, u_blit, 0, 0);
+
+  g_tel.acc_input_us = 0; g_tel.acc_shell_us = 0; g_tel.acc_doldoc_us = 0;
+  g_tel.acc_render_us = 0; g_tel.acc_idle_us = 0;
 }
 
 // FPS da janela deslizante (x10, sem ponto flutuante na impressao).
 I64 ProfilerFpsX10() {
-  if (g_prof.ring_count <= 0) return 0;
+  if (g_tel.ui_ring_count <= 0) return 0;
   I64 i = 0; I64 sum = 0;
-  while (i < g_prof.ring_count) { sum = sum + g_prof.ring[i]; i = i + 1; }
+  while (i < g_tel.ui_ring_count) { sum = sum + g_tel.ui_ring[i]; i = i + 1; }
   if (sum <= 0) return 0;
   // fps = count * 1e6 / sum_us
-  return (g_prof.ring_count * 10000000) / sum;
+  return (g_tel.ui_ring_count * 10000000) / sum;
 }
 
 I64 ProfilerFrameMsX100() {
-  if (g_prof.ring_count <= 0) return 0;
+  if (g_tel.ui_ring_count <= 0) return 0;
   I64 i = 0; I64 sum = 0;
-  while (i < g_prof.ring_count) { sum = sum + g_prof.ring[i]; i = i + 1; }
-  return (sum * 100) / (g_prof.ring_count * 1000);
+  while (i < g_tel.ui_ring_count) { sum = sum + g_tel.ui_ring[i]; i = i + 1; }
+  return (sum * 100) / (g_tel.ui_ring_count * 1000);
 }
 
 I64 ProfilerAvgUs(I64 which) {
-  if (g_prof.samples <= 0) return 0;
+  if (g_tel.samples <= 0) return 0;
   I64 s = 0;
-  if (which == 0) s = g_prof.sum_render_us;
-  else if (which == 1) s = g_prof.sum_doldoc_us;
-  else if (which == 2) s = g_prof.sum_input_us;
-  else if (which == 3) s = g_prof.sum_shell_us;
-  else s = g_prof.sum_idle_us;
-  return s / g_prof.samples;
+  if (which == 0) s = g_tel.sum_render_us;
+  else if (which == 1) s = g_tel.sum_doldoc_us;
+  else if (which == 2) s = g_tel.sum_input_us;
+  else if (which == 3) s = g_tel.sum_shell_us;
+  else s = g_tel.sum_idle_us;
+  return s / g_tel.samples;
 }
 
 // ---- formatacao auxiliar: barra de proporcao (0..100 -> 20 celulas) ----
@@ -814,27 +850,27 @@ U0 ProfilerBar(U8 *dst, I64 pct) {
 
 // Amostra a carga corrente (heap, excecoes, uptime) no refresh.
 U0 ProfilerSampleLoad() {
-  g_prof.heap_used_kb = KHeapUsedBytes() / 1024;
-  g_prof.heap_free_kb = KHeapFreeBytes() / 1024;
-  g_prof.heap_total_kb = KHeapTotalBytes() / 1024;
-  g_prof.heap_allocs = KHeapAllocCount();
-  g_prof.exc_recovered = ExceptionsRecoveredCount();
-  g_prof.exc_total = ExceptionsTotalCount();
-  g_prof.exc_panic = ExceptionsPanicCount();
-  g_prof.uptime_ms = timer_get_uptime_ms();
+  g_tel.ui_heap_used_kb = KHeapUsedBytes() / 1024;
+  g_tel.ui_heap_free_kb = KHeapFreeBytes() / 1024;
+  g_tel.ui_heap_total_kb = KHeapTotalBytes() / 1024;
+  g_tel.ui_heap_allocs = KHeapAllocCount();
+  g_tel.ui_exc_recovered = ExceptionsRecoveredCount();
+  g_tel.ui_exc_total = ExceptionsTotalCount();
+  g_tel.ui_exc_panic = ExceptionsPanicCount();
+  g_tel.ui_uptime_ms = timer_get_uptime_ms();
   // FPS real: frames contados na janela de um refresh (250 ms), nao no anel
   // curto de 256 frames (que a 30 kHz cobre apenas ~8 ms e oscila demais).
-  if (g_prof.last_sample_ms > 0 && g_prof.uptime_ms > g_prof.last_sample_ms) {
-    I64 dms = g_prof.uptime_ms - g_prof.last_sample_ms;
-    I64 dframes = g_prof.frames_total - g_prof.last_sample_frames;
+  if (g_tel.ui_last_sample_ms > 0 && g_tel.ui_uptime_ms > g_tel.ui_last_sample_ms) {
+    I64 dms = g_tel.ui_uptime_ms - g_tel.ui_last_sample_ms;
+    I64 dframes = g_tel.total_frames - g_tel.ui_last_sample_frames;
     if (dframes > 0) {
-      g_prof.fps_x10 = (dframes * 10000) / dms;
-      g_prof.frame_us = (dms * 1000) / dframes;
+      g_tel.ui_fps_x10 = (dframes * 10000) / dms;
+      g_tel.ui_frame_us = (dms * 1000) / dframes;
     }
   }
-  g_prof.last_sample_ms = g_prof.uptime_ms;
-  g_prof.last_sample_frames = g_prof.frames_total;
-  g_prof.refreshes = g_prof.refreshes + 1;
+  g_tel.ui_last_sample_ms = g_tel.ui_uptime_ms;
+  g_tel.ui_last_sample_frames = g_tel.total_frames;
+  g_tel.ui_refreshes = g_tel.ui_refreshes + 1;
 }
 
 // Soma dos baldes atribuidos (media por frame) - o resto e overhead do loop.
@@ -844,8 +880,8 @@ I64 total_attributed_us() {
 
 // ---- painel (desenhado pelo DolDoc; chamado de DolDocRedraw) ----
 U0 ProfilerDrawPanel(I64 vx, I64 vy, I64 vw, I64 vh) {
-  if (!g_prof.on) return;
-  g_prof.draws = g_prof.draws + 1;
+  if (!g_tel.ui_on) return;
+  g_tel.ui_draws = g_tel.ui_draws + 1;
 
   U32 bg     = 0xF011111B;   // crust translucido
   U32 border = 0xFF89B4FA;   // sapphire
@@ -868,13 +904,13 @@ U0 ProfilerDrawPanel(I64 vx, I64 vy, I64 vw, I64 vh) {
 
   I64 lx = vx + 10;
   I64 ly = vy + 26;
-  I64 total_us = g_prof.sum_frame_us / (g_prof.samples > 0 ? g_prof.samples : 1);
+  I64 total_us = g_tel.sum_total_us / (g_tel.samples > 0 ? g_tel.samples : 1);
   if (total_us <= 0) total_us = 1;
 
-  I64 fps_i = g_prof.fps_x10 / 10;
-  I64 fps_d = g_prof.fps_x10 % 10;
-  I64 fr_i = g_prof.frame_us / 1000;
-  I64 fr_d = g_prof.frame_us % 1000;
+  I64 fps_i = g_tel.ui_fps_x10 / 10;
+  I64 fps_d = g_tel.ui_fps_x10 % 10;
+  I64 fr_i = g_tel.ui_frame_us / 1000;
+  I64 fr_d = g_tel.ui_frame_us % 1000;
 
   U8 line[160];
   // Linha 1: FPS + ms/frame + uptime. HolyC limita os argumentos por chamada
@@ -882,8 +918,8 @@ U0 ProfilerDrawPanel(I64 vx, I64 vy, I64 vw, I64 vh) {
   I64 off = 0;
   off += snprintf(line + off, 158 - off, "loop FPS %lld.%lld", fps_i, fps_d);
   off += snprintf(line + off, 158 - off, "   frame %lld.%03lld ms", fr_i, fr_d);
-  off += snprintf(line + off, 158 - off, "   samples %lld", g_prof.samples);
-  off += snprintf(line + off, 158 - off, "   uptime %lld s", g_prof.uptime_ms / 1000);
+  off += snprintf(line + off, 158 - off, "   samples %lld", g_tel.samples);
+  off += snprintf(line + off, 158 - off, "   uptime %lld s", g_tel.ui_uptime_ms / 1000);
   gfx_draw_string(lx, ly, line, text, 0);
   ly = ly + 18;
 
@@ -911,40 +947,40 @@ U0 ProfilerDrawPanel(I64 vx, I64 vy, I64 vw, I64 vh) {
 
   // Linha 7: ocioso acumulado + atividade do painel
   off = 0;
-  off += snprintf(line + off, 158 - off, "idle total %lld ms", g_prof.sum_idle_ms);
-  off += snprintf(line + off, 158 - off, "   frames %lld", g_prof.frames_total);
-  off += snprintf(line + off, 158 - off, "   refreshes %lld", g_prof.refreshes);
-  off += snprintf(line + off, 158 - off, "   draws %lld", g_prof.draws);
-  off += snprintf(line + off, 158 - off, "   period %lld ms", g_prof.refresh_period_ms);
+  off += snprintf(line + off, 158 - off, "idle total %lld ms", g_tel.sum_idle_ms);
+  off += snprintf(line + off, 158 - off, "   frames %lld", g_tel.total_frames);
+  off += snprintf(line + off, 158 - off, "   refreshes %lld", g_tel.ui_refreshes);
+  off += snprintf(line + off, 158 - off, "   draws %lld", g_tel.ui_draws);
+  off += snprintf(line + off, 158 - off, "   period %lld ms", g_tel.ui_refresh_period_ms);
   gfx_draw_string(lx, ly, line, muted, 0);
   ly = ly + 18;
   off = 0;
-  I64 other_us = (g_prof.sum_frame_us / (g_prof.samples > 0 ? g_prof.samples : 1)) - total_attributed_us();
+  I64 other_us = (g_tel.sum_total_us / (g_tel.samples > 0 ? g_tel.samples : 1)) - total_attributed_us();
   if (other_us < 0) other_us = 0;
   off += snprintf(line + off, 158 - off, "loop/other %lld.%03lld ms", other_us / 1000, other_us % 1000);
-  off += snprintf(line + off, 158 - off, "   min %lld.%03lld ms", g_prof.min_frame_us / 1000, g_prof.min_frame_us % 1000);
-  off += snprintf(line + off, 158 - off, "   max %lld.%03lld ms", g_prof.max_frame_us / 1000, g_prof.max_frame_us % 1000);
+  off += snprintf(line + off, 158 - off, "   min %lld.%03lld ms", g_tel.min_frame_us / 1000, g_tel.min_frame_us % 1000);
+  off += snprintf(line + off, 158 - off, "   max %lld.%03lld ms", g_tel.max_frame_us / 1000, g_tel.max_frame_us % 1000);
   gfx_draw_string(lx, ly, line, muted, 0);
   ly = ly + 18;
 
   // Linha 8: excecoes recuperadas
   off = 0;
-  off += snprintf(line + off, 158 - off, "exceptions  recovered %lld", g_prof.exc_recovered);
-  off += snprintf(line + off, 158 - off, "   trapped %lld", g_prof.exc_total);
-  off += snprintf(line + off, 158 - off, "   panics %lld", g_prof.exc_panic);
-  gfx_draw_string(lx, ly, line, g_prof.exc_recovered > 0 ? red : green, 0);
+  off += snprintf(line + off, 158 - off, "exceptions  recovered %lld", g_tel.ui_exc_recovered);
+  off += snprintf(line + off, 158 - off, "   trapped %lld", g_tel.ui_exc_total);
+  off += snprintf(line + off, 158 - off, "   panics %lld", g_tel.ui_exc_panic);
+  gfx_draw_string(lx, ly, line, g_tel.ui_exc_recovered > 0 ? red : green, 0);
   ly = ly + 18;
 
   // Linha 9: heap
   I64 hpct = 0;
-  if (g_prof.heap_total_kb > 0) hpct = (g_prof.heap_used_kb * 100) / g_prof.heap_total_kb;
+  if (g_tel.ui_heap_total_kb > 0) hpct = (g_tel.ui_heap_used_kb * 100) / g_tel.ui_heap_total_kb;
   U8 hbar[24]; ProfilerBar(hbar, hpct);
   off = 0;
-  off += snprintf(line + off, 158 - off, "heap  used %lld KB", g_prof.heap_used_kb);
-  off += snprintf(line + off, 158 - off, " / %lld KB", g_prof.heap_total_kb);
+  off += snprintf(line + off, 158 - off, "heap  used %lld KB", g_tel.ui_heap_used_kb);
+  off += snprintf(line + off, 158 - off, " / %lld KB", g_tel.ui_heap_total_kb);
   off += snprintf(line + off, 158 - off, "  [%s]", hbar);
   off += snprintf(line + off, 158 - off, " %lld%%", hpct);
-  off += snprintf(line + off, 158 - off, "   free %lld KB", g_prof.heap_free_kb);
+  off += snprintf(line + off, 158 - off, "   free %lld KB", g_tel.ui_heap_free_kb);
   gfx_draw_string(lx, ly, line, yellow, 0);
 }
 
@@ -955,13 +991,13 @@ U0 ProfilerSerialMirror(U8 *why) {
   U8 head[96];
   snprintf(head, 94, "[PROF:%s] NeoOS live profiler panel", why);
   uart_puts(head); uart_puts("\n");
-  I64 total_us = g_prof.sum_frame_us / (g_prof.samples > 0 ? g_prof.samples : 1);
+  I64 total_us = g_tel.sum_total_us / (g_tel.samples > 0 ? g_tel.samples : 1);
   if (total_us <= 0) total_us = 1;
   off = 0;
-  off += snprintf(line + off, 158 - off, "  loop FPS %lld.%lld", g_prof.fps_x10 / 10, g_prof.fps_x10 % 10);
-  off += snprintf(line + off, 158 - off, " | frame %lld.%03lld ms", g_prof.frame_us / 1000, g_prof.frame_us % 1000);
-  off += snprintf(line + off, 158 - off, " | samples %lld", g_prof.samples);
-  off += snprintf(line + off, 158 - off, " | uptime %lld s", g_prof.uptime_ms / 1000);
+  off += snprintf(line + off, 158 - off, "  loop FPS %lld.%lld", g_tel.ui_fps_x10 / 10, g_tel.ui_fps_x10 % 10);
+  off += snprintf(line + off, 158 - off, " | frame %lld.%03lld ms", g_tel.ui_frame_us / 1000, g_tel.ui_frame_us % 1000);
+  off += snprintf(line + off, 158 - off, " | samples %lld", g_tel.samples);
+  off += snprintf(line + off, 158 - off, " | uptime %lld s", g_tel.ui_uptime_ms / 1000);
   uart_puts(line); uart_puts("\n");
   off = 0;
   off += snprintf(line + off, 158 - off, "  render %lld.%03lld ms", ProfilerAvgUs(0) / 1000, ProfilerAvgUs(0) % 1000);
@@ -978,30 +1014,30 @@ U0 ProfilerSerialMirror(U8 *why) {
   off = 0;
   off += snprintf(line + off, 158 - off, "  idle %lld.%03lld ms", ProfilerAvgUs(4) / 1000, ProfilerAvgUs(4) % 1000);
   off += snprintf(line + off, 158 - off, " (%lld%%)", (ProfilerAvgUs(4) * 100) / total_us);
-  off += snprintf(line + off, 158 - off, " | idle total %lld ms", g_prof.sum_idle_ms);
+  off += snprintf(line + off, 158 - off, " | idle total %lld ms", g_tel.sum_idle_ms);
   uart_puts(line); uart_puts("\n");
   off = 0;
-  off += snprintf(line + off, 158 - off, "  exceptions recovered %lld", g_prof.exc_recovered);
-  off += snprintf(line + off, 158 - off, " | trapped %lld", g_prof.exc_total);
-  off += snprintf(line + off, 158 - off, " | panics %lld", g_prof.exc_panic);
+  off += snprintf(line + off, 158 - off, "  exceptions recovered %lld", g_tel.ui_exc_recovered);
+  off += snprintf(line + off, 158 - off, " | trapped %lld", g_tel.ui_exc_total);
+  off += snprintf(line + off, 158 - off, " | panics %lld", g_tel.ui_exc_panic);
   uart_puts(line); uart_puts("\n");
   off = 0;
-  off += snprintf(line + off, 158 - off, "  heap used %lld KB", g_prof.heap_used_kb);
-  off += snprintf(line + off, 158 - off, " / %lld KB", g_prof.heap_total_kb);
-  off += snprintf(line + off, 158 - off, " | free %lld KB", g_prof.heap_free_kb);
-  off += snprintf(line + off, 158 - off, " | allocs %lld", g_prof.heap_allocs);
+  off += snprintf(line + off, 158 - off, "  heap used %lld KB", g_tel.ui_heap_used_kb);
+  off += snprintf(line + off, 158 - off, " / %lld KB", g_tel.ui_heap_total_kb);
+  off += snprintf(line + off, 158 - off, " | free %lld KB", g_tel.ui_heap_free_kb);
+  off += snprintf(line + off, 158 - off, " | allocs %lld", g_tel.ui_heap_allocs);
   uart_puts(line); uart_puts("\n");
 }
 
 // Chamado pelo Shell no event loop quando chega a hora do refresh.
 // Devolve 1 se o painel foi redesenhado neste tick.
 I64 ProfilerTickDue(I64 now_ms) {
-  if (!g_prof.on) return 0;
-  if (now_ms - g_prof.last_refresh_ms < g_prof.refresh_period_ms) return 0;
-  g_prof.last_refresh_ms = now_ms;
+  if (!g_tel.ui_on) return 0;
+  if (now_ms - g_tel.ui_last_refresh_ms < g_tel.ui_refresh_period_ms) return 0;
+  g_tel.ui_last_refresh_ms = now_ms;
   ProfilerSampleLoad();
-  if (g_prof.trace && (now_ms - g_prof.last_trace_ms) >= g_prof.trace_period_ms) {
-    g_prof.last_trace_ms = now_ms;
+  if (g_tel.ui_trace && (now_ms - g_tel.ui_last_trace_ms) >= g_tel.ui_trace_period_ms) {
+    g_tel.ui_last_trace_ms = now_ms;
     ProfilerSerialMirror("LIVE");
   }
   return 1;
@@ -1010,16 +1046,16 @@ I64 ProfilerTickDue(I64 now_ms) {
 I64 ProfilerSelfTest() {
   I64 pass = 0; I64 total = 0;
   ProfilerReset();
-  total++; if (g_prof.samples == 0 && g_prof.ring_count == 0 && g_prof.draws == 0) pass++;
+  total++; if (g_tel.samples == 0 && g_tel.ui_ring_count == 0 && g_tel.ui_draws == 0) pass++;
   ProfilerSetOn(1);
   total++; if (ProfilerIsOn() == 1) pass++;
   ProfilerMarkInput(100); ProfilerMarkShell(200); ProfilerMarkDolDoc(300);
   ProfilerMarkRender(400); ProfilerMarkIdle(500);
   ProfilerEndFrame(1500);
-  total++; if (g_prof.last_input_us == 100 && g_prof.last_shell_us == 200 &&
-                g_prof.last_doldoc_us == 300 && g_prof.last_render_us == 400 &&
-                g_prof.last_idle_us == 500 && g_prof.last_frame_us == 1500) pass++;
-  total++; if (g_prof.ring_count == 1 && g_prof.samples == 1) pass++;
+  total++; if (g_tel.last_input_us == 100 && g_tel.last_shell_us == 200 &&
+                g_tel.last_doldoc_us == 300 && g_tel.last_render_us == 400 &&
+                g_tel.last_idle_us == 500 && g_tel.last_total_us == 1500) pass++;
+  total++; if (g_tel.ui_ring_count == 1 && g_tel.samples == 1) pass++;
   // FPS: 1 frame de 1500 us -> 666.6 fps -> 6666 (x10)
   total++; if (ProfilerFpsX10() == 6666) pass++;
   ProfilerSetOn(0);

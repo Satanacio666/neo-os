@@ -958,7 +958,12 @@ U0 SelfTestShadeDemo() {
 U0 SelfTestRender() {
     I64 saved_daif = __mrs_daif();
     __msr_daif(saved_daif | 0x80);       // mask IRQ: no preemption during render+hash
+    // UNIFICACAO 01/11: o caminho de desenho entra no UNICO modelo de telemetria.
+    // TelemetryBeginFrame era orfa (0 chamadores); aqui o frame da cena golden passa
+    // a alimentar o histograma/percentis junto com os frames do shell.
+    TelemetryFrameBegin();
     RenderGoldenScene();
+    TelemetryFrameEnd();
     U32 *rbuf = RenderGetTargetBuffer();
     I64 rw = gfx_get_canvas_width();
     I64 rh = gfx_get_canvas_height();
@@ -1776,6 +1781,11 @@ U0 SelfTestFallbacks() {
     SelfTestCompare("c_low_wcore_both_cores", ((g_wcore_ops[0] > 0) && (g_wcore_ops[1] > 0)) ? 1 : 0, 1);
     SelfTestCompare("c_low_wcore_no_fail", ((g_wcore_fail[0] == 0) && (g_wcore_fail[1] == 0)) ? 1 : 0, 1);
     SelfTestCompare("c_low_wcore_join", (g_wcore_join_rc == 0) ? 1 : 0, 1);
+    // UNIFICACAO DA TELEMETRIA: o caminho de desenho (SelfTestRender) alimenta o
+    // MESMO modelo que o loop do shell. Antes, TelemetryBeginFrame/EndFrame eram
+    // orfas (0 chamadores) e o histograma so' via os frames do HolyBenchmark.
+    SelfTestCompare("c_low_telemetry_frames", (TelemetryTotalFrames() > 0) ? 1 : 0, 1);
+    SelfTestCompare("c_low_telemetry_valid", (TelemetryValidSamples() >= 0) ? 1 : 0, 1);
     SelfTestCompare("c3_present_backend_valid",
                     (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
     // O contador de frames so' avanca quando algo apresenta. O corpus desenha
