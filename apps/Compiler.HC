@@ -182,6 +182,7 @@ I64   g_hc_epi_count;
 // PRODUCT of two macros is the one form it does not fold reliably. The named
 // constants below/above are the single source of truth for the bounds checks.
 U8    g_hc_local_names[16384];       // HC_MAX_LOCALS * 32
+I64   g_hc_local_h[512];
 I64   g_hc_local_offsets[512];
 I64   g_hc_local_scales[512];        // 1, 2, 4, 8, or struct size
 // FASE 2.5b (Rota B): largura SEMANTICA real (1/2/4/8). O tamanho do SLOT
@@ -249,6 +250,7 @@ I64   g_hc_fnf_count;
 // precisa de 6 globais e a tabela passava a estourar -> corrupcao silenciosa.
 #define HC_MAX_GLOBALS 768
 U8    g_hc_global_names[HC_MAX_GLOBALS * 32];
+I64   g_hc_global_h[768];
 I64   g_hc_global_st_idx[HC_MAX_GLOBALS];
 I64   g_hc_global_is_arr[HC_MAX_GLOBALS];
 I64   g_hc_global_is_ptr[HC_MAX_GLOBALS]; // 1 if the global is a pointer (e.g. FBox *p)
@@ -282,6 +284,7 @@ I64 HcGlobalSlotOk() {
 // Preprocessor #define Table in Compiler.HC
 #define HC_MAX_DEFINES 2048
 U8    g_hc_def_names[HC_MAX_DEFINES * 64];
+I64   g_hc_def_h[2048];
 I64   g_hc_def_vals[HC_MAX_DEFINES];
 I64   g_hc_def_count;
 
@@ -303,9 +306,11 @@ I64   g_hc_init_count;
 // HC_MAX_STRUCTS * HC_STRUCT_MEMBERS * 32 (two macros in a product) is the form
 // the C seed JIT's dim parser does not fold, so it must not appear here.
 U8    g_hc_structs[4096];            // HC_MAX_STRUCTS * 32
+I64   g_hc_struct_h[256];
 I64   g_hc_struct_sizes[128];
 I64   g_hc_struct_mcount[128];
 U8    g_hc_member_names[524288];     // HC_MAX_STRUCTS * HC_STRUCT_MEMBERS * 32
+I64   g_hc_member_h[32768];
 I64   g_hc_member_offsets[16384];    // HC_MAX_STRUCTS * HC_STRUCT_MEMBERS
 I64   g_hc_member_sizes[16384];      // 1, 2, 4, 8 (element/field load width)
 I64   g_hc_member_is_arr[16384];     // 1 if inline array member
@@ -679,10 +684,23 @@ U0 HcFlushCache(U64 addr, U64 size) {
 // ------------------------------------------------------------------------------
 // Preprocessor #define Table, Struct Table, Locals & Functions
 // ------------------------------------------------------------------------------
+U64 HcHashStr(U8 *s) {
+    if (!s || !s[0]) return 0;
+    U64 h = 2166136261;
+    I64 i = 0;
+    while (s[i] != 0) {
+        h = ((h ^ (U64)(s[i] & 0xFF)) * 16777619) & 0xFFFFFFFF;
+        i = i + 1;
+    }
+    return h;
+}
+
 U0 HcAddDefine(U8 *name, I64 val) {
     if (!name || !name[0]) return;
     I64 had_i = 0;
+    U64 had_h = HcHashStr(name);
     for (had_i = 0; had_i < g_hc_def_count; had_i++) {
+        if (g_hc_def_h[had_i] != had_h) continue;
         if (strcmp(&g_hc_def_names[had_i * 64], name) == 0) {
             g_hc_def_vals[had_i] = val;
             return;
@@ -690,6 +708,7 @@ U0 HcAddDefine(U8 *name, I64 val) {
     }
     if (g_hc_def_count < HC_MAX_DEFINES) {
         HcSafeCopy(&g_hc_def_names[g_hc_def_count * 64], name, 64);
+        g_hc_def_h[g_hc_def_count] = (I64)HcHashStr(name);
         g_hc_def_vals[g_hc_def_count] = val;
         g_hc_def_count++;
     } else {
@@ -703,8 +722,10 @@ U0 HcAddDefine(U8 *name, I64 val) {
 }
 
 I64 HcFindDefine(U8 *name, I64 *out_val) {
+    U64 hfd_h = HcHashStr(name);
     I64 hfd_i = 0;
     for (hfd_i = 0; hfd_i < g_hc_def_count; hfd_i++) {
+        if (g_hc_def_h[hfd_i] != hfd_h) continue;
         if (strcmp(&g_hc_def_names[hfd_i * 64], name) == 0) {
             *out_val = g_hc_def_vals[hfd_i];
             return 1;
@@ -715,8 +736,10 @@ I64 HcFindDefine(U8 *name, I64 *out_val) {
 
 I64 HcFindStruct(U8 *name) {
     if (!name || !name[0]) return -1;
+    U64 hfs_h = HcHashStr(name);
     I64 hfs_i = 0;
     for (hfs_i = 0; hfs_i < g_hc_struct_count; hfs_i++) {
+        if (g_hc_struct_h[hfs_i] != hfs_h) continue;
         if (strcmp(&g_hc_structs[hfs_i * 32], name) == 0) {
             return hfs_i;
         }
@@ -746,6 +769,7 @@ I64 HcAddStruct(U8 *name) {
     if (HcStructSlotOk() == 0) { HcRaiseError(HC_ERR_STRUCT_OVERFLOW); return 0; }
     I64 ns_idx = g_hc_struct_count;
     HcSafeCopy(&g_hc_structs[ns_idx * 32], name, 32);
+    g_hc_struct_h[ns_idx] = (I64)HcHashStr(name);
     g_hc_struct_sizes[ns_idx] = 0;
     g_hc_struct_mcount[ns_idx] = 0;
     g_hc_struct_count++;
@@ -807,8 +831,10 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
 }
 
 I64 HcFindLocalIdx(U8 *name) {
+    U64 fl_h = HcHashStr(name);
     I64 fl_i = 0;
     for (fl_i = 0; fl_i < g_hc_local_count; fl_i++) {
+        if (g_hc_local_h[fl_i] != fl_h) continue;
         if (strcmp(&g_hc_local_names[fl_i * 32], name) == 0) {
             return fl_i;
         }
@@ -859,6 +885,7 @@ I64 HcAddLocalTyped(U8 *name, I64 scale, I64 is_ptr, I64 st_idx, I64 count) {
     g_hc_frame_offset += alloc_bytes;
     if (g_hc_local_count < HC_MAX_LOCALS) {
         HcSafeCopy(&g_hc_local_names[g_hc_local_count * 32], name, 32);
+    g_hc_local_h[g_hc_local_count] = (I64)HcHashStr(name);
         g_hc_local_offsets[g_hc_local_count] = offset;
         g_hc_local_scales[g_hc_local_count] = scale;
         g_hc_local_elem_sz[g_hc_local_count] = g_hc_pending_elem_sz;
@@ -1994,22 +2021,28 @@ U0 HcLexNext() {
 // and sets *out_addr_only = 1 if expression is an unindexed array/struct base
 // ------------------------------------------------------------------------------
 U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_st_idx[i] = st_idx; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = st_idx;
         g_hc_global_count++;
     }
 }
 
 U0 HcRegisterGlobalArray(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_arr[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_arr[g_hc_global_count] = 1;
         g_hc_global_count++;
@@ -2017,7 +2050,9 @@ U0 HcRegisterGlobalArray(U8 *name) {
 }
 
 I64 HcGlobalIsArray(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_arr[i];
     }
     return 0;
@@ -2027,11 +2062,14 @@ I64 HcGlobalIsArray(U8 *name) {
 // the pointer cell before applying the member offset (a struct *value* global
 // instead treats the symbol itself as the struct storage).
 U0 HcRegisterGlobalPtr(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_ptr[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_ptr[g_hc_global_count] = 1;
         g_hc_global_count++;
@@ -2039,18 +2077,23 @@ U0 HcRegisterGlobalPtr(U8 *name) {
 }
 
 I64 HcGlobalIsPtr(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_ptr[i];
     }
     return 0;
 }
 
 U0 HcRegisterGlobalFloat(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_float[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_is_float[g_hc_global_count] = 1;
         g_hc_global_count++;
@@ -2058,7 +2101,9 @@ U0 HcRegisterGlobalFloat(U8 *name) {
 }
 
 I64 HcGlobalIsFloat(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_float[i];
     }
     return 0;
@@ -2068,12 +2113,15 @@ I64 HcGlobalIsFloat(U8 *name) {
 // every parsed global array regardless of whether its storage was allocated here
 // or by the C JIT (which sizes arrays at their true element width).
 U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
+    U64 gh_h = HcHashStr(name);
     if (scale <= 0) return;
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_elem_scale[i] = scale; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_elem_scale[g_hc_global_count] = scale;
         g_hc_global_count++;
@@ -2081,7 +2129,9 @@ U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
 }
 
 I64 HcGlobalScale(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_elem_scale[i];
     }
     return 0;
@@ -2092,7 +2142,9 @@ I64 HcGlobalScale(U8 *name) {
 // "no such dimension". This is what lets `m[i][j]` resolve to base + i*M*8 + j*8
 // with no intermediate dereference (the old code had no row stride at all).
 U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
             g_hc_global_strides[i * 4 + 0] = s0;
             g_hc_global_strides[i * 4 + 1] = s1;
@@ -2103,6 +2155,7 @@ U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_strides[g_hc_global_count * 4 + 0] = s0;
         g_hc_global_strides[g_hc_global_count * 4 + 1] = s1;
@@ -2113,15 +2166,19 @@ U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
 }
 
 I64 HcGlobalStride(U8 *name, I64 k) {
+    U64 gh_h = HcHashStr(name);
     if (k < 0 || k > 3) return 0;
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_strides[i * 4 + k];
     }
     return 0;
 }
 
 I64 HcGlobalStructIdx(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
     }
     return -1;
@@ -2132,7 +2189,9 @@ I64 HcGlobalStructIdx(U8 *name) {
 // clean slate. Without this the stale float/array/struct flags make the new
 // declaration compile with the old type.
 U0 HcResetGlobalType(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
             g_hc_global_st_idx[i] = -1;
             g_hc_global_is_arr[i] = 0;
@@ -2152,11 +2211,14 @@ U0 HcResetGlobalType(U8 *name) {
 // HcSetGlobalAlloc creates the table entry if needed (mirrors the HcRegisterGlobal*
 // add path); a size of 0 means "unknown" (C seed JIT cell or not yet sized).
 U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_alloc[i] = bytes; return; }
     }
     if (HcGlobalSlotOk()) {
         HcSafeCopy(&g_hc_global_names[g_hc_global_count * 32], name, 32);
+        g_hc_global_h[g_hc_global_count] = (I64)HcHashStr(name);
         g_hc_global_st_idx[g_hc_global_count] = -1;
         g_hc_global_alloc[g_hc_global_count] = bytes;
         g_hc_global_count++;
@@ -2164,7 +2226,9 @@ U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
 }
 
 I64 HcGetGlobalAlloc(U8 *name) {
+    U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
+        if (g_hc_global_h[i] != gh_h) continue;
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_alloc[i];
     }
     return 0;
@@ -3213,6 +3277,7 @@ U0 HcParseStructDef() {
                 if (m_cnt < HC_STRUCT_MEMBERS) {
                     I64 fp_slot = st_idx * HC_STRUCT_MEMBERS + m_cnt;
                     HcSafeCopy(&g_hc_member_names[fp_slot * 32], fp_name, 32);
+                    g_hc_member_h[fp_slot] = (I64)HcHashStr(fp_name);
                     g_hc_member_offsets[fp_slot] = cur_off;
                     g_hc_member_sizes[fp_slot] = 8;
                     g_hc_member_is_arr[fp_slot] = 0;
@@ -3258,6 +3323,7 @@ U0 HcParseStructDef() {
                 if (m_cnt < HC_STRUCT_MEMBERS) {
                     I64 m_slot = st_idx * HC_STRUCT_MEMBERS + m_cnt;
                     HcSafeCopy(&g_hc_member_names[m_slot * 32], mem_n, 32);
+                    g_hc_member_h[m_slot] = (I64)HcHashStr(mem_n);
                     g_hc_member_offsets[m_slot] = cur_off;
                     g_hc_member_sizes[m_slot] = (is_p || elem_sz > 8) ? 8 : elem_sz;
                     g_hc_member_is_arr[m_slot] = is_a;
