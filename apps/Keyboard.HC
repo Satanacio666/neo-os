@@ -131,17 +131,12 @@ I64 UartTestIrqNesting() {
 }
 
 U0 UartPutChar(U8 c) {
-    I64 uart_base = hal_get_uart_base();
-    if (!uart_base) return;
-
-    // CAMADA 1.1: Nivel 1 (IRQ-safe) via primitivas de HalPlatform.HC. Um handler
-    // de IRQ que imprimisse na MESMA core nao da self-deadlock (IRQs mascaradas).
+    // P3.1: despacha para o driver polimórfico da HAL (PL011/16550A/SBSA).
+    // O lock de nivel 1 e' mantido aqui porque UartPutChar pode ser chamado de
+    // qualquer contexto (incluindo IRQ) e o MMIO deve ser acessado com IRQs
+    // mascaradas para evitar self-deadlock.
     U64 daif = SmpLockIrqSave(&g_uart_lock);
-    I64 kb_to = 10000;
-    while ((__mmio_r32(uart_base + 0x18) & PL011_FR_TXFF) && kb_to > 0) {
-        kb_to--;
-    }
-    __mmio_w32(uart_base + 0x00, c);
+    UartPutCharHw(c);
     SmpUnlockIrqRestore(&g_uart_lock, daif);
 }
 
@@ -157,18 +152,9 @@ U0 UartPutChar(U8 c) {
 U0 UartPutString(U8 *s) {
     if (!s) return;
     U64 daif = SmpLockIrqSave(&g_uart_lock);
-    I64 us_base = hal_get_uart_base();
     while (*s) {
-        if (us_base) {
-            if (*s == '\n') {
-                I64 w1 = 10000;
-                while ((__mmio_r32(us_base + 0x18) & PL011_FR_TXFF) && w1 > 0) w1--;
-                __mmio_w32(us_base + 0x00, '\r');
-            }
-            I64 w2 = 10000;
-            while ((__mmio_r32(us_base + 0x18) & PL011_FR_TXFF) && w2 > 0) w2--;
-            __mmio_w32(us_base + 0x00, *s);
-        }
+        if (*s == '\n') UartPutCharHw('\r');
+        UartPutCharHw(*s);
         s++;
     }
     SmpUnlockIrqRestore(&g_uart_lock, daif);   // restaura SO se o bit I estava limpo
@@ -183,25 +169,17 @@ U0 uart_puts(U8 *s) {
 }
 
 I64 UartHasRx() {
-    I64 uart_base = hal_get_uart_base();
-    if (!uart_base) return 0;
-    // CORRIGIDO (31/10): NAO reconfigurar o UART dentro do poll. A versao anterior
-    // reescrevia LCR_H (0x2C) e CR (0x30) SEMPRE que UARTEN parecia desligado — e
-    // no PL011 desligar/religar o UART **reseta o FIFO de RX**, PERDENDO caracteres.
-    // Sintoma medido: comandos longos chegavam corrompidos ("I64 m12" -> "I2",
-    // "m25" -> "m5"), fazendo structs de 48/70 membros e muitas-locals falharem no
-    // Compiler.HC (3 dos 9 casos do JIT-golden).
-    // A configuracao do UART pertence a KeyboardInit (uma vez). Aqui so' se' LE.
-    return (__mmio_r32(uart_base + 0x18) & PL011_FR_RXFE) == 0;
+    // P3.1: usa o driver polimórfico da HAL (nao toca em registrador diretamente).
+    return UartHasRxHw();
 }
 
 I64 UartWaitRx(I64 max_spins) {
     I64 uw_i = 0;
     while (uw_i < max_spins) {
-        if (UartHasRx()) return 1;
+        if (UartHasRxHw()) return 1;
         uw_i++;
     }
-    return UartHasRx();
+    return UartHasRxHw();
 }
 
 I64 UartGetChar() {

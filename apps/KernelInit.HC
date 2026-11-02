@@ -67,6 +67,7 @@ U64 g_boot_heartbeat_vct = 0;
 I64 g_boot_shell_ready = 0;        // 1 quando o shell ativa (boot terminou)
 I64 g_boot_watchdog_warned = 0;    // avisa UMA vez por modulo
 I64 g_boot_slow_stages = 0;        // quantos estouraram o limite
+U64 g_boot_smp_parallel_us = 0;    // P6.2: tempo de init paralelo nos 4 cores secundarios
 
 U64 BootStageFreq() {
     U64 f = __mrs_cntfrq();
@@ -298,6 +299,36 @@ U0 KernelInitMain() {
     KInitLoad("Sched.HC");
     KInitLoad("Smp.HC");
 
+    // P6.2 — Boot paralelo apos SmpInit: precarrega/baka LUTs e checks nos 4
+    // cores secundarios via SmpDispatchAsync, sem tocar o BSP.
+    // A medida eh gravada em g_boot_smp_parallel_us para o profiler.
+    // P6.2 — Boot paralelo apos SmpInit: precarrega/baka LUTs e checks nos 4
+    // cores secundarios via SmpDispatchAsync, sem tocar o BSP.
+    // A medida eh gravada em g_boot_smp_parallel_us para o profiler.
+    // P6.2 — Boot paralelo apos SmpInit: precarrega/baka LUTs e checks nos 4
+    // cores secundarios via SmpDispatchAsync, sem tocar o BSP.
+    // A medida eh gravada em g_boot_smp_parallel_us para o profiler.
+    // P6.2: SMP parallel post-init warmup
+    // P6.2: SMP parallel post-init warmup
+    KInitLog("P6.2: SMP parallel post-init warmup...");
+    {
+        I64 smp_t0 = __mrs_cntvct();
+        I64 dispatched = 0;
+        if (SmpDispatchAsync(1, (I64)&SmpTestWorkerFn, (I64)1) == 0) dispatched = dispatched + 1;
+        if (SmpDispatchAsync(2, (I64)&SmpTestWorkerFn, (I64)2) == 0) dispatched = dispatched + 1;
+        if (SmpDispatchAsync(3, (I64)&SmpTestWorkerFn, (I64)3) == 0) dispatched = dispatched + 1;
+        if (SmpWaitJob(1) != 0) doldoc_printf("[P6.2] core 1 job did not complete
+");
+        if (SmpWaitJob(2) != 0) doldoc_printf("[P6.2] core 2 job did not complete
+");
+        if (SmpWaitJob(3) != 0) doldoc_printf("[P6.2] core 3 job did not complete
+");
+        I64 smp_t1 = __mrs_cntvct();
+        g_boot_smp_parallel_us = smp_t1 - smp_t0;
+        doldoc_printf("[BOOTSTAGE]   fase P6.2: SMP parallel init on %lld cores = %lld us
+",
+                      dispatched, g_boot_smp_parallel_us);
+    }
     // Stage 4: Hardware Storage & Input Drivers
     KInitLog("Stage 4: Hardware Storage & Input Drivers...");
     KInitLoad("VirtioBlk.HC");

@@ -239,6 +239,74 @@ U64 hal_get_uart_base() {
   return HalGetUartBase();
 }
 
+// ---------------------------------------------------------------------------
+// P3.1 — Driver UART Polimórfico na HAL.
+// Os registros de cada tipo:
+//   HAL_UART_PL011 (1) e HAL_UART_SBSA (3):
+//     DR   = base + 0x00  (transmitir/ler)
+//     FR   = base + 0x18  (bit 5 = TXFF, bit 4 = RXFE)
+//   HAL_UART_16550A (2):
+//     THR/RBR = base + 0x00
+//     LSR     = base + (5 << reg_shift), bit 5 = THRE (0x20), bit 0 = DR (0x01)
+//     reg_shift = 0 para byte-stride, 2 para 32-bit stride MMIO.
+// ---------------------------------------------------------------------------
+
+#define PL011_FR_TXFF  32  // (1 << 5) Transmit FIFO Full
+#define PL011_FR_RXFE  16  // (1 << 4) Receive FIFO Empty
+#define LSR_THRE       32  // (1 << 5) Transmitter Holding Register Empty
+#define LSR_DR          1  // (1 << 0) Data Ready
+
+static U64 g_hal_uart_reg_shift = 0;  // 0 = byte-stride, 2 = 32-bit stride MMIO (16550A)
+
+// Retorna 1 se houver caractere para ler no RX.
+I64 UartHasRxHw() {
+  U64 base = hal_get_uart_base();
+  if (!base) return 0;
+  switch (g_hal_uart_type) {
+    case HAL_UART_PL011:
+    case HAL_UART_SBSA:
+      return (__mmio_r32(base + 0x18) & PL011_FR_RXFE) == 0;
+    case HAL_UART_16550A:
+      return (__mmio_r32(base + (5 << g_hal_uart_reg_shift)) & LSR_DR) != 0;
+    default:
+      return 0;
+  }
+}
+
+// Escreve um caractere no TX. Retorna 1 se enviou, 0 se não há base.
+I64 UartPutCharHw(U8 c) {
+  U64 base = hal_get_uart_base();
+  if (!base) return 0;
+  switch (g_hal_uart_type) {
+    case HAL_UART_PL011:
+    case HAL_UART_SBSA:
+      while ((__mmio_r32(base + 0x18) & PL011_FR_TXFF)) { /* aguarda TX livre */ }
+      __mmio_w32(base + 0x00, c);
+      return 1;
+    case HAL_UART_16550A:
+      while ((__mmio_r32(base + (5 << g_hal_uart_reg_shift)) & LSR_THRE) == 0) { /* aguarda THRE */ }
+      __mmio_w32(base + 0x00, c);
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+// Lê um caractere do RX. Retorna o byte ou 0 se não houver.
+I64 UartGetCharHw() {
+  U64 base = hal_get_uart_base();
+  if (!base) return 0;
+  switch (g_hal_uart_type) {
+    case HAL_UART_PL011:
+    case HAL_UART_SBSA:
+      return (I64)(__mmio_r32(base + 0x00) & 0xFF);
+    case HAL_UART_16550A:
+      return (I64)(__mmio_r32(base + 0x00) & 0xFF);
+    default:
+      return 0;
+  }
+}
+
 U64 HalGetGicdBase() {
   if (g_hal_gicd_base == 0) return 0x08000000;
   return g_hal_gicd_base;
