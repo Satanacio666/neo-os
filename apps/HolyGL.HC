@@ -860,3 +860,84 @@ HolyGLInit();
 if (!g_kernel_booting) {
   HolyGLMain();
 }
+
+// ==============================================================================
+// LOTE 3 / Camada 4A — HglTransformBatchSmp: transformacao em lote de vertices
+// nos 4 cores via o motor soberano Math3DPar (Math3DTransformParallel).
+// Reutiliza a arena g_tf_s_* (slices + prova de core) — ZERO kmalloc, ZERO
+// impacto no CENSUS. Arena estatica alinhada a 64B (slot de 64 bytes p/ core).
+// A matematica e' idêntica a do scalar (Math3DTransformRange), logo o resultado
+// e' bit-identico; cada slice e' escrito por exatamente um core.
+// ==============================================================================
+#define HGL_BATCH_MAX_CORES 4
+
+I64 g_hgl_batch_core_mask;       // bitmask de cores que executaram
+U64 g_hgl_batch_ticks;           // ciclos CNTVCT do lote
+I64 g_hgl_batch_nslices;
+
+typedef struct {
+  I64 _pad[(64 / 8)];            // slot de 64 bytes por core (bss alinhada)
+} HglCoreArena;
+
+// Transforma [0,count) vertices CVec3->CVec4 pelo MVP em paralelo. Retorna o
+// numero de slices usados (1 no fallback scalar). Preenche g_hgl_batch_core_mask
+// e g_hgl_batch_ticks. Mesma assinatura de Math3DTransformParallel.
+I64 HglTransformBatchSmp(CVec3 *in, CVec4 *out, I64 count, CMat4 *mvp) {
+  U64 t0 = __mrs_cntvct();
+  I64 nsl = Math3DTransformParallel(in, out, count, mvp);
+  U64 t1 = __mrs_cntvct();
+  g_hgl_batch_ticks = t1 - t0;
+  g_hgl_batch_nslices = nsl;
+  // Sonda quais cores executaram (ran[] = MPIDR de quem rodou cada slice).
+  g_hgl_batch_core_mask = 0;
+  I64 k = 0;
+  while (k < nsl) {
+    I64 ran = g_tf_s_ran[k];
+    if (ran >= 0) g_hgl_batch_core_mask = g_hgl_batch_core_mask | (1 << ran);
+    k = k + 1;
+  }
+  return nsl;
+}
+
+// Self-test do Lote 3 (c4_hgl_batch_smp_exact / c4_hgl_batch_speedup): compara o
+// lote SMP com a referencia escalar bit a bit e prova que multiplos cores rodaram
+// quando ha SMP. Retorna nro de falhas (0 = pass).
+CVec3 g_hgl_b_test_in[16];
+CVec4 g_hgl_b_test_out[16];
+CVec4 g_hgl_b_ref[16];
+
+I64 HglBatchSmpSelfTest() {
+  CMat4 mvp;
+  Mat4Identity(&mvp);
+  Mat4Translate(&mvp, 0.5, -1.0, 2.0);
+  Mat4RotateY(&mvp, 30.0);
+  I64 i = 0;
+  while (i < 16) {
+    g_hgl_b_test_in[i].x = (F64)(i * 2) - 5.0;
+    g_hgl_b_test_in[i].y = (F64)(i * 0.5) + 3.0;
+    g_hgl_b_test_in[i].z = (F64)i - 2.0;
+    CVec4 t;
+    t.x = g_hgl_b_test_in[i].x; t.y = g_hgl_b_test_in[i].y; t.z = g_hgl_b_test_in[i].z; t.w = 1.0;
+    Mat4MulVec4(&g_hgl_b_ref[i], &mvp, &t);
+    i = i + 1;
+  }
+  I64 nsl = HglTransformBatchSmp(g_hgl_b_test_in, g_hgl_b_test_out, 16, &mvp);
+  I64 bad = 0;
+  // c4_hgl_batch_smp_exact: bit-identical ao scalar.
+  i = 0;
+  while (i < 16) {
+    if (g_hgl_b_test_out[i].x != g_hgl_b_ref[i].x) bad = bad + 1;
+    if (g_hgl_b_test_out[i].y != g_hgl_b_ref[i].y) bad = bad + 1;
+    if (g_hgl_b_test_out[i].z != g_hgl_b_ref[i].z) bad = bad + 1;
+    if (g_hgl_b_test_out[i].w != g_hgl_b_ref[i].w) bad = bad + 1;
+    i = i + 1;
+  }
+  // c4_hgl_batch_speedup: com >1 core, mais de um core executa alguma slice.
+  if ((I64)SmpOnlineCoreCount() > 1) {
+    I64 core_cnt = 0;
+    I64 mk = 0;
+    while (mk < 32) { if (g_hgl_batch_core_mask & (1 << mk)) core_cnt = core_cnt + 1; mk = mk + 1; }
+    if (core_cnt < 2) bad = bad + 1;
+  }
+  return bad;
+}

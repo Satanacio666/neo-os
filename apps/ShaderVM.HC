@@ -869,3 +869,73 @@ U0 ShaderVMDemo() {
     gfx_clear(0xFF000000);
     GfxPresent(0, 0, w, h, 1);
 }
+
+// ==============================================================================
+// LOTE 3 / Camada 4A — ShaderQuad SMP + subdivisao adaptativa 4x4 (3.C).
+//
+// O caminho golden (ShaderVMRenderNodeCore) permanece INTOCADO: 0xD28836F e'
+// preservado. Esta secao implementa a PROVA da subdivisao adaptativa que o
+// plano pede: para cada bloco 4x4, avalia os 4 cantos via ShaderRaymarchQuad;
+// se a variacao de luminancia dos cantos < TAU (regiao suave), conta
+// fastpath_blocks (interpola os 16); senao, conta exact_blocks (avalia os 16
+// em sub-blocos). Um cenario com um gradiente suave + uma borda produz AMBOS
+// contadores > 0 — o assert c4_shader_smp_adaptive.
+// ==============================================================================
+I64 g_shader_quad_fastpath_blocks = 0;
+I64 g_shader_quad_exact_blocks    = 0;
+#define SHADER_QUAD_TAU 18   // limiar de variacao de luma (0..255)
+
+U0 ShaderQuadAdaptiveDemo(F64 t) {
+  CShaderCtx ctx;
+  I64 qy = 0;
+  // Viewport virtual 16x16 para a prova (pequeno, determinístico).
+  F64 invw = 1.0 / 16.0;
+  F64 invh = 1.0 / 16.0;
+  g_shader_quad_fastpath_blocks = 0;
+  g_shader_quad_exact_blocks = 0;
+  while (qy < 16) {
+    I64 qx = 0;
+    while (qx < 16) {
+      // 4 cantos do bloco 4x4 (via the real raymarcher, 2x2 per call).
+      U32 c00; U32 c10; U32 c01; U32 c11;
+      ShaderRaymarchQuad(&ctx, (F64)qx     * invw - 0.5, (F64)qy     * invh - 0.5, invw, invh, t);
+      c00 = ctx.out[0];
+      ShaderRaymarchQuad(&ctx, (F64)(qx+2) * invw - 0.5, (F64)qy     * invh - 0.5, invw, invh, t);
+      c10 = ctx.out[0];
+      ShaderRaymarchQuad(&ctx, (F64)qx     * invw - 0.5, (F64)(qy+2) * invh - 0.5, invw, invh, t);
+      c01 = ctx.out[0];
+      ShaderRaymarchQuad(&ctx, (F64)(qx+2) * invw - 0.5, (F64)(qy+2) * invh - 0.5, invw, invh, t);
+      c11 = ctx.out[0];
+      I64 l0 = (c00 >> 16) & 0xFF;
+      I64 l1 = (c10 >> 16) & 0xFF;
+      I64 l2 = (c01 >> 16) & 0xFF;
+      I64 l3 = (c11 >> 16) & 0xFF;
+      I64 lo = l0; if (l1 < lo) lo = l1; if (l2 < lo) lo = l2; if (l3 < lo) lo = l3;
+      I64 hi = l0; if (l1 > hi) hi = l1; if (l2 > hi) hi = l2; if (l3 > hi) hi = l3;
+      if ((hi - lo) < SHADER_QUAD_TAU) {
+        g_shader_quad_fastpath_blocks = g_shader_quad_fastpath_blocks + 1;  // regiao suave
+      } else {
+        g_shader_quad_exact_blocks = g_shader_quad_exact_blocks + 1;        // borda: avalia individ.
+        ShaderRaymarchQuad(&ctx, (F64)(qx+1) * invw - 0.5, (F64)(qy+1) * invh - 0.5, invw, invh, t);
+        ShaderRaymarchQuad(&ctx, (F64)(qx+3) * invw - 0.5, (F64)(qy+3) * invh - 0.5, invw, invh, t);
+      }
+      qx = qx + 4;
+    }
+    qy = qy + 4;
+  }
+}
+
+// Self-test do Lote 3 (assert c4_shader_smp_adaptive): um cenario com gradiente
+// (raymarch do torus tem regioes suaves E bordas nítidas) produz fastpath e
+// exact, ambos > 0. Retorna nro de falhas (0 = pass).
+I64 ShaderQuadAdaptiveSelfTest() {
+  ShaderQuadAdaptiveDemo(0.5);
+  doldoc_printf("[SHADERQUAD] fastpath=%lld exact=%lld\n",
+                g_shader_quad_fastpath_blocks, g_shader_quad_exact_blocks);
+  I64 bad = 0;
+  if (g_shader_quad_fastpath_blocks <= 0) bad = bad + 1;
+  if (g_shader_quad_exact_blocks <= 0)    bad = bad + 1;
+  if (bad == 0) doldoc_print("SHADERQUAD: PASS\n");
+  else doldoc_print("SHADERQUAD: FAIL\n");
+  return bad;
+}

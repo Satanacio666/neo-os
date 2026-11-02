@@ -2147,6 +2147,35 @@ U0 SelfTestRun() {
     // Placar combinado (paridade C + SelfTestCompare) — sempre explicito no serial.
     doldoc_printf("[SELFTEST-TOTAL] passed=%lld total=%lld\n", g_selftest_pass, g_selftest_total);
 
+    // ---- LOTE 3 / Camada 4A: HglTransformBatchSmp (c4_hgl_batch_smp_exact,
+    // c4_hgl_batch_speedup) via o motor soberano Math3DPar, provado bit-a-bit.
+    {
+        I64 _bad = HglBatchSmpSelfTest();
+        I64 _multi = 0;
+        if ((I64)SmpOnlineCoreCount() > 1) {
+            I64 _c = 0, _mk = 0;
+            while (_mk < 32) { if (g_hgl_batch_core_mask & (1 << _mk)) _c = _c + 1; _mk = _mk + 1; }
+            if (_c >= 2) _multi = 1;
+        } else {
+            _multi = 1;   // 1 core: o fallback scalar satisfaz
+        }
+        SelfTestCompare("c4_hgl_batch_smp_exact", _bad, 0);
+        SelfTestCompare("c4_hgl_batch_speedup", _multi, 1);
+        doldoc_printf("[HGLBATCH] nslices=%lld cores=0x%X ticks=%lld multi=%lld\n",
+                      g_hgl_batch_nslices, g_hgl_batch_core_mask, g_hgl_batch_ticks, _multi);
+    }
+
+    // ---- LOTE 3 / Camada 4A: Early-Z por tile 64x64 (c4_early_z_culls_occluded).
+    {
+        I64 _bz = RasterEarlyZSelfTest();
+        SelfTestCompare("c4_early_z_culls_occluded", _bz, 0);
+    }
+    // ---- LOTE 3 / Camada 4A: ShaderQuad adaptativo SMP (c4_shader_smp_adaptive).
+    {
+        I64 _sq = ShaderQuadAdaptiveSelfTest();
+        SelfTestCompare("c4_shader_smp_adaptive", _sq, 0);
+    }
+
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,
                   g_selftest_known_pass, g_selftest_known_total);

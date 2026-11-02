@@ -123,6 +123,63 @@ I64 g_rs_next_tile = 0;     // shared work-stealing cursor
 I64 g_rs_smp_workers = 0;   // secondaries dispatched for the last SMP frame
 
 // ==============================================================================
+// LOTE 3 / Camada 4A — Early-Z conservador por tile 64x64 (3.B).
+//
+// Mantem um envelope de profundidade por tile: g_rs_tile_z_far[i] = maior z
+// de um span OPAQUE ja desenhado naquele tile. Um triangulo cujo z_near inteiro
+// e' > z_far_opaque do tile esta COMPROVADAMENTE ocluido e pode ser descartado
+// em O(1) (culling conservador: so elimina o que nao pode mudar o frame).
+// g_rs_early_z_culled conta os triangulos descartados (por produtor, em slot de
+// 64B) — o assert c4_early_z_culls_occluded prova que a rejeicao acontece.
+//
+// IMPORTANTE — a regra petrea do determinismo (0xD28836F): o caminho golden
+// (RasterTriangleZCore / RasterRenderTile) NAO usa o culling por padrao. Esta
+// estrutura alimenta o teste isolado (RasterEarlyZSelfTest) e o cabeamento
+// futuro; manter conservador (so eliminar o que esta 100% ocluido) garante que,
+// se ligado, o resultado seja bit-identico ao sem-culling.
+#define RS_TILE_ZFAR_OPAQUE 0xFFFFFFFFFFFFFFFF  // -1 = tile ainda sem span opaco
+I64 g_rs_tile_z_far[RASTER_MAX_TILES];          // envelope de z por tile
+I64 g_rs_early_z_culled;                        // total de tris descartados
+
+// Slot 64B por produtor p/ o contador de early-z culled (mesmo idioma de
+// CProdCount: uma linha L1D por core, sem false sharing sob SMP).
+class CEarlyZCount { I64 c; I64 p0; I64 p1; I64 p2; I64 p3; I64 p4; I64 p5; I64 p6; };
+CEarlyZCount g_rs_earlyz_per_core[RASTER_MAX_PRODUCERS];
+
+// (Re)inicia o envelope de profundidade por tile.
+U0 RasterEarlyZReset() {
+  I64 zi = 0;
+  while (zi < RASTER_MAX_TILES) { g_rs_tile_z_far[zi] = RS_TILE_ZFAR_OPAQUE; zi = zi + 1; }
+  I64 pi = 0;
+  while (pi < RASTER_MAX_PRODUCERS) { g_rs_earlyz_per_core[pi].c = 0; pi = pi + 1; }
+  g_rs_early_z_culled = 0;
+}
+
+// Registra o z_far de um span opaco num tile (liga com o rasterizador futuro).
+U0 RasterEarlyZMarkOpq(I64 tile_idx, I64 z_far) {
+  if (tile_idx < 0 || tile_idx >= RASTER_MAX_TILES) return;
+  if (g_rs_tile_z_far[tile_idx] == RS_TILE_ZFAR_OPAQUE ||
+      z_far > g_rs_tile_z_far[tile_idx]) {
+    g_rs_tile_z_far[tile_idx] = z_far;
+  }
+}
+
+// Teste conservador: o tri [z_near] esta inteiro atras do envelope do tile?
+// Se sim, e' descartado em O(1) e contabilizado. Retorna 1 se cullou.
+I64 RasterEarlyZTestCull(I64 tile_idx, I64 z_near_max, I64 producer) {
+  if (tile_idx < 0 || tile_idx >= RASTER_MAX_TILES) return 0;
+  if (g_rs_tile_z_far[tile_idx] == RS_TILE_ZFAR_OPAQUE) return 0;  // vazio: nao cullar
+  if (z_near_max > g_rs_tile_z_far[tile_idx]) {
+    g_rs_early_z_culled = g_rs_early_z_culled + 1;
+    if (producer >= 0 && producer < RASTER_MAX_PRODUCERS) {
+      g_rs_earlyz_per_core[producer].c = g_rs_earlyz_per_core[producer].c + 1;
+    }
+    return 1;
+  }
+  return 0;
+}
+
+// ==============================================================================
 // P4.3: unified texture state. The ONE rasterizer reads ctx->tex_active; when a
 // texture is bound it runs the textured span, when not it runs the byte-identical
 // NEON solid span (golden hash 0xD28836F). The per-texel work is scalar because
@@ -1879,4 +1936,37 @@ if (g_kernel_booting) {
   RasterBootCheck();
 } else {
   RasterTileMain();
+}
+
+// LOTE 3 / Camada 4A — self-test Early-Z (assert c4_early_z_culls_occluded).
+// Prova: um tile com z_far_opaque=10 (quad frontal) oclui COMPROVADAMENTE um tri
+// com z_near=50 (descarta, g_rs_early_z_culled++), mas NAO oclui um tri com
+// z_near=5 (nao descarta porque ainda pode aparecer na frente). A imagem nao e'
+// alterada (a rejeicao e' conservadora). Retorna nro de falhas (0 = pass).
+I64 RasterEarlyZSelfTest() {
+  RasterEarlyZReset();
+  I64 bad = 0;
+
+  // Tile 3: quad frontal opaco cobre o tile com z_far = 10.
+  RasterEarlyZMarkOpq(3, 10);
+  // Tri traseiro totalmente ocluido (z_near_max=50 > 10) -> deve cull.
+  I64 c1 = RasterEarlyZTestCull(3, 50, 1);
+  // Tri frontal (z_near_max=5 <= 10) -> nao deve cull (pode estar na frente).
+  I64 c2 = RasterEarlyZTestCull(3, 5, 2);
+  // Tile vazio (0) -> nunca culla (sem envelope).
+  I64 c0 = RasterEarlyZTestCull(0, 999, 0);
+
+  doldoc_printf("[EARLYZ] tile3 front+far: cull_far=%lld keep_near=%lld empty_tile_cull=%lld total=%lld\n",
+                c1, c2, c0, g_rs_early_z_culled);
+
+  if (c1 != 1) bad = bad + 1;   // ocluido deve ser descartado
+  if (c2 != 0) bad = bad + 1;   // nao-ocluido nao deve ser descartado
+  if (c0 != 0) bad = bad + 1;   // tile vazio nunca culla
+  if (g_rs_early_z_culled != 1) bad = bad + 1;   // exatamente 1 culled
+  // Slot 64B por produtor: o produtor 1 recebeu o culled, o 2 nao.
+  if (g_rs_earlyz_per_core[1].c != 1) bad = bad + 1;
+  if (g_rs_earlyz_per_core[2].c != 0) bad = bad + 1;
+  if (bad == 0) doldoc_print("EARLYZ: PASS\n");
+  else doldoc_print("EARLYZ: FAIL\n");
+  return bad;
 }
