@@ -1256,6 +1256,11 @@ U0 DolDocShellEventLoop() {
     I64 last_anim_ms = timer_get_uptime_ms();
 
     while (g_shell_running) {
+        // IDEA-5: cabecar o frame de telemetria na entrada do loop do shell.
+        // TelemetryBeginFrame/EndFrame ja existem (Telemetry.HC) e alimentam o
+        // histograma/percentil de frames do profiler; aqui as ligamos ao loop
+        // real para que g_tel.frame_count avance e o painel mostre o frame atual.
+        TelemetryBeginFrame();
         // P9.0: carimbo por subsistema (CNTVCT_EL0) para o painel do profiler.
         I64 pf_t0 = (I64)__mrs_cntvct();
         virtio_input_poll();
@@ -1337,6 +1342,7 @@ U0 DolDocShellEventLoop() {
         I64 pf_t6 = (I64)__mrs_cntvct();
         ProfilerMarkIdle(ProfilerUsBetween(pf_t5, pf_t6));
         ProfilerEndFrame(ProfilerUsBetween(pf_t0, pf_t6));
+        TelemetryEndFrame();
     }
 }
 
