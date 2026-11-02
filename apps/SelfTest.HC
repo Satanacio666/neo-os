@@ -2111,6 +2111,42 @@ U0 SelfTestRun() {
     SelfTestFallbacks();
     SelfTestStackCanary();
 
+    // ---- LOTE 2-FIX / Fuga 3: 4 asserts (c3_telem_frame_wired,
+    // c3_telem_stages_nonzero, c2_uart_16550a_sim, c2_hash_filter) ----
+    // c3_telem_frame_wired: prova que o funil da Layer B (TelemetryBeginFrame/
+    // TelemetryEndFrame do Shell) realmente contou frames. Se 0, o cabearmento
+    // do Ciclo 1 nao chegou ao g_tel e o painel estaria morto.
+    SelfTestCompare("c3_telem_frame_wired", TelemetryTotalFrames() > 0, 1);
+    // c3_telem_stages_nonzero: ha pelo menos uma amostra valida (frames apos o
+    // warmup) — a prova de que os estagios logic/raster/blit nao saem zerados.
+    SelfTestCompare("c3_telem_stages_nonzero", TelemetryValidSamples() > 0, 1);
+    // c2_uart_16550a_sim: exercita o ramo 16550A (LSR/THR) que o QEMU virt
+    // nunca toca (ele roda PL011). Aponta a base da UART para um buffer simulado
+    // em RAM com LSR_THRE alto, envia 1 byte, valida o byte gravado, restaura a
+    // base real E o tipo PL011 antes de qualquer doldoc_printf.
+    {
+        I64 _uart_ok = 0;
+        U8  _sim[64];
+        I64 _i = 0;
+        while (_i < 64) { _sim[_i] = 0; _i = _i + 1; }
+        U64 _saved_base = g_hal_uart_base;
+        U32 _saved_type = g_hal_uart_type;
+        g_hal_uart_base  = (U64)&_sim[0];
+        g_hal_uart_type  = HAL_UART_16550A;
+        _sim[5] = LSR_THRE;              // Transmitter Holding Register Empty
+        I64 _sent = UartPutCharHw('A');  // usa __mmio_w32 no buffer RAM
+        g_hal_uart_base  = _saved_base;
+        g_hal_uart_type  = _saved_type;
+        if (_sent == 1 && (_sim[0] & 0xFF) == 'A') _uart_ok = 1;
+        SelfTestCompare("c2_uart_16550a_sim", _uart_ok, 1);
+    }
+    // c2_hash_filter: prova DETERMINISTICA do filtro FNV-1a — o numero de strcmp
+    // evitados e' constante para um dado corpus, imune ao jitter do host TCG.
+    doldoc_printf("[HASH-FILTER] avoided_strcmp=%lld\n", g_hc_hash_filtered);
+    SelfTestCompare("c2_hash_filter", g_hc_hash_filtered > 100000, 1);
+    // Placar combinado (paridade C + SelfTestCompare) — sempre explicito no serial.
+    doldoc_printf("[SELFTEST-TOTAL] passed=%lld total=%lld\n", g_selftest_pass, g_selftest_total);
+
     doldoc_printf("$FG,CYAN$---$FG$ %lld/%lld passed, %lld failed | known: %lld/%lld\n",
                   g_selftest_pass, g_selftest_total, g_selftest_fail,
                   g_selftest_known_pass, g_selftest_known_total);

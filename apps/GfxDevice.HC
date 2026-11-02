@@ -348,10 +348,9 @@ I64 VirtioGpuInit() {
 
   U64 slot_base = g_hal_virtio_base;
   if (slot_base == 0) slot_base = VIRTIO_MMIO_SLOT_BASE;
-  I64 max_slots = g_hal_virtio_slots;
-  if (max_slots <= 0) max_slots = 32;
-  U64 slot_stride = g_hal_virtio_stride;
-  if (slot_stride == 0) slot_stride = VIRTIO_MMIO_SLOT_STRIDE;
+  // Layer B: usa os acessores soberanos (aplicam os fallbacks 32 / 0x200).
+  I64 max_slots = HalGetVirtioSlots();
+  U64 slot_stride = HalGetVirtioStride();
 
   I64 vg_slot;
   for (vg_slot = 0; vg_slot < max_slots; vg_slot++) {

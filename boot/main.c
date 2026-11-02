@@ -79,13 +79,8 @@ extern uint32_t acpi_virtio_stride(void);
 extern uint32_t acpi_virtio_slots(void);
 extern uint32_t acpi_cpu_count(void);
 
-/* P6.2 — simbolos SMP (boot/runtime/smp.c / apps/Smp.HC) */
-extern void     SmpInit(void);
-extern int64_t  SmpDispatchAsync(uint32_t, uint64_t, uint64_t);
-extern int64_t  SmpWaitJob(uint32_t);
-extern uint32_t SmpGetCoreCount(void);
-extern uint32_t SmpGetCoreId(void);
-extern void     SmpTestWorkerFn(uint64_t);
+/* P6.2 — o SMP e' propriedade soberana de apps/Smp.HC; o seed C nao declara
+   SmpInit/SmpDispatch aqui para nao criar um segundo motor SMP no bootstrap. */
 
 /* Timer (apps/Timer.HC) */
 extern uint64_t TimerQueryHwFreq(void);
@@ -720,12 +715,11 @@ int main(int argc, char **argv)
     symbols_register("neo_midr_implementer", (void*)neo_midr_implementer, SYM_FUNC);
     symbols_register("neo_midr_partnum", (void*)neo_midr_partnum, SYM_FUNC);
 
-    // P3.1/P6.2 — simbolos SMP para o HolyC (boot paralelo e UART polimorfica).
-    symbols_register("SmpInit", (void*)SmpInit, SYM_FUNC);
-    symbols_register("SmpDispatchAsync", (void*)SmpDispatchAsync, SYM_FUNC);
-    symbols_register("SmpGetCoreCount", (void*)SmpGetCoreCount, SYM_FUNC);
-    symbols_register("SmpGetCoreId", (void*)SmpGetCoreId, SYM_FUNC);
-    symbols_register("SmpTestWorkerFn", (void*)SmpTestWorkerFn, SYM_FUNC);
+    // P3.1/P6.2 — o SMP eh propriedade SOBERANA de apps/Smp.HC. O seed C faz o
+    // bootstrap minimo (smp_entry, MMU, PSCI) mas NAO registra SmpInit/SmpDispatch
+    // aqui: ao abandonar essa fronteira voce criaria um segundo motor SMP em C
+    // competindo com o HolyC. apps/Smp.HC registra-os pela HcPublishFunc no seu
+    // proprio load. (SOVEREIGN: a tabela pertence ao HolyC em runtime.)
 
     // P7.1 — armazenamento via EFI_BLOCK_IO. O apps/RedSea.HC consome
     // neo_block_read e neo_block_write; o resto e diagnostico e escolha do primario.

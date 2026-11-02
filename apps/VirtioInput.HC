@@ -323,10 +323,9 @@ I64 VirtioInputScanAndInit(I64 screen_w, I64 screen_h) {
 
   U64 slot_base = g_hal_virtio_base;
   if (slot_base == 0) slot_base = VIRTIO_MMIO_SLOT_BASE;
-  I64 max_slots = g_hal_virtio_slots;
-  if (max_slots <= 0) max_slots = 32;
-  U64 slot_stride = g_hal_virtio_stride;
-  if (slot_stride == 0) slot_stride = VIRTIO_MMIO_SLOT_STRIDE;
+  // Layer B: usa os acessores soberanos (aplicam os fallbacks 32 / 0x200).
+  I64 max_slots = HalGetVirtioSlots();
+  U64 slot_stride = HalGetVirtioStride();
 
   I64 vi_slot;
   for (vi_slot = 0; vi_slot < max_slots && g_num_input_devs < 4; vi_slot++) {

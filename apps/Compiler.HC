@@ -207,6 +207,7 @@ I64   g_hc_frame_offset;
 // Persistent Compiled Function Table
 U8    g_hc_func_names[HC_MAX_FUNCS * 32];
 U64   g_hc_func_addrs[HC_MAX_FUNCS];
+I64   g_hc_func_h[HC_MAX_FUNCS];
 I64   g_hc_func_count;
 
 // BLOCO 3: a guarda de HC_MAX_FUNCS pulava em silencio (mesma classe do
@@ -287,6 +288,13 @@ U8    g_hc_def_names[HC_MAX_DEFINES * 64];
 I64   g_hc_def_h[2048];
 I64   g_hc_def_vals[HC_MAX_DEFINES];
 I64   g_hc_def_count;
+
+// Lote 2-Fix — contador DETERMINISTICO do filtro FNV-1a. Incrementado sempre que
+// g_hc_*_h[i] != hash_alvo evita uma chamada a strcmp. Como isso depende so da
+// contagem dos simbolos (constante matematica de um dado corpus), o numero sai
+// IDENTICO entre boots, imune ao jitter do host TCG. Impresso no fim como
+// [HASH-FILTER] avoided_strcmp=%lld e validado pelo assert c2_hash_filter.
+I64   g_hc_hash_filtered = 0;
 
 // Deferred top-level initializers. A global declared with a NON-literal initializer
 // (e.g. `I64 *p = &x;`, `I64 b = a + 4;`) gets its storage allocated statically but
@@ -700,7 +708,7 @@ U0 HcAddDefine(U8 *name, I64 val) {
     I64 had_i = 0;
     U64 had_h = HcHashStr(name);
     for (had_i = 0; had_i < g_hc_def_count; had_i++) {
-        if (g_hc_def_h[had_i] != had_h) continue;
+        if (g_hc_def_h[had_i] != had_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_def_names[had_i * 64], name) == 0) {
             g_hc_def_vals[had_i] = val;
             return;
@@ -725,7 +733,7 @@ I64 HcFindDefine(U8 *name, I64 *out_val) {
     U64 hfd_h = HcHashStr(name);
     I64 hfd_i = 0;
     for (hfd_i = 0; hfd_i < g_hc_def_count; hfd_i++) {
-        if (g_hc_def_h[hfd_i] != hfd_h) continue;
+        if (g_hc_def_h[hfd_i] != hfd_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_def_names[hfd_i * 64], name) == 0) {
             *out_val = g_hc_def_vals[hfd_i];
             return 1;
@@ -739,7 +747,7 @@ I64 HcFindStruct(U8 *name) {
     U64 hfs_h = HcHashStr(name);
     I64 hfs_i = 0;
     for (hfs_i = 0; hfs_i < g_hc_struct_count; hfs_i++) {
-        if (g_hc_struct_h[hfs_i] != hfs_h) continue;
+        if (g_hc_struct_h[hfs_i] != hfs_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_structs[hfs_i * 32], name) == 0) {
             return hfs_i;
         }
@@ -782,6 +790,7 @@ I64 HcAddStruct(U8 *name) {
 I64 g_hc_found_member_elem = 8;
 I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_arr, I64 *out_is_ptr, I64 *out_sub_st, I64 *out_is_float) {
     g_hc_found_member_elem = 8;
+    U64 m_h = HcHashStr(mname);
     I64 s_start = 0;
     I64 s_end = g_hc_struct_count;
     if (st_idx >= 0 && st_idx < g_hc_struct_count) {
@@ -794,6 +803,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
         I64 mcnt = g_hc_struct_mcount[s_i];
         for (m_i = 0; m_i < mcnt; m_i++) {
             I64 slot = s_i * HC_STRUCT_MEMBERS + m_i;
+            if (g_hc_member_h[slot] != (I64)m_h) { g_hc_hash_filtered++; continue; }
             if (strcmp(&g_hc_member_names[slot * 32], mname) == 0) {
                 *out_off = g_hc_member_offsets[slot];
                 *out_sz = g_hc_member_sizes[slot];
@@ -813,6 +823,7 @@ I64 HcFindMember(I64 st_idx, U8 *mname, I64 *out_off, I64 *out_sz, I64 *out_is_a
             I64 mcnt2 = g_hc_struct_mcount[s_i];
             for (m_i = 0; m_i < mcnt2; m_i++) {
                 I64 slot2 = s_i * HC_STRUCT_MEMBERS + m_i;
+                if (g_hc_member_h[slot2] != (I64)m_h) { g_hc_hash_filtered++; continue; }
                 if (strcmp(&g_hc_member_names[slot2 * 32], mname) == 0) {
                     *out_off = g_hc_member_offsets[slot2];
                     *out_sz = g_hc_member_sizes[slot2];
@@ -834,7 +845,7 @@ I64 HcFindLocalIdx(U8 *name) {
     U64 fl_h = HcHashStr(name);
     I64 fl_i = 0;
     for (fl_i = 0; fl_i < g_hc_local_count; fl_i++) {
-        if (g_hc_local_h[fl_i] != fl_h) continue;
+        if (g_hc_local_h[fl_i] != fl_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_local_names[fl_i * 32], name) == 0) {
             return fl_i;
         }
@@ -935,7 +946,9 @@ I64 HcLocalStride(I64 loc, I64 k) {
 
 U64 HcFindFunc(U8 *name) {
     I64 ff_i = 0;
+    U64 ff_h = HcHashStr(name);
     for (ff_i = 0; ff_i < g_hc_func_count; ff_i++) {
+        if (g_hc_func_h[ff_i] != (I64)ff_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_func_names[ff_i * 32], name) == 0) {
             return g_hc_func_addrs[ff_i];
         }
@@ -1031,7 +1044,9 @@ I64 HcFnFloatGet(U8 *name) {
 U0 HcAddFunc(U8 *name, U64 addr) {
     HcFnFloatSet(name, g_hc_fn_ret_float); // P4.5: persist across units
     I64 af_i = 0;
+    U64 af_h = HcHashStr(name);
     for (af_i = 0; af_i < g_hc_func_count; af_i++) {
+        if (g_hc_func_h[af_i] != (I64)af_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_func_names[af_i * 32], name) == 0) {
             g_hc_func_addrs[af_i] = addr;
             HcPublishFunc(name, addr);
@@ -1040,6 +1055,7 @@ U0 HcAddFunc(U8 *name, U64 addr) {
     }
     if (HcFuncSlotOk()) {
         HcSafeCopy(&g_hc_func_names[g_hc_func_count * 32], name, 32);
+        g_hc_func_h[g_hc_func_count] = (I64)HcHashStr(name);
         g_hc_func_addrs[g_hc_func_count] = addr;
         g_hc_func_ret_float[g_hc_func_count] = g_hc_fn_ret_float;
         g_hc_func_count++;
@@ -2023,7 +2039,7 @@ U0 HcLexNext() {
 U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_st_idx[i] = st_idx; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2037,7 +2053,7 @@ U0 HcRegisterGlobalStruct(U8 *name, I64 st_idx) {
 U0 HcRegisterGlobalArray(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_arr[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2052,7 +2068,7 @@ U0 HcRegisterGlobalArray(U8 *name) {
 I64 HcGlobalIsArray(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_arr[i];
     }
     return 0;
@@ -2064,7 +2080,7 @@ I64 HcGlobalIsArray(U8 *name) {
 U0 HcRegisterGlobalPtr(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_ptr[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2079,7 +2095,7 @@ U0 HcRegisterGlobalPtr(U8 *name) {
 I64 HcGlobalIsPtr(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_ptr[i];
     }
     return 0;
@@ -2088,7 +2104,7 @@ I64 HcGlobalIsPtr(U8 *name) {
 U0 HcRegisterGlobalFloat(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_is_float[i] = 1; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2103,7 +2119,7 @@ U0 HcRegisterGlobalFloat(U8 *name) {
 I64 HcGlobalIsFloat(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_is_float[i];
     }
     return 0;
@@ -2116,7 +2132,7 @@ U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
     U64 gh_h = HcHashStr(name);
     if (scale <= 0) return;
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_elem_scale[i] = scale; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2131,7 +2147,7 @@ U0 HcRegisterGlobalScale(U8 *name, I64 scale) {
 I64 HcGlobalScale(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_elem_scale[i];
     }
     return 0;
@@ -2144,7 +2160,7 @@ I64 HcGlobalScale(U8 *name) {
 U0 HcRegisterGlobalStrides(U8 *name, I64 s0, I64 s1, I64 s2, I64 s3) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
             g_hc_global_strides[i * 4 + 0] = s0;
             g_hc_global_strides[i * 4 + 1] = s1;
@@ -2169,7 +2185,7 @@ I64 HcGlobalStride(U8 *name, I64 k) {
     U64 gh_h = HcHashStr(name);
     if (k < 0 || k > 3) return 0;
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_strides[i * 4 + k];
     }
     return 0;
@@ -2178,7 +2194,7 @@ I64 HcGlobalStride(U8 *name, I64 k) {
 I64 HcGlobalStructIdx(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_st_idx[i];
     }
     return -1;
@@ -2191,7 +2207,7 @@ I64 HcGlobalStructIdx(U8 *name) {
 U0 HcResetGlobalType(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) {
             g_hc_global_st_idx[i] = -1;
             g_hc_global_is_arr[i] = 0;
@@ -2213,7 +2229,7 @@ U0 HcResetGlobalType(U8 *name) {
 U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) { g_hc_global_alloc[i] = bytes; return; }
     }
     if (HcGlobalSlotOk()) {
@@ -2228,7 +2244,7 @@ U0 HcSetGlobalAlloc(U8 *name, I64 bytes) {
 I64 HcGetGlobalAlloc(U8 *name) {
     U64 gh_h = HcHashStr(name);
     for (I64 i = 0; i < g_hc_global_count; i++) {
-        if (g_hc_global_h[i] != gh_h) continue;
+        if (g_hc_global_h[i] != gh_h) { g_hc_hash_filtered++; continue; }
         if (strcmp(&g_hc_global_names[i * 32], name) == 0) return g_hc_global_alloc[i];
     }
     return 0;

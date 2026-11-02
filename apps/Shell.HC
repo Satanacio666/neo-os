@@ -899,6 +899,10 @@ U0 ShellCmd_top(U8 *a, U8 *r) {
     doldoc_print("$HR$\n");
     doldoc_print("  $BT,\"Refresh\",LM=\"top\"$  $BT,\"Memory (mem)\",LM=\"mem\"$  $BT,\"Run Bench\",LM=\"bench\"$  $BT,\"RenderBench\",LM=\"renderbench\"$  $BT,\"NeoMenu\",LM=\"wm\"$\n");
     doldoc_print("$HR$\n\n");
+    // Layer B: o detalhamento por core/run-queue (SchedPrintDolDoc + SmpPrintDolDoc)
+    // vivia numa funcao orfa (top_print_doldoc, Sched.HC:828). Aqui ele ganha o
+    // chamador real — o comando `top` agora mostra o grafico SMP ao vivo.
+    top_print_doldoc();
 }
 
 U0 ShellCmd_filer(U8 *a, U8 *r) {
