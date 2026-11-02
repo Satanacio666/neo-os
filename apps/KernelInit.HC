@@ -53,6 +53,14 @@ U8  g_boot_module_name[BOOT_NAME_MAX];  // ultimo modulo em compilacao
 U64 g_boot_module_vct = 0;              // quando ele comecou
 I64 g_boot_modules_done = 0;            // quantos ja' terminaram
 U64 g_boot_module_us_total = 0;         // soma dos tempos (perfil)
+// B2 — TABELA POR MODULO (o que o P6.2 precisa para decidir ONDE paralelizar):
+// nome + tempo de compilacao de cada .HC, na ordem de carga. Sem isto o perfil so'
+// dava o total, e nao dava para saber quais 5-6 modulos dominam o boot.
+#define BOOT_MOD_MAX 48
+U8  g_boot_mod_names[BOOT_MOD_MAX * BOOT_NAME_MAX];  // buffer PLANO (sem 2D)
+U64 g_boot_mod_us[BOOT_MOD_MAX];
+I64 g_boot_mod_count = 0;
+U64 g_boot_mod_last_vct = 0;            // fim do ultimo modulo (para o delta)
 
 // ---- ESTADO ----
 U64 g_boot_heartbeat_vct = 0;
@@ -95,11 +103,61 @@ U0 BootStageEnterModule(U8 *fname) {
 // Fecha o modulo (depois de compilar) e acumula o tempo.
 U0 BootStageExitModule() {
     U64 now = __mrs_cntvct();
+    U64 us = 0;
     if (g_boot_module_vct != 0 && now > g_boot_module_vct) {
-        g_boot_module_us_total = g_boot_module_us_total + (((now - g_boot_module_vct) * 1000000) / BootStageFreq());
+        us = ((now - g_boot_module_vct) * 1000000) / BootStageFreq();
+        g_boot_module_us_total = g_boot_module_us_total + us;
+    }
+    // B2: registra o modulo na tabela (nome + tempo). Uma linha por .HC, na ordem
+    // de carga — e' esta tabela que se ordena para achar os que dominam o boot.
+    if (g_boot_mod_count < BOOT_MOD_MAX) {
+        I64 bi = g_boot_mod_count * BOOT_NAME_MAX;
+        I64 k = 0;
+        while (g_boot_module_name[k] != 0 && k < (BOOT_NAME_MAX - 1)) {
+            g_boot_mod_names[bi + k] = g_boot_module_name[k];
+            k = k + 1;
+        }
+        g_boot_mod_names[bi + k] = 0;
+        g_boot_mod_us[g_boot_mod_count] = us;
+        g_boot_mod_count = g_boot_mod_count + 1;
     }
     g_boot_modules_done = g_boot_modules_done + 1;
+    g_boot_mod_last_vct = now;
     g_boot_heartbeat_vct = now;
+}
+
+// B2: acessores da tabela por modulo (para a timeline e o SelfTest).
+I64 BootStageModCount() { return g_boot_mod_count; }
+U64 BootStageModUs(I64 i) { return (i >= 0 && i < g_boot_mod_count) ? g_boot_mod_us[i] : 0; }
+U8 *BootStageModName(I64 i) {
+    if (i < 0 || i >= BOOT_MOD_MAX) return 0;
+    return &g_boot_mod_names[i * BOOT_NAME_MAX];
+}
+
+// B2: imprime a tabela dos modulos ORDENADA por tempo (desc). E' o instrumento que
+// o P6.2 usa: mostra quais .HC consomem o boot. Selecao por maior-a-cada-passo,
+// sem alocacao (re computational, seguro no KernelInit pelo seed C-JIT).
+U0 BootStagePrintModules(I64 top_n) {
+    I64 printed = 0;
+    I64 used[BOOT_MOD_MAX];
+    I64 u = 0;
+    while (u < g_boot_mod_count) { used[u] = 0; u = u + 1; }
+    doldoc_printf("[BOOTSTAGE] modulos por tempo (top %lld de %lld):\n", top_n, g_boot_mod_count);
+    while (printed < top_n && printed < g_boot_mod_count) {
+        I64 best = -1;
+        I64 bi = 0;
+        while (bi < g_boot_mod_count) {
+            if (used[bi] == 0) {
+                if (best < 0 || g_boot_mod_us[bi] > g_boot_mod_us[best]) best = bi;
+            }
+            bi = bi + 1;
+        }
+        if (best < 0) break;
+        used[best] = 1;
+        doldoc_printf("[BOOTSTAGE]   [%lld] %s = %lld us\n", printed + 1,
+                      BootStageModName(best), g_boot_mod_us[best]);
+        printed = printed + 1;
+    }
 }
 
 // O shell ativou: o boot terminou, o watchdog sai de cena.
@@ -341,6 +399,9 @@ U0 KernelInitMain() {
                       bs_i + 1, BootStagePhaseName(bs_i), BootStagePhaseUs(bs_i));
         bs_i = bs_i + 1;
     }
+    // B2: a tabela por MODULO, ordenada por tempo. E' o dado que o P6.2 (boot
+    // paralelo) precisa: quais .HC dominam a compilacao.
+    BootStagePrintModules(8);
 
     KInitLog("Entering Sovereign HolyC DolDocShellEventLoop()...");
     jit_compile_and_run("DolDocShellEventLoop();");

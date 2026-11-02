@@ -1805,6 +1805,20 @@ U0 SelfTestFallbacks() {
         BootConfigParse("chave_inexistente = 7;\n", 22);
         SelfTestCompare("c_bootcfg_unknown_key_noisy", (BootCfgParseErrors() > errs_before) ? 1 : 0, 1);
     }
+    // B2: a tabela POR MODULO (nome + tempo) esta populada e a soma dos tempos casa
+    // com o total. Sem ela o P6.2 nao sabe ONDE paralelizar (so' teria o total).
+    SelfTestCompare("b2_mod_table_populated", (BootStageModCount() >= 30) ? 1 : 0, 1);
+    {
+        I64 bi = 0;
+        U64 bsum = 0;
+        while (bi < BootStageModCount()) { bsum = bsum + BootStageModUs(bi); bi = bi + 1; }
+        // Tolerancia: a soma por modulo e' o mesmo trabalho do total (delta zero no
+        // mesmo boot). Se divergir muito, a instrumentacao esta' medindo errado.
+        U64 btot = BootStageModuleUs();
+        I64 bok = (bsum > 0 && btot > 0 && bsum <= btot + 1000 && bsum + 1000 >= btot) ? 1 : 0;
+        SelfTestCompare("b2_mod_sum_matches_total", bok, 1);
+    }
+    SelfTestCompare("b2_mod_names_valid", (BootStageModName(0) != 0) ? 1 : 0, 1);
     SelfTestCompare("c3_present_backend_valid",
                     (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
     // O contador de frames so' avanca quando algo apresenta. O corpus desenha

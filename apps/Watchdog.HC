@@ -390,6 +390,8 @@ U0 ShellCmd_bootstage(U8 *a, U8 *r) {
     }
     doldoc_printf("  modulos compilados: %lld | tempo de compilacao: %lld us\n",
                   BootStageModulesDone(), BootStageModuleUs());
+    // B2: a tabela por modulo, ordenada — o instrumento do P6.2 ao vivo.
+    BootStagePrintModules(8);
     doldoc_printf("  shell_ready=%lld | estagios lentos=%lld | modulo corrente='%s'\n",
                   BootStageShellReady(), BootStageSlow(), BootStageModuleName());
 }

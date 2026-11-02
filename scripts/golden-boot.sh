@@ -388,6 +388,9 @@ check "WCORE no heap corruption"  1 "$(count 'canary=0')"
 # perfil de hardware e' carregado da ESP. Sem eles, o boot passava sem config.
 check "HAL v2 descriptor"         1 "$(count '\[HAL-V2\] uart=')"
 check "BOOTCFG profile applied"   1 "$(count '\[BOOTCFG\] perfil .* carregado')"
+# B2: a tabela por modulo (nome + tempo). E' o instrumento que o P6.2 usa para
+# saber quais .HC dominam o boot — sem ela, so' havia o total.
+check "B2 module time table"      1 "$(count '\[BOOTSTAGE\] modulos por tempo')"
 check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
 # Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
 check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"
