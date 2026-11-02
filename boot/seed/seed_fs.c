@@ -78,9 +78,14 @@ int seed_preload_all(void) {
      * de hardware ficava inacessivel depois do drop (sem Boot Services). */
     int a = seed_preload_dir("holyc", 0);
     int b = seed_preload_dir("profiles", 1);
+    /* P8: o cache do JIT (NEOJIT\*.bin) TAMBEM precisa ser pre-carregado. Sem isto
+     * a gravacao funciona mas a leitura pos-drop devolve -1 (so' serve da RAM),
+     * o cache nunca da' HIT e o seed recompila tudo a cada boot. Medido: o
+     * arquivo estava no disco com 273 KB e a leitura retornava -1. */
+    int c = seed_preload_dir("NEOJIT", 1);
     s_preload_ready = 1;
-    if (a < 0) return b < 0 ? -1 : b;
-    return a + (b < 0 ? 0 : b);
+    if (a < 0 && b < 0 && c < 0) return -1;
+    return (a < 0 ? 0 : a) + (b < 0 ? 0 : b) + (c < 0 ? 0 : c);
 }
 
 /* Prele uma arvore de diretorio para RAM. `path_is_full` = 1 quando o caminho e'
@@ -125,11 +130,12 @@ int seed_preload_dir(const char *dirname, int path_is_full) {
 
         char path[256];
         int n = 0;
-        // BLOCO A: `path_is_full` = o arquivo mora em `profiles\`. O path de ABERTURA
-        // e' sempre o caminho fisico completo; o path_is_full controla apenas o
-        // prefixo do CAMINHO (nao do nome guardado, que ja' leva `profiles\`).
-        const char *pre = path_is_full ? "profiles\\" : "holyc\\";
-        for (int i = 0; pre[i] && n < 250; i++) path[n++] = pre[i];
+        // BLOCO A: `path_is_full` = o arquivo mora fora de `holyc\`. O path de ABERTURA
+        // e' sempre o caminho fisico completo; o prefixo vem do proprio dirname, para
+        // que a mesma varredura sirva `profiles\`, `NEOJIT\` e qualquer arvore futura.
+        const char *pre = dirname;
+        for (int i = 0; pre[i] && n < 240; i++) path[n++] = pre[i];
+        path[n++] = '\\';
         for (int i = 0; nm[i] && n < 254; i++) path[n++] = nm[i];
         path[n] = 0;
 
@@ -148,7 +154,7 @@ int seed_preload_dir(const char *dirname, int path_is_full) {
          * so o nome para modulos (`X.HC`), porque assim e' como o consumidor pede.
          * BLOCO A: unificado — um resolvedor, dois usos, sem duas tabelas. */
         int off = 0;
-        if (path_is_full) { const char *pfx = "profiles\\"; for (int i = 0; pfx[i] && off < 40; i++) s_preload[s_preload_count].name[off++] = pfx[i]; }
+        if (path_is_full) { for (int i = 0; dirname[i] && off < 32; i++) s_preload[s_preload_count].name[off++] = dirname[i]; s_preload[s_preload_count].name[off++] = '\\'; }
         for (int i = 0; nm[i] && off < 63; i++) s_preload[s_preload_count].name[off++] = nm[i];
         s_preload[s_preload_count].name[off] = 0;
         s_preload[s_preload_count].data     = (uint8_t*)phys;
