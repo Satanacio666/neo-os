@@ -306,6 +306,11 @@ early_sync_panic:
     msr  elr_el1, x16
     eret                    // retoma logo apos o load; PSTATE volta do SPSR_EL1
 2:
+    // P0.8b: os TRES sitios que chegam aqui fizeram SAVE_ALL e passaram o trap
+    // frame em x0 (mov x0, sp). Preservamos o frame em x4 ANTES de sobrescrever
+    // x0 — sem isso o reporter tier-0 joga fora x0..x30 e o LR (x30), que e' a
+    // UNICA coisa que diz QUAL blr saltou para o endereco do fault.
+    mov  x4, x0
     mrs  x0, esr_el1
     mrs  x1, elr_el1
     mrs  x2, far_el1

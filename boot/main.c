@@ -179,7 +179,7 @@ static void neo_harden_exec_env(void)
 // g_arch_vectors[0] is NULL and a synchronous fault fell through to the
 // firmware's vectors. This hook keeps the diagnosis in-house: it dumps the full
 // syndrome over the UART and halts (never eret-loops on the fault).
-void (*g_early_panic_hook)(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr) = 0;
+void (*g_early_panic_hook)(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr, uint64_t *frame) = 0;
 
 static const char *neo_ec_name(uint64_t ec)
 {
@@ -257,7 +257,7 @@ static void neo_verify_esp_write(void)
            (long long)r, seed_fnv1a(back, (size_t)r));
 }
 
-void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
+void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr, uint64_t *frame)
 {
     uint64_t ec = (esr >> 26) & 0x3F;
     uint64_t iss = esr & 0x1FFFFFF;
@@ -271,6 +271,29 @@ void neo_early_panic(uint64_t esr, uint64_t elr, uint64_t far, uint64_t spsr)
     printf(" heap    : 0x%016llX  (faulting PC - heap_base = 0x%llX)\r\n",
            (unsigned long long)g_uefi_heap_base,
            (unsigned long long)(elr - g_uefi_heap_base));
+
+    // P0.8b: o trap frame (x0..x30 + ELR + SPSR + SP_EL0) chega aqui agora.
+    // X30 e' o LR: a instrucao SEGUINTE ao blr que saltou para o endereco do
+    // fault. Sem ele um "ELR=0x0" e' anonimo; com ele sabemos QUEM chamou.
+    // Layout (Exceptions.HC): x[30] em 0..232, lr em 240, elr_el1 em 248,
+    // spsr_el1 em 256, sp_el0 em 264.
+    if (frame) {
+        uint64_t lr  = frame[30];
+        uint64_t psp = frame[29];
+        printf(" --- trap frame (P0.8b) ---\r\n");
+        printf(" X30 (LR) : 0x%016llX  (caller of the faulting blr)\r\n",
+               (unsigned long long)lr);
+        printf(" X29 (FP) : 0x%016llX\r\n", (unsigned long long)psp);
+        printf(" X0..X3   : 0x%016llX 0x%016llX 0x%016llX 0x%016llX\r\n",
+               (unsigned long long)frame[0], (unsigned long long)frame[1],
+               (unsigned long long)frame[2], (unsigned long long)frame[3]);
+        printf(" X8..X9   : 0x%016llX 0x%016llX\r\n",
+               (unsigned long long)frame[8], (unsigned long long)frame[9]);
+        printf(" X19..X21 : 0x%016llX 0x%016llX 0x%016llX\r\n",
+               (unsigned long long)frame[19], (unsigned long long)frame[20],
+               (unsigned long long)frame[21]);
+        printf(" SP_EL0   : 0x%016llX\r\n", (unsigned long long)frame[33]);
+    }
     printf("=========== <<<BSOD:TIER0>>> HALTED ===========\r\n");
 
     // P7.2 — Grava o dump em setores CRUS, fora da FAT, ANTES de travar.
