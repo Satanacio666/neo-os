@@ -351,6 +351,10 @@ uint32_t *g_uefi_fb = NULL;
 // (servidor headless / U-Boot sem display). O Render.HC NAO precisa de nenhum
 // `if` no caminho de pixel — ele escreve no ponteiro, seja VRAM ou RAM.
 uint64_t  g_uefi_has_gop = 1;
+
+/* BLOCO A (HAL v2): acessor para o HolyC ler has_gop sem symbols_lookup literal
+ * (mantem o CENSUS de .HC->C estavel). */
+uint64_t  neo_has_gop(void) { return g_uefi_has_gop ? 1 : 0; }
 uint64_t  g_uefi_width = 0;
 uint64_t  g_uefi_height = 0;
 uint64_t  g_uefi_pitch = 0;
@@ -598,6 +602,7 @@ int main(int argc, char **argv)
     // Register Tier-0 Hardware Pointers & Vector Trampoline Table
     symbols_register("g_uefi_fb", (void*)&g_uefi_fb, SYM_VAR);
     symbols_register("g_uefi_has_gop", (void*)&g_uefi_has_gop, SYM_VAR);
+    symbols_register("neo_has_gop", (void*)neo_has_gop, SYM_FUNC);
     symbols_register("g_uefi_width", (void*)&g_uefi_width, SYM_VAR);
     symbols_register("g_uefi_height", (void*)&g_uefi_height, SYM_VAR);
     symbols_register("g_uefi_pitch", (void*)&g_uefi_pitch, SYM_VAR);
@@ -757,6 +762,9 @@ int main(int argc, char **argv)
         printf("[BOOT] WARN: UEFI filesystem (ESP) unavailable; cannot read .HC sources.\r\n");
     }
     symbols_register("seed_read_file", (void*)seed_read_file, SYM_FUNC);
+    // BLOCO A: leitura por CAMINHO COMPLETO (profiles\<id>.conf). Apos o drop ela
+    // serve da RAM pre-carregada — o perfil de hardware fica acessivel ao kernel.
+    symbols_register("seed_read_file_at", (void*)seed_read_file_at, SYM_FUNC);
     // P2.3: escrita no ESP pelo driver FAT do firmware — fundação do cache de JIT
     // (P2.4) e da validação de ida e volta do RedSea sobre EFI_BLOCK_IO (P3.2).
     symbols_register("seed_write_file", (void*)seed_write_file, SYM_FUNC);

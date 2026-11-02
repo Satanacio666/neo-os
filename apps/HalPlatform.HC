@@ -22,7 +22,41 @@ class CHalPlatform {
   // P1.2 — acrescentados no FIM de proposito: nao deslocam nenhum campo existente.
   U64 gicr_base;    // redistribuidor do GICv3 (0 = a plataforma nao tem)
   U64 gic_version;  // 2 = GICv2, 3 = GICv3, 0 = autodetectar em runtime (QEMU)
+  // ------------------------------------------------------------------------
+  // HAL v2 (P1.3-resto, BLOCO A): o descritor fisico COMPLETO. Sem estes campos a
+  // HAL nao descrevia os alvos reais (X-Gene = 16550A + SATA; POCO = QUP + UFS).
+  // Append no fim, mesma razao dos anteriores: nao deslocar campo existente.
+  // ------------------------------------------------------------------------
+  U32 uart_type;     // HAL_UART_*  (valores identicos aos do ACPI/FDT)
+  U32 storage_type;  // HAL_STORAGE_*
+  U32 input_type;    // HAL_INPUT_* (mascara: UART | VIRTIO | USB_HID)
+  U32 has_gop;       // 1 = firmware entregou GOP; 0 = shadow RAM (headless)
 };
+
+// ---------------------------------------------------------------------------
+// HAL v2 — ENUMS CANONICOS DE HARDWARE (BLOCO A / A2)
+// ---------------------------------------------------------------------------
+// Os valores de uart_type sao IDENTICOS aos que o ACPI/FDT ja' produzem
+// (boot/runtime/acpi.c:271-275 e fdt.c:131-135), de proposito: a descoberta de
+// firmware e a HAL falam a MESMA lingua, sem tabela de traducao no meio.
+#define HAL_UART_NONE    0
+#define HAL_UART_PL011   1   // QEMU virt / ARM SBSA
+#define HAL_UART_16550A  2   // X-Gene / PC-style MMIO
+#define HAL_UART_SBSA    3   // ARM SBSA generic UART
+#define HAL_UART_QUP     4   // Qualcomm Snapdragon (POCO)
+
+#define HAL_STORAGE_NONE     0
+#define HAL_STORAGE_VIRTIO   1   // QEMU virtio-blk-mmio
+#define HAL_STORAGE_AHCI     2   // SATA / X-Gene
+#define HAL_STORAGE_UFS      3   // POCO UFS / eMMC
+#define HAL_STORAGE_RAMDISK  4   // fallback: ESP / RAM
+
+// input_type e' MASCARA: o console por UART esta SEMPRE ativo (Layer B/console v4)
+// e pode haver um ou mais dispositivos de entrada de placa somados a ele.
+#define HAL_INPUT_NONE     0
+#define HAL_INPUT_UART     1
+#define HAL_INPUT_VIRTIO   2
+#define HAL_INPUT_USB_HID  4
 
 CHalPlatform g_plat_qemu;
 CHalPlatform g_plat_rpi4;
@@ -40,6 +74,89 @@ U32 g_hal_virtio_stride;
 U64 g_hal_timer_freq;
 U64 g_hal_gicr_base;
 U64 g_hal_gic_version;
+// HAL v2 (BLOCO A): o descritor fisico global. Preenchido por HalPlatformV2Init()
+// a partir do que a DESCOBERTA de firmware achou (ACPI/FDT) + sondagem direta.
+U32 g_hal_uart_type    = HAL_UART_NONE;
+U32 g_hal_storage_type = HAL_STORAGE_NONE;
+U32 g_hal_input_type   = HAL_INPUT_NONE;
+U32 g_hal_has_gop      = 0;
+
+U32 HalGetUartType()    { return g_hal_uart_type; }
+U32 HalGetStorageType() { return g_hal_storage_type; }
+U32 HalGetInputType()   { return g_hal_input_type; }
+U32 HalGetHasGop()      { return g_hal_has_gop; }
+
+// ---- HAL v2: nomes canonicos para impressao ([HAL-V2] no boot) ----
+U8 *HalUartName(U32 t) {
+  if (t == HAL_UART_PL011)  return "PL011";
+  if (t == HAL_UART_16550A) return "16550A";
+  if (t == HAL_UART_SBSA)   return "SBSA";
+  if (t == HAL_UART_QUP)    return "QUP";
+  return "NONE";
+}
+U8 *HalStorageName(U32 t) {
+  if (t == HAL_STORAGE_VIRTIO)  return "VIRTIO";
+  if (t == HAL_STORAGE_AHCI)    return "AHCI";
+  if (t == HAL_STORAGE_UFS)     return "UFS";
+  if (t == HAL_STORAGE_RAMDISK) return "RAMDISK";
+  return "NONE";
+}
+
+// Determina o tipo de UART. PRIORIDADE: descoberta de firmware (ACPI/FDT) >
+// sondagem direta. A sondagem existe porque o QEMU TCG com FDT simplesmente nao
+// traz o no' de UART em algumas configs, e o endereco 0x09000000 e' PL011 por
+// construcao da maquina virt.
+U32 HalDetectUartType() {
+  // 1) Descoberta de firmware (autoridade quando presente). Chamada DIRETA: os
+  //    dois simbolos sao registrados incondicionalmente por boot/main.c, logo a
+  //    checagem symbols_is_defined seria cerimonia (e inflava o CENSUS).
+  I64 at = (I64)acpi_uart_type();
+  if (at > 0) return (U32)at;
+  // 2) Sondagem direta: o PL011 responde? (le UARTFR; se nao aborta e' PL011).
+  if (neo_pl011_available() != 0) return HAL_UART_PL011;
+  return HAL_UART_NONE;
+}
+
+// Determina o tipo de armazenamento. Nesta plataforma o barramento de disco e' o
+// virtio-mmio (nao e' "hardware suportado": e' a topologia da placa). Numa
+// plataforma sem virtio, o ESP/RAM e' o fallback — nunca silencio.
+U32 HalDetectStorageType() {
+  if (g_hal_virtio_base != 0) return HAL_STORAGE_VIRTIO;
+  return HAL_STORAGE_RAMDISK;
+}
+
+// Determina as fontes de entrada. O console por UART esta SEMPRE ativo (e' o
+// canal da Layer B), somado ao que a placa oferecer.
+U32 HalDetectInputType() {
+  U32 m = HAL_INPUT_UART;
+  if (g_hal_virtio_base != 0) m = m | HAL_INPUT_VIRTIO;
+  return m;
+}
+
+// Preenche o descritor HAL v2. Chamada DEPOIS da descoberta de firmware e ANTES
+// de qualquer consumidor (o CBootConfig le estes campos para escolher o perfil).
+U0 HalPlatformV2Init() {
+  g_hal_uart_type    = HalDetectUartType();
+  g_hal_storage_type = HalDetectStorageType();
+  g_hal_input_type   = HalDetectInputType();
+  // has_gop: o C registra g_uefi_has_gop no handover (boot/main.c:600).
+  // has_gop: acessor C (sem symbols_lookup literal -> CENSUS estavel).
+  g_hal_has_gop = (U32)neo_has_gop();
+}
+
+// Imprime o descritor HAL v2 (a prova visivel do Bloco A no boot).
+U0 HalPlatformV2Report() {
+  U8 ibuf[64];
+  I64 ip = 0;
+  if (g_hal_input_type & HAL_INPUT_UART)    { ibuf[ip] = 'U'; ibuf[ip+1]='A'; ibuf[ip+2]='R'; ibuf[ip+3]='T'; ip = ip + 4; }
+  if (g_hal_input_type & HAL_INPUT_VIRTIO)  { if (ip) { ibuf[ip] = '+'; ip = ip + 1; } ibuf[ip]='V';ibuf[ip+1]='I';ibuf[ip+2]='R';ibuf[ip+3]='T';ibuf[ip+4]='I';ibuf[ip+5]='O'; ip = ip + 6; }
+  if (g_hal_input_type & HAL_INPUT_USB_HID) { if (ip) { ibuf[ip] = '+'; ip = ip + 1; } ibuf[ip]='U';ibuf[ip+1]='S';ibuf[ip+2]='B'; ip = ip + 3; }
+  if (ip == 0) { ibuf[0]='N';ibuf[1]='O';ibuf[2]='N';ibuf[3]='E'; ip = 4; }
+  ibuf[ip] = 0;
+  doldoc_printf("[HAL-V2] uart=%s storage=%s input=%s gop=%lld\n",
+                HalUartName(g_hal_uart_type), HalStorageName(g_hal_storage_type),
+                ibuf, (I64)g_hal_has_gop);
+}
 
 // ============================================================================
 // CAMADA 1.1 (IDEA-2) — ATOMICIDADE: Nivel 1 (IRQ-safe) e Nivel 2 (cross-core).
@@ -539,6 +656,11 @@ I64 HalTwinProbe() { return 0x48414C31; }
 
 if (g_kernel_booting) {
   HalPlatformInit();
+  // BLOCO A / A2: o descritor fisico COMPLETO (uart/storage/input/gop). Roda
+  // depois do HalPlatformInit (que escolhe a tabela + sobreposicao do firmware),
+  // para o CBootConfig ler a verdade fisica ja' resolvida.
+  HalPlatformV2Init();
+  HalPlatformV2Report();
 } else {
   HalSelfTest();
 }

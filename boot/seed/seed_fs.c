@@ -70,7 +70,23 @@ static int seed_name_eq(const char *a, const char *b) {
 }
 
 /* Le a arvore `holyc\` inteira para RAM. Retorna o numero de arquivos, ou -1. */
+int seed_preload_dir(const char *dirname, int path_is_full);
+
 int seed_preload_all(void) {
+    /* BLOCO A: generalized — a mesma varredura serve `holyc\` (modulos .HC) e
+     * `profiles\` (perfis .conf). Antes o preload so' cobria `holyc`, e o perfil
+     * de hardware ficava inacessivel depois do drop (sem Boot Services). */
+    int a = seed_preload_dir("holyc", 0);
+    int b = seed_preload_dir("profiles", 1);
+    s_preload_ready = 1;
+    if (a < 0) return b < 0 ? -1 : b;
+    return a + (b < 0 ? 0 : b);
+}
+
+/* Prele uma arvore de diretorio para RAM. `path_is_full` = 1 quando o caminho e'
+ * completo (profiles\<id>.conf cabe em `name`); 0 para `holyc\<name>`.
+ * Retorna o numero de arquivos lidos, ou -1. */
+int seed_preload_dir(const char *dirname, int path_is_full) {
     if (!s_root) return -1;
 
     uint64_t dirbuf = 0;
@@ -80,12 +96,13 @@ int seed_preload_all(void) {
     s_preload_dirbuf = (uint8_t*)dirbuf;
 
     wchar_t wdir[16];
-    seed_ascii_to_wchar("holyc", wdir, 16);
+    seed_ascii_to_wchar(dirname, wdir, 16);
 
     efi_file_handle_t *dir = NULL;
     if (EFI_ERROR(s_root->Open(s_root, &dir, wdir, EFI_FILE_MODE_READ, 0)) || !dir)
         return -1;
 
+    int got = 0;
     for (;;) {
         uintn_t sz = SEED_PRELOAD_DIRSZ;
         efi_status_t st = dir->Read(dir, &sz, s_preload_dirbuf);
@@ -108,7 +125,10 @@ int seed_preload_all(void) {
 
         char path[256];
         int n = 0;
-        const char *pre = "holyc\\";
+        // BLOCO A: `path_is_full` = o arquivo mora em `profiles\`. O path de ABERTURA
+        // e' sempre o caminho fisico completo; o path_is_full controla apenas o
+        // prefixo do CAMINHO (nao do nome guardado, que ja' leva `profiles\`).
+        const char *pre = path_is_full ? "profiles\\" : "holyc\\";
         for (int i = 0; pre[i] && n < 250; i++) path[n++] = pre[i];
         for (int i = 0; nm[i] && n < 254; i++) path[n++] = nm[i];
         path[n] = 0;
@@ -124,21 +144,43 @@ int seed_preload_all(void) {
         fh->Close(fh);
         if (EFI_ERROR(rst)) continue;
 
-        for (int i = 0; i < k; i++) s_preload[s_preload_count].name[i] = nm[i];
-        s_preload[s_preload_count].name[k]  = 0;
+        /* O nome guardado e' o CAMINHO COMPLETO para perfis (`profiles\x.conf`) e
+         * so o nome para modulos (`X.HC`), porque assim e' como o consumidor pede.
+         * BLOCO A: unificado — um resolvedor, dois usos, sem duas tabelas. */
+        int off = 0;
+        if (path_is_full) { const char *pfx = "profiles\\"; for (int i = 0; pfx[i] && off < 40; i++) s_preload[s_preload_count].name[off++] = pfx[i]; }
+        for (int i = 0; nm[i] && off < 63; i++) s_preload[s_preload_count].name[off++] = nm[i];
+        s_preload[s_preload_count].name[off] = 0;
         s_preload[s_preload_count].data     = (uint8_t*)phys;
         s_preload[s_preload_count].size     = (uint64_t)rd;
         s_preload_count++;
+        got++;
     }
     dir->Close(dir);
-    s_preload_ready = 1;
-    return s_preload_count;
+    return got;
 }
 
 /* E5 — leitura por CAMINHO COMPLETO (ex: "profiles\\<id>.conf").
  * seed_read_file() prefixa "holyc\\"; o perfil mora fora dessa arvore. */
 int64_t seed_read_file_at(const char *path, void *buf, size_t max_bytes) {
-    if (!s_root || !path || !buf) return -1;
+    if (!path || !buf) return -1;
+
+    /* BLOCO A: apos o drop, serve da RAM pre-carregada (a MESMA tabela do preload)
+     * — uma fonte de verdade. Antes esta funcao so' existia na fase UEFI e o perfil
+     * de hardware ficava inacessivel ao kernel. */
+    if (s_preload_ready) {
+        for (int i = 0; i < s_preload_count; i++) {
+            if (!seed_name_eq(s_preload[i].name, path)) continue;
+            uint64_t n = s_preload[i].size;
+            if (n > (uint64_t)max_bytes) n = (uint64_t)max_bytes;
+            uint8_t *d = (uint8_t*)buf;
+            for (uint64_t j = 0; j < n; j++) d[j] = s_preload[i].data[j];
+            return (int64_t)n;
+        }
+        return -1;
+    }
+
+    if (!s_root) return -1;
 
     wchar_t wp[256];
     seed_ascii_to_wchar(path, wp, 256);

@@ -384,6 +384,10 @@ check "BOOTSTAGE timeline published" 1 "$(count '\[BOOTSTAGE\] timeline:')"
 # se o teste nao rodar, o gate falha (nunca passa em silencio).
 check "WCORE concurrent heap ran" 1 "$(count 'WCORE: bsp_ops=')"
 check "WCORE no heap corruption"  1 "$(count 'canary=0')"
+# BLOCO A: o descritor fisico HAL v2 e' impresso (uart/storage/input/gop) e o
+# perfil de hardware e' carregado da ESP. Sem eles, o boot passava sem config.
+check "HAL v2 descriptor"         1 "$(count '\[HAL-V2\] uart=')"
+check "BOOTCFG profile applied"   1 "$(count '\[BOOTCFG\] perfil .* carregado')"
 check "PROFILER invariant present" 1 "$(count 'PROFILER: PASS')"
 # Efeitos/camadas declarados no boot: passam a ser verificados (antes: so' assumidos).
 check "GLASS invariant present"    1 "$(count 'GLASS: PASS')"

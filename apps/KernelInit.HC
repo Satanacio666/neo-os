@@ -221,6 +221,11 @@ U0 KernelInitMain() {
     // P7.5: the unified GPU config plane is loaded before every consumer
     // (SelfTest, Render, GfxDevice, RasterTile) reads its accessors.
     KInitLoad("GpuConfig.HC");
+    // BLOCO A (A1+A3): a config ATIVA do kernel. Carrega DEPOIS do GpuConfig (que
+    // ele espelha) e depois da HAL v2 (cuja verdade fisica ele consome). O loader
+    // le' profiles\<identidade>.conf da ESP (pre-carregado na RAM pelo C).
+    KInitLoad("BootConfig.HC");
+    BootConfigLoad();
     KInitLoad("SelfTest.HC");
 
     // Stage 2: 2D Graphics Canvas & Scalable Typography

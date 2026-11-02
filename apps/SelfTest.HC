@@ -1786,6 +1786,25 @@ U0 SelfTestFallbacks() {
     // orfas (0 chamadores) e o histograma so' via os frames do HolyBenchmark.
     SelfTestCompare("c_low_telemetry_frames", (TelemetryTotalFrames() > 0) ? 1 : 0, 1);
     SelfTestCompare("c_low_telemetry_valid", (TelemetryValidSamples() >= 0) ? 1 : 0, 1);
+    // BLOCO A (A2): o descritor fisico HAL v2 esta preenchido e COERENTE. Sem isto,
+    // um campo zerado passava e o perfil seria escolhido com dados falsos.
+    SelfTestCompare("c_hal_v2_uart_known", (g_hal_uart_type != HAL_UART_NONE) ? 1 : 0, 1);
+    SelfTestCompare("c_hal_v2_storage_known", (g_hal_storage_type != HAL_STORAGE_NONE) ? 1 : 0, 1);
+    SelfTestCompare("c_hal_v2_input_has_uart", (g_hal_input_type & HAL_INPUT_UART) ? 1 : 0, 1);
+    SelfTestCompare("c_hal_v2_gop_coherent", (g_hal_has_gop <= 1) ? 1 : 0, 1);
+    // BLOCO A (A1+A3): a config ATIVA. O perfil carregado tem de casar com o
+    // espelho em CGpuConfig (a fusao A3) e o parse tem de ser RUIDOSO.
+    SelfTestCompare("c_bootcfg_profile_loaded", (BootCfgProfileLoaded() == 1) ? 1 : 0, 1);
+    SelfTestCompare("c_bootcfg_no_parse_errors", (BootCfgParseErrors() == 0) ? 1 : 0, 1);
+    SelfTestCompare("c_bootcfg_keys_applied", (BootCfgKeysApplied() >= 5) ? 1 : 0, 1);
+    SelfTestCompare("c_bootcfg_gpu_fused", (gpu_get_tile_size() == BootCfgTileSize()) ? 1 : 0, 1);
+    SelfTestCompare("c_bootcfg_default_tile64", (BootCfgTileSize() == 64) ? 1 : 0, 1);
+    // Parse RUIDOSO: uma chave desconhecida TEM de contar erro (zero silencio).
+    {
+        I64 errs_before = BootCfgParseErrors();
+        BootConfigParse("chave_inexistente = 7;\n", 22);
+        SelfTestCompare("c_bootcfg_unknown_key_noisy", (BootCfgParseErrors() > errs_before) ? 1 : 0, 1);
+    }
     SelfTestCompare("c3_present_backend_valid",
                     (PresentBackendId() >= 0 && PresentBackendId() <= 2) ? 1 : 0, 1);
     // O contador de frames so' avanca quando algo apresenta. O corpus desenha

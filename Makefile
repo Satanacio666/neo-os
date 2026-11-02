@@ -190,8 +190,8 @@ disk: $(TARGET_EFI)
 	mmd -i $(FAT_IMG) ::/holyc
 	mcopy -i $(FAT_IMG) apps/*.HC ::/holyc/
 	@echo "Instalando perfis de hardware (DADOS, nao codigo — E5)..."
-	-@mmd -i $(FAT_IMG) ::/profiles
-	-@mcopy -i $(FAT_IMG) profiles/*.conf ::/profiles/
+	mmd -i $(FAT_IMG) ::/profiles
+	mcopy -i $(FAT_IMG) profiles/*.conf ::/profiles/
 	@echo "Diretorio do cache de JIT (P8, Nivel 1)..."
 	-@mmd -i $(FAT_IMG) ::/NEOJIT
 	@echo "Assembling $(DISK_SIZE_MB) MB image: FAT in LBA 0..$(CRASH_ZONE_LBA), crash zone from LBA $(CRASH_ZONE_LBA)"
