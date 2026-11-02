@@ -553,6 +553,10 @@ static size_t galloc_get(const char *n) {
         if (strcmp(g_galloc[i].name, n) == 0) return g_galloc[i].bytes;
     return 0;
 }
+
+/* P8: exposto ao jitcache.c — o HIT precisa realocar cada VAR com o mesmo
+ * tamanho que o parse criou. */
+size_t jit_galloc_size(const char *name) { return galloc_get(name); }
 static void galloc_set(const char *n, size_t b) {
     for (int i = 0; i < g_galloc_count; i++)
         if (strcmp(g_galloc[i].name, n) == 0) { g_galloc[i].bytes = b; return; }

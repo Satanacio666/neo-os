@@ -66,6 +66,20 @@ void kheap_init(void *heap_start, size_t heap_size) {
            (unsigned long long)(head->size / 1024));
 }
 
+/* P8: log de transacao do heap — o cache do JIT precisa REPLAY as alocacoes do
+     * Compiler.HC no HIT (as globais vivem no heap e o codigo restaurado as referencia).
+     * Determinismo medido: os enderecos sao identicos entre boots. */
+#define KHEAP_REC_MAX 8192
+static size_t   s_rec_size[KHEAP_REC_MAX];
+static uint64_t s_rec_addr[KHEAP_REC_MAX];
+static uint32_t s_rec_n = 0;
+static int      s_rec_on = 0;
+void kheap_rec_begin(void) { s_rec_n = 0; s_rec_on = 1; }
+void kheap_rec_end(void)   { s_rec_on = 0; }
+uint32_t kheap_rec_count(void) { return s_rec_n; }
+size_t   kheap_rec_size(uint32_t i) { return i < s_rec_n ? s_rec_size[i] : 0; }
+uint64_t kheap_rec_addr(uint32_t i) { return i < s_rec_n ? s_rec_addr[i] : 0; }
+
 void* kmalloc(size_t size) {
     if (size == 0 || size > 0x40000000ULL) return NULL;
 
@@ -117,6 +131,11 @@ void* kmalloc(size_t size) {
 
             smp_spin_unlock(&s_heap_spinlock);
             kheap_irq_restore(__f);
+            if (s_rec_on && s_rec_n < KHEAP_REC_MAX) {
+                s_rec_addr[s_rec_n] = (uint64_t)(uintptr_t)(curr + 1);
+                s_rec_size[s_rec_n] = curr->size;
+                s_rec_n++;
+            }
             return (void*)(curr + 1);
         }
         curr = curr->next;

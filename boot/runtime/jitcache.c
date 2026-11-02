@@ -12,11 +12,22 @@
  *   2. os simbolos que apontam para dentro dessa regiao (nome + endereco);
  *   3. o codigo do top-level (compilado no scratch), que e o entrypoint.
  *
- * O ENTRYPOINT CONTINUA RODANDO. Isto e deliberado e e a diferenca entre um
- * cache correto e um boot quebrado: e o top-level do Compiler.HC que chama
- * HcInit() e inicializa o compilador auto-hospedado. Pular o entrypoint
- * economizaria mais alguns milissegundos e deixaria o sistema sem compilador.
- * A regra vale para qualquer nivel: cacheia-se COMPILACAO, nunca INICIALIZACAO.
+ * P8 — PROBLEMAS RESOLVIDOS:
+ *   Bug 1 (re-entrada via scratch): no HIT NAO chamamos o entrypoint restaurado.
+ *     O top-level do Compiler.HC e VAZIO (so definicoes). Chamar o scratch aqui
+ *     re-executava o MODULO CHAMADOR (KernelInit.HC rodando no scratch) ->
+ *     [JC-CALL] #2 -> recompilava tudo. Agora retornamos 0 imediatamente.
+ *
+ *   Bug 2 (Ponto A: globais do heap nao re-alocadas): as variaveis globais
+ *     (SYM_VAR) vivem no heap (base 0x40000000), fora do range de codigo.
+ *     O MISS grava o tamanho de cada VAR (via galloc_get). No HIT, realocamos
+ *     cada VAR com kmalloc(tamanho) e registramos o NOVO endereco real
+ *     retornado (nao o gravado, que eh invalido porque o estado do heap eh
+ *     diferente entre boots). O codigo restaurado referencia variaveis por
+ *     nome via SIC (late-bound) — endereco eh resolvido em tempo de uso.
+ *
+ *   Variaveis SIC sem tamanho (galloc_get == 0) sao simplesmente NAO
+ *     registradas no HIT — o SIC cria uma nova entrada quando for acessado.
  *
  * VALIDACAO POR ANCORA (fail-safe total):
  * O codigo emitido embute enderecos ABSOLUTOS (MOVZ/MOVK de 4 instrucoes) para
@@ -34,6 +45,10 @@
 #include "seed_fs.h"
 #include "symbols.h"
 
+/* P8: tamanho de uma global (seed). */
+extern size_t jit_galloc_size(const char *name);
+#include "kheap.h"   /* P8: kmalloc para realocar VARs no HIT */
+
 #define JC_MAGIC      0x54494A4Eu      /* 'NJIT' em little-endian */
 #define JC_VERSION    1u
 #define JC_NAME_MAX   48
@@ -49,7 +64,7 @@ typedef struct __attribute__((packed)) {
     uint64_t anchor_pool_base;   /* detecta mudanca do pool de codigo */
     uint32_t pool_off_start;     /* offset EXATO onde o codigo deve aterrissar */
     uint32_t code_size;          /* bytes de codigo de maquina */
-    uint64_t entry_addr;         /* endereco do entrypoint (scratch) */
+    uint64_t entry_addr;         /* endereco do entrypoint (scratch) — NAO USADO no HIT */
     uint32_t sym_count;
     uint32_t scratch_size;
     uint32_t payload_size;       /* simbolos + codigo + scratch */
@@ -57,7 +72,10 @@ typedef struct __attribute__((packed)) {
 } jc_hdr_t;
 
 typedef struct __attribute__((packed)) {
-    uint64_t address;
+    uint64_t address;      /* endereco da global/funcao (gravado no MISS) */
+    uint64_t size;         /* P8: tamanho em bytes (0 para FUNC, tamanho da VAR) */
+    uint8_t  type;         /* P8: SYM_VAR=2 ou SYM_FUNC=1 */
+    uint8_t  pad[3];
     uint8_t  name[JC_NAME_MAX];
 } jc_sym_t;
 
@@ -91,10 +109,14 @@ static uint32_t s_sym_count = 0;
 static uint64_t s_range_lo = 0, s_range_hi = 0;
 
 static void jc_sym_visitor(const char *name, void *address, int64_t type) {
-    (void)type;
     if (!name || !address) return;
     uint64_t a = (uint64_t)(uintptr_t)address;
-    if (a < s_range_lo || a >= s_range_hi) return;   /* fora da regiao: nao e nosso */
+    if (type == SYM_VAR) {
+        /* P8: variaveis globais vivem no heap (base 0x40000000), fora do range
+         * de codigo. Capturamos endereco e TAMANHO para realocar no HIT. */
+    } else if (a < s_range_lo || a >= s_range_hi) {
+        return;   /* FUNC fora da regiao de codigo: nao e nosso */
+    }
     if (s_sym_count >= JC_MAX_SYMS) {
         static int warned = 0;
         if (!warned) { warned = 1;
@@ -104,6 +126,8 @@ static void jc_sym_visitor(const char *name, void *address, int64_t type) {
     }
     jc_sym_t *s = &s_syms[s_sym_count];
     s->address = a;
+    s->size    = (uint64_t)jit_galloc_size(name);   /* P8: 0 para FUNC, tamanho para VAR */
+    s->type    = (uint8_t)type;
     int i = 0;
     while (name[i] && i < JC_NAME_MAX - 1) { s->name[i] = (uint8_t)name[i]; i++; }
     s->name[i] = 0;
@@ -251,11 +275,40 @@ int jitcache_try(const char *name, const char *source) {
 
     uint8_t *r = buf + sizeof(jc_hdr_t);
 
-    /* 1. Simbolos: restaura na MESMA tabela, pelos nomes. */
+    /* P8, passo 1: Simbolos — restaura na MESMA tabela, pelos nomes.
+     *   - SYM_FUNC: endereco gravado no pool (valido, eh codigo).
+     *   - SYM_VAR com size>0: REALOCAR com kmalloc(size) e registrar o NOVO
+     *     endereco real, porque o estado do heap no HIT eh diferente do MISS.
+     *   - SYM_VAR com size==0: NAO registrar — o SIC cria a entrada quando
+     *     o simbolo for acessado pela primeira vez. */
     jc_sym_t *sy = (jc_sym_t*)r;
+    uint32_t var_syms = 0, func_syms = 0, var_realloc_ok = 0, var_skip0 = 0;
     for (uint32_t i = 0; i < hdr.sym_count; i++) {
-        symbols_register((const char*)sy[i].name, (void*)(uintptr_t)sy[i].address, SYM_FUNC);
+        if (sy[i].type == SYM_VAR) {
+            var_syms++;
+            if (sy[i].size == 0) {
+                var_skip0++;
+                continue;
+            }
+            void *p = kmalloc(sy[i].size);
+            if (!p) {
+                printf("[JIT-CACHE] %s HIT abortado: kmalloc(%llu) falhou para '%s'\n",
+                       name, (unsigned long long)sy[i].size, sy[i].name);
+                return 0;
+            }
+            uint64_t new_addr = (uint64_t)(uintptr_t)p;
+            if (new_addr != sy[i].address)
+                printf("[JIT-CACHE-DIAG] VAR '%s': 0x%llX -> 0x%llX (reallocado)\n",
+                       sy[i].name, (unsigned long long)sy[i].address, new_addr);
+            symbols_register((const char*)sy[i].name, (void*)(uintptr_t)new_addr, SYM_VAR);
+            var_realloc_ok++;
+        } else {
+            func_syms++;
+            symbols_register((const char*)sy[i].name, (void*)(uintptr_t)sy[i].address, SYM_FUNC);
+        }
     }
+    printf("[JIT-CACHE-DIAG] simbolos: VAR=%u (realloc_ok=%u, skip0=%u) FUNC=%u\n",
+           var_syms, var_realloc_ok, var_skip0, func_syms);
     r += hdr.sym_count * sizeof(jc_sym_t);
 
     /* 2. Codigo no pool, no offset exato. */
@@ -263,17 +316,17 @@ int jitcache_try(const char *name, const char *source) {
     for (uint32_t i = 0; i < hdr.code_size; i++) dst[i] = r[i];
     r += hdr.code_size;
 
-    /* 3. Scratch (o top-level, que e o entrypoint). */
+    /* 3. Scratch (o top-level, que e o entrypoint).
+     * P8 Bug 1: NAO chamamos o entrypoint restaurado! O top-level do
+     * Compiler.HC e VAZIO. Chamar o scratch re-executaria o modulo chamador
+     * (KernelInit.HC rodando no scratch) -> recompilava tudo. */
     uint8_t *scratch = jit_scratch_ptr();
     for (uint32_t i = 0; i < hdr.scratch_size && i < jit_scratch_capacity(); i++)
         scratch[i] = r[i];
 
-    /* 4. Consistencia de cache: D-cache limpo + I-cache invalidado. Sem isto a
-     *    CPU executaria instrucoes velhas — invisivel no QEMU (sem cache), fatal
-     *    em silicio real. */
+    /* 4. Consistencia de cache: D-cache limpo + I-cache invalidado. */
     /* 5. AVANCA O BUMP-ALLOCATOR. Sem isto a proxima compilacao comeca em
-     *    pool_off_start e SOBRESCREVE o codigo que acabamos de restaurar — o
-     *    boot chega a compilar tudo e depois falha de forma obscura. */
+     *    pool_off_start e SOBRESCREVE o codigo que acabamos de restaurar. */
     jit_pool_advance(hdr.code_size);
 
     jit_flush(dst, hdr.code_size);

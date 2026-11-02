@@ -247,7 +247,7 @@ U0 KInitLoad(U8 *fname) {
         // cache nao retorna ao chamador, e o seed acaba recompilando tudo — o cache
         // sai mais caro que a compilacao. Reativar quando o retorno for resolvido:
         //   ... else { res = jit_compile_and_run_cached(fname, kinit_load_buf); }
-        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run(kinit_load_buf); }
+        if (g_hc_ready) { res = CompilerCompileAndRun(kinit_load_buf); } else { res = jit_compile_and_run_cached("Compiler", kinit_load_buf); }
         doldoc_printf("[KERNEL-INIT] %s compiled, res = %lld\n", fname, res);
     } else {
         doldoc_printf("[KERNEL-INIT WARN] Could not read %s from the ESP!\n", fname);
