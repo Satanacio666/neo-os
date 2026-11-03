@@ -1,5 +1,11 @@
 # NeoOS — 01 REALITY AUDIT (verified claim-by-claim)
 
+> **⏱ ATUALIZAÇÃO 02/11 (HEAD `4e17ed9`):** este audit é de 30-31/10. Reality atual
+> verificada no gate: **SELFTEST 208/208, CENSUS 187, SELF-HOST, DETERMINISM 0xD28836F,
+> GOLDEN BOOT PASS, 4 gates da Fase G**. O que era [PARTIAL]/[STUB] neste doc que os
+> Lotes 1-6 fecharam: Camada 3 (Present/headless), Camada 4A/B, Fase G. Detalhe em
+> `CONSOLIDADO-MESTRE-2026-11-02.md`.
+
 > Consolidation doc 2 of 5. This is the **verified reality** of the code, cross-checked against every claim in the
 > 44 old docs. Tags: **[REAL]** verified in code today · **[PARTIAL]** exists but incomplete/wrong · **[STUB]**
 > mock/placeholder/renamed-only · **[MISSING]** claimed but absent · **[GONE]** was real, since removed ·

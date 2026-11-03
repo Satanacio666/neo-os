@@ -1,5 +1,10 @@
 # NeoOS — 00 MASTER PLAN (objectives, priorities, architecture)
 
+> **⏱ ATUALIZAÇÃO 02/11 (HEAD `4e17ed9`):** este plano é histórico (30-31/10). A
+> Frente A (Camadas 0-4 + Fase G) **está 100% fechada** (Lotes 1-6). O estado real e
+> a prioridade atual (migração KVM, push GitHub, fechamento do Lote 7) estão em
+> `/var/minis/shared/neos/relatorios/ONDE-ESTAMOS.md` e `CONSOLIDADO-MESTRE-2026-11-02.md`.
+
 > Consolidation doc 1 of 6. Sources: all 44 `docs/*.md` + `docs/master/*.md` + repo `README.md`/`SKILL.md`.
 > This is the **plan** (what we are building and why). Reality is in `01-REALITY-AUDIT.md`; the task list is in
 > `02-TASKLIST.md`; ideas/research in `03-IDEAS-AND-RESEARCH.md`; contradictions/decisions in

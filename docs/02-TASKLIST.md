@@ -1,5 +1,13 @@
 # NeoOS — 02 TASKLIST (every task, prioritized, traced to sources)
 
+> **⏱ ATUALIZAÇÃO 02/11 (HEAD `4e17ed9`, Lote 6):** o plano abaixo era de 30-31/10.
+> Estado real verificado no gate: **CHECKPOINT GREEN — SELFTEST 208/208, CENSUS 187,
+> DETERMINISM 0xD28836F, GOLDEN BOOT PASS. Os Lotes 1→6 fecharam** a Camada 0-3,
+> Camada 4A (HolyGL batch SMP/Early-Z/ShaderQuad), 4B (widget $GLVIEW$) e a Fase G
+> (gates INDUS/LAYOUT/SHELL/TYPE). Prioridade atual NÃO está nesta lista — ver
+> `/var/minis/shared/neos/relatorios/ONDE-ESTAMOS.md` (migração KVM + push GitHub +
+> fechamento do Lote 7: INDUS render real, profiler B3, P6.2 real).
+
 > Consolidation doc 3 of 5. The **actionable** list: every task from every old plan, merged, de-duplicated,
 > and ordered P0→P10. The *why* is in `00-MASTER-PLAN.md`; verified reality in `01-REALITY-AUDIT.md`;
 > research/ideas in `03-IDEAS-AND-RESEARCH.md`; contradictions & decisions in
