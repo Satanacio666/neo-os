@@ -13,7 +13,7 @@ I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 // load); without a local mirror they'd resolve to 0 and the [BUDGET] line would
 // print teto=0. Keep in sync with the originals.
 #define HC_MAX_FUNCS     2048
-#define HC_MAX_GLOBALS   768
+#define HC_MAX_GLOBALS   1536
 #define HC_MAX_DEFINES   2048
 #define HC_MAX_STRUCTS   256
 #define HC_MAX_LOCALS    512

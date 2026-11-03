@@ -1933,6 +1933,7 @@ U0 RasterTileMain() {
 if (g_kernel_booting) {
   RasterCtxInit();
   RasterInit();
+  RasterSetZPrecision(16);   // Layer B (Lote 6): confirma a precisao Z default
   RasterBootCheck();
 } else {
   RasterTileMain();

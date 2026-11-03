@@ -750,6 +750,9 @@ U0 SchedPrintDolDoc() {
     curr = curr->next;
     if (curr == g_sched_head) break;
   }
+  // Layer B (Lote 6): hash de integridade das run-queues (sched_ticks +
+  // context_switches por core) — prova o escalonador rodou sem esquecimento.
+  doldoc_printf("  $FG,MUTED$RQ hash$FG$: 0x%llX  (integ: sched_ticks + ctx_sw per core)\n", SchedRqHash());
   doldoc_print("$HR$\n\n");
 }
 

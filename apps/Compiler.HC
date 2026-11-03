@@ -344,8 +344,9 @@ I64   g_hc_loop_depth;
 U64   g_hc_exec_fn;
 U64   g_fn_parse_expr;
 U64   g_fn_parse_stmt;
-U64   g_hc_call_targets[32];
-I64   g_hc_call_depth;
+// (g_hc_call_targets/g_hc_call_depth removidos no Lote 6 — mecanismo abandonado,
+// 0 usos; ambos eram "mortos: 0 em HcReset" conforme o próprio comentário.)
+
 // B6 (ONDA 2): profundidade de recursao do parser de EXPRESSOES. O parser
 // nao tinha contador (g_hc_call_depth acima e' morto: 0 em HcReset) — um
 // aninhamento patologico (\( x N) consumia pilha ate' o Data Abort. Zerada
@@ -638,7 +639,6 @@ U0 HcReset() {
     g_hc_code_len = g_hc_pool_offset;
     g_hc_local_count = 0;
     g_hc_frame_offset = 16;
-    g_hc_call_depth = 0;
     g_hc_parse_depth = 0; // B6: profundidade de recursao do parser
     g_hc_op_sp = 0;
     g_hc_loop_depth = 0;
@@ -965,7 +965,7 @@ U64 HcFindFunc(U8 *name) {
 // P0.6: cumulative JIT symbol map (name -> addr). Stored, not printed, so the
 // boot log is not flooded; dumped on demand by the `jitmap` shell command so
 // scripts/crash-decode.py can symbolicate a faulting ELR_EL1 to function+offset.
-#define HC_MAP_MAX 2048
+#define HC_MAP_MAX 4096
 U8  g_hc_map_names[HC_MAP_MAX * 24];
 U64 g_hc_map_addrs[HC_MAP_MAX];
 I64 g_hc_map_count = 0;

@@ -21,7 +21,6 @@ I64 s_cursor_saved_y = -1;
 I64 s_cursor_is_drawn = 0;
 I64 s_compose_diag_done = 0;
 
-U32 s_front_save_under[256];
 I64 s_front_saved_x = -1;
 I64 s_front_saved_y = -1;
 I64 s_front_is_drawn = 0;

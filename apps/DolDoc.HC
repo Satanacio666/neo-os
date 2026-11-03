@@ -650,9 +650,6 @@ U0 DolDocPutc(U8 c) {
 // Tag attribute parsing helpers
 // ============================================================================
 U8  g_tag_buf[2048];
-U8  g_tag_label[256];
-U8  g_tag_cmd[256];
-U8  g_tag_title[256];
 U8  g_click_cmd_buf[256];
 U8  g_doc_inc_buf[4096];
 
@@ -4296,6 +4293,8 @@ U0 DolDocXFEWinClose(I64 s) {
     if (g_xf_set_slot == s) g_xf_set_slot = -1;
     else if (g_xf_set_slot > s) g_xf_set_slot--;
     DolDocXFEZRemove(s);
+    // Layer B (Lote 6): reintegra a z-order do workspace apos fechar a janela.
+    DolDocXFEAllToWSLayout();
     if (g_xf_active_id == cid) {
         if (g_xf_nwin > 0) g_xf_active_id = g_xf_win_id[g_xf_z[g_xf_nwin - 1]];
         else g_xf_active_id = -1;
