@@ -17,7 +17,7 @@ I64 g_hc_ready = 0;   // set once Compiler.HC has been bootstrapped by the C JIT
 #define HC_MAX_DEFINES   2048
 #define HC_MAX_STRUCTS   256
 #define HC_MAX_LOCALS    512
-#define HC_MAP_MAX       2048
+#define HC_MAP_MAX       4096
 #define HC_FNF_MAX       4096
 #define HC_MAX_DEFERRED  64
 #define HC_MAX_EPILOGUES 512
