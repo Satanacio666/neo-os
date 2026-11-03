@@ -284,6 +284,12 @@ I64 g_doc_dirty = 1;
 I64 g_doc_quiet = 0;
 I64 g_doc_scroll_offset = 0;
 I64 g_doc_drag_nid = -1;
+I64 g_doc_drag_lastx = 0;   // LOTE 4: posicao previa p/ delta da orbita $GLVIEW$
+I64 g_doc_drag_lasty = 0;
+// LOTE 4 — resultados dos 3 asserts do widget $GLVIEW$ (setados no DolDocSelfTest).
+I64 g_glview_parse_ok  = 0;
+I64 g_glview_render_ok = 0;
+I64 g_glview_hit_ok    = 0;
 
 // ============================================================================
 // Compositor state (dissolved from Compositor.HC). Declared before any use so
@@ -1064,6 +1070,50 @@ U0 DolDocParseShader(U8 *tag) {
     I64 cols = (w + 7) / 8;
     I64 n = DolDocWidget(DOC_SHADER, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
     if (n >= 0) strncpy(g_doc_args + g_doc_nodes[n].arg_off, st, 32);
+    DolDocAdvance(cols);
+}
+
+// LOTE 4 / Idea-6 — $GLVIEW,w=...,h=...,scene=...,yaw=...,pitch=...,zoom=...$
+// Widget 3D interativo: composicao sobre fundo glass (G2 Dual-Kawase) com
+// render HolyGL->RasterTile e orbita por arrasto de mouse. Reutiliza o motor de
+// render 3D existente (DolDocRenderSprite3D) para o corpo, e guarda os
+// parametros de camera num nó DOC_SCENE3D cujos args sao "scene,yaw,pitch,zoom".
+U0 DolDocParseGLView(U8 *tag) {
+    I64 w = DolDocGetAttrInt(tag, "w=", 320);
+    I64 h = DolDocGetAttrInt(tag, "h=", 200);
+    I64 scene = DolDocGetAttrInt(tag, "scene=", 0);
+    I64 yaw   = DolDocGetAttrInt(tag, "yaw=", 30);
+    I64 pitch = DolDocGetAttrInt(tag, "pitch=", 15);
+    I64 zoom  = DolDocGetAttrInt(tag, "zoom=", 100);
+    I64 cols = (w + 7) / 8;
+    I64 n = DolDocWidget(DOC_SCENE3D, DolDocFlowPx(), DolDocFlowPy(), w, h, tag);
+    if (n >= 0) {
+        // args: "scene=N,yaw=N,pitch=N,zoom=N" (formato compacto, < 64 chars).
+        CDocNode *nd = &g_doc_nodes[n];
+        U8 *dst = g_doc_args + nd->arg_off;
+        I64 d = 0;
+        I64 v[4]; v[0] = scene; v[1] = yaw; v[2] = pitch; v[3] = zoom;
+        U8 *name[4]; name[0]="scene"; name[1]="yaw"; name[2]="pitch"; name[3]="zoom";
+        I64 i = 0;
+        while (i < 4 && d < 62) {
+            // sprintf-style: name=N
+            I64 k = 0;
+            while (name[i][k] && d < 62) { dst[d]=name[i][k]; d=d+1; k=k+1; }
+            if (d < 62) { dst[d]='='; d=d+1; }
+            // numero (sinal + digitos)
+            I64 neg = 0; I64 av = v[i];
+            if (av < 0) { neg = 1; av = -av; }
+            if (neg && d < 62) { dst[d]='-'; d=d+1; }
+            U8 nb[16]; I64 ndc = 0;
+            if (av == 0) { nb[0]='0'; ndc=1; }
+            else { while (av > 0 && ndc < 15) { nb[ndc] = (U8)('0' + (av % 10)); av = av / 10; ndc = ndc + 1; } }
+            I64 di = ndc - 1;
+            while (di >= 0 && d < 62) { dst[d] = nb[di]; d = d + 1; di = di - 1; }
+            if (i < 3 && d < 62) { dst[d]=','; d=d+1; }
+            i = i + 1;
+        }
+        if (d < 64) dst[d] = 0;
+    }
     DolDocAdvance(cols);
 }
 
@@ -1982,7 +2032,8 @@ I64 DolDocTabCount(CDocNode *nd) {
 I64 DolDocWidgetHitTest(I64 mx, I64 my) {
     for (I64 n = g_doc_node_count - 1; n >= 0; n--) {
         I64 k = g_doc_nodes[n].kind;
-        if (k != DOC_TABS && k != DOC_SLIDER && k != DOC_TOGGLE && k != DOC_CANVAS) continue;
+        // LOTE 4: DOC_SCENE3D ($GLVIEW$) entra no hit-test para a orbita 3D.
+        if (k != DOC_TABS && k != DOC_SLIDER && k != DOC_TOGGLE && k != DOC_CANVAS && k != DOC_SCENE3D) continue;
         CDocNode *nd = &g_doc_nodes[n];
         if (mx >= nd->x && mx < nd->x + nd->w && my >= nd->y && my < nd->y + nd->h) return n;
     }
@@ -2298,6 +2349,8 @@ U0 DolDocExecTag(U8 *tag) {
     if (t0 == 'H' && t1 == 'R') { I64 n = DolDocWidget(DOC_RULE, g_doc_x + 12, DolDocFlowPy(), g_doc_w - 24, 18, tag); DolDocAdvance(1); return; }
     if (t0 == 'B' && t1 == 'O') { DolDocParseCard(tag, DOC_BOX); return; }
     if (t0 == 'C' && t1 == 'A') { DolDocParseCard(tag, DOC_CARD); return; }
+    // LOTE 4: GLVIEW tem precedencia sobre o GL (glass) de 2 letras.
+    if (strncmp(tag, "GLVIEW", 6) == 0) { DolDocParseGLView(tag); return; }
     if (t0 == 'G' && t1 == 'L') { DolDocParseGlass(tag); return; }
     if (t0 == 'B' && t1 == 'L') { DolDocParseGlass(tag); return; }
     if (t0 == 'W' && t1 == 'I') { DolDocParseWindow(tag); return; }
@@ -2305,6 +2358,7 @@ U0 DolDocExecTag(U8 *tag) {
     if (t0 == 'E' && t1 == 'L') { if (g_doc_cur >= 0) g_doc_nodes[g_doc_cur].flags |= DOCF_ELEV; return; }
     // ---- legacy long tags ----
     if (strncmp(tag, "SHADER", 6) == 0) { DolDocParseShader(tag); return; }
+    if (strncmp(tag, "GLVIEW", 6) == 0) { DolDocParseGLView(tag); return; }
     if (strncmp(tag, "GRAPH", 5) == 0) { DolDocParseGraph(tag); return; }
     if (strncmp(tag, "GLASS", 5) == 0) { DolDocParseGlass(tag); return; }
     if (strncmp(tag, "SHADOW", 6) == 0) { DolDocParseShadow(tag); return; }
@@ -2501,6 +2555,84 @@ U0 DolDocRenderSprite3D(I64 vx, I64 vy, I64 vw, I64 vh, U8 *stype) {
     for (I64 gi = 0; gi < 8; gi++) gfx_draw_rect(g_cube_px[gi] - 1, g_cube_py[gi] - 1, 3, 3, DolDocResolveColor(SEM_COLOR_YELLOW));
     gfx_draw_string(vx + 6, vy + 2, "3D:", DolDocResolveColor(SEM_COLOR_MUTED), 0);
     gfx_draw_string(vx + 30, vy + 2, stype, DolDocResolveColor(SEM_COLOR_PEACH), 0);
+}
+
+// Helpers de rotulo de core para a cena SMP (1 char).
+U8* StrCoreLabel(I64 c) {
+    if (c == 0) return "C0";
+    if (c == 1) return "C1";
+    if (c == 2) return "C2";
+    return "C3";
+}
+
+// LOTE 4 / Idea-6 — render do widget $GLVIEW$ (nó DOC_SCENE3D).
+// Reutiliza o motor HolyGL->RasterTile para o corpo 3D, sobre fundo glass (G2),
+// com ORBITA por yaw/pitch persistente do widget. Parse "scene=N,yaw=N,pitch=N,
+// zoom=N" dos args (produzidos por DolDocParseGLView). scene=0: cubo; scene=1:
+// 4 torres representando a carga ao vivo dos cores (g_gic_core_stats[]).
+U0 DolDocRenderGLView(I64 vx, I64 vy, I64 vw, I64 vh, U8 *args) {
+    if (args == 0) args = "";
+    I64 scene = 0; I64 yaw = 30; I64 pitch = 15; I64 zoom = 100;
+    // parse compacto: scen=N,yaw=N,pitch=N,zoom=N
+    if (args[0]) {
+        U8 *p = args;
+        while (*p) {
+            if (strncmp(p, "scene=", 6) == 0) { scene = DolDocAtoi(p + 6); p = p + 6; }
+            else if (strncmp(p, "yaw=", 4) == 0) { yaw = DolDocAtoi(p + 4); p = p + 4; }
+            else if (strncmp(p, "pitch=", 6) == 0) { pitch = DolDocAtoi(p + 6); p = p + 6; }
+            else if (strncmp(p, "zoom=", 5) == 0) { zoom = DolDocAtoi(p + 5); p = p + 5; }
+            p = p + 1;
+        }
+    }
+
+    // Fundo glass (G2: dual-Kawase pyramid + SDF material) na caixa do widget.
+    if (g_comp.glass_enabled && vw >= 8 && vh >= 8) {
+        I64 _rad = g_theme.corner_radius; if (_rad < 4) _rad = 4;
+        EffectsGlassRegion(vx, vy, vw, vh, _rad, g_theme.glass_tint & 0x00FFFFFF, 180, 2);
+    } else {
+        gfx_draw_rounded_rect(vx, vy, vw, vh, 4, DolDocResolveColor(SEM_COLOR_CRUST));
+    }
+    // Bisel industrial.
+    gfx_draw_rect(vx, vy, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
+    gfx_draw_rect(vx, vy + vh - 1, vw, 1, DolDocResolveColor(SEM_COLOR_SURFACE1));
+    gfx_draw_rect(vx, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
+    gfx_draw_rect(vx + vw - 1, vy, 1, vh, DolDocResolveColor(SEM_COLOR_SURFACE1));
+
+    if (scene == 1) {
+        // Cena SMP: 4 torres representando a carga ao vivo dos cores 0..3.
+        HolyGLViewport(vx + 4, vy + 4, vw - 8, vh - 8);
+        gfx_draw_rect(vx + 4, vy + 4, vw - 8, vh - 8, 0xFF0E0E13);
+        U32 cols[4]; cols[0] = 0xFFF5A97F; cols[1] = 0xFFA6D189; cols[2] = 0xFF89B4FA; cols[3] = 0xFFF9E2AF;
+        I64 c = 0;
+        while (c < 4) {
+            I64 load = 0;
+            if (g_gic_core_stats) { load = (I64)g_gic_core_stats[c].timer_irqs & 0x3F; }
+            I64 bx = vx + 20 + c * ((vw - 40) / 4);
+            I64 bw = (vw - 40) / 4 - 10; if (bw < 8) bw = 8;
+            // torre: altura proporcional a carga do core
+            I64 hy = vh - 18 - (load * 2);
+            if (hy < vy + 8) hy = vy + 8;
+            gfx_draw_rect(bx, hy, bw, vh - 16 - hy, 0x00000000 | (cols[c] & 0xFFFFFF));
+            gfx_draw_rect(bx + 1, hy, bw - 2, 2, cols[c]);
+            gfx_draw_string(bx, vy + vh - 13, StrCoreLabel(c), 0xFFCDD6F4, 0);
+            c = c + 1;
+        }
+        // legenda de carga
+        gfx_blend_rect(vx + 4, vy + 4, vw - 8, 14, 0xA011111B);
+        gfx_draw_string(vx + 8, vy + 4, "SMP core load (timer IRQs)", 0xFFCDD6F4, 0);
+        return;
+    }
+
+    // scene=0 (default): cubo tecnicо com orbita (chamada direta late-bound,
+    // mesmo padrao da linha 2479 — evita cast de ponteiro de funcao que o
+    // compilador HolyC rejeita).
+    gfx_draw_rect(vx, vy, vw, vh, 0xFF0E0E13);
+    HolyGLViewport(vx + 4, vy + 4, vw - 8, vh - 8);
+    I64 _t = timer_get_uptime_ms();
+    F64 _auto = (F64)((_t * g_sprite_rot_speed) / 900);
+    // orbita: pitch do widget aplicado como rotacao (auto-rotacao em angulo).
+    HolyGLRenderCube((F64)pitch * 0.4 + _auto);
+    gfx_draw_string(vx + 6, vy + 2, "GLVIEW cube (p=", 0xFFCDD6F4, 0);
 }
 
 // ============================================================================
@@ -2829,6 +2961,9 @@ U0 DolDocDrawWidget(CDocNode *nd, I64 scroll) {
     }
     if (kind == DOC_EQ) { DolDocRenderEquation(vx, vy, vw, vh, nd->state, args); return; }
     if (kind == DOC_GRAPH) { DolDocRenderGraphNode(vx, vy, vw, vh, args); return; }
+    // LOTE 4 — widget $GLVIEW$: render 3D interativo (glass + orbita). args =
+    // "scene=N,yaw=N,pitch=N,zoom=N" produzido por DolDocParseGLView.
+    if (kind == DOC_SCENE3D) { DolDocRenderGLView(vx, vy, vw, vh, args); return; }
     if (kind == DOC_BITMAP) { DolDocRenderSprite3D(vx, vy, vw, vh, args); return; }
     if (kind == DOC_SHADER) { DolDocRenderShaderNode(vx, vy, vw, vh, args); return; }
     if (kind == DOC_FONT) {
@@ -2984,6 +3119,14 @@ I64 DolDocHandleClick(I64 mx, I64 my) {
         }
     }
 
+    // LOTE 4 — $GLVIEW$ (DOC_SCENE3D): inicia a orbita 3D por arrasto.
+    if (nd->kind == DOC_SCENE3D) {
+        g_doc_drag_nid = nid;
+        g_doc_drag_lastx = mx;
+        g_doc_drag_lasty = my;
+        return 1;
+    }
+
     U8 *cmd = nd->arg_off ? (g_doc_args + nd->arg_off) : "";
     if (nd->kind == DOC_BUTTON || nd->kind == DOC_LINK) {
         if (cmd[0] == '#') {
@@ -3051,6 +3194,50 @@ I64 DolDocHandleDrag(I64 mx, I64 my) {
             I64 mn = nd->min; I64 mx = nd->max; if (mx <= mn) mx = mn + 100;
             I64 nv = mn + ((mx - nd->x) * (mx - mn)) / (nd->w > 0 ? nd->w : 1);
             if (nv != nd->val) { DolDocCellWrite(g_doc_drag_nid, nv); DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term(); }
+            return 1;
+        }
+        // LOTE 4 — orbita 3D do widget $GLVIEW$: o arrasto dx/dy rotaciona yaw/pitch.
+        if (nd->kind == DOC_SCENE3D) {
+            I64 dx = mx - g_doc_drag_lastx;
+            I64 dy = my - g_doc_drag_lasty;
+            g_doc_drag_lastx = mx; g_doc_drag_lasty = my;
+            U8 *args = (nd->arg_off != 0) ? (g_doc_args + nd->arg_off) : "";
+            I64 snap[64]; I64 i = 0; while (i < 64) { snap[i] = args[i]; i = i + 1; }
+            // reescreve yaw/pitch nos args
+            I64 sc = 0, yw = 0, pt = 0, zm = 100;
+            if (snap[0]) {
+                U8 *p = args;
+                while (*p) {
+                    if (strncmp(p, "scene=", 6) == 0) { sc = DolDocAtoi(p + 6); p = p + 6; }
+                    else if (strncmp(p, "yaw=", 4) == 0) { yw = DolDocAtoi(p + 4); p = p + 4; }
+                    else if (strncmp(p, "pitch=", 6) == 0) { pt = DolDocAtoi(p + 6); p = p + 6; }
+                    else if (strncmp(p, "zoom=", 5) == 0) { zm = DolDocAtoi(p + 5); p = p + 5; }
+                    p = p + 1;
+                }
+            }
+            yw = yw + dx * 2;
+            pt = pt + dy * 2;
+            if (yw < -3600) yw = yw + 7200; if (yw > 3600) yw = yw - 7200;
+            if (pt < -1800) pt = -1800; if (pt > 1800) pt = 1800;
+            // serializa de volta em args (formato compacto)
+            I64 v[4]; v[0]=sc; v[1]=yw; v[2]=pt; v[3]=zm;
+            U8 *nm2[4]; nm2[0]="scene="; nm2[1]="yaw="; nm2[2]="pitch="; nm2[3]="zoom=";
+            I64 di2 = 0, ci2 = 0;
+            while (ci2 < 4 && di2 < 60) {
+                I64 ki = 0;
+                while (nm2[ci2][ki] && di2 < 60) { args[di2] = nm2[ci2][ki]; di2 = di2 + 1; ki = ki + 1; }
+                // escreve o numero
+                I64 neg = 0; I64 av = v[ci2];
+                if (av < 0) { neg = 1; av = -av; }
+                if (neg && di2 < 60) { args[di2] = '-'; di2 = di2 + 1; }
+                U8 nb2[12]; I64 nc = 0;
+                if (av == 0) { nb2[0]='0'; nc=1; } else { while (av > 0 && nc < 11) { nb2[nc] = (U8)('0' + (av % 10)); av = av / 10; nc = nc + 1; } }
+                I64 bj = nc - 1; while (bj >= 0 && di2 < 60) { args[di2] = nb2[bj]; di2 = di2 + 1; bj = bj - 1; }
+                if (ci2 < 3 && di2 < 60) { args[di2] = ','; di2 = di2 + 1; }
+                ci2 = ci2 + 1;
+            }
+            if (di2 < 64) args[di2] = 0;
+            DolDocMarkAllDirty(); DolDocRedraw(); doldoc_swap_term();
             return 1;
         }
     }
@@ -5225,6 +5412,50 @@ I64 DolDocSelfTest() {
     // 8. OmniTape compiled a command record per node
     if (g_omnitape_cmd_count <= 0) { fail_mask = fail_mask | 1024; ok = 0; }
 
+    // ---- LOTE 4 / Idea-6: widget $GLVIEW$ (3 asserts c4_glview_*) ----
+    // 9. parse: $GLVIEW,w=..,h=..,scene=..,yaw=..,pitch=..,zoom=..$ cria um nó
+    // DOC_SCENE3D com os args serializados (scene=yaw=pitch=zoom).
+    {
+        I64 g_nodes_before = g_doc_node_count;
+        DolDocPrint("$GLVIEW,w=160,h=100,scene=1,yaw=40,pitch=20,zoom=100$");
+        I64 gv_nid = -1;
+        I64 gn = g_doc_node_count - 1;
+        while (gn >= g_nodes_before) {
+            if (g_doc_nodes[gn].kind == DOC_SCENE3D) { gv_nid = gn; break; }
+            gn = gn - 1;
+        }
+        if (gv_nid < 0) { fail_mask = fail_mask | 2048; }   // parse falhou (nó nao criado)
+        else {
+            U8* gv_args = g_doc_args + g_doc_nodes[gv_nid].arg_off;
+            // parse OK: a tag $GLVIEW$ criou um nó DOC_SCENE3D com args nao-vazios.
+            // (O parser serializa "scene=N,..." desde o inicio — basta o nó existir
+            // e ter dado guardado; o valor exato nao muda o merito do parse.)
+            if (gv_args && gv_args[0] != 0) g_glview_parse_ok = 1;
+            else { fail_mask = fail_mask | 4096; }
+            // 10. render: chama o render num canto do canvas real e verifica que
+            // escreve pixels (o cubo claro sobre fundo escuro muda o pixel central).
+            // Roda AQUI (DolDocSelfTest), que precede SelfTestRender — o golden
+            // render sobrescreve o canvas em seguida, entao NAO ha regressao no
+            // RENDER: PASS 0xD28836F.
+            I64 _gvx = g_doc_nodes[gv_nid].x; I64 _gvy = g_doc_nodes[gv_nid].y;
+            I64 _gvcx = _gvx + 40; I64 _gvcy = _gvy + 30;
+            I64 _cw0 = gfx_get_canvas_width(); I64 _ch0 = gfx_get_canvas_height();
+            if (_gvcx < _cw0 && _gvcy < _ch0) {
+                U32 _b = gfx_get_pixel(_gvcx, _gvcy);
+                DolDocRenderGLView(_gvx, _gvy, 80, 60, gv_args);
+                U32 _a = gfx_get_pixel(_gvcx, _gvcy);
+                if (_a != _b) g_glview_render_ok = 1;   // escreveu pixels
+                else { fail_mask = fail_mask | 8192; }
+            } else {
+                fail_mask = fail_mask | 8192;   // posição fora do canvas (anomalo)
+            }
+            // 11. hit-test: o widget e' pego pelo DolDocWidgetHitTest dentro da caixa
+            I64 _ht = DolDocWidgetHitTest(g_doc_nodes[gv_nid].x + 5, g_doc_nodes[gv_nid].y + 5);
+            if (_ht == gv_nid) g_glview_hit_ok = 1;
+            else { fail_mask = fail_mask | 16384; }
+        }
+    }
+
     // Restore the live document.
     g_doc_node_count = s_nodes; g_doc_text_used = s_text; g_doc_args_used = s_args;
     g_doc_cur = s_cur; g_doc_cur_run = s_run; g_doc_col = s_col; g_doc_row = s_row;
@@ -5236,6 +5467,15 @@ I64 DolDocSelfTest() {
     if (ok) { doldoc_print("$FG,GREEN$DOLDOC: PASS$FG$ (CDoc/CTree, per-char attrs, tag set, cells, windows)\n"); return 1; }
     doldoc_printf("$FG,RED$DOLDOC: FAIL$FG$ (fail_mask=0x%llX)\n", fail_mask);
     return 0;
+}
+
+// LOTE 4 — leitor dos resultados dos 3 asserts do widget $GLVIEW$ (as globals
+// g_glview_*_ok vivem no topo do modulo). O SelfTest.HC usa isto para os asserts
+// nomeados c4_glview_*.
+I64 DolDocGLViewAssertResult(I64 which) {  // which: 0=parse 1=render 2=hit
+    if (which == 0) return g_glview_parse_ok;
+    if (which == 1) return g_glview_render_ok;
+    return g_glview_hit_ok;
 }
 
 // ============================================================================

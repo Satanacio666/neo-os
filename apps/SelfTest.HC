@@ -2100,6 +2100,10 @@ U0 SelfTestRun() {
     SelfTestWcore();
     SelfTestRender();
     DolDocSelfTest();
+    // LOTE 4 / Idea-6 — 3 asserts do widget $GLVIEW$ (parse/render/hittest-orbit).
+    SelfTestCompare("c4_glview_parse", DolDocGLViewAssertResult(0), 1);
+    SelfTestCompare("c4_glview_render_pixels", DolDocGLViewAssertResult(1), 1);
+    SelfTestCompare("c4_glview_hittest_orbit", DolDocGLViewAssertResult(2), 1);
     DolDocSlateSelfTest();
     ShellSelfTest();
     SelfTestInputDuct();

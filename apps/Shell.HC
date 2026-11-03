@@ -728,6 +728,18 @@ U0 ShellCmd_bench(U8 *a, U8 *r) { ShellRunCommand("run HolyBenchmark.HC"); }
 U0 ShellCmd_gears(U8 *a, U8 *r) { ShellRunCommand("run Gears3D.HC"); }
 U0 ShellCmd_physics(U8 *a, U8 *r) { ShellRunCommand("run Physics3D.HC"); }
 U0 ShellCmd_holygl(U8 *a, U8 *r) { ShellRunCommand("run HolyGL.HC"); }
+// LOTE 4 / Idea-6 — comando glview: injeta um widget $GLVIEW$ 3D no documento.
+// Uso: glview [scene] (scene 0=cubo, 1=4 torres SMP de carga ao vivo).
+U0 ShellCmd_glview(U8 *a, U8 *r) {
+    I64 scene = 0;
+    if (a && a[0]) scene = DolDocAtoi(a);
+    if (scene < 0) scene = 0;
+    if (scene > 1) scene = 1;
+    doldoc_printf("  $GLVIEW,w=380,h=220,scene=%lld,yaw=25,pitch=12,zoom=100$\n", scene);
+    doldoc_print("  Widget 3D $FG,CYAN$GLVIEW$FG$ (IDEA-6): arraste para orbitar. scene=");
+    doldoc_printf("%lld\n", scene);
+    DolDocMarkAllDirty();
+}
 U0 ShellCmd_stopbench(U8 *a, U8 *r) { bench_unified_stop(); doldoc_print("$FG,YELLOW$[3D VIEWPORT]$FG$ Stopped 3D rendering pipeline.\n"); }
 U0 ShellCmd_explode(U8 *a, U8 *r) { physics3d_world_explode(); doldoc_print("$FG,RED$[3D DYNAMICS]$FG$ Polyhedral explosion impulse applied!\n"); }
 U0 ShellCmd_impulse(U8 *a, U8 *r) { bench_unified_trigger_impulse(); doldoc_print("$FG,GREEN$[3D DYNAMICS]$FG$ Rigid body dynamic impulse applied.\n"); }
@@ -1174,6 +1186,7 @@ U0 ShellInit() {
     shell_register_cmd("gears", ShellCmd_gears, "3D gears");
     shell_register_cmd("physics", ShellCmd_physics, "physics demo");
     shell_register_cmd("holygl", ShellCmd_holygl, "HolyGL demo");
+    shell_register_cmd("glview", ShellCmd_glview, "3D GLVIEW widget (IDEA-6)");
     shell_register_cmd("stopbench", ShellCmd_stopbench, "stop benchmark");
     shell_register_cmd("explode", ShellCmd_explode, "physics explode");
     shell_register_cmd("impulse", ShellCmd_impulse, "physics impulse");
