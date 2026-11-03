@@ -2105,6 +2105,9 @@ U0 SelfTestRun() {
     SelfTestCompare("c4_glview_render_pixels", DolDocGLViewAssertResult(1), 1);
     SelfTestCompare("c4_glview_hittest_orbit", DolDocGLViewAssertResult(2), 1);
     DolDocSlateSelfTest();
+    // LOTE 5 / Fase G — gates canonicos INDUS e TYPE.
+    DolDocIndusSelfTest();
+    DolDocTypeSelfTest();
     ShellSelfTest();
     SelfTestInputDuct();
     SelfTestRollback();

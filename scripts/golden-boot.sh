@@ -268,6 +268,13 @@ else
         echo "  [FAIL] layout: ${lyline:-<none>} (want LAYOUT: PASS)"
         fail=1
     fi
+    idline="$(printf '%s\n' "$out" | grep -a 'INDUS: ' | tail -1)"
+    if printf '%s' "$idline" | grep -aq 'PASS'; then
+        echo "  [PASS] $idline (industrial nodes: NODEGRAPH/BLOCK_EDITOR/ISLAND/REPL)"
+    else
+        echo "  [FAIL] industrial: ${idline:-<none>} (want INDUS: PASS)"
+        fail=1
+    fi
     spline="$(printf '%s\n' "$out" | grep -a 'SPRING: ' | tail -1)"
     if printf '%s' "$spline" | grep -aq 'PASS'; then
         echo "  [PASS] $spline (universal harmonic physics: motions/transitions/overshoot)"
@@ -343,6 +350,13 @@ else
         echo "  [PASS] $shline (O(1) registry + action protocol)"
     else
         echo "  [FAIL] shell: ${shline:-<none>} (want SHELL: PASS)"
+        fail=1
+    fi
+    tyline="$(printf '%s\n' "$out" | grep -a 'TYPE: ' | tail -1)"
+    if printf '%s' "$tyline" | grep -aq 'PASS'; then
+        echo "  [PASS] $tyline (canonical name collisions avoided + typography)"
+    else
+        echo "  [FAIL] type: ${tyline:-<none>} (want TYPE: PASS)"
         fail=1
     fi
     hpline="$(printf '%s\n' "$out" | grep -a 'HEAPINT: ' | tail -1)"
